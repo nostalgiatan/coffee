@@ -6,8 +6,6 @@
 //! array access. These checks are inserted into the generated code to provide
 //! runtime protection while maintaining good performance.
 
-#![allow(dead_code)]
-
 use inkwell::{values::PointerValue, builder::Builder};
 
 /// Safety context for runtime checks
@@ -69,6 +67,7 @@ impl<'ctx> SafetyContext<'ctx> {
     /// // In practice, you'd need an LLVM FunctionValue here
     /// // safety_context.set_panic_func(panic_function);
     /// ```
+    #[allow(dead_code)]
     pub fn set_panic_func(&mut self, panic_func: inkwell::values::FunctionValue<'ctx>) {
         self.panic_func = Some(panic_func);
     }
@@ -101,6 +100,7 @@ impl<'ctx> SafetyContext<'ctx> {
     /// // In practice, you'd need LLVM builder and pointer value
     /// // safety_context.check_null_ptr(&builder, ptr_value, "example.coffee:10:5");
     /// ```
+    #[allow(dead_code)]
     pub fn check_null_ptr(
         &self,
         builder: &Builder<'ctx>,

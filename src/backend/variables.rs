@@ -540,6 +540,17 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 // Use compile-time constant for bounds checking
                 let array_len = self.backend.context.i64_type().const_int(array_size as u64, false);
 
+                // `--enable-safety` inserts SafetyContext bounds checks (bounds_panic).
+                // Existing check_array_bounds still runs so default array access stays guarded.
+                if self.enable_safety {
+                    self.safety_ctx.check_bounds(
+                        &self.backend.builder,
+                        index_i64,
+                        array_len,
+                        "array index",
+                    )?;
+                }
+
                 // Perform bounds checking: 0 <= index < length
                 self.check_array_bounds(index_i64, array_len, array_name, index_str)?;
 

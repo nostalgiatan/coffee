@@ -1323,6 +1323,22 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
     /// 
     /// # Arguments
     
+    /// Branch to `dest` if the current insert block has no terminator.
+    fn branch_to_if_unterminated(
+        &self,
+        dest: inkwell::basic_block::BasicBlock,
+    ) -> Result<(), String> {
+        let Some(block) = self.backend.builder.get_insert_block() else {
+            return Ok(());
+        };
+        if block.get_terminator().is_none() {
+            self.backend.builder
+                .build_unconditional_branch(dest)
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
     /// Parse a field pair from a string like "field_name: var_name"
     fn parse_field_pair(field_pair: &str) -> (String, String) {
         let field_pair = field_pair.trim();
@@ -1671,33 +1687,36 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             self.backend.builder.position_at_end(arm_block);
             for line in arm.result.split('\n') {
                 let line = line.trim();
-                if !line.is_empty() {
-                    self.compile_body_line(line)?;
+                if line.is_empty() {
+                    continue;
+                }
+                self.compile_body_line(line)?;
+                // compile_body_line skips pure expressions without '(' (e.g. `y + 1`).
+                // Emit them so overflow-check merge blocks exist, then terminate below.
+                let looks_like_stmt = line.starts_with("let ")
+                    || line.starts_with("return")
+                    || line == "break"
+                    || line == "continue"
+                    || (line.contains(" = ") && !line.starts_with("if "));
+                if !looks_like_stmt {
+                    if let Some(b) = self.backend.builder.get_insert_block() {
+                        if b.get_terminator().is_none() && !line.contains('(') {
+                            let _ = self.compile_expression_str(line);
+                        }
+                    }
                 }
             }
             // CRITICAL: check the builder's CURRENT block for a terminator, not
-            // arm_block. A complex arm-result expression (e.g. `(y + x) * 2`,
-            // which emits arithmetic overflow-check sub-blocks) leaves the builder
-            // positioned on the final sub-block — so that block is the one that
-            // needs the branch to merge_block. Checking arm_block instead would
-            // see arm_block's own (now-present) terminator and skip the branch,
-            // leaving the tail sub-block unterminated → LLVM verification failure.
-            let cur_block = self.backend.builder.get_insert_block()
-                .ok_or("match: builder has no insert block after compiling arm body")?;
-            if cur_block.get_terminator().is_none() {
-                self.backend.builder.build_unconditional_branch(merge_block)
-                    .map_err(|e| e.to_string())?;
-            }
+            // arm_block. Overflow-check sub-blocks (add_merge, mul_merge, …) are
+            // the insert point after a nested arithmetic expression.
+            self.branch_to_if_unterminated(merge_block)?;
 
             current_block = next_block;
         }
 
-        // Default: jump to merge
+        // Fall-through next_block of the last arm (may have no predecessors).
         self.backend.builder.position_at_end(current_block);
-        if current_block.get_terminator().is_none() {
-            self.backend.builder.build_unconditional_branch(merge_block)
-                .map_err(|e| e.to_string())?;
-        }
+        self.branch_to_if_unterminated(merge_block)?;
 
         self.backend.builder.position_at_end(merge_block);
         

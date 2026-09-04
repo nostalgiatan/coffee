@@ -743,3 +743,43 @@ fn main() => int:
 "#;
     assert_compiles(source).unwrap();
 }
+
+//=============================================================================
+// --enable-safety: array bounds checks in LLVM IR
+//=============================================================================
+
+#[test]
+fn test_enable_safety_emits_bounds_panic_block() {
+    let source = r#"
+fn main() => int:
+    let arr: [int; 2] = [1, 2]
+    let i: int = 1
+    let x: int = arr[i]
+    rm x
+    rm i
+    rm arr
+    return 0
+"#;
+    let pid = std::process::id();
+    let off_ll = format!("test_enable_safety_off_{}.ll", pid);
+    let on_ll = format!("test_enable_safety_on_{}.ll", pid);
+
+    let off = compile_coffee(source, &["--emit-llvm", "-o", &off_ll]).unwrap();
+    let on = compile_coffee(source, &["--enable-safety", "--emit-llvm", "-o", &on_ll]).unwrap();
+
+    let on_ir = std::fs::read_to_string(&on_ll).unwrap_or_default();
+    let _ = std::fs::remove_file(&off_ll);
+    let _ = std::fs::remove_file(&on_ll);
+
+    assert_eq!(on.exit_code, 0, "enable-safety emit-llvm failed:\n{}", on.stderr);
+    assert!(
+        on_ir.contains("bounds_panic")
+            || on.stdout.contains("bounds_panic")
+            || on.stderr.contains("bounds_panic"),
+        "expected bounds_panic in LLVM IR file (emit-llvm writes a .ll file, not stdout):\nir={}\nstdout={}\nstderr={}",
+        on_ir,
+        on.stdout,
+        on.stderr
+    );
+    let _ = off;
+}
