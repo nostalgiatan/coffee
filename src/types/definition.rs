@@ -388,10 +388,20 @@ pub fn type_from_str(s: &str) -> Result<Type, String> {
         });
     }
 
-    // 处理切片类型 [T]
+    // 处理数组 [T; N] 与切片 [T]
     if s.starts_with('[') && s.ends_with(']') {
-        let elem_str = &s[1..s.len() - 1];
-        let elem = type_from_str(elem_str)?;
+        let inner = &s[1..s.len() - 1].trim();
+        if let Some(semi_pos) = inner.find(';') {
+            let elem = type_from_str(inner[..semi_pos].trim())?;
+            let size: usize = inner[semi_pos + 1..].trim()
+                .parse()
+                .map_err(|_| format!("Invalid array size: '{}'", inner))?;
+            return Ok(Type::Array {
+                elem: Box::new(elem),
+                size,
+            });
+        }
+        let elem = type_from_str(inner)?;
         return Ok(Type::Slice(Box::new(elem)));
     }
 

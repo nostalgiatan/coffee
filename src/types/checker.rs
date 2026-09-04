@@ -366,7 +366,7 @@ impl TypeChecker {
             parser::Statement::If(if_expr) => self.check_if(if_expr),
             parser::Statement::While(while_loop) => self.check_while(while_loop),
             parser::Statement::Match(match_expr) => self.check_match(match_expr),
-            parser::Statement::For(for_loop) => self.check_stmt_list(&for_loop.body),
+            parser::Statement::For(for_loop) => self.check_for(for_loop),
             parser::Statement::Expr(expr) => self.check_expr_stmt(expr),
             parser::Statement::Return(ret) => self.check_return_statement(ret),
             parser::Statement::Assignment(_, value) => self.check_expr_stmt(value),
@@ -457,6 +457,37 @@ impl TypeChecker {
         self.check_stmt_list(&while_loop.body)
     }
 
+    fn check_for(&mut self, for_loop: &parser::ForLoop) -> Result<(), TypeSystemError> {
+        match &for_loop.iterator {
+            parser::ForIterator::Range { start, end } => {
+                self.check_expr_stmt(start)?;
+                self.check_expr_stmt(end)?;
+            }
+            parser::ForIterator::Collection(name) => {
+                let _ = self.infer_value_type(name);
+            }
+        }
+        let prev = self.values.remove(&for_loop.variable);
+        self.values.insert(for_loop.variable.clone(), ValueInfo {
+            name: for_loop.variable.clone(),
+            ty: Type::int(),
+            state: ValueState::Alive,
+            scope: SpaceId::new(),
+            location: Span::new(0, for_loop.variable.len()),
+            lifetime: None,
+        });
+        let result = self.check_stmt_list(&for_loop.body);
+        match prev {
+            Some(info) => {
+                self.values.insert(for_loop.variable.clone(), info);
+            }
+            None => {
+                self.values.remove(&for_loop.variable);
+            }
+        }
+        result
+    }
+
     fn check_match(&mut self, match_expr: &parser::MatchExpr) -> Result<(), TypeSystemError> {
         self.check_expr_stmt(&match_expr.value)?;
         for arm in &match_expr.arms {
@@ -493,14 +524,16 @@ impl TypeChecker {
                     }),
                 };
 
-                // Convert to FunctionCall for existing logic
+                for arg in args {
+                    self.check_expression(arg)?;
+                }
                 let function_call = crate::parser::function::FunctionCall {
                     name: function_name,
                     args: args.iter().map(|arg| {
                         match arg {
                             crate::parser::expr::Expression::Literal(value) => value.clone(),
                             crate::parser::expr::Expression::Variable(name) => name.clone(),
-                            _ => "placeholder".to_string(),
+                            other => other.to_string(),
                         }
                     }).collect(),
                 };
@@ -801,6 +834,13 @@ impl TypeChecker {
                     Err(TypeSystemError::invalid_operation(op, left_type.clone(), right_type.clone(), location))
                 }
             }
+            "&" | "|" | "^" | "<<" | ">>" => {
+                if left_type.is_int() && right_type.is_int() {
+                    Ok(self.promote_numeric_types(left_type, right_type))
+                } else {
+                    Err(TypeSystemError::invalid_operation(op, left_type.clone(), right_type.clone(), location))
+                }
+            }
             _ => {
                 Err(TypeSystemError::invalid_operation(op, left_type.clone(), right_type.clone(), location))
             }
@@ -970,7 +1010,10 @@ impl TypeChecker {
         // Check argument types
         for (i, (arg, expected_type)) in call.args.iter().zip(param_types.iter()).enumerate() {
             coffee_debug!("[DEBUG] check_function_call: checking arg {} '{}' with expected type {:?}", i, arg, expected_type);
-            let arg_type = self.infer_value_type(arg)?;
+            let arg_type = match crate::parser::expr::parse_expression(arg) {
+                Ok(expr) => self.check_expression(&expr)?,
+                Err(_) => self.infer_value_type(arg)?,
+            };
             coffee_debug!("[DEBUG] check_function_call: inferred arg type as {:?}", arg_type);
             if !self.types_compatible(&arg_type, expected_type)? {
                 let arg_location = Span::new(location.start + i * 10, location.start + (i + 1) * 10);
@@ -1060,6 +1103,10 @@ impl TypeChecker {
             if let Some(paren_pos) = value.find('(') {
                 let func_name = &value[..paren_pos].trim();
                 let args_str = &value[paren_pos + 1..value.len() - 1];
+                // Display of Binary is `(n - 1)` — grouping, not a call named "".
+                if func_name.is_empty() {
+                    return self.infer_value_type(args_str);
+                }
                 
                 // Try to find function type
                 if let Some(ref analyzer) = self.analyzer {

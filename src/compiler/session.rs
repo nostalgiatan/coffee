@@ -32,7 +32,11 @@ impl Session {
 
         let analyzer = Arc::new(RwLock::new(SemanticAnalyzer::new(type_registry.clone())));
         let type_checker = Arc::new(RwLock::new(
-            crate::types::TypeChecker::new(type_registry.clone(), crate::types::CheckingMode::Comprehensive)
+            crate::types::TypeChecker::with_analyzer(
+                type_registry.clone(),
+                crate::types::CheckingMode::Comprehensive,
+                Some(analyzer.clone()),
+            )
         ));
 
         Session {
