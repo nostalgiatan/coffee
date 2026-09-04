@@ -295,6 +295,16 @@ impl ErrorKind {
             ErrorKind::InvalidSyntax { context } => {
                 format!("Invalid syntax: {}", context)
             }
+            ErrorKind::UnexpectedToken { token, expected } => {
+                if expected.is_empty() {
+                    format!("Unexpected token '{}'", token)
+                } else {
+                    format!("Unexpected token '{}'; expected one of: {}", token, expected.join(", "))
+                }
+            }
+            ErrorKind::IncompleteInput { expected } => {
+                format!("Incomplete input: expected {}", expected)
+            }
             ErrorKind::CodeGeneration { stage, details } => {
                 format!("Code generation error in {}: {}", stage, details)
             }
@@ -962,24 +972,69 @@ impl From<&types::TypeSystemError> for Diagnostic {
 
 impl From<crate::parser::ParseError> for Diagnostic {
     fn from(error: crate::parser::ParseError) -> Self {
+        use crate::parser::ParseError;
+
         let line = error.line();
-
-        let mut diagnostic = Diagnostic::new(
-            Severity::Error,
-            ErrorKind::InvalidSyntax {
-                context: format!("line {}", line),
+        let kind = match &error {
+            ParseError::UnexpectedKeyword { keyword, expected, .. } => {
+                ErrorKind::UnexpectedToken {
+                    token: keyword.clone(),
+                    expected: expected.clone(),
+                }
+            }
+            ParseError::MissingColon { function_name, .. } => ErrorKind::IncompleteInput {
+                expected: format!("':' after function '{}'", function_name),
             },
-            error.to_message(),
-        );
+            ParseError::MissingReturnType { function_name, .. } => ErrorKind::IncompleteInput {
+                expected: format!("return type after '=>' for function '{}'", function_name),
+            },
+            ParseError::MissingClosingParen { context, .. } => ErrorKind::IncompleteInput {
+                expected: format!("')' to close parenthesis in '{}'", context.trim()),
+            },
+            ParseError::MissingBlockBody { statement_type, .. } => ErrorKind::IncompleteInput {
+                expected: format!("indented block body after '{}:'", statement_type),
+            },
+            ParseError::MissingParameterName { function_name, .. } => ErrorKind::IncompleteInput {
+                expected: format!("parameter name in function '{}'", function_name),
+            },
+            ParseError::MissingTypeAnnotation { parameter_name, .. } => ErrorKind::IncompleteInput {
+                expected: format!("type annotation for parameter '{}'", parameter_name),
+            },
+            ParseError::WrongCommentSyntax { wrong_syntax, correct_syntax, .. } => {
+                ErrorKind::InvalidSyntax {
+                    context: format!(
+                        "comment syntax '{}'; Coffee uses '{}' (not '//')",
+                        wrong_syntax, correct_syntax
+                    ),
+                }
+            }
+            ParseError::InvalidUseOfBraces { context, brace_type, .. } => {
+                ErrorKind::InvalidSyntax {
+                    context: format!(
+                        "brace '{}' in '{}'; Coffee is indentation-based and does not use braces",
+                        brace_type,
+                        context.trim()
+                    ),
+                }
+            }
+            ParseError::GenericSyntaxError { hint, .. } => ErrorKind::InvalidSyntax {
+                context: hint.clone(),
+            },
+            ParseError::InvalidFunctionSyntax { context, expected, .. } => {
+                ErrorKind::InvalidSyntax {
+                    context: format!("{} (expected {})", context.trim(), expected),
+                }
+            }
+            ParseError::InvalidTypeSyntax { type_str, reason, .. } => ErrorKind::InvalidSyntax {
+                context: format!("type '{}': {}", type_str, reason),
+            },
+        };
 
-        // Set location
+        let mut diagnostic = Diagnostic::new(Severity::Error, kind, error.to_message());
         diagnostic.location = SourceLocation::new(line, 1, 100);
-
-        // Add suggestions
         for suggestion in error.suggestions() {
             diagnostic = diagnostic.with_suggestion(Suggestion::new(suggestion));
         }
-
         diagnostic
     }
 }

@@ -374,6 +374,32 @@ impl ParseError {
             .map(|s| s.to_string())
     }
 
+    /// Coffee-specific hints for unknown/wrong keywords (Python/JS leftovers, etc.)
+    fn unexpected_keyword_suggestions(keyword: &str, expected: &[String]) -> Vec<String> {
+        let mut hints = Vec::new();
+        match keyword {
+            "def" => hints.push(
+                "Coffee uses `fn` for functions, not `def`. Example: `fn foo() => int:`.".to_string(),
+            ),
+            "try" | "catch" | "except" | "finally" => hints.push(
+                "Coffee has no try/catch. Use `raise` to throw; there is no catch block.".to_string(),
+            ),
+            "function" => hints.push(
+                "Coffee uses `fn` for functions, not `function`.".to_string(),
+            ),
+            _ => {}
+        }
+        hints.push(format!(
+            "Unexpected `{}`. Coffee keywords include: {}",
+            keyword,
+            expected.join(", ")
+        ));
+        hints.push(
+            "Allocated values must be released with `rm` (Coffee has no implicit drop).".to_string(),
+        );
+        hints
+    }
+
     /// Generate helpful hint based on line content
     fn generate_hint(line: &str) -> String {
         if line.contains("fn ") {
@@ -465,49 +491,76 @@ impl ParseError {
     pub fn suggestions(&self) -> Vec<String> {
         match self {
             ParseError::MissingParameterName { hint, .. } => {
-                vec![hint.clone()]
+                vec![
+                    hint.clone(),
+                    "Coffee parameters need a name and a type, e.g. `fn f(x: int) => int:`.".to_string(),
+                ]
             }
             ParseError::MissingClosingParen { context, .. } => {
-                vec![format!("Add a closing ')' to match the opening parenthesis in '{}'", context.trim())]
+                vec![
+                    format!("Add a closing ')' to match the opening parenthesis in '{}'", context.trim()),
+                    "Function headers look like `fn name(params: Types) => ReturnType:`.".to_string(),
+                ]
             }
             ParseError::MissingReturnType { function_name, .. } => {
-                vec![format!("Add return type after '=>', like: fn {}(...) => int:", function_name)]
+                vec![
+                    format!("Add a return type after '=>', like: fn {}(...) => int:", function_name),
+                    "Then start the indented body on the next line (Coffee uses indent, not braces).".to_string(),
+                ]
             }
             ParseError::MissingColon { function_name, .. } => {
-                vec![format!("Add a colon ':' at the end: fn {}(...) => Type:", function_name)]
+                vec![
+                    format!("Add a colon ':' after the signature: fn {}(...) => Type:", function_name),
+                    "Coffee blocks are indentation-based: `:` then an indented body, not `{}`.".to_string(),
+                ]
             }
             ParseError::MissingTypeAnnotation { parameter_name, .. } => {
-                vec![format!("Add type annotation: {}: Type", parameter_name)]
+                vec![
+                    format!("Add a type annotation: {}: Type", parameter_name),
+                    "Example: `fn f(x: int) => int:` — types are required, not inferred from the name.".to_string(),
+                ]
             }
             ParseError::InvalidFunctionSyntax { expected, .. } => {
-                vec![expected.clone()]
+                vec![
+                    expected.clone(),
+                    "Use `fn`, not `def`. End the header with `:` and indent the body.".to_string(),
+                ]
             }
-            ParseError::UnexpectedKeyword { expected, .. } => {
-                vec![format!("Try using one of these keywords: {}", expected.join(", "))]
+            ParseError::UnexpectedKeyword { keyword, expected, .. } => {
+                Self::unexpected_keyword_suggestions(keyword, expected)
             }
             ParseError::MissingBlockBody { statement_type, .. } => {
-                vec![format!("Add a body block with a colon: {} ...", statement_type)]
+                vec![
+                    format!("End `{}` with ':' and indent the body (4 spaces).", statement_type),
+                    "Coffee is indentation-based and does not use `{` `}` for blocks.".to_string(),
+                ]
             }
             ParseError::InvalidTypeSyntax { type_str, .. } => {
-                vec![format!("Check type syntax: '{}'. Valid types: int, float, str, bool, or custom types", type_str)]
+                vec![
+                    format!("Check type syntax: '{}'. Valid types: int, float, str, bool, or custom types", type_str),
+                    "Integer sizes are in bytes, e.g. `int(4)+` for a 4-byte signed int.".to_string(),
+                ]
             }
             ParseError::GenericSyntaxError { hint, .. } => {
-                vec![hint.clone()]
+                vec![
+                    hint.clone(),
+                    "Check Coffee syntax: `fn` (not `def`), `/#/` comments (not `//`), indent blocks, and `rm` every `let`.".to_string(),
+                ]
             }
             ParseError::WrongCommentSyntax { wrong_syntax, correct_syntax, .. } => {
                 vec![
-                    format!("Replace '{}' with '{}'", wrong_syntax, correct_syntax),
-                    format!("Single-line comment: {} This is a comment", correct_syntax),
-                    "Multi-line comment: /#* This is a".to_string(),
+                    format!("Coffee comments use '{}', not '{}'.", correct_syntax, wrong_syntax),
+                    format!("Single-line: {} This is a comment", correct_syntax),
+                    "Multi-line: /#* This is a".to_string(),
                     "                   multi-line comment *#/".to_string(),
-                    "Note: Comments in Coffee use /#/ delimiters, not // or /* */".to_string(),
+                    "`//`, `#`, and `/* */` are not Coffee comment syntax.".to_string(),
                 ]
             }
             ParseError::InvalidUseOfBraces { .. } => {
                 vec![
-                    "Remove all curly braces {} and use indentation instead".to_string(),
-                    "Use 4 spaces for each indentation level".to_string(),
-                    "Example: Instead of '{' use ':' to start a block and indent the body".to_string(),
+                    "Coffee is indentation-based: remove `{` `}` and start the block with `:`.".to_string(),
+                    "Indent the body with 4 spaces per level.".to_string(),
+                    "Example: `fn example() => int:` then indent `return 0`.".to_string(),
                 ]
             }
         }
@@ -566,5 +619,25 @@ mod tests {
     fn test_wrong_comment_syntax() {
         let error = ParseError::detect_error(1, "// not coffee");
         assert!(matches!(error, ParseError::WrongCommentSyntax { .. }));
+        let joined = error.suggestions().join(" ");
+        assert!(joined.contains("/#/"), "{joined}");
+        assert!(joined.contains("//"), "{joined}");
+    }
+
+    #[test]
+    fn test_def_suggestions_point_to_fn() {
+        let error = ParseError::detect_error(1, "def foo():");
+        let joined = error.suggestions().join(" ");
+        assert!(joined.contains("`fn`"), "{joined}");
+        assert!(joined.contains("`def`"), "{joined}");
+        assert!(joined.contains("`rm`"), "{joined}");
+    }
+
+    #[test]
+    fn test_try_suggestions_point_to_raise_not_catch() {
+        let error = ParseError::detect_error(1, "try foo()");
+        let joined = error.suggestions().join(" ");
+        assert!(joined.contains("`raise`"), "{joined}");
+        assert!(joined.contains("no try/catch"), "{joined}");
     }
 }

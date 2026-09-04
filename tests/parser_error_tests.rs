@@ -44,6 +44,9 @@ fn main() => int:
     return 0
 "#;
     assert_compile_error(source, "comment").unwrap();
+    // InvalidSyntax / E001 — distinct from unexpected-token and incomplete-input
+    assert_compile_error(source, "E001").unwrap();
+    assert_compile_error(source, "/#/").unwrap();
 }
 
 #[test]
@@ -53,4 +56,41 @@ fn main() => int
     return 0
 "#;
     assert_compile_error(source, "colon").unwrap();
+    // IncompleteInput / E003 — missing ':' on the fn header
+    assert_compile_error(source, "E003").unwrap();
+}
+
+#[test]
+fn python_def_is_unexpected_token() {
+    let source = r#"
+def foo() => int:
+    return 0
+"#;
+    assert_compile_error(source, "def").unwrap();
+    // UnexpectedToken / E002 — `def` is not Coffee (`fn` is)
+    assert_compile_error(source, "E002").unwrap();
+    assert_compile_error(source, "fn").unwrap();
+}
+
+#[test]
+fn parse_error_kinds_are_distinguishable() {
+    let def_src = "def foo() => int:\n    return 0\n";
+    let comment_src = "// not coffee\nfn main() => int:\n    return 0\n";
+    let colon_src = "fn main() => int\n    return 0\n";
+
+    let def_err = compile_coffee(def_src, &[]).unwrap();
+    let comment_err = compile_coffee(comment_src, &[]).unwrap();
+    let colon_err = compile_coffee(colon_src, &[]).unwrap();
+
+    assert_ne!(def_err.exit_code, 0, "def should fail: {}", def_err.stderr);
+    assert_ne!(comment_err.exit_code, 0, "// should fail: {}", comment_err.stderr);
+    assert_ne!(colon_err.exit_code, 0, "missing colon should fail: {}", colon_err.stderr);
+
+    assert!(def_err.stderr.contains("E002"), "def → UnexpectedToken: {}", def_err.stderr);
+    assert!(comment_err.stderr.contains("E001"), "// → InvalidSyntax: {}", comment_err.stderr);
+    assert!(colon_err.stderr.contains("E003"), "missing colon → IncompleteInput: {}", colon_err.stderr);
+
+    assert!(!def_err.stderr.contains("E001") || def_err.stderr.contains("E002"));
+    assert!(!comment_err.stderr.contains("E002"), "comment must not look like UnexpectedToken: {}", comment_err.stderr);
+    assert!(!colon_err.stderr.contains("E002"), "colon must not look like UnexpectedToken: {}", colon_err.stderr);
 }
