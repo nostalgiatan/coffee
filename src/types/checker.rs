@@ -360,17 +360,146 @@ impl TypeChecker {
             parser::Statement::For(for_loop) => self.check_for(for_loop),
             parser::Statement::Expr(expr) => self.check_expr_stmt(expr),
             parser::Statement::Return(ret) => self.check_return_statement(ret),
-            parser::Statement::Assignment(_, value) => self.check_expr_stmt(value),
+            parser::Statement::Assignment(name, value) => self.check_assignment(name, value),
             parser::Statement::Raise(raise_stmt) => self.check_expr_stmt(&raise_stmt.error_expr),
+            parser::Statement::Main(main_entry) => self.check_main_entry(main_entry),
+            parser::Statement::Class(class) => self.check_class(class),
+            parser::Statement::Enum(enum_def) => self.check_enum_field_types(enum_def),
             parser::Statement::Import(_)
-            | parser::Statement::Main(_)
-            | parser::Statement::Class(_)
-            | parser::Statement::Enum(_)
             | parser::Statement::Break(_)
             | parser::Statement::Continue(_)
             | parser::Statement::SingleLineComment(_)
             | parser::Statement::MultiLineComment(_) => Ok(()),
         }
+    }
+
+    fn check_assignment(
+        &mut self,
+        name: &str,
+        value: &crate::parser::expr::Expression,
+    ) -> Result<(), TypeSystemError> {
+        let target_type = if let Some((object, field)) = name.split_once('.') {
+            let object_type = match self.check_expression(&crate::parser::expr::Expression::Variable(object.to_string())) {
+                Ok(ty) => ty,
+                Err(e) => {
+                    self.add_error(e.clone());
+                    return Err(e);
+                }
+            };
+            let class_name = match object_type {
+                Type::NamedType { name } => name,
+                _ => {
+                    let error = TypeSystemError::ParseError {
+                        type_str: "assignment".to_string(),
+                        reason: format!("Cannot assign field '{}' on non-class type {:?}", field, object_type),
+                    };
+                    self.add_error(error.clone());
+                    return Err(error);
+                }
+            };
+            match self.lookup_field_type(&class_name, field) {
+                Ok(ty) => ty,
+                Err(e) => {
+                    self.add_error(e.clone());
+                    return Err(e);
+                }
+            }
+        } else {
+            match self.check_expression(&crate::parser::expr::Expression::Variable(name.to_string())) {
+                Ok(ty) => ty,
+                Err(e) => {
+                    self.add_error(e.clone());
+                    return Err(e);
+                }
+            }
+        };
+
+        let value_type = match self.check_expression(value) {
+            Ok(ty) => ty,
+            Err(e) => {
+                self.add_error(e.clone());
+                return Err(e);
+            }
+        };
+
+        if !self.types_compatible(&value_type, &target_type)? {
+            let error = TypeSystemError::type_mismatch(target_type, value_type, Span::new(0, name.len()));
+            self.add_error(error.clone());
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn bind_alive(&mut self, name: &str, ty: Type) {
+        self.values.insert(name.to_string(), ValueInfo {
+            name: name.to_string(),
+            ty,
+            state: ValueState::Alive,
+            scope: SpaceId::new(),
+            location: Span::new(0, name.len()),
+            lifetime: None,
+        });
+    }
+
+    fn check_class(&mut self, class: &parser::class::ClassDef) -> Result<(), TypeSystemError> {
+        let class_ty = Type::NamedType { name: class.name.clone() };
+        let mut first_err = None;
+        for method in &class.methods {
+            let prev_return = self.current_return_type.clone();
+            let prev_values = self.values.clone();
+            if let Err(e) = self.set_function_return_type(&method.return_type) {
+                self.add_error(e.clone());
+                self.current_return_type = prev_return;
+                if first_err.is_none() {
+                    first_err = Some(e);
+                }
+                continue;
+            }
+            self.bind_alive("self", class_ty.clone());
+            for param in &method.parameters {
+                let ty = if param.name == "self" {
+                    class_ty.clone()
+                } else {
+                    match self.registry.read() {
+                        Ok(reg) => reg.resolve_type(&param.param_type).unwrap_or(Type::unit()),
+                        Err(_) => Type::unit(),
+                    }
+                };
+                self.bind_alive(&param.name, ty);
+            }
+            if let Err(e) = self.check_stmt_list(&method.body) {
+                if first_err.is_none() {
+                    first_err = Some(e);
+                }
+            }
+            self.current_return_type = prev_return;
+            self.values = prev_values;
+        }
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
+    fn check_enum_field_types(&mut self, enum_def: &parser::class::EnumDef) -> Result<(), TypeSystemError> {
+        for variant in &enum_def.variants {
+            for field in &variant.fields {
+                let type_str = match field {
+                    parser::class::VariantField::Type(ty) => ty.as_str(),
+                    parser::class::VariantField::Named { field_type, .. } => field_type.as_str(),
+                };
+                let resolved = self.registry.read().ok().and_then(|reg| reg.resolve_type(type_str).ok());
+                if resolved.is_none() {
+                    let error = TypeSystemError::UndefinedType {
+                        name: type_str.to_string(),
+                        span: Span::new(0, type_str.len()),
+                    };
+                    self.add_error(error.clone());
+                    return Err(error);
+                }
+            }
+        }
+        Ok(())
     }
 
     fn check_stmt_list(&mut self, statements: &[parser::Statement]) -> Result<(), TypeSystemError> {
@@ -480,9 +609,15 @@ impl TypeChecker {
     }
 
     fn check_match(&mut self, match_expr: &parser::MatchExpr) -> Result<(), TypeSystemError> {
-        self.check_expr_stmt(&match_expr.value)?;
+        let scrutinee_ty = match self.check_expression(&match_expr.value) {
+            Ok(ty) => ty,
+            Err(e) => {
+                self.add_error(e.clone());
+                return Err(e);
+            }
+        };
         for arm in &match_expr.arms {
-            let bound = self.bind_pattern_vars(&arm.pattern);
+            let bound = self.bind_pattern_vars(&arm.pattern, &scrutinee_ty);
             if let Some(guard) = &arm.guard {
                 self.check_expr_stmt(guard)?;
             }
@@ -492,15 +627,43 @@ impl TypeChecker {
         Ok(())
     }
 
-    fn bind_pattern_vars(&mut self, pattern: &crate::parser::Pattern) -> Vec<(String, Option<ValueInfo>)> {
+    fn bind_pattern_vars(
+        &mut self,
+        pattern: &crate::parser::Pattern,
+        expected: &Type,
+    ) -> Vec<(String, Option<ValueInfo>)> {
         let mut bound = Vec::new();
-        self.collect_pattern_bindings(pattern, &mut bound);
+        self.collect_pattern_bindings(pattern, expected, &mut bound);
         bound
+    }
+
+    fn variant_payload_types(&self, enum_name: &str, variant: &str) -> Vec<Type> {
+        let Ok(reg) = self.registry.read() else {
+            return Vec::new();
+        };
+        let Some(TypeDef::Enum { variants, .. }) = reg.get_type(enum_name) else {
+            return Vec::new();
+        };
+        let Some(v) = variants.iter().find(|v| v.name == variant) else {
+            return Vec::new();
+        };
+        v.fields
+            .iter()
+            .map(|field| match field {
+                crate::types::definition::VariantField::Positional(t) => {
+                    reg.resolve_type(t).unwrap_or(Type::int())
+                }
+                crate::types::definition::VariantField::Named { ty, .. } => {
+                    reg.resolve_type(ty).unwrap_or(Type::int())
+                }
+            })
+            .collect()
     }
 
     fn collect_pattern_bindings(
         &mut self,
         pattern: &crate::parser::Pattern,
+        expected: &Type,
         bound: &mut Vec<(String, Option<ValueInfo>)>,
     ) {
         match pattern {
@@ -508,7 +671,7 @@ impl TypeChecker {
                 let prev = self.values.remove(name);
                 self.values.insert(name.clone(), ValueInfo {
                     name: name.clone(),
-                    ty: Type::int(),
+                    ty: expected.clone(),
                     state: ValueState::Alive,
                     scope: SpaceId::new(),
                     location: Span::new(0, name.len()),
@@ -516,19 +679,44 @@ impl TypeChecker {
                 });
                 bound.push((name.clone(), prev));
             }
-            crate::parser::Pattern::Tuple(elements) | crate::parser::Pattern::Or(elements) => {
+            crate::parser::Pattern::Tuple(elements) => {
+                match expected {
+                    Type::Tuple(tys) => {
+                        for (i, el) in elements.iter().enumerate() {
+                            let ty = tys.get(i).cloned().unwrap_or_else(Type::int);
+                            self.collect_pattern_bindings(el, &ty, bound);
+                        }
+                    }
+                    _ => {
+                        for el in elements {
+                            self.collect_pattern_bindings(el, &Type::int(), bound);
+                        }
+                    }
+                }
+            }
+            crate::parser::Pattern::Or(elements) => {
                 for el in elements {
-                    self.collect_pattern_bindings(el, bound);
+                    self.collect_pattern_bindings(el, expected, bound);
                 }
             }
-            crate::parser::Pattern::Struct { fields, .. } => {
-                for (_, value) in fields {
-                    self.collect_pattern_bindings(value, bound);
+            crate::parser::Pattern::Struct { name, fields } => {
+                for (field, value) in fields {
+                    let ty = self.lookup_field_type(name, field).unwrap_or_else(|_| Type::int());
+                    self.collect_pattern_bindings(value, &ty, bound);
                 }
             }
-            crate::parser::Pattern::EnumVariant { args, .. } => {
-                for arg in args {
-                    self.collect_pattern_bindings(arg, bound);
+            crate::parser::Pattern::EnumVariant { enum_name, variant, args } => {
+                let type_name = if !enum_name.is_empty() {
+                    enum_name.clone()
+                } else if let Type::NamedType { name } = expected {
+                    name.clone()
+                } else {
+                    String::new()
+                };
+                let payload_tys = self.variant_payload_types(&type_name, variant);
+                for (i, arg) in args.iter().enumerate() {
+                    let ty = payload_tys.get(i).cloned().unwrap_or_else(Type::int);
+                    self.collect_pattern_bindings(arg, &ty, bound);
                 }
             }
             crate::parser::Pattern::Wildcard | crate::parser::Pattern::Literal(_) => {}
@@ -563,7 +751,6 @@ impl TypeChecker {
                 self.check_binary_operation(&left_type, op, &right_type)
             },
             crate::parser::expr::Expression::Call { function, args } => {
-                // Extract function name
                 let function_name = match function.as_ref() {
                     crate::parser::expr::Expression::Variable(name) => name.clone(),
                     _ => return Err(TypeSystemError::ParseError {
@@ -571,22 +758,7 @@ impl TypeChecker {
                         reason: "Complex function expressions not yet supported".to_string(),
                     }),
                 };
-
-                for arg in args {
-                    self.check_expression(arg)?;
-                }
-                let function_call = crate::parser::function::FunctionCall {
-                    name: function_name,
-                    args: args.iter().map(|arg| {
-                        match arg {
-                            crate::parser::expr::Expression::Literal(value) => value.clone(),
-                            crate::parser::expr::Expression::Variable(name) => name.clone(),
-                            other => other.to_string(),
-                        }
-                    }).collect(),
-                };
-
-                self.check_function_call(&function_call)
+                self.check_function_call(&function_name, args)
             },
             crate::parser::expr::Expression::Member { object, field, args } => {
                 if let crate::parser::expr::Expression::Variable(type_name) = object.as_ref() {
@@ -911,12 +1083,16 @@ impl TypeChecker {
     }
 
     /// Check function call
-    pub fn check_function_call(&mut self, call: &parser::function::FunctionCall) -> Result<Type, TypeSystemError> {
-        let location = Span::new(0, call.name.len());
+    pub fn check_function_call(
+        &mut self,
+        name: &str,
+        args: &[crate::parser::expr::Expression],
+    ) -> Result<Type, TypeSystemError> {
+        let location = Span::new(0, name.len());
 
         // Check if this is an enum variant: Enum::Variant(args)
-        if call.name.contains("::") {
-            let parts: Vec<&str> = call.name.split("::").collect();
+        if name.contains("::") {
+            let parts: Vec<&str> = name.split("::").collect();
             if parts.len() == 2 {
                 let enum_name = parts[0].trim().to_string();
                 let variant_name = parts[1].trim();
@@ -952,14 +1128,14 @@ impl TypeChecker {
                 
                 if let Some((enum_name, variant)) = variant_info {
                     // Check argument count
-                    if call.args.len() != variant.fields.len() {
-                        let error = TypeSystemError::arity_mismatch(variant.fields.len(), call.args.len(), location);
+                    if args.len() != variant.fields.len() {
+                        let error = TypeSystemError::arity_mismatch(variant.fields.len(), args.len(), location);
                         self.add_error(error.clone());
                         return Err(error);
                     }
                     
                     // Check argument types
-                    for (i, (arg, field)) in call.args.iter().zip(variant.fields.iter()).enumerate() {
+                    for (i, (arg, field)) in args.iter().zip(variant.fields.iter()).enumerate() {
                         let expected_type = {
                             let registry_result = self.registry.read();
                             match registry_result {
@@ -977,7 +1153,7 @@ impl TypeChecker {
                             }
                         };
                         
-                        let arg_type = self.infer_value_type(arg)?;
+                        let arg_type = self.check_expression(arg)?;
                         if !self.types_compatible(&arg_type, &expected_type)? {
                             let arg_location = Span::new(location.start + i * 10, location.start + (i + 1) * 10);
                             let error = TypeSystemError::type_mismatch(expected_type, arg_type, arg_location);
@@ -998,7 +1174,7 @@ impl TypeChecker {
             match registry_result {
                 Ok(reg) => {
                     // Check if it's a defined function in registry
-                    if let Ok(func_type) = reg.resolve_type(&call.name) {
+                    if let Ok(func_type) = reg.resolve_type(name) {
                         Ok(func_type)
                     } else {
                         Err("not_found")
@@ -1017,7 +1193,7 @@ impl TypeChecker {
                         // Check C function symbols
                         if let Ok(cfc_symbols) = analyzer.get_cfc_symbols() {
                             for (lib_name, symbol_table) in cfc_symbols.iter() {
-                                if let Some(c_symbol) = symbol_table.symbols.get(&call.name) {
+                                if let Some(c_symbol) = symbol_table.symbols.get(name) {
                                     // Build function type from C symbol
                                     let mut param_types = Vec::new();
                                     for param in &c_symbol.parameters {
@@ -1039,13 +1215,13 @@ impl TypeChecker {
                     }
                 }
                 
-                let error = TypeSystemError::undefined_function(&call.name, location);
+                let error = TypeSystemError::undefined_function(name, location);
                 self.add_error(error.clone());
                 return Err(error);
             }
             Err(_) => {
                 let error = TypeSystemError::ParseError {
-                    type_str: call.name.clone(),
+                    type_str: name.to_string(),
                     reason: "Failed to access registry".to_string(),
                 };
                 self.add_error(error.clone());
@@ -1064,19 +1240,16 @@ impl TypeChecker {
         };
 
         // Check arity
-        if call.args.len() != param_types.len() {
-            let error = TypeSystemError::arity_mismatch(param_types.len(), call.args.len(), location);
+        if args.len() != param_types.len() {
+            let error = TypeSystemError::arity_mismatch(param_types.len(), args.len(), location);
             self.add_error(error.clone());
             return Err(error);
         }
 
         // Check argument types
-        for (i, (arg, expected_type)) in call.args.iter().zip(param_types.iter()).enumerate() {
+        for (i, (arg, expected_type)) in args.iter().zip(param_types.iter()).enumerate() {
             coffee_debug!("[DEBUG] check_function_call: checking arg {} '{}' with expected type {:?}", i, arg, expected_type);
-            let arg_type = match crate::parser::expr::parse_expression(arg) {
-                Ok(expr) => self.check_expression(&expr)?,
-                Err(_) => self.infer_value_type(arg)?,
-            };
+            let arg_type = self.check_expression(arg)?;
             coffee_debug!("[DEBUG] check_function_call: inferred arg type as {:?}", arg_type);
             if !self.types_compatible(&arg_type, expected_type)? {
                 let arg_location = Span::new(location.start + i * 10, location.start + (i + 1) * 10);
@@ -1955,21 +2128,45 @@ impl TypeChecker {
                     ("remove_multiple", "")
                 }
             }
-            crate::parser::memory::MemoryOp::CleanOut { targets, except_mode: _ } => {
-                if let Some(vars) = targets {
-                    if !vars.is_empty() {
-                        ("clean_out", vars[0].as_str())
-                    } else {
-                        ("clean_out", "")
-                    }
-                } else {
-                    ("clean_out", "")
-                }
+            crate::parser::memory::MemoryOp::CleanOut { targets, except_mode } => {
+                return self.check_clean_out(targets.as_ref().map(|v| v.as_slice()), *except_mode);
             }
         };
 
         self.check_memory_operation(var_name, operation)
             .map_err(|e| e.into())
+    }
+
+    fn check_clean_out(
+        &mut self,
+        targets: Option<&[String]>,
+        except_mode: bool,
+    ) -> Result<(), crate::diagnostics::Diagnostic> {
+        let is_live = |state: &ValueState| {
+            matches!(state, ValueState::Alive | ValueState::Borrowed { .. })
+        };
+        let names: Vec<String> = if except_mode {
+            let except = targets.unwrap_or(&[]);
+            self.values
+                .iter()
+                .filter(|(name, info)| is_live(&info.state) && !except.iter().any(|e| e == *name))
+                .map(|(name, _)| name.clone())
+                .collect()
+        } else if let Some(list) = targets {
+            list.to_vec()
+        } else {
+            self.values
+                .iter()
+                .filter(|(_, info)| is_live(&info.state))
+                .map(|(name, _)| name.clone())
+                .collect()
+        };
+
+        for name in names {
+            self.check_memory_operation(&name, "remove")
+                .map_err(crate::diagnostics::Diagnostic::from)?;
+        }
+        Ok(())
     }
 }
 
