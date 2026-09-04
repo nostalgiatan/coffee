@@ -479,14 +479,16 @@ fn split_assignment(trimmed: &str) -> Option<(&str, &str)> {
     None
 }
 
-fn assignment_target_ok(var_name: &str) -> bool {
-    let is_valid_identifier = !var_name.is_empty()
-        && var_name.chars().all(|c| c.is_alphanumeric() || c == '_');
-    let is_member_access = var_name.contains('.')
-        && var_name.split('.').all(|part| {
-            !part.is_empty() && part.chars().all(|c| c.is_alphanumeric() || c == '_')
-        });
-    is_valid_identifier || is_member_access
+fn assignment_lhs_name(expr: &crate::parser::expr::Expression) -> Option<String> {
+    use crate::parser::expr::Expression;
+    match expr {
+        Expression::Variable(name) if !name.is_empty() => Some(name.clone()),
+        Expression::Member { object, field, args } if args.is_empty() && !field.is_empty() => {
+            let prefix = assignment_lhs_name(object)?;
+            Some(format!("{}.{}", prefix, field))
+        }
+        _ => None,
+    }
 }
 
 fn try_parse_assignment(trimmed: &str) -> Option<(String, crate::parser::expr::Expression)> {
@@ -497,15 +499,10 @@ fn try_parse_assignment(trimmed: &str) -> Option<(String, crate::parser::expr::E
     {
         return None;
     }
-    let (var_name, value_expr) = split_assignment(trimmed)?;
-    if assignment_target_ok(var_name) {
-        Some((
-            var_name.to_string(),
-            crate::parser::expr::assignment_rhs(value_expr),
-        ))
-    } else {
-        None
-    }
+    let (lhs_src, rhs_src) = split_assignment(trimmed)?;
+    let lhs_expr = crate::parser::expr::parse_expression(lhs_src).ok()?;
+    let var_name = assignment_lhs_name(&lhs_expr)?;
+    Some((var_name, crate::parser::expr::assignment_rhs(rhs_src)))
 }
 
 fn is_broken_statement_keyword(trimmed: &str) -> bool {
@@ -1544,6 +1541,15 @@ mod tests {
         assert!(matches!(
             program.statements.as_slice(),
             [Statement::Assignment(name, _)] if name == "x"
+        ));
+    }
+
+    #[test]
+    fn parse_nested_member_assignment_flattens_dotted_name() {
+        let program = parse_program("p.x.y=1\n").expect("p.x.y=1 should parse as assignment");
+        assert!(matches!(
+            program.statements.as_slice(),
+            [Statement::Assignment(name, _)] if name == "p.x.y"
         ));
     }
 

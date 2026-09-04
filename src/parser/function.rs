@@ -76,19 +76,6 @@ pub struct Function {
     pub is_c: bool,
 }
 
-/// Represents a function call in Coffee
-/// 
-/// This structure captures the details of a function call, including the function name
-/// and its arguments. Currently, arguments are stored as string representations.
-#[derive(Debug, PartialEq, Clone)]
-#[allow(dead_code)]
-pub struct FunctionCall {
-    /// The name of the function being called
-    pub name: String,
-    /// The list of arguments to the function (as string representations)
-    pub args: Vec<String>, // For now, using string representations of arguments
-}
-
 impl Function {
     /// Check if this function is an error handler
     /// 

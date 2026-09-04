@@ -7,6 +7,8 @@ use crate::coffee_debug;
 use super::codegen::CodeGenerator;
 use crate::parser::expr::Expression;
 use crate::parser::{Statement, MemoryOp};
+use inkwell::AddressSpace;
+use inkwell::types::BasicTypeEnum;
 
 impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
     /// Compile a statement
@@ -32,7 +34,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 }
             }
             Statement::Assignment(var_name, value_expr) => {
-                self.compile_assignment_from_ast(var_name, value_expr)
+                self.compile_dotted_or_simple_assignment(var_name, value_expr)
             }
             Statement::Class(class) => {
                 // Skip class compilation here - classes are already compiled in the first pass
@@ -56,6 +58,119 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 Ok(())
             }
         }
+    }
+
+    /// Assign through a dotted path. One-level `obj.field` uses the existing
+    /// `compile_assignment_from_ast` split; nested `a.b.c` walks each field.
+    fn compile_dotted_or_simple_assignment(
+        &mut self,
+        var_name: &str,
+        value_expr: &Expression,
+    ) -> Result<(), String> {
+        let parts: Vec<&str> = var_name.split('.').collect();
+        if parts.len() <= 2 || parts.iter().any(|p| p.is_empty()) {
+            return self.compile_assignment_from_ast(var_name, value_expr);
+        }
+
+        let root = parts[0];
+        self.used_variables.insert(root.to_string());
+
+        let mut class_name = self.variable_types.get(root).cloned().ok_or_else(|| {
+            self.error(
+                "compile_assignment_from_ast",
+                format!("cannot get class name for variable '{}'", root),
+            )
+        })?;
+
+        let mut field_ptr = self.compile_field_access_ptr(root, parts[1]).map_err(|e| {
+            self.error(
+                "compile_assignment_from_ast",
+                format!("failed to get field pointer for '{}.{}': {}", root, parts[1], e),
+            )
+        })?;
+
+        let first_field_ty = self
+            .classes
+            .get(&class_name)
+            .and_then(|c| c.fields.iter().find(|f| f.name == parts[1]))
+            .map(|f| f.field_type.clone())
+            .ok_or_else(|| {
+                self.error(
+                    "compile_assignment_from_ast",
+                    format!("field '{}' not found on '{}'", parts[1], class_name),
+                )
+            })?;
+        class_name = first_field_ty;
+
+        for field_name in &parts[2..] {
+            let llvm_ty = self.coffee_type_to_llvm(&class_name).map_err(|e| {
+                self.error("compile_assignment_from_ast", e)
+            })?;
+            let object_ptr = if matches!(llvm_ty, BasicTypeEnum::PointerType(_)) {
+                let ptr_ty = self.backend.context.ptr_type(AddressSpace::default());
+                self.backend
+                    .builder
+                    .build_load(ptr_ty, field_ptr, "nested_obj")
+                    .map_err(|e| {
+                        self.error(
+                            "compile_assignment_from_ast",
+                            format!("failed to load nested object '{}': {}", class_name, e),
+                        )
+                    })?
+                    .into_pointer_value()
+            } else {
+                field_ptr
+            };
+
+            let struct_type = *self
+                .type_mapper
+                .struct_types
+                .get(&class_name)
+                .ok_or_else(|| {
+                    self.error(
+                        "compile_assignment_from_ast",
+                        format!("class '{}' not found in struct_types cache", class_name),
+                    )
+                })?;
+            let field_index = self.get_field_index(&struct_type, field_name)?;
+            let zero = self.backend.context.i64_type().const_int(0, false);
+            let field_index_val = self.backend.context.i32_type().const_int(field_index as u64, false);
+            field_ptr = unsafe {
+                self.backend.builder.build_in_bounds_gep(
+                    struct_type,
+                    object_ptr,
+                    &[zero, field_index_val],
+                    &format!("{}_{}_ptr", class_name, field_name),
+                )
+            }
+            .map_err(|e| {
+                self.error(
+                    "compile_assignment_from_ast",
+                    format!("failed to build field GEP for '{}.{}': {}", class_name, field_name, e),
+                )
+            })?;
+
+            class_name = self
+                .classes
+                .get(&class_name)
+                .and_then(|c| c.fields.iter().find(|f| f.name == *field_name))
+                .map(|f| f.field_type.clone())
+                .unwrap_or(class_name);
+        }
+
+        let value = self.compile_expr(value_expr).map_err(|e| {
+            self.error(
+                "compile_assignment_from_ast",
+                format!("failed to compile value expression for field '{}': {}", var_name, e),
+            )
+        })?;
+        self.backend.builder.build_store(field_ptr, value).map_err(|e| {
+            self.error(
+                "compile_assignment_from_ast",
+                format!("failed to store value to field '{}': {}", var_name, e),
+            )
+        })?;
+        Ok(())
     }
 
     /// Compile a line of function body

@@ -749,15 +749,7 @@ impl SemanticAnalyzer {
                 result
             }
             crate::parser::Statement::Assignment(name, value) => {
-                if let Some((object, field)) = name.split_once('.') {
-                    self.analyze_expression(&crate::parser::expr::Expression::Member {
-                        object: Box::new(crate::parser::expr::Expression::Variable(object.to_string())),
-                        field: field.to_string(),
-                        args: Vec::new(),
-                    })?;
-                } else {
-                    self.analyze_expression(&crate::parser::expr::Expression::Variable(name.clone()))?;
-                }
+                self.analyze_assignment_lhs(name)?;
                 self.analyze_expression(value)
             }
             crate::parser::Statement::Main(main_entry) => {
@@ -785,6 +777,26 @@ impl SemanticAnalyzer {
             }
             _ => Ok(())
         }
+    }
+
+    /// Walk a dotted assignment target (`p`, `p.x`, `p.x.y`) as a Member chain.
+    fn analyze_assignment_lhs(&self, name: &str) -> Result<(), TypeSystemError> {
+        use crate::parser::expr::Expression;
+        let mut parts = name.split('.');
+        let Some(first) = parts.next() else {
+            return Ok(());
+        };
+        let mut expr = Expression::Variable(first.to_string());
+        self.analyze_expression(&expr)?;
+        for field in parts {
+            expr = Expression::Member {
+                object: Box::new(expr),
+                field: field.to_string(),
+                args: Vec::new(),
+            };
+            self.analyze_expression(&expr)?;
+        }
+        Ok(())
     }
 
     fn analyze_stmt_list(&mut self, stmts: &[crate::parser::Statement]) -> Result<(), TypeSystemError> {

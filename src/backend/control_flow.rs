@@ -548,33 +548,65 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 (start_int, end_int)
             }
             crate::parser::ForIterator::Collection(coll) => {
-                let crate::parser::expr::Expression::Variable(name) = coll else {
-                    if let Err(e) = self.compile_expr(coll) {
-                        return Err(self.error("compile_for", format!(
-                            "failed to compile for-in collection expression: {}\n  = note: for-in over arbitrary expressions is not yet supported\n  = help: use a simple collection name (`for x in items`) or an explicit range (`for i in 0..n`)",
-                            e
-                        )));
+                match coll {
+                    crate::parser::expr::Expression::Variable(name) => {
+                        let start_int = i64_type.const_int(0, false);
+
+                        let end_int = if let Some(&len_ptr) = self.array_lengths.get(name) {
+                            self.backend.builder.build_load(i64_type, len_ptr, "arr_len")
+                                .map_err(|e| self.error("compile_for",
+                                    format!("failed to load length of collection '{}': {}", name, e)))?
+                                .into_int_value()
+                        } else if let Some(&(_var_ptr, _)) = self.variables.get(name) {
+                            self.used_variables.insert(name.to_string());
+                            return Err(self.error("compile_for",
+                                format!("cannot iterate over collection '{}' - length information not available\n  = note: collection length must be tracked when the collection is created\n  = help: use explicit range instead: for i in 0..length", name)));
+                        } else {
+                            return Err(self.error("compile_for",
+                                format!("cannot find collection '{}' in this scope\n  = note: for-in loops require an existing collection or range", name)));
+                        };
+                        (start_int, end_int)
                     }
-                    return Err(self.error("compile_for",
-                        format!("for-in over arbitrary expressions is not yet supported\n  = note: collection is `{}`\n  = help: bind the collection to a variable first, or use an explicit range (`for i in 0..n`)", coll)));
-                };
-
-                let start_int = i64_type.const_int(0, false);
-
-                let end_int = if let Some(&len_ptr) = self.array_lengths.get(name) {
-                    self.backend.builder.build_load(i64_type, len_ptr, "arr_len")
-                        .map_err(|e| self.error("compile_for",
-                            format!("failed to load length of collection '{}': {}", name, e)))?
-                        .into_int_value()
-                } else if let Some(&(_var_ptr, _)) = self.variables.get(name) {
-                    self.used_variables.insert(name.to_string());
-                    return Err(self.error("compile_for",
-                        format!("cannot iterate over collection '{}' - length information not available\n  = note: collection length must be tracked when the collection is created\n  = help: use explicit range instead: for i in 0..length", name)));
-                } else {
-                    return Err(self.error("compile_for",
-                        format!("cannot find collection '{}' in this scope\n  = note: for-in loops require an existing collection or range", name)));
-                };
-                (start_int, end_int)
+                    crate::parser::expr::Expression::ArrayLiteral { elements } => {
+                        let compiled = self.compile_expr(coll)
+                            .map_err(|e| self.error("compile_for", format!(
+                                "failed to compile for-in collection expression: {}\n  = note: for-in over arbitrary expressions is not yet supported\n  = help: use a simple collection name (`for x in items`) or an explicit range (`for i in 0..n`)",
+                                e
+                            )))?;
+                        let temp_name = format!("__forin_lit_{}", self.array_lengths.len());
+                        if let BasicValueEnum::PointerValue(ptr) = compiled {
+                            self.array_allocas.insert(temp_name.clone(), ptr);
+                            self.array_sizes.insert(temp_name.clone(), elements.len() as u32);
+                        }
+                        let len_alloca = self.create_entry_alloca_preserving_terminator(
+                            i64_type,
+                            &format!("{}_len", temp_name),
+                        ).map_err(|e| self.error("compile_for",
+                            format!("failed to allocate length for array literal: {}", e)))?;
+                        self.backend.builder.build_store(
+                            len_alloca,
+                            i64_type.const_int(elements.len() as u64, false),
+                        ).map_err(|e| self.error("compile_for",
+                            format!("failed to store array literal length: {}", e)))?;
+                        self.array_lengths.insert(temp_name, len_alloca);
+                        let start_int = i64_type.const_int(0, false);
+                        let end_int = self.backend.builder.build_load(i64_type, len_alloca, "arr_len")
+                            .map_err(|e| self.error("compile_for",
+                                format!("failed to load array literal length: {}", e)))?
+                            .into_int_value();
+                        (start_int, end_int)
+                    }
+                    other => {
+                        if let Err(e) = self.compile_expr(other) {
+                            return Err(self.error("compile_for", format!(
+                                "failed to compile for-in collection expression: {}\n  = note: for-in over arbitrary expressions is not yet supported\n  = help: use a simple collection name (`for x in items`) or an explicit range (`for i in 0..n`)",
+                                e
+                            )));
+                        }
+                        return Err(self.error("compile_for",
+                            format!("for-in over arbitrary expressions is not yet supported\n  = note: collection is `{}`\n  = help: bind the collection to a variable first, or use an explicit range (`for i in 0..n`)", other)));
+                    }
+                }
             }
         };
 
