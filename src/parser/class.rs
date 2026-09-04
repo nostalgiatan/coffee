@@ -482,10 +482,9 @@ fn parse_method_body_lines(raw_lines: &[&str], implicit_return: bool) -> Vec<Sta
 
     // Preserve single-line method implicit return (bare expression => return)
     if implicit_return && statements.len() == 1 {
-        if let Statement::Expr(_) = &statements[0] {
-            let line = strip_inline_comment(dedented.iter().find(|l| !l.trim().is_empty()).copied().unwrap_or("")).trim();
+        if let Statement::Expr(expr) = statements.remove(0) {
             return vec![Statement::Return(ReturnStmt {
-                value: Some(line.to_string()),
+                value: Some(*expr),
             })];
         }
     }

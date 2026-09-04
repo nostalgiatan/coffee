@@ -36,9 +36,12 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             (decl_part, "int") // Default to int
         };
 
+        let value_expr = crate::parser::expr::parse_expression(value_part)
+            .unwrap_or_else(|_| crate::parser::expr::Expression::Literal(value_part.to_string()));
+
         // Check if this is an array type
         if type_str.starts_with('[') && type_str.ends_with(']') {
-            return self.compile_array_declaration(name, type_str, value_part);
+            return self.compile_array_declaration(name, type_str, &value_expr);
         }
 
         let llvm_type = self.coffee_type_to_llvm(type_str)
@@ -145,7 +148,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
     }
 
     /// Compile array declaration with initialization
-    pub fn compile_array_declaration(&mut self, name: &str, type_str: &str, value_part: &str) -> Result<(), String> {
+    pub fn compile_array_declaration(&mut self, name: &str, type_str: &str, value_expr: &crate::parser::expr::Expression) -> Result<(), String> {
         // Parse array type: [elem_type; size] or [elem_type]
         let (elem_type_str, array_size) = if let Some(semi_pos) = type_str.find(';') {
             // [elem_type; size]
@@ -176,12 +179,18 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 format!("failed to resolve element type '{}': {}", elem_type_str, e)))?;
 
         // Check if value is an array literal: [1, 2, 3]
-        let (elements, actual_size) = if value_part.starts_with('[') && value_part.ends_with(']') {
-            self.parse_array_literal(value_part, 0)? // Start at depth 0
-        } else {
-            // Single value or expression
-            let value = self.compile_source_as_expr(value_part)?;
-            (vec![value], array_size.unwrap_or(1))
+        let (elements, actual_size) = match value_expr {
+            crate::parser::expr::Expression::ArrayLiteral { elements: elems } => {
+                let compiled: Vec<_> = elems.iter()
+                    .map(|el| self.compile_expr(el))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let n = compiled.len();
+                (compiled, n)
+            }
+            other => {
+                let value = self.compile_expr(other)?;
+                (vec![value], array_size.unwrap_or(1))
+            }
         };
 
         // Security: Check size consistency
@@ -731,11 +740,11 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
 
         let name = &var.name;
         let type_str = var.var_type.trim(); // Trim any whitespace
-        let value_part = &var.value;
+        let value_expr = &var.value;
 
         // Check if this is an array type
         if type_str.starts_with('[') && type_str.ends_with(']') {
-            return self.compile_array_declaration(name, type_str, value_part);
+            return self.compile_array_declaration(name, type_str, value_expr);
         }
 
         let llvm_type = self.coffee_type_to_llvm(type_str)
@@ -820,7 +829,8 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         self.current_stack_size += alloc_size;
 
         // 检查是否是内存操作表达式（move x, clone x, copy x）
-        let trimmed_value = value_part.trim();
+        let value_src = value_expr.to_string();
+        let trimmed_value = value_src.trim();
         let (source_var, memory_op_type) = if trimmed_value.starts_with("move ") {
             (trimmed_value[5..].trim(), "move")
         } else if trimmed_value.starts_with("clone ") {
@@ -828,10 +838,9 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         } else if trimmed_value.starts_with("copy ") {
             (trimmed_value[5..].trim(), "copy")
         } else {
-            // 普通表达式 - 需要进行类型转换
-            let value = self.compile_source_as_expr(value_part)
+            let value = self.compile_expr(value_expr)
                 .map_err(|e| self.error("compile_local_variable_decl",
-                    format!("failed to compile initial value '{}' for variable '{}': {}", value_part, name, e)))?;
+                    format!("failed to compile initial value '{}' for variable '{}': {}", value_expr, name, e)))?;
             
             // 类型转换：将值转换为目标变量类型
             let converted_value = self.convert_value_to_type(value, llvm_type, name)
@@ -857,10 +866,10 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
 
             // 生命周期跟踪：注册变量出生
             // Check if this is a heap-allocated object (constructor call)
-            if value_part.trim().ends_with("_new()") {
+            if value_src.trim().ends_with("_new()") {
                 self.memory_ctx.mark_heap_allocated(name);
                 // Extract class name from constructor call (e.g., "Point_new()" -> "Point")
-                if let Some(class_name) = value_part.trim().strip_suffix("_new()") {
+                if let Some(class_name) = value_src.trim().strip_suffix("_new()") {
                     self.memory_ctx.set_variable_type(name.to_string(), class_name.to_string());
                 }
             }

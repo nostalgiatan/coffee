@@ -3,6 +3,7 @@
 
 //! Raise statement parsing: `raise Error(...)`
 
+use super::expr::Expression;
 use nom::{
     bytes::complete::{tag, take_till},
     character::complete::space1,
@@ -12,7 +13,7 @@ use nom::{
 /// Raise statement: raise Error(...)
 #[derive(Debug, PartialEq, Clone)]
 pub struct RaiseStmt {
-    pub error_expr: String,  // Error constructor call, e.g., "DivErr(b)"
+    pub error_expr: Expression,
 }
 
 /// Parse raise statement
@@ -28,7 +29,8 @@ pub fn parse_raise(input: &str) -> IResult<&str, RaiseStmt> {
     Ok((
         input,
         RaiseStmt {
-            error_expr: error_expr.trim().to_string(),
+            error_expr: crate::parser::expr::parse_expression(error_expr.trim())
+                .unwrap_or_else(|_| Expression::Literal(error_expr.trim().to_string())),
         },
     ))
 }
@@ -41,7 +43,7 @@ mod tests {
     fn test_parse_raise_simple() {
         let input = "raise DivErr(b)\n";
         let (remaining, stmt) = parse_raise(input).unwrap();
-        assert_eq!(stmt.error_expr, "DivErr(b)");
+        assert_eq!(stmt.error_expr.to_string(), "DivErr(b)");
         assert_eq!(remaining, "\n");
     }
 
@@ -49,7 +51,7 @@ mod tests {
     fn test_parse_raise_with_message() {
         let input = "raise DivErr(10)\n";
         let (remaining, stmt) = parse_raise(input).unwrap();
-        assert_eq!(stmt.error_expr, "DivErr(10)");
+        assert_eq!(stmt.error_expr.to_string(), "DivErr(10)");
         assert_eq!(remaining, "\n");
     }
 
@@ -57,7 +59,7 @@ mod tests {
     fn test_parse_raise_with_spaces() {
         let input = "raise  DivErr(0)\n";
         let (remaining, stmt) = parse_raise(input).unwrap();
-        assert_eq!(stmt.error_expr, "DivErr(0)");
+        assert_eq!(stmt.error_expr.to_string(), "DivErr(0)");
         assert_eq!(remaining, "\n");
     }
 }

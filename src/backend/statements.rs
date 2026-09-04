@@ -40,7 +40,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 Ok(())
             }
             Statement::Enum(enum_def) => self.compile_enum(enum_def),
-            Statement::Return(ret) => self.compile_return(&ret.value),
+            Statement::Return(ret) => self.compile_return(ret.value.as_ref()),
             Statement::Import(_) => Ok(()), // Handled at frontend
             Statement::SingleLineComment(_) | Statement::MultiLineComment(_) => Ok(()),
             Statement::If(if_expr) => self.compile_if(if_expr),
@@ -102,23 +102,16 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
     }
 
     /// Compile return statement
-    fn compile_return(&mut self, expr: &Option<String>) -> Result<(), String> {
-        if let Some(expr_str) = expr {
-            // If expr_str is a simple variable name, we need to handle it specially
-            let var_name = expr_str.trim();
-            // Only treat as a direct variable if it's just a variable name (no operators, function calls, etc.)
-            if var_name.chars().all(|c| c.is_alphanumeric() || c == '_') && !var_name.is_empty() {
-                // This is a simple variable being returned - record its use
+    fn compile_return(&mut self, expr: Option<&Expression>) -> Result<(), String> {
+        if let Some(expr) = expr {
+            if let Expression::Variable(var_name) = expr {
                 self.memory_ctx.record_use(var_name);
-
-                // Mark the variable as returned (not needing cleanup)
                 if let Some(info) = self.memory_ctx.lifetimes.get_mut(var_name) {
-                    // We'll modify the lifetime check to allow returned variables
-                    info.properly_cleaned = true; // Mark as properly handled (returned)
+                    info.properly_cleaned = true;
                 }
             }
 
-            let value = self.compile_source_as_expr(expr_str)?;
+            let value = self.compile_expr(expr)?;
 
             // Convert return value to match function return type
             if let Some(current_fn) = self.current_function {
@@ -164,11 +157,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         // This will trigger automatic generation of Error class definition
         self.needs_error_class = true;
 
-        let src = self.strip_inline_comments(&raise_stmt.error_expr);
-        let parsed = match Expression::parse(&src) {
-            Ok(tree) => tree,
-            Err(_) => Expression::Literal(src.trim().to_string()),
-        };
+        let parsed = raise_stmt.error_expr.clone();
 
         let (error_type, args) = Self::raise_ctor_parts(parsed);
         for arg in &args {

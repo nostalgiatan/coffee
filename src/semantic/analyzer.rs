@@ -174,7 +174,7 @@ impl SemanticAnalyzer {
         // 创建实体
         let entity = Entity::Variable {
             ty,
-            initialized: !decl.value.is_empty(),
+            initialized: true,
         };
 
         // 在作用域中绑定
@@ -206,16 +206,7 @@ impl SemanticAnalyzer {
         }
 
         // 分析初始化值的表达式（用于检查未定义符号）
-        if !decl.value.is_empty() {
-            // 解析值字符串为表达式并分析
-            if let Ok(expr) = crate::parser::expr::parse_expression(&decl.value) {
-                // 分析表达式以检查未定义符号
-                // 注意：我们需要先释放写锁，然后调用 analyze_expression
-                if let Err(e) = self.analyze_expression(&expr) {
-                    return Err(e);
-                }
-            }
-        }
+        self.analyze_expression(&decl.value)?;
 
         Ok(())
     }
@@ -711,9 +702,7 @@ impl SemanticAnalyzer {
                 }
 
                 if let Some(ref ret_value) = ret_stmt.value {
-                    if let Ok(expr) = crate::parser::expr::parse_expression(ret_value) {
-                        self.analyze_expression(&expr)?;
-                    }
+                    self.analyze_expression(ret_value)?;
                 }
                 Ok(())
             }

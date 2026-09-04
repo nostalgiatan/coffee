@@ -6,20 +6,22 @@ use nom::{
     IResult, Parser,
 };
 
+use crate::parser::expr::Expression;
+
 /// 变量声明
 /// let name:type = value
 #[derive(Debug, PartialEq, Clone)]
 pub struct VariableDecl {
     pub name: String,
     pub var_type: String,
-    pub value: String,
+    pub value: Expression,
 }
 
 /// Return 语句
 /// return value
 #[derive(Debug, PartialEq, Clone)]
 pub struct ReturnStmt {
-    pub value: Option<String>,
+    pub value: Option<Expression>,
 }
 
 /// Break 语句
@@ -43,7 +45,10 @@ pub fn parse_variable_decl(input: &str) -> IResult<&str, VariableDecl> {
     let (input, _) = multispace0(input)?;
     let (input, _) = tag("=")(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, value) = parse_expression(input)?;
+    let (input, value_raw) = parse_expression(input)?;
+    let value_raw = value_raw.trim();
+    let value = crate::parser::expr::parse_expression(value_raw)
+        .unwrap_or_else(|_| Expression::Literal(value_raw.to_string()));
 
     coffee_debug!("DEBUG: parse_variable_decl: name='{}', var_type='{}', value='{}'", name, var_type, value);
 
@@ -52,7 +57,7 @@ pub fn parse_variable_decl(input: &str) -> IResult<&str, VariableDecl> {
         VariableDecl {
             name: name.to_string(),
             var_type: var_type.to_string(),
-            value: value.trim().to_string(),
+            value,
         },
     ))
 }
@@ -66,7 +71,11 @@ pub fn parse_return(input: &str) -> IResult<&str, ReturnStmt> {
     Ok((
         input,
         ReturnStmt {
-            value: value.map(|v| v.trim().to_string()),
+            value: value.map(|v| {
+                let v = v.trim();
+                crate::parser::expr::parse_expression(v)
+                    .unwrap_or_else(|_| Expression::Literal(v.to_string()))
+            }),
         },
     ))
 }

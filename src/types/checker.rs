@@ -250,14 +250,10 @@ impl TypeChecker {
     pub fn check_return_statement(&mut self, return_stmt: &parser::var::ReturnStmt) -> Result<(), TypeSystemError> {
         coffee_debug!("[DEBUG] check_return_statement: checking return statement");
         if let Some(ref expr) = return_stmt.value {
-            coffee_debug!("[DEBUG] check_return_statement: inferring type for return value '{}'", expr);
-            let expr_type = match crate::parser::expr::parse_expression(expr) {
-                Ok(parsed) => self.check_expression(&parsed)?,
-                Err(_) => self.infer_value_type(expr)?,
-            };
+            coffee_debug!("[DEBUG] check_return_statement: checking return expression");
+            let expr_type = self.check_expression(expr)?;
             coffee_debug!("[DEBUG] check_return_statement: inferred return value type as {:?}", expr_type);
             
-            // Check against expected return type
             if let Some(ref expected_type) = self.current_return_type {
                 coffee_debug!("[DEBUG] check_return_statement: expected return type is {:?}", expected_type);
                 if !self.types_compatible(&expr_type, expected_type)? {
@@ -265,7 +261,7 @@ impl TypeChecker {
                     let error = TypeSystemError::type_mismatch(
                         expected_type.clone(),
                         expr_type,
-                        Span::new(0, expr.len())
+                        Span::new(0, expr.to_string().len())
                     );
                     self.add_error(error.clone());
                     return Err(error);
@@ -315,29 +311,24 @@ impl TypeChecker {
 
         coffee_debug!("[DEBUG] check_variable_decl: resolved type to {:?}", ty);
 
-        // Check value type if value is provided
-        if !decl.value.is_empty() {
-            let value_type = match crate::parser::expr::parse_expression(&decl.value) {
-                Ok(expr) => self.check_expression(&expr)?,
-                Err(_) => self.infer_value_type(&decl.value)?,
+        let value_type = self.check_expression(&decl.value)?;
+        coffee_debug!("[DEBUG] check_variable_decl: inferred value type as {:?}", value_type);
+        if !self.types_compatible(&value_type, &ty)? {
+            coffee_debug!("[DEBUG] check_variable_decl: types NOT compatible: {:?} vs {:?}", value_type, ty);
+            let error = TypeSystemError::TypeMismatch {
+                expected: ty.clone(),
+                found: value_type.clone(),
+                span: Span::new(0, decl.value.to_string().len()),
             };
-            coffee_debug!("[DEBUG] check_variable_decl: inferred value type as {:?}", value_type);
-            if !self.types_compatible(&value_type, &ty)? {
-                coffee_debug!("[DEBUG] check_variable_decl: types NOT compatible: {:?} vs {:?}", value_type, ty);
-                let error = TypeSystemError::TypeMismatch {
-                    expected: ty.clone(),
-                    found: value_type.clone(),
-                    span: Span::new(0, decl.value.len()),
-                };
-                coffee_debug!("[DEBUG] check_variable_decl: creating TypeMismatch error: expected {:?}, found {:?}", ty, value_type);
-                self.add_error(error.clone());
-                return Err(error);
-            }
+            coffee_debug!("[DEBUG] check_variable_decl: creating TypeMismatch error: expected {:?}, found {:?}", ty, value_type);
+            self.add_error(error.clone());
+            return Err(error);
         }
 
-        // Check type bounds if value is a literal (comprehensive mode)
-        if self.mode == CheckingMode::Comprehensive && !decl.value.is_empty() {
-            self.check_value_bounds(&ty, &decl.value, location)?;
+        if self.mode == CheckingMode::Comprehensive {
+            if let crate::parser::expr::Expression::Literal(lit) = &decl.value {
+                self.check_value_bounds(&ty, lit, location)?;
+            }
         }
 
         // Track the value
@@ -370,8 +361,8 @@ impl TypeChecker {
             parser::Statement::Expr(expr) => self.check_expr_stmt(expr),
             parser::Statement::Return(ret) => self.check_return_statement(ret),
             parser::Statement::Assignment(_, value) => self.check_expr_stmt(value),
-            parser::Statement::Raise(_)
-            | parser::Statement::Import(_)
+            parser::Statement::Raise(raise_stmt) => self.check_expr_stmt(&raise_stmt.error_expr),
+            parser::Statement::Import(_)
             | parser::Statement::Main(_)
             | parser::Statement::Class(_)
             | parser::Statement::Enum(_)
@@ -2001,7 +1992,7 @@ mod tests {
         let decl = parser::var::VariableDecl {
             name: "x".to_string(),
             var_type: "int".to_string(),
-            value: "42".to_string(),
+            value: parser::expr::Expression::Literal("42".to_string()),
         };
 
         checker.check_variable_decl(&decl).unwrap();
