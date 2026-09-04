@@ -256,7 +256,17 @@ fn detect_project_config() -> Option<PathBuf> {
 }
 
 /// 项目模式编译（检测到 coffee.toml）
-fn compile_project(config_path: &Path, entry_file: Option<&str>, _output_file: Option<&str>, _opt_level: u8, show_stats: bool, target_triple: Option<&String>, force_static: bool, _static_libs: &[String]) -> Result<(), String> {
+fn compile_project(
+    config_path: &Path,
+    entry_file: Option<&str>,
+    output_file: Option<&str>,
+    _opt_level: u8,
+    show_stats: bool,
+    target_triple: Option<&String>,
+    force_static: bool,
+    _static_libs: &[String],
+    emit: compiler::EmitKind,
+) -> Result<(), String> {
     // Load project configuration
     let config = compiler::ProjectConfig::from_file(config_path)?;
 
@@ -279,13 +289,16 @@ fn compile_project(config_path: &Path, entry_file: Option<&str>, _output_file: O
         println!("Forcing static linking for all libraries");
     }
 
+    builder.set_emit(emit);
+    builder.set_output_file(output_file.map(PathBuf::from));
+
     // Compile the project
-    let executable = builder.compile()?;
+    let artifact = builder.compile()?;
 
     // Show statistics if requested
     if show_stats {
         println!("\nBuild Statistics:");
-        println!("   Output: {}", executable.display());
+        println!("   Output: {}", artifact.display());
     }
 
     Ok(())
@@ -401,7 +414,7 @@ fn run_actual_main() -> i32 {
         let project_config = detect_project_config();
         if let Some(config_path) = project_config {
             // Project mode: coffee.toml exists, no input file needed
-            if let Err(e) = compile_project(&config_path, None, None, 0, false, None, false, &[]) {
+            if let Err(e) = compile_project(&config_path, None, None, 0, false, None, false, &[], compiler::EmitKind::Binary) {
                 eprintln!("{}", e);
                 return 1;
             }
@@ -595,7 +608,17 @@ fn run_actual_main() -> i32 {
             None
         };
 
-        if let Err(e) = compile_project(&config_path, entry_file, output_file.as_deref(), opt_level, show_stats, target_triple.as_ref(), force_static, &static_libs) {
+        let emit = if emit_llvm {
+            compiler::EmitKind::LlvmIr
+        } else if emit_bc {
+            compiler::EmitKind::Bitcode
+        } else if emit_asm {
+            compiler::EmitKind::Assembly
+        } else {
+            compiler::EmitKind::Binary
+        };
+
+        if let Err(e) = compile_project(&config_path, entry_file, output_file.as_deref(), opt_level, show_stats, target_triple.as_ref(), force_static, &static_libs, emit) {
             eprintln!("{}", e);
             return 1;
         }

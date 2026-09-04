@@ -20,7 +20,7 @@ use super::scanner::SourceScanner;
 use super::linker::{Linker, LinkOptions};
 use super::unit::{CompilationUnit, CompilationUnits, CompilationStatus};
 use super::graph::DependencyGraph;
-use super::CompilerFrontend;
+use super::{CompilerFrontend, EmitKind};
 
 /// Project builder - coordinates compilation of Coffee projects
 pub struct ProjectBuilder {
@@ -36,6 +36,10 @@ pub struct ProjectBuilder {
     target_triple: Option<String>,
     /// Force static linking for all libraries
     force_static: bool,
+    /// Requested output kind (IR skips clang link)
+    emit: EmitKind,
+    /// Optional `-o` path
+    output_file: Option<PathBuf>,
 }
 
 impl ProjectBuilder {
@@ -49,6 +53,8 @@ impl ProjectBuilder {
             frontend: CompilerFrontend::new(),
             target_triple: None,
             force_static: false,
+            emit: EmitKind::Binary,
+            output_file: None,
         }
     }
 
@@ -65,6 +71,16 @@ impl ProjectBuilder {
     /// Force static linking for all libraries
     pub fn set_force_static(&mut self, force_static: bool) {
         self.force_static = force_static;
+    }
+
+    /// Set emit kind (LLVM IR / bitcode / assembly skip linking)
+    pub fn set_emit(&mut self, emit: EmitKind) {
+        self.emit = emit;
+    }
+
+    /// Set `-o` output path
+    pub fn set_output_file(&mut self, output_file: Option<PathBuf>) {
+        self.output_file = output_file;
     }
 
     /// Get the entry point manager
@@ -236,6 +252,11 @@ impl ProjectBuilder {
         println!("\nValidating project...");
         self.validate()?;
 
+        // Intermediate artifacts: entry module only, no clang link
+        if matches!(self.emit, EmitKind::LlvmIr | EmitKind::Bitcode | EmitKind::Assembly) {
+            return self.emit_entry_artifact();
+        }
+
         // 4. Create scheduler and get compilation schedule
         println!("\nBuilding dependency graph...");
         let mut scheduler = CompilationScheduler::new(self.units.all().to_owned());
@@ -380,5 +401,36 @@ impl ProjectBuilder {
         println!("  Done: {}", output_path.display());
 
         Ok(output_path)
+    }
+
+    /// Write IR/bitcode/assembly for the entry module only (v1; no clang link).
+    fn emit_entry_artifact(&mut self) -> Result<PathBuf, String> {
+        let entry_file = self.entry_manager.get_entry_file();
+        let mut entry_unit = self.units
+            .all()
+            .values()
+            .find(|u| u.source == entry_file)
+            .cloned()
+            .ok_or_else(|| format!("entry file '{}' has no compilation unit", entry_file.display()))?;
+
+        let default_path = {
+            let stem = entry_file
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("a");
+            match self.emit {
+                EmitKind::LlvmIr => PathBuf::from(format!("{}.ll", stem)),
+                EmitKind::Bitcode => PathBuf::from(format!("{}.bc", stem)),
+                EmitKind::Assembly => PathBuf::from(format!("{}.s", stem)),
+                _ => entry_unit.object.clone(),
+            }
+        };
+        let out = self.output_file.clone().unwrap_or(default_path);
+
+        let mut frontend = CompilerFrontend::new();
+        frontend.emit_module(&mut entry_unit, true, self.emit, Some(&out))?;
+
+        println!("  Wrote: {}", out.display());
+        Ok(out)
     }
 }

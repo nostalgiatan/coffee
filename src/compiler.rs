@@ -25,6 +25,17 @@ pub use unit::{CompilationUnit, CompilationStatus};
 pub use project::ProjectConfig;
 pub use builder::ProjectBuilder;
 
+/// Output artifact requested by the driver (`coffee.toml` and single-file share this).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EmitKind {
+    Object,
+    LlvmIr,
+    Bitcode,
+    Assembly,
+    #[default]
+    Binary,
+}
+
 use crate::parser;
 use crate::semantic::{SemanticAnalyzer, AnalysisReport};
 use crate::semantic::analyzer::{ScopeInfo, SymbolInfo};
@@ -34,7 +45,7 @@ use crate::c;
 use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 //=============================================================================
@@ -1465,6 +1476,17 @@ impl CompilerFrontend {
 
     /// Compile a single module to an object file
     pub fn compile_module_to_object(&mut self, unit: &mut CompilationUnit, is_entry: bool) -> Result<(), String> {
+        self.emit_module(unit, is_entry, EmitKind::Object, None)
+    }
+
+    /// Codegen a module and write object, LLVM IR, bitcode, or assembly.
+    pub fn emit_module(
+        &mut self,
+        unit: &mut CompilationUnit,
+        is_entry: bool,
+        emit: EmitKind,
+        output_file: Option<&Path>,
+    ) -> Result<(), String> {
         use crate::backend::Backend;
         use inkwell::context::Context;
 
@@ -1546,17 +1568,55 @@ impl CompilerFrontend {
                 .map_err(|e| format!("failed to create output directory: {}", e))?;
         }
 
-        // Write object file
-        backend.write_object_file(&unit.object)
-            .map_err(|e| format!("failed to write object file: {}", e))?;
-
-        // Save hash cache
-        unit.save_hash_cache()?;
-
-        // Update status
-        unit.status = CompilationStatus::Compiled(unit.object.clone());
-
-        Ok(())
+        match emit {
+            EmitKind::LlvmIr | EmitKind::Bitcode | EmitKind::Assembly => {
+                let path = output_file
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| {
+                        let stem = unit.source
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("a");
+                        match emit {
+                            EmitKind::LlvmIr => PathBuf::from(format!("{}.ll", stem)),
+                            EmitKind::Bitcode => PathBuf::from(format!("{}.bc", stem)),
+                            EmitKind::Assembly => PathBuf::from(format!("{}.s", stem)),
+                            _ => unit.object.clone(),
+                        }
+                    });
+                if let Some(parent) = path.parent() {
+                    if !parent.as_os_str().is_empty() {
+                        fs::create_dir_all(parent)
+                            .map_err(|e| format!("failed to create output directory: {}", e))?;
+                    }
+                }
+                match emit {
+                    EmitKind::LlvmIr => {
+                        backend.write_ir(&path)
+                            .map_err(|e| format!("failed to write LLVM IR: {}", e))?;
+                    }
+                    EmitKind::Bitcode => {
+                        if !backend.write_bitcode(&path) {
+                            return Err("failed to write bitcode".to_string());
+                        }
+                    }
+                    EmitKind::Assembly => {
+                        backend.write_assembly_file(&path)
+                            .map_err(|e| format!("failed to write assembly: {}", e))?;
+                    }
+                    _ => unreachable!(),
+                }
+                unit.status = CompilationStatus::Compiled(path);
+                return Ok(());
+            }
+            EmitKind::Object | EmitKind::Binary => {
+                backend.write_object_file(&unit.object)
+                    .map_err(|e| format!("failed to write object file: {}", e))?;
+                unit.save_hash_cache()?;
+                unit.status = CompilationStatus::Compiled(unit.object.clone());
+                Ok(())
+            }
+        }
     }
 
     /// Count program entry points: `main(...)` statements and functions named `main`.
