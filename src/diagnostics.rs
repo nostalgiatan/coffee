@@ -145,6 +145,26 @@ pub enum ErrorKind {
     UnknownType { name: String },
     #[allow(dead_code)]
     IncompatibleTypes { ty1: String, ty2: String },
+    /// Wrong number of call/constructor arguments
+    ArityMismatch { expected: usize, found: usize },
+    /// Operator not defined for these operand types
+    InvalidOperation { op: String, left: String, right: String },
+    /// Value used as a function
+    NotCallable { ty: String },
+    /// Struct/class field does not exist
+    FieldNotFound { type_name: String, field_name: String },
+    /// Method does not exist on this type
+    MethodNotFound { type_name: String, method_name: String },
+    /// Enum variant does not exist
+    VariantNotFound { enum_name: String, variant_name: String },
+    /// Wrong number of generic arguments
+    GenericArgCountMismatch { type_name: String, expected: usize, found: usize },
+    /// Type string could not be resolved, or a type-level parse/instantiate failure
+    InvalidType { name: String, reason: String },
+    /// `break` / `continue` outside a loop
+    InvalidControlFlow { keyword: String },
+    /// Match does not cover all enum variants
+    NonExhaustiveMatch { ty: String },
 
     // Symbol Errors (E200-E299)
     #[allow(dead_code)]
@@ -233,6 +253,16 @@ impl ErrorKind {
             ErrorKind::TypeMismatch { .. } => "E100",
             ErrorKind::UnknownType { .. } => "E101",
             ErrorKind::IncompatibleTypes { .. } => "E102",
+            ErrorKind::ArityMismatch { .. } => "E103",
+            ErrorKind::InvalidOperation { .. } => "E104",
+            ErrorKind::NotCallable { .. } => "E105",
+            ErrorKind::FieldNotFound { .. } => "E106",
+            ErrorKind::MethodNotFound { .. } => "E107",
+            ErrorKind::VariantNotFound { .. } => "E108",
+            ErrorKind::GenericArgCountMismatch { .. } => "E109",
+            ErrorKind::InvalidType { .. } => "E110",
+            ErrorKind::InvalidControlFlow { .. } => "E111",
+            ErrorKind::NonExhaustiveMatch { .. } => "E112",
             ErrorKind::UndefinedSymbol { .. } => "E200",
             ErrorKind::DuplicateDefinition { .. } => "E201",
             ErrorKind::InvalidSymbolAccess { .. } => "E202",
@@ -261,7 +291,17 @@ impl ErrorKind {
 
             ErrorKind::TypeMismatch { .. } |
             ErrorKind::UnknownType { .. } |
-            ErrorKind::IncompatibleTypes { .. } => "type",
+            ErrorKind::IncompatibleTypes { .. } |
+            ErrorKind::ArityMismatch { .. } |
+            ErrorKind::InvalidOperation { .. } |
+            ErrorKind::NotCallable { .. } |
+            ErrorKind::FieldNotFound { .. } |
+            ErrorKind::MethodNotFound { .. } |
+            ErrorKind::VariantNotFound { .. } |
+            ErrorKind::GenericArgCountMismatch { .. } |
+            ErrorKind::InvalidType { .. } |
+            ErrorKind::InvalidControlFlow { .. } |
+            ErrorKind::NonExhaustiveMatch { .. } => "type",
 
             ErrorKind::UndefinedSymbol { .. } |
             ErrorKind::DuplicateDefinition { .. } |
@@ -304,6 +344,45 @@ impl ErrorKind {
             }
             ErrorKind::IncompleteInput { expected } => {
                 format!("Incomplete input: expected {}", expected)
+            }
+            ErrorKind::TypeMismatch { expected, found } => {
+                format!("Type mismatch: expected {}, found {}", expected, found)
+            }
+            ErrorKind::UnknownType { name } => {
+                format!("Unknown type '{}'", name)
+            }
+            ErrorKind::IncompatibleTypes { ty1, ty2 } => {
+                format!("Incompatible types '{}' and '{}'", ty1, ty2)
+            }
+            ErrorKind::ArityMismatch { expected, found } => {
+                format!("Wrong number of arguments: expected {}, found {}", expected, found)
+            }
+            ErrorKind::InvalidOperation { op, left, right } => {
+                format!("Invalid operation: {} {} {}", left, op, right)
+            }
+            ErrorKind::NotCallable { ty } => {
+                format!("Type '{}' is not callable", ty)
+            }
+            ErrorKind::FieldNotFound { type_name, field_name } => {
+                format!("Field '{}' not found on type '{}'", field_name, type_name)
+            }
+            ErrorKind::MethodNotFound { type_name, method_name } => {
+                format!("Method '{}' not found on type '{}'", method_name, type_name)
+            }
+            ErrorKind::VariantNotFound { enum_name, variant_name } => {
+                format!("Variant '{}' not found on enum '{}'", variant_name, enum_name)
+            }
+            ErrorKind::GenericArgCountMismatch { type_name, expected, found } => {
+                format!("Type '{}' expected {} generic arguments, found {}", type_name, expected, found)
+            }
+            ErrorKind::InvalidType { name, reason } => {
+                format!("Invalid type '{}': {}", name, reason)
+            }
+            ErrorKind::InvalidControlFlow { keyword } => {
+                format!("'{}' used outside of a loop", keyword)
+            }
+            ErrorKind::NonExhaustiveMatch { ty } => {
+                format!("non-exhaustive match on '{}'", ty)
             }
             ErrorKind::CodeGeneration { stage, details } => {
                 format!("Code generation error in {}: {}", stage, details)
@@ -776,47 +855,42 @@ impl From<types::TypeSystemError> for Diagnostic {
             }
 
             types::TypeSystemError::UndefinedType { name, .. } => {
-                Diagnostic::new(Severity::Error, ErrorKind::UndefinedSymbol {
+                Diagnostic::new(Severity::Error, ErrorKind::UnknownType {
                     name: name.clone(),
-                    symbol_type: SymbolType::Type,
                 }, format!("undefined type: '{}'", name))
             }
 
             types::TypeSystemError::ArityMismatch { expected, found, .. } => {
-                // Create the main error
                 let msg = format!("arity mismatch: expected {} arguments, found {}", expected, found);
-
-                // Create a note with additional information
-                let _note = Diagnostic::new(Severity::Note, ErrorKind::InvalidSyntax {
-                    context: format!("expected {} {}", expected, if expected == 1 { "argument" } else { "arguments" }),
-                }, format!("note: function expects {} {}", expected, if expected == 1 { "argument" } else { "arguments" }));
-
-                Diagnostic::new(Severity::Error, ErrorKind::InvalidSyntax {
-                    context: msg.clone(),
-                }, msg)
+                Diagnostic::new(Severity::Error, ErrorKind::ArityMismatch { expected, found }, msg)
             }
 
             types::TypeSystemError::InvalidOperation { op, left, right, .. } => {
-                Diagnostic::new(Severity::Error, ErrorKind::InvalidSyntax {
-                    context: format!("invalid operation: {} {} {}", left, op, right),
+                Diagnostic::new(Severity::Error, ErrorKind::InvalidOperation {
+                    op: op.clone(),
+                    left: left.to_string(),
+                    right: right.to_string(),
                 }, format!("invalid operation: {} {} {}", left, op, right))
             }
 
             types::TypeSystemError::NotCallable { ty, .. } => {
-                Diagnostic::new(Severity::Error, ErrorKind::InvalidSyntax {
-                    context: format!("type '{}' is not callable", ty),
+                Diagnostic::new(Severity::Error, ErrorKind::NotCallable {
+                    ty: ty.to_string(),
                 }, format!("type '{}' is not callable", ty))
             }
 
             types::TypeSystemError::FieldNotFound { type_name, field_name, .. } => {
-                Diagnostic::new(Severity::Error, ErrorKind::InvalidSyntax {
-                    context: format!("field '{}' not found in type '{}'", field_name, type_name),
+                Diagnostic::new(Severity::Error, ErrorKind::FieldNotFound {
+                    type_name: type_name.clone(),
+                    field_name: field_name.clone(),
                 }, format!("field '{}' not found in type '{}'", field_name, type_name))
             }
 
             types::TypeSystemError::GenericArgCountMismatch { type_name, expected, found, .. } => {
-                Diagnostic::new(Severity::Error, ErrorKind::InvalidSyntax {
-                    context: format!("type '{}' expected {} generic arguments, found {}", type_name, expected, found),
+                Diagnostic::new(Severity::Error, ErrorKind::GenericArgCountMismatch {
+                    type_name: type_name.clone(),
+                    expected,
+                    found,
                 }, format!("type '{}' expected {} generic arguments, found {}", type_name, expected, found))
             }
 
@@ -903,57 +977,83 @@ impl From<types::TypeSystemError> for Diagnostic {
             }
 
             types::TypeSystemError::ConstraintViolation { constraint, reason, .. } => {
-                Diagnostic::new(Severity::Error, ErrorKind::ConstraintViolation {
-                    constraint: constraint.clone(),
-                    reason: reason.clone(),
-                }, format!("constraint violation: {}", reason))
+                if constraint.contains("exhaustive") {
+                    Diagnostic::new(
+                        Severity::Error,
+                        ErrorKind::NonExhaustiveMatch { ty: reason.clone() },
+                        format!("non-exhaustive match: {}", reason),
+                    )
+                } else {
+                    Diagnostic::new(Severity::Error, ErrorKind::ConstraintViolation {
+                        constraint: constraint.clone(),
+                        reason: reason.clone(),
+                    }, format!("constraint violation: {}", reason))
+                }
             }
 
-            types::TypeSystemError::VisibilityError { .. } => {
-                Diagnostic::new(Severity::Error, ErrorKind::UndefinedSymbol {
-                    name: "field".to_string(),
-                    symbol_type: SymbolType::Field,
-                }, "field access error: field is not visible or does not exist")
+            types::TypeSystemError::VisibilityError { name, required, actual } => {
+                Diagnostic::new(Severity::Error, ErrorKind::InvalidSymbolAccess {
+                    name: name.clone(),
+                    reason: format!("required {}, actual {}", required, actual),
+                }, format!("field access error: '{}' is not visible", name))
             }
 
             types::TypeSystemError::ParseError { type_str, reason } => {
-                Diagnostic::new(Severity::Error, ErrorKind::InvalidSyntax {
-                    context: format!("parse error for type '{}': {}", type_str, reason),
-                }, format!("parse error for type '{}': {}", type_str, reason))
+                if type_str == "break" || type_str == "continue" {
+                    Diagnostic::new(
+                        Severity::Error,
+                        ErrorKind::InvalidControlFlow { keyword: type_str.clone() },
+                        format!("{} used outside of a loop", type_str),
+                    )
+                } else {
+                    Diagnostic::new(Severity::Error, ErrorKind::InvalidType {
+                        name: type_str.clone(),
+                        reason: reason.clone(),
+                    }, format!("type error in '{}': {}", type_str, reason))
+                }
             }
 
             types::TypeSystemError::InstantiationError { type_name, reason, .. } => {
-                Diagnostic::new(Severity::Error, ErrorKind::InvalidSyntax {
-                    context: format!("failed to instantiate type '{}': {}", type_name, reason),
+                Diagnostic::new(Severity::Error, ErrorKind::InvalidType {
+                    name: type_name.clone(),
+                    reason: reason.clone(),
                 }, format!("failed to instantiate type '{}': {}", type_name, reason))
             }
 
             types::TypeSystemError::MethodNotFound { type_name, method_name, .. } => {
-                Diagnostic::new(Severity::Error, ErrorKind::UndefinedSymbol {
-                    name: method_name.clone(),
-                    symbol_type: SymbolType::Method,
+                Diagnostic::new(Severity::Error, ErrorKind::MethodNotFound {
+                    type_name: type_name.clone(),
+                    method_name: method_name.clone(),
                 }, format!("method '{}' not found in type '{}'", method_name, type_name))
             }
 
             types::TypeSystemError::VariantNotFound { enum_name, variant_name, .. } => {
-                Diagnostic::new(Severity::Error, ErrorKind::UndefinedSymbol {
-                    name: variant_name.clone(),
-                    symbol_type: SymbolType::Constant,
+                Diagnostic::new(Severity::Error, ErrorKind::VariantNotFound {
+                    enum_name: enum_name.clone(),
+                    variant_name: variant_name.clone(),
                 }, format!("variant '{}' not found in enum '{}'", variant_name, enum_name))
             }
 
             types::TypeSystemError::LifetimeError { reason, .. } => {
-                Diagnostic::new(Severity::Error, ErrorKind::UndefinedSymbol {
-                    name: "lifetime".to_string(),
-                    symbol_type: SymbolType::Lifetime,
+                Diagnostic::new(Severity::Error, ErrorKind::LifetimeError {
+                    variable: String::new(),
+                    reason: reason.clone(),
                 }, format!("lifetime error: {}", reason))
             }
 
             types::TypeSystemError::OwnershipError { reason, .. } => {
-                Diagnostic::new(Severity::Error, ErrorKind::BorrowViolation {
-                    variable: "unknown".to_string(),
-                    reason: reason.clone(),
-                }, format!("ownership error: {}", reason))
+                let lowered = reason.to_ascii_lowercase();
+                let kind = if lowered.contains("moved") {
+                    ErrorKind::UseAfterMove { name: String::new() }
+                } else if lowered.contains("dropped") {
+                    ErrorKind::UseAfterDrop { name: String::new() }
+                } else {
+                    ErrorKind::InvalidMemoryOperation {
+                        operation: "ownership".to_string(),
+                        reason: reason.clone(),
+                    }
+                };
+                Diagnostic::new(Severity::Error, kind, format!("ownership error: {}", reason))
             }
         }
     }
@@ -1042,5 +1142,121 @@ impl From<crate::parser::ParseError> for Diagnostic {
 impl From<&crate::parser::ParseError> for Diagnostic {
     fn from(error: &crate::parser::ParseError) -> Self {
         Diagnostic::from(error.clone())
+    }
+}
+
+#[cfg(test)]
+mod type_error_kind_tests {
+    use super::*;
+    use crate::types::TypeSystemError;
+    use crate::types::definition::{Span, Type};
+
+    fn code(err: TypeSystemError) -> &'static str {
+        Diagnostic::from(err).kind.error_code()
+    }
+
+    #[test]
+    fn mismatch_is_e100() {
+        assert_eq!(
+            code(TypeSystemError::type_mismatch(Type::int(), Type::bool(), Span::new(0, 1))),
+            "E100"
+        );
+    }
+
+    #[test]
+    fn unknown_type_is_e101() {
+        assert_eq!(
+            code(TypeSystemError::undefined_type("Nope", Span::new(0, 1))),
+            "E101"
+        );
+    }
+
+    #[test]
+    fn arity_is_e103() {
+        assert_eq!(
+            code(TypeSystemError::arity_mismatch(2, 1, Span::new(0, 1))),
+            "E103"
+        );
+    }
+
+    #[test]
+    fn invalid_operation_is_e104() {
+        assert_eq!(
+            code(TypeSystemError::invalid_operation("!", Type::int(), Type::unit(), Span::new(0, 1))),
+            "E104"
+        );
+    }
+
+    #[test]
+    fn not_callable_is_e105() {
+        assert_eq!(
+            code(TypeSystemError::not_callable(Type::int(), Span::new(0, 1))),
+            "E105"
+        );
+    }
+
+    #[test]
+    fn field_not_found_is_e106() {
+        assert_eq!(
+            code(TypeSystemError::field_not_found("Point", "z", Span::new(0, 1))),
+            "E106"
+        );
+    }
+
+    #[test]
+    fn method_not_found_is_e107() {
+        let err = TypeSystemError::MethodNotFound {
+            type_name: "Point".into(),
+            method_name: "nope".into(),
+            span: Span::new(0, 1),
+        };
+        assert_eq!(code(err), "E107");
+    }
+
+    #[test]
+    fn variant_not_found_is_e108() {
+        let err = TypeSystemError::VariantNotFound {
+            enum_name: "Color".into(),
+            variant_name: "Purple".into(),
+            span: Span::new(0, 1),
+        };
+        assert_eq!(code(err), "E108");
+    }
+
+    #[test]
+    fn invalid_type_parse_is_e110() {
+        let err = TypeSystemError::ParseError {
+            type_str: "member access".into(),
+            reason: "not a class".into(),
+        };
+        assert_eq!(code(err), "E110");
+    }
+
+    #[test]
+    fn ownership_moved_is_e300() {
+        let err = TypeSystemError::OwnershipError {
+            reason: "Cannot clone 'x' - value was moved".into(),
+            span: Span::new(0, 1),
+        };
+        assert_eq!(code(err), "E300");
+    }
+
+    #[test]
+    fn break_outside_loop_is_e111() {
+        let err = TypeSystemError::ParseError {
+            type_str: "break".into(),
+            reason: "break used outside of a loop".into(),
+        };
+        assert_eq!(code(err), "E111");
+    }
+
+    #[test]
+    fn non_exhaustive_match_is_e112() {
+        let err = TypeSystemError::ConstraintViolation {
+            constraint: "exhaustive match".into(),
+            reason: "missing variants: None".into(),
+            span: Span::new(0, 1),
+        };
+        assert_eq!(code(err), "E112");
     }
 }

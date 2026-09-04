@@ -1,7 +1,8 @@
 use nom::{
     bytes::complete::tag,
-    character::complete::{multispace0, space1},
+    character::complete::{char, multispace0, space0, space1},
     combinator::opt,
+    sequence::preceded,
     IResult, Parser,
 };
 
@@ -335,7 +336,12 @@ fn parse_method(input: &str) -> IResult<&str, MethodDef> {
 
         let parameters = parameters.unwrap_or_default();
 
-    
+        // Optional `#error_handler` (same placement as free functions).
+        let (input, _) = space0(input)?;
+        let (input, _) = {
+            let mut parser = opt(preceded(char('#'), parse_identifier));
+            Parser::parse(&mut parser, input)?
+        };
 
         // Parse return type => type
 

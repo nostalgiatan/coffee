@@ -314,7 +314,21 @@ impl TypeChecker {
 
         coffee_debug!("[DEBUG] check_variable_decl: resolved type to {:?}", ty);
 
-        let value_type = self.check_expression(&decl.value)?;
+        let value_type = match &decl.value {
+            crate::parser::expr::Expression::ArrayLiteral { elements }
+                if elements.is_empty() =>
+            {
+                match &ty {
+                    Type::Slice(elem) => Type::Slice(elem.clone()),
+                    Type::Array { elem, size: 0 } => Type::Array {
+                        elem: elem.clone(),
+                        size: 0,
+                    },
+                    _ => self.check_expression(&decl.value)?,
+                }
+            }
+            _ => self.check_expression(&decl.value)?,
+        };
         coffee_debug!("[DEBUG] check_variable_decl: inferred value type as {:?}", value_type);
         if !self.types_compatible(&value_type, &ty)? {
             coffee_debug!("[DEBUG] check_variable_decl: types NOT compatible: {:?} vs {:?}", value_type, ty);
@@ -635,6 +649,22 @@ impl TypeChecker {
         Ok(())
     }
 
+    fn require_int_expr(&mut self, expr: &crate::parser::expr::Expression) -> Result<(), TypeSystemError> {
+        let ty = match self.check_expression(expr) {
+            Ok(ty) => ty,
+            Err(e) => {
+                self.add_error(e.clone());
+                return Err(e);
+            }
+        };
+        if !ty.is_int() {
+            let error = TypeSystemError::type_mismatch(Type::int(), ty, Span::new(0, 0));
+            self.add_error(error.clone());
+            return Err(error);
+        }
+        Ok(())
+    }
+
     fn check_loop_control(&mut self, keyword: &str) -> Result<(), TypeSystemError> {
         if self.loop_depth == 0 {
             let error = TypeSystemError::ParseError {
@@ -649,7 +679,8 @@ impl TypeChecker {
 
     fn check_raise(&mut self, expr: &crate::parser::expr::Expression) -> Result<(), TypeSystemError> {
         match self.check_raise_expression(expr) {
-            Ok(ty) if ty.is_int() => {
+            Ok(Type::NamedType { .. }) => Ok(()),
+            Ok(ty) => {
                 let error = TypeSystemError::type_mismatch(
                     Type::NamedType { name: "Error".to_string() },
                     ty,
@@ -658,7 +689,6 @@ impl TypeChecker {
                 self.add_error(error.clone());
                 Err(error)
             }
-            Ok(_) => Ok(()),
             Err(e) => {
                 self.add_error(e.clone());
                 Err(e)
@@ -667,17 +697,26 @@ impl TypeChecker {
     }
 
     fn check_raise_expression(&mut self, expr: &crate::parser::expr::Expression) -> Result<Type, TypeSystemError> {
-        if let crate::parser::expr::Expression::Call { function, args } = expr {
-            if let crate::parser::expr::Expression::Variable(name) = function.as_ref() {
-                if self.is_registered_type(name) {
-                    for arg in args {
-                        self.check_expression(arg)?;
+        match expr {
+            crate::parser::expr::Expression::Call { function, args } => {
+                if let crate::parser::expr::Expression::Variable(name) = function.as_ref() {
+                    if self.is_registered_type(name) {
+                        for arg in args {
+                            self.check_expression(arg)?;
+                        }
+                        return Ok(Type::NamedType { name: name.clone() });
                     }
-                    return Ok(Type::NamedType { name: name.clone() });
                 }
+                self.check_expression(expr)
             }
+            crate::parser::expr::Expression::StructLiteral { struct_name, fields } => {
+                if self.is_registered_type(struct_name) {
+                    return self.check_struct_literal(struct_name, fields);
+                }
+                self.check_expression(expr)
+            }
+            _ => self.check_expression(expr),
         }
-        self.check_expression(expr)
     }
 
     fn is_registered_type(&self, name: &str) -> bool {
@@ -708,8 +747,8 @@ impl TypeChecker {
     fn check_for(&mut self, for_loop: &parser::ForLoop) -> Result<(), TypeSystemError> {
         let loop_ty = match &for_loop.iterator {
             parser::ForIterator::Range { start, end } => {
-                self.check_expr_stmt(start)?;
-                self.check_expr_stmt(end)?;
+                self.require_int_expr(start)?;
+                self.require_int_expr(end)?;
                 Type::int()
             }
             parser::ForIterator::Collection(expr) => {
@@ -769,7 +808,7 @@ impl TypeChecker {
         for arm in &match_expr.arms {
             let bound = self.bind_pattern_vars(&arm.pattern, &scrutinee_ty)?;
             if let Some(guard) = &arm.guard {
-                self.check_expr_stmt(guard)?;
+                self.require_bool_condition(guard)?;
             }
             self.check_stmt_list(&arm.body)?;
             self.unbind_pattern_vars(bound);
@@ -782,6 +821,60 @@ impl TypeChecker {
         scrutinee_ty: &Type,
         arms: &[parser::r#match::MatchArm],
     ) -> Result<(), TypeSystemError> {
+        if matches!(scrutinee_ty, Type::Int { .. } | Type::Float { .. } | Type::String) {
+            let catch_all = arms.iter().any(|arm| Self::pattern_is_catch_all(&arm.pattern));
+            if catch_all {
+                return Ok(());
+            }
+            let error = TypeSystemError::ConstraintViolation {
+                constraint: "exhaustive match".to_string(),
+                reason: format!("non-exhaustive match on {}", scrutinee_ty),
+                span: Span::new(0, 0),
+            };
+            self.add_error(error.clone());
+            return Err(error);
+        }
+        if *scrutinee_ty == Type::bool() {
+            let mut saw_true = false;
+            let mut saw_false = false;
+            let mut catch_all = false;
+            for arm in arms {
+                if Self::pattern_is_catch_all(&arm.pattern) {
+                    catch_all = true;
+                    break;
+                }
+                if let crate::parser::Pattern::Literal(lit) = &arm.pattern {
+                    match lit.as_str() {
+                        "true" => saw_true = true,
+                        "false" => saw_false = true,
+                        _ => {}
+                    }
+                }
+            }
+            if catch_all || (saw_true && saw_false) {
+                return Ok(());
+            }
+            let error = TypeSystemError::ConstraintViolation {
+                constraint: "exhaustive match".to_string(),
+                reason: "non-exhaustive match on bool".to_string(),
+                span: Span::new(0, 0),
+            };
+            self.add_error(error.clone());
+            return Err(error);
+        }
+        if matches!(scrutinee_ty, Type::Tuple(_)) {
+            let catch_all = arms.iter().any(|arm| Self::pattern_is_catch_all(&arm.pattern));
+            if catch_all {
+                return Ok(());
+            }
+            let error = TypeSystemError::ConstraintViolation {
+                constraint: "exhaustive match".to_string(),
+                reason: format!("non-exhaustive match on {}", scrutinee_ty),
+                span: Span::new(0, 0),
+            };
+            self.add_error(error.clone());
+            return Err(error);
+        }
         let Type::NamedType { name } = scrutinee_ty else {
             return Ok(());
         };
@@ -830,6 +923,12 @@ impl TypeChecker {
     fn pattern_is_catch_all(pattern: &crate::parser::Pattern) -> bool {
         match pattern {
             crate::parser::Pattern::Wildcard | crate::parser::Pattern::Ident(_) => true,
+            crate::parser::Pattern::Tuple(elements) => {
+                elements.iter().all(Self::pattern_is_catch_all)
+            }
+            crate::parser::Pattern::Struct { fields, .. } => {
+                fields.iter().all(|(_, p)| Self::pattern_is_catch_all(p))
+            }
             crate::parser::Pattern::Or(elements) => elements.iter().any(Self::pattern_is_catch_all),
             _ => false,
         }
@@ -1440,7 +1539,16 @@ impl TypeChecker {
             }
         }
         for arg in args.iter().skip(typed_count) {
-            self.check_expression(arg)?;
+            let arg_type = self.check_expression(arg)?;
+            if c_variadic && !arg_type.is_c_handle_value() {
+                let error = TypeSystemError::type_mismatch(
+                    Type::Variadic,
+                    arg_type,
+                    Span::new(0, 0),
+                );
+                self.add_error(error.clone());
+                return Err(error);
+            }
         }
         Ok(())
     }
@@ -2119,16 +2227,16 @@ impl TypeChecker {
             return Ok(true);
         }
 
-        // C handle (`object` / Type::Variadic): opaque in accepts any; opaque out
-        // is pointer-sized (int / string / ref / object). Never object → bool.
+        // C `object`: in-params use handle-shaped values (not bool). Out-params
+        // only to pointer-sized int, string, ref, or object — never int(4)+.
         if matches!(expected, Type::Variadic) {
-            return Ok(true);
+            return Ok(found.is_c_handle_value());
         }
         if matches!(found, Type::Variadic) {
-            return Ok(matches!(
-                expected,
-                Type::Int { .. } | Type::String | Type::Ref { .. } | Type::Variadic
-            ));
+            return Ok(
+                expected.is_pointer_sized_int()
+                    || matches!(expected, Type::String | Type::Ref { .. } | Type::Variadic),
+            );
         }
 
         if expected.can_coerce_from(found) {
@@ -2424,7 +2532,9 @@ impl TypeChecker {
         Ok(())
     }
 
-    /// Check import statement (comprehensive mode only)
+    /// Record an import for cycle detection. Module existence and `.cf` loading
+    /// are the pipeline's job (`ProjectBuilder` / `CompilationPipeline`), not the
+    /// type checker's: this function does not open files.
     pub fn check_import(&mut self, module: &str, source_file: &str) -> Result<(), TypeSystemError> {
         if self.mode != CheckingMode::Comprehensive {
             return Ok(());

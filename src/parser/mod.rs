@@ -547,6 +547,31 @@ fn is_broken_statement_keyword(trimmed: &str) -> bool {
 /// 
 /// * `Some((Statement, usize))` - The parsed statement and number of lines consumed if successful
 /// * `None` - If no multiline statement could be parsed from the given lines
+/// Join consecutive lines until `{` / `}` depth returns to zero.
+fn collect_balanced_brace_prefix(lines: &[&str]) -> Option<String> {
+    if lines.is_empty() {
+        return None;
+    }
+    let mut collected = Vec::new();
+    let mut brace_depth = 0;
+    let mut found_open = false;
+    for line in lines {
+        collected.push((*line).to_string());
+        for ch in line.chars() {
+            if ch == '{' {
+                brace_depth += 1;
+                found_open = true;
+            } else if ch == '}' {
+                brace_depth -= 1;
+            }
+        }
+        if found_open && brace_depth == 0 {
+            return Some(collected.join("\n"));
+        }
+    }
+    None
+}
+
 pub fn parse_multiline_statement(lines: &[&str]) -> Option<(Statement, usize)> {
     if lines.is_empty() {
         return None;
@@ -658,12 +683,18 @@ pub fn parse_multiline_statement(lines: &[&str]) -> Option<(Statement, usize)> {
         return None;
     }
 
-    // Try to parse raise statement: raise Error(...)
+    // Try to parse raise statement: raise Error(...) or raise Error { ... }
     if first_line.starts_with("raise ") {
         coffee_debug!("DEBUG: parse_multiline_statement: found raise statement, first_line='{}'", first_line);
-        if let Ok((remaining, raise_stmt)) = crate::parser::raise::parse_raise(first_line) {
+        let raise_src = if first_line.contains('{') {
+            collect_balanced_brace_prefix(lines).unwrap_or_else(|| first_line.to_string())
+        } else {
+            first_line.to_string()
+        };
+        let lines_used = raise_src.lines().count().max(1);
+        if let Ok((remaining, raise_stmt)) = crate::parser::raise::parse_raise(&raise_src) {
             if remaining.trim().is_empty() {
-                return Some((Statement::Raise(raise_stmt), 1));
+                return Some((Statement::Raise(raise_stmt), lines_used));
             }
         }
         coffee_debug!("DEBUG: parse_multiline_statement: raise parsing failed");

@@ -223,13 +223,56 @@ impl From<crate::diagnostics::Diagnostic> for TypeSystemError {
                 }
             }
             crate::diagnostics::ErrorKind::TypeMismatch { expected, found } => {
-                // Try to parse type strings, fall back to unit if failed
                 let expected_ty = type_from_str(&expected).unwrap_or(Type::unit());
                 let found_ty = type_from_str(&found).unwrap_or(Type::unit());
                 TypeSystemError::TypeMismatch {
                     expected: expected_ty,
                     found: found_ty,
-                    span: Span::new(0, 1), // Default span
+                    span: Span::new(0, 1),
+                }
+            }
+            crate::diagnostics::ErrorKind::UnknownType { name } => {
+                TypeSystemError::undefined_type(name, Span::new(0, 0))
+            }
+            crate::diagnostics::ErrorKind::ArityMismatch { expected, found } => {
+                TypeSystemError::arity_mismatch(expected, found, Span::new(0, 0))
+            }
+            crate::diagnostics::ErrorKind::InvalidOperation { op, left, right } => {
+                TypeSystemError::invalid_operation(
+                    op,
+                    type_from_str(&left).unwrap_or(Type::unit()),
+                    type_from_str(&right).unwrap_or(Type::unit()),
+                    Span::new(0, 0),
+                )
+            }
+            crate::diagnostics::ErrorKind::NotCallable { ty } => {
+                TypeSystemError::not_callable(type_from_str(&ty).unwrap_or(Type::unit()), Span::new(0, 0))
+            }
+            crate::diagnostics::ErrorKind::FieldNotFound { type_name, field_name } => {
+                TypeSystemError::FieldNotFound {
+                    type_name,
+                    field_name,
+                    span: Span::new(0, 0),
+                }
+            }
+            crate::diagnostics::ErrorKind::MethodNotFound { type_name, method_name } => {
+                TypeSystemError::MethodNotFound {
+                    type_name,
+                    method_name,
+                    span: Span::new(0, 0),
+                }
+            }
+            crate::diagnostics::ErrorKind::VariantNotFound { enum_name, variant_name } => {
+                TypeSystemError::VariantNotFound {
+                    enum_name,
+                    variant_name,
+                    span: Span::new(0, 0),
+                }
+            }
+            crate::diagnostics::ErrorKind::InvalidType { name, reason } => {
+                TypeSystemError::ParseError {
+                    type_str: name,
+                    reason,
                 }
             }
             _ => {

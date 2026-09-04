@@ -5,7 +5,7 @@
 
 use super::expr::Expression;
 use nom::{
-    bytes::complete::{tag, take_till},
+    bytes::complete::tag,
     character::complete::space1,
     IResult,
 };
@@ -17,20 +17,19 @@ pub struct RaiseStmt {
 }
 
 /// Parse raise statement
-/// `raise Error(...)`
+/// `raise Error(...)` or `raise Error { field: value, ... }` (possibly multiline).
 pub fn parse_raise(input: &str) -> IResult<&str, RaiseStmt> {
     let (input, _) = tag("raise")(input)?;
     let (input, _) = space1(input)?;
 
-    // Parse the error expression (e.g., DivErr(b) or DivisionByZeroError(10))
-    // Take until newline or end of input
-    let (input, error_expr) = take_till(|c| c == '\n' || c == '\0')(input)?;
+    let error_expr_src = input.trim();
+    let error_expr = crate::parser::expr::parse_expression(error_expr_src)
+        .unwrap_or_else(|_| Expression::Literal(error_expr_src.to_string()));
 
     Ok((
-        input,
+        "",
         RaiseStmt {
-            error_expr: crate::parser::expr::parse_expression(error_expr.trim())
-                .unwrap_or_else(|_| Expression::Literal(error_expr.trim().to_string())),
+            error_expr,
         },
     ))
 }
@@ -44,7 +43,7 @@ mod tests {
         let input = "raise DivErr(b)\n";
         let (remaining, stmt) = parse_raise(input).unwrap();
         assert_eq!(stmt.error_expr.to_string(), "DivErr(b)");
-        assert_eq!(remaining, "\n");
+        assert_eq!(remaining, "");
     }
 
     #[test]
@@ -52,7 +51,7 @@ mod tests {
         let input = "raise DivErr(10)\n";
         let (remaining, stmt) = parse_raise(input).unwrap();
         assert_eq!(stmt.error_expr.to_string(), "DivErr(10)");
-        assert_eq!(remaining, "\n");
+        assert_eq!(remaining, "");
     }
 
     #[test]
@@ -60,6 +59,6 @@ mod tests {
         let input = "raise  DivErr(0)\n";
         let (remaining, stmt) = parse_raise(input).unwrap();
         assert_eq!(stmt.error_expr.to_string(), "DivErr(0)");
-        assert_eq!(remaining, "\n");
+        assert_eq!(remaining, "");
     }
 }

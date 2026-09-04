@@ -468,10 +468,24 @@ use printf in libc of c
 
 fn main() => int:
     printf("%d", 1)
+    printf("%d %s", 1, "x")
     return 0
 
 "#;
     assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_printf_bool_variadic_extra_is_error() {
+    let source = r#"
+use printf in libc of c
+
+fn main() => int:
+    printf("%d", true)
+    return 0
+
+"#;
+    assert_compile_error(source, "type mismatch").unwrap();
 }
 
 #[test]
@@ -540,4 +554,95 @@ fn main() => int:
 
 "#;
     assert_compile_error(source, "type mismatch").unwrap();
+}
+
+#[test]
+fn test_range_bounds_must_be_int() {
+    let source = r#"
+fn main() => int:
+    for i in true..3:
+        return 0
+    return 0
+
+"#;
+    assert_compile_error(source, "type mismatch").unwrap();
+}
+
+#[test]
+fn test_match_guard_must_be_bool() {
+    let source = r#"
+fn main() => int:
+    let x: int = 1
+    match x:
+        n if 1 => 1
+        _ => 0
+    rm x
+    return 0
+
+"#;
+    assert_compile_error(source, "type mismatch").unwrap();
+}
+
+#[test]
+fn test_int_match_requires_catch_all() {
+    let source = r#"
+fn main() => int:
+    let x: int = 1
+    match x:
+        0 => 0
+        1 => 1
+    rm x
+    return 0
+
+"#;
+    assert_compile_error(source, "exhaustive").unwrap();
+}
+
+#[test]
+fn test_raise_bool_is_error() {
+    let source = r#"
+fn main() => int:
+    raise true
+
+"#;
+    assert_compile_error(source, "type mismatch").unwrap();
+}
+
+#[test]
+fn test_bool_not_assignable_to_object() {
+    let source = r#"
+use free in libc of c
+
+fn main() => int:
+    free(true)
+    return 0
+
+"#;
+    assert_compile_error(source, "type mismatch").unwrap();
+}
+
+#[test]
+fn test_object_not_assignable_to_int4() {
+    let source = r#"
+use malloc, free in libc of c
+
+fn main() => int:
+    let p: int(4)+ = malloc(8)
+    free(p)
+    return 0
+
+"#;
+    assert_compile_error(source, "type mismatch").unwrap();
+}
+
+#[test]
+fn test_empty_slice_literal_uses_annotation() {
+    let source = r#"
+fn main() => int:
+    let xs: [int] = []
+    rm xs
+    return 0
+
+"#;
+    assert_compiles(source).unwrap();
 }

@@ -221,19 +221,6 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         };
 
         let fixed_param_count = function.count_params() as usize;
-        let mut param_types = Vec::new();
-        for i in 0..args.len() {
-            let param_type = if i < fixed_param_count {
-                function.get_nth_param(i as u32)
-                    .map(|p| p.get_type())
-                    .ok_or_else(|| self.error("function_call",
-                        format!("failed to get type for parameter {} of function '{}'", i, func_name)))?
-            } else {
-                self.backend.context.i64_type().into()
-            };
-            param_types.push(param_type);
-        }
-
         let compiled_args: Vec<BasicValueEnum<'ctx>> = args.iter().enumerate()
             .map(|(i, arg)| {
                 self.compile_expr(arg)
@@ -250,7 +237,15 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
 
         let mut converted_args = Vec::new();
         for (i, arg) in compiled_args.iter().enumerate() {
-            let param_type = param_types[i];
+            if i >= fixed_param_count {
+                // C/LLVM variadic extras keep their compiled type (e.g. i8* for strings).
+                converted_args.push(*arg);
+                continue;
+            }
+            let param_type = function.get_nth_param(i as u32)
+                .map(|p| p.get_type())
+                .ok_or_else(|| self.error("function_call",
+                    format!("failed to get type for parameter {} of function '{}'", i, func_name)))?;
             let arg_type = arg.get_type();
             if !self.are_types_compatible(arg_type, param_type) {
                 let arg_type_str = self.type_to_string(arg_type);
