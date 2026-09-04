@@ -39,7 +39,7 @@ If you change parsing/semantic/type-checking behavior, change it in `src/compile
 1. **Parse** — `src/parser/` (`mod.rs::parse_program` is the entry; `expr.rs`, `function.rs`, `class.rs`, `if.rs`, `for.rs`, `while.rs`, `match.rs`, `memory.rs`, `import.rs`). nom-based, indentation-aware (`indent.rs`, `tracker.rs`). Produces `parser::Program`.
 2. **Semantic analysis** — `src/semantic/analyzer.rs` (large, ~5k lines): scopes (`scope.rs`), symbols (`symbols.rs`), lifetimes (`lifetime.rs`).
 3. **Type checking** — `src/types/`: `checker.rs`, `definition.rs`, `registry.rs`, `inference.rs`, `errors.rs`. Two-pass: first declare all functions (mutual recursion), then check bodies.
-4. **Code generation** — `src/backend/`: `codegen.rs` (`CodeGenerator` is the coordinator) plus the modular split (`arithmetic`, `control_flow`, `memory_ops`, `memory/`, `functions`, `expressions`, `variables`, `statements`, `classes`, `types`, `type_inference`, `error`). LLVM I/O and JIT live in `backend/mod.rs` (`Backend`, `compile_and_run`).
+4. **Code generation** — `src/backend/`: `codegen.rs` (`CodeGenerator` is the coordinator) plus the modular split (`arithmetic`, `control_flow`, `memory_ops`, `memory/`, `functions`, `expressions`, `variables`, `statements`, `classes`, `types`, `type_inference`, `error`). Values compile with `CodeGenerator::compile_expr(&Expression)` from the parser AST. `compile_expression_str` / `compile_body_line` exist only under `#[cfg(test)]`. LLVM I/O and JIT live in `backend/mod.rs` (`Backend`, `compile_and_run`).
 5. **C interop** — `src/c/`: `parser.rs` (parses `.cfc`), `signature.rs` (`CSymbol`/`CSymbolTable`), `generator.rs` (`.h`/`.c` → `.cfc` via `clang-sys`), `header_gen.rs` (Coffee functions → `.h`).
 
 ### The `CompilationResult` contract
@@ -48,7 +48,7 @@ If you change parsing/semantic/type-checking behavior, change it in `src/compile
 
 ## Things that will surprise you
 
-- **`eprintln!("DEBUG: ...")` is everywhere** in `src/compiler/pipeline.rs`. Compilation is very noisy on stderr by design (current state). Do not assume stderr is clean; tests check exit codes and specific stderr substrings, not silence.
+- **`coffee_debug!` traces** (`src/debug_log.rs`) print only when `COFFEE_DEBUG` is set. Default compile stderr has no `DEBUG:` prefix (`tests/frontend_parity_tests.rs::test_default_compile_stderr_has_no_debug_prefix`).
 - **Process mutex lock.** On startup `main.rs` acquires an exclusive `fs2` file lock at `.coffee_compiler.lock` in the project dir (found by walking up for `coffee.toml`, else cwd). Concurrent `coffee` invocations on the same project will fail. **Tests must pass `--test-mode`** (sets `COFFEE_TEST_MODE=1`) to skip the lock — the test harness in `tests/common/mod.rs` already does this; if you invoke the binary yourself, add `--test-mode`.
 - **Explicit memory management is mandatory in Coffee.** The language has no implicit drop: variables must be cleaned up with `rm` / `clean out` (see `SYNTAX.md` §内存管理). Codegen and the type checker treat `mv`/`clone`/`copy`/`rm`/`clean` as first-class statements (`parser::Statement::MemoryOp`, checked in `types::checker::check_memory_op`). Test fixtures must `rm` what they `let`.
 - **Integer type notation.** `int(N)+` / `int(N)-` mean N-*byte* signed/unsigned (e.g. `int(4)+` = C `int`), not bits. `float(N)` is N-byte float. `int` and `float` default to 8 bytes. The type mapper in `src/backend/types.rs` and `src/types/definition.rs::type_from_str` must agree on this.
