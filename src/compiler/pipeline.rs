@@ -51,13 +51,14 @@ impl CompilationPipeline {
         stats.lines_parsed = source.lines().count();
 
         // Parse source code with error recovery
+        let mut parse_ok = true;
         let program = match self.parse_source(source, file_name) {
             Ok(stmts) => {
                 stats.statements_parsed = stmts.len();
                 parser::Program { statements: stmts }
             }
             Err(parse_errors) => {
-                // Report parse errors but continue if possible
+                parse_ok = false;
                 for error in parse_errors {
                     self.session.emitter.emit(error);
                 }
@@ -119,6 +120,9 @@ impl CompilationPipeline {
             };
         }
 
+        // Parse failures already emitted diagnostics; skip analysis on the empty program
+        // so we do not invent follow-on type errors.
+        if parse_ok {
         // Set C imports in semantic analyzer before analysis
         let c_imports = self.get_c_imports();
         self.session.analyzer.read().unwrap().set_c_imports(c_imports);
@@ -202,6 +206,7 @@ impl CompilationPipeline {
         for statement in &program.statements {
             self.type_check_statement(statement);
         }
+        }
 
         // Collect semantic analysis errors
         let analyzer = self.session.analyzer.read().unwrap();
@@ -211,16 +216,10 @@ impl CompilationPipeline {
         }
         drop(analyzer);
 
-        // Collect type checker diagnostics
+        // Collect type checker diagnostics (E100 TypeMismatch via Diagnostic::from)
         let type_checker = self.session.type_checker.read().unwrap();
-        for diagnostic in type_checker.diagnostics() {
-            // Convert from types::errors::Diagnostic to diagnostics::Diagnostic
-            let main_diagnostic = crate::diagnostics::Diagnostic::new(
-                crate::diagnostics::Severity::Error,
-                crate::diagnostics::ErrorKind::InvalidSyntax { context: "type check error".to_string() },
-                diagnostic.message
-            );
-            self.session.emitter.emit(main_diagnostic);
+        for type_system_error in type_checker.errors() {
+            self.session.emitter.emit(Diagnostic::from(type_system_error.clone()));
         }
         drop(type_checker);
 

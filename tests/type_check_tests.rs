@@ -12,6 +12,7 @@ fn main() => int:
 
 "#;
     assert_compile_error(source, "type mismatch").unwrap();
+    assert_compile_error(source, "E100").unwrap();
 }
 
 #[test]
