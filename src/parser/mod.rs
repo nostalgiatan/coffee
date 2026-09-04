@@ -24,6 +24,8 @@
 
 #![allow(dead_code)]
 
+use crate::coffee_debug;
+
 pub mod import;
 pub mod function;
 pub mod main;
@@ -263,19 +265,19 @@ pub fn parse_multiline_statement(lines: &[&str]) -> Option<(Statement, usize)> {
 
     // Try to parse function (supports fn and c fn)
     if first_line.starts_with("fn ") || first_line.starts_with("c fn ") {
-        eprintln!("DEBUG: parse_multiline_statement: found function definition, first_line='{}'", first_line);
+        coffee_debug!("DEBUG: parse_multiline_statement: found function definition, first_line='{}'", first_line);
         // Try to parse current line and following lines directly
         if let Some(multiline_content) = collect_multiline_content(lines, "fn") {
-            eprintln!("DEBUG: parse_multiline_statement: collected multiline_content='{}'", multiline_content.0);
+            coffee_debug!("DEBUG: parse_multiline_statement: collected multiline_content='{}'", multiline_content.0);
             // Try direct parsing - parser will handle c fn prefix
             if let Ok((_, func)) = crate::parser::function::parse_function(&multiline_content.0) {
-                eprintln!("DEBUG: parse_multiline_statement: parsed function '{}'", func.name);
+                coffee_debug!("DEBUG: parse_multiline_statement: parsed function '{}'", func.name);
                 return Some((Statement::Function(func), multiline_content.1));
             } else {
-                eprintln!("DEBUG: parse_multiline_statement: failed to parse function");
+                coffee_debug!("DEBUG: parse_multiline_statement: failed to parse function");
             }
         } else {
-            eprintln!("DEBUG: parse_multiline_statement: failed to collect multiline_content");
+            coffee_debug!("DEBUG: parse_multiline_statement: failed to collect multiline_content");
         }
     }
 
@@ -355,63 +357,63 @@ pub fn parse_multiline_statement(lines: &[&str]) -> Option<(Statement, usize)> {
 
     // Try to parse return statement: return value
     if first_line.starts_with("return ") {
-        eprintln!("DEBUG: parse_multiline_statement: found return statement, first_line='{}'", first_line);
+        coffee_debug!("DEBUG: parse_multiline_statement: found return statement, first_line='{}'", first_line);
         if let Ok((remaining, return_stmt)) = crate::parser::var::parse_return(first_line) {
             if remaining.trim().is_empty() {
                 return Some((Statement::Return(return_stmt), 1));
             }
         }
-        eprintln!("DEBUG: parse_multiline_statement: return parsing failed");
+        coffee_debug!("DEBUG: parse_multiline_statement: return parsing failed");
         return None;
     }
 
     // Try to parse raise statement: raise Error(...)
     if first_line.starts_with("raise ") {
-        eprintln!("DEBUG: parse_multiline_statement: found raise statement, first_line='{}'", first_line);
+        coffee_debug!("DEBUG: parse_multiline_statement: found raise statement, first_line='{}'", first_line);
         if let Ok((remaining, raise_stmt)) = crate::parser::raise::parse_raise(first_line) {
             if remaining.trim().is_empty() {
                 return Some((Statement::Raise(raise_stmt), 1));
             }
         }
-        eprintln!("DEBUG: parse_multiline_statement: raise parsing failed");
+        coffee_debug!("DEBUG: parse_multiline_statement: raise parsing failed");
         return None;
     }
 
     // Try to parse break statement
     if first_line == "break" {
-        eprintln!("DEBUG: parse_multiline_statement: found break statement, first_line='{}'", first_line);
+        coffee_debug!("DEBUG: parse_multiline_statement: found break statement, first_line='{}'", first_line);
         if let Ok((remaining, break_stmt)) = crate::parser::var::parse_break(first_line) {
             if remaining.trim().is_empty() {
                 return Some((Statement::Break(break_stmt), 1));
             }
         }
-        eprintln!("DEBUG: parse_multiline_statement: break parsing failed");
+        coffee_debug!("DEBUG: parse_multiline_statement: break parsing failed");
         return None;
     }
 
     // Try to parse continue statement
     if first_line == "continue" {
-        eprintln!("DEBUG: parse_multiline_statement: found continue statement, first_line='{}'", first_line);
+        coffee_debug!("DEBUG: parse_multiline_statement: found continue statement, first_line='{}'", first_line);
         if let Ok((remaining, continue_stmt)) = crate::parser::var::parse_continue(first_line) {
             if remaining.trim().is_empty() {
                 return Some((Statement::Continue(continue_stmt), 1));
             }
         }
-        eprintln!("DEBUG: parse_multiline_statement: continue parsing failed");
+        coffee_debug!("DEBUG: parse_multiline_statement: continue parsing failed");
         return None;
     }
 
     // Try to parse main entry point: main(function(args))
     if first_line == "main()" || first_line.starts_with("main(") {
-        eprintln!("DEBUG: parse_multiline_statement: found main() statement, first_line='{}'", first_line);
+        coffee_debug!("DEBUG: parse_multiline_statement: found main() statement, first_line='{}'", first_line);
         match crate::parser::main::parse_main_entry(first_line) {
             Ok((remaining, main_entry)) if remaining.trim().is_empty() => {
-                eprintln!("DEBUG: parse_multiline_statement: parsed main entry, entry_function='{}', args={:?}", main_entry.entry_function, main_entry.args);
+                coffee_debug!("DEBUG: parse_multiline_statement: parsed main entry, entry_function='{}', args={:?}", main_entry.entry_function, main_entry.args);
                 return Some((Statement::Main(main_entry), 1));
             }
             _ => {
                 // Main parsing failed - return None to trigger error detection
-                eprintln!("DEBUG: parse_multiline_statement: main parsing failed");
+                coffee_debug!("DEBUG: parse_multiline_statement: main parsing failed");
                 return None;
             }
         }
@@ -521,7 +523,7 @@ fn collect_multiline_content(lines: &[&str], keyword: &str) -> Option<(String, u
         return None;
     }
 
-    eprintln!("DEBUG: collect_multiline_content: keyword='{}', lines.len()={}", keyword, lines.len());
+    coffee_debug!("DEBUG: collect_multiline_content: keyword='{}', lines.len()={}", keyword, lines.len());
 
     // Pre-allocate capacity: estimate total size (average 60 chars per line)
     let estimated_size = lines.iter().take(20).map(|l| l.len() + 1).sum::<usize>() * 2;
@@ -591,14 +593,14 @@ fn collect_multiline_content(lines: &[&str], keyword: &str) -> Option<(String, u
                 // Start tracking this block
                 if let Some(block_type) = BlockTracker::detect_block_type(line) {
                     tracker.push_block(block_type, current_indent, line_num, true);
-                    eprintln!("DEBUG: collect_multiline_content: first line, pushed block {:?}, indent={}", block_type, current_indent);
+                    coffee_debug!("DEBUG: collect_multiline_content: first line, pushed block {:?}, indent={}", block_type, current_indent);
                 } else {
-                    eprintln!("DEBUG: collect_multiline_content: first line, no block type detected");
+                    coffee_debug!("DEBUG: collect_multiline_content: first line, no block type detected");
                 }
             } else if brace_depth > 0 || bracket_depth > 0 || paren_depth > 0 {
                 // This is a multiline expression (e.g., struct literal)
                 // Track the brace/bracket/paren depth
-                eprintln!("DEBUG: collect_multiline_content: first line, multiline expression, brace_depth={}, bracket_depth={}, paren_depth={}", brace_depth, bracket_depth, paren_depth);
+                coffee_debug!("DEBUG: collect_multiline_content: first line, multiline expression, brace_depth={}, bracket_depth={}, paren_depth={}", brace_depth, bracket_depth, paren_depth);
                 // Store the depth in the tracker for later use
                 tracker.push_block(BlockType::Expression, current_indent, line_num, true);
             } else {
@@ -634,7 +636,7 @@ fn collect_multiline_content(lines: &[&str], keyword: &str) -> Option<(String, u
                 }) {
                     false // Part of the if block
                 } else if is_top_level_keyword(trimmed) && !trimmed.starts_with(keyword) {
-                    eprintln!("DEBUG: should_end = true (different top-level keyword): line='{}', keyword='{}'", trimmed, keyword);
+                    coffee_debug!("DEBUG: should_end = true (different top-level keyword): line='{}', keyword='{}'", trimmed, keyword);
                     true // Different top-level keyword - end the block
                 } else if trimmed.starts_with(keyword) && current_indent == base_level {
                     // Same keyword at base level - check nesting depth
@@ -657,21 +659,21 @@ fn collect_multiline_content(lines: &[&str], keyword: &str) -> Option<(String, u
             let should_end_for_memory_op = (is_memory_op || is_return) &&
                                            current_indent == base_level;
 
-            eprintln!("DEBUG: line='{}', current_indent={}, base_level={:?}, should_end={}, tracker.depth={}, is_memory_op={}, should_end_for_memory_op={}", trimmed, current_indent, base_level, should_end, tracker.depth(), is_memory_op, should_end_for_memory_op);
+            coffee_debug!("DEBUG: line='{}', current_indent={}, base_level={:?}, should_end={}, tracker.depth={}, is_memory_op={}, should_end_for_memory_op={}", trimmed, current_indent, base_level, should_end, tracker.depth(), is_memory_op, should_end_for_memory_op);
 
             if should_end || should_end_for_memory_op {
                 break;
             }
 
             // Include this line
-            eprintln!("[DEBUG] collect_multiline_content: adding line '{}' to content (current content length = {})", line, content.len());
+            coffee_debug!("[DEBUG] collect_multiline_content: adding line '{}' to content (current content length = {})", line, content.len());
             content.push_str(line);
             content.push('\n');
             lines_consumed += 1;
         }
     }
 
-    eprintln!("[DEBUG] collect_multiline_content: finished collecting, content length = {}, lines_consumed = {}", content.len(), lines_consumed);
+    coffee_debug!("[DEBUG] collect_multiline_content: finished collecting, content length = {}, lines_consumed = {}", content.len(), lines_consumed);
 
     // Validate closure (check for unclosed blocks)
     let _ = tracker.validate_closure();
@@ -1031,15 +1033,15 @@ pub fn parse_single_line_statement(line: &str) -> Option<Statement> {
     // Main entry point: main(function(args))
     // Only match if it's the entire line (not part of an expression)
     if trimmed == "main()" || trimmed.starts_with("main(") {
-        eprintln!("DEBUG: parse_multiline_statement: found main() statement, line='{}'", line);
+        coffee_debug!("DEBUG: parse_multiline_statement: found main() statement, line='{}'", line);
         match crate::parser::main::parse_main_entry(line) {
             Ok((remaining, main_entry)) if remaining.trim().is_empty() => {
-                eprintln!("DEBUG: parse_multiline_statement: parsed main entry, entry_function='{}', args={:?}", main_entry.entry_function, main_entry.args);
+                coffee_debug!("DEBUG: parse_multiline_statement: parsed main entry, entry_function='{}', args={:?}", main_entry.entry_function, main_entry.args);
                 return Some(Statement::Main(main_entry));
             }
             _ => {
                 // Main parsing failed - return None to trigger error detection
-                eprintln!("DEBUG: parse_multiline_statement: main parsing failed");
+                coffee_debug!("DEBUG: parse_multiline_statement: main parsing failed");
                 return None;
             }
         }
@@ -1090,14 +1092,14 @@ pub fn parse_single_line_statement(line: &str) -> Option<Statement> {
 
     // Return statement: return value
     if trimmed.starts_with("return ") {
-        eprintln!("DEBUG: parse_single_line_statement: found return statement, line='{}'", line);
+        coffee_debug!("DEBUG: parse_single_line_statement: found return statement, line='{}'", line);
         if let Ok((remaining, return_stmt)) = crate::parser::var::parse_return(line) {
-            eprintln!("DEBUG: parse_single_line_statement: parse_return succeeded, remaining='{}'", remaining);
+            coffee_debug!("DEBUG: parse_single_line_statement: parse_return succeeded, remaining='{}'", remaining);
             if remaining.trim().is_empty() {
                 return Some(Statement::Return(return_stmt));
             }
         }
-        eprintln!("DEBUG: parse_single_line_statement: parse_return failed");
+        coffee_debug!("DEBUG: parse_single_line_statement: parse_return failed");
         return None;
     }
 
@@ -1149,31 +1151,31 @@ pub fn parse_single_line_statement(line: &str) -> Option<Statement> {
     }
 
     // Memory operations (mv/copy/clone/rm/clean)
-    eprintln!("DEBUG: parse_single_line_statement: checking memory ops, trimmed='{}', starts_with(rm)={}", trimmed, trimmed.starts_with("rm"));
+    coffee_debug!("DEBUG: parse_single_line_statement: checking memory ops, trimmed='{}', starts_with(rm)={}", trimmed, trimmed.starts_with("rm"));
     if trimmed.starts_with("mv") || trimmed.starts_with("copy") ||
        trimmed.starts_with("clone") || trimmed.starts_with("rm") ||
        trimmed.starts_with("clean") {
-        eprintln!("DEBUG: parse_single_line_statement: trying to parse memory op: '{}'", line);
+        coffee_debug!("DEBUG: parse_single_line_statement: trying to parse memory op: '{}'", line);
         if let Ok((remaining, memory_op)) = crate::parser::memory::parse_memory_op(line) {
-            eprintln!("DEBUG: parse_single_line_statement: parsed memory op successfully, remaining='{}', memory_op={:?}", remaining, memory_op);
+            coffee_debug!("DEBUG: parse_single_line_statement: parsed memory op successfully, remaining='{}', memory_op={:?}", remaining, memory_op);
             if remaining.trim().is_empty() {
                 return Some(Statement::MemoryOp(memory_op));
             }
         } else {
-            eprintln!("DEBUG: parse_single_line_statement: failed to parse memory op");
+            coffee_debug!("DEBUG: parse_single_line_statement: failed to parse memory op");
         }
     }
 
     // Expression statement (function calls, etc.): as a last resort try parsing as expression
     // This handles standalone function calls like printf("hello"), foo()
-    eprintln!("DEBUG: parse_single_line_statement: trying to parse as expression, line='{}'", line);
+    coffee_debug!("DEBUG: parse_single_line_statement: trying to parse as expression, line='{}'", line);
     match crate::parser::expr::parse_expression(line) {
         Ok(expr) => {
-            eprintln!("DEBUG: parse_single_line_statement: parsed as expression successfully");
+            coffee_debug!("DEBUG: parse_single_line_statement: parsed as expression successfully");
             return Some(Statement::Expr(Box::new(expr)));
         }
         Err(e) => {
-            eprintln!("DEBUG: parse_single_line_statement: failed to parse as expression, error='{}'", e);
+            coffee_debug!("DEBUG: parse_single_line_statement: failed to parse as expression, error='{}'", e);
         }
     }
 

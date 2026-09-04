@@ -3,6 +3,7 @@
 //! `CompilerFrontend` holds a `Session` and forwards `compile` here so
 //! single-file and project drivers share one algorithm.
 
+use crate::coffee_debug;
 use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
@@ -122,7 +123,7 @@ impl CompilationPipeline {
 
         // First pass: declare all functions (without analyzing bodies)
         // This supports mutual recursion
-        eprintln!("DEBUG: compile_source: First pass: declaring all functions");
+        coffee_debug!("DEBUG: compile_source: First pass: declaring all functions");
         for statement in &program.statements {
             if let parser::Statement::Function(func) = statement {
                 let _ = self.session.analyzer.write().unwrap().declare_function_decl(func);
@@ -130,23 +131,23 @@ impl CompilationPipeline {
         }
 
         // First pass: register all class and enum definitions
-        eprintln!("DEBUG: compile_source: First pass: registering all class and enum definitions");
+        coffee_debug!("DEBUG: compile_source: First pass: registering all class and enum definitions");
         for statement in &program.statements {
             match statement {
                 parser::Statement::Class(class) => {
                     // Register class definition without analyzing methods
-                    eprintln!("DEBUG: compile_source: Registering class '{}'", class.name);
+                    coffee_debug!("DEBUG: compile_source: Registering class '{}'", class.name);
                     let type_def = {
                         let analyzer = self.session.analyzer.read().unwrap();
                         let type_registry = analyzer.type_registry();
                         let reg = type_registry.read().unwrap();
                         match reg.bind_class(class) {
                             Ok(type_def) => {
-                                eprintln!("DEBUG: compile_source: Successfully bound class '{}'", class.name);
+                                coffee_debug!("DEBUG: compile_source: Successfully bound class '{}'", class.name);
                                 Some(type_def)
                             }
                             Err(e) => {
-                                eprintln!("DEBUG: Failed to bind class '{}': {}", class.name, e);
+                                coffee_debug!("DEBUG: Failed to bind class '{}': {}", class.name, e);
                                 None
                             }
                         }
@@ -155,13 +156,13 @@ impl CompilationPipeline {
                     // Now register the type definition (after releasing the read lock)
                     if let Some(type_def) = type_def {
                         if let Err(e) = self.session.analyzer.write().unwrap().analyze_type_def(&class.name, type_def) {
-                            eprintln!("DEBUG: Failed to register class '{}': {}", class.name, e);
+                            coffee_debug!("DEBUG: Failed to register class '{}': {}", class.name, e);
                         }
                     }
                 }
                 parser::Statement::Enum(enum_def) => {
                     // Register enum definition
-                    eprintln!("DEBUG: compile_source: Registering enum '{}'", enum_def.name);
+                    coffee_debug!("DEBUG: compile_source: Registering enum '{}'", enum_def.name);
                     let type_def = {
                         let analyzer = self.session.analyzer.read().unwrap();
                         let type_registry = analyzer.type_registry();
@@ -172,7 +173,7 @@ impl CompilationPipeline {
                     // Now register the type definition (after releasing the read lock)
                     if let Some(type_def) = type_def {
                         if let Err(e) = self.session.analyzer.write().unwrap().analyze_type_def(&enum_def.name, type_def) {
-                            eprintln!("DEBUG: Failed to register enum '{}': {}", enum_def.name, e);
+                            coffee_debug!("DEBUG: Failed to register enum '{}': {}", enum_def.name, e);
                         }
                     }
                 }
@@ -181,7 +182,7 @@ impl CompilationPipeline {
         }
 
         // Second pass: perform semantic analysis on all statements (skip class/enum since they're already registered)
-        eprintln!("DEBUG: compile_source: Second pass: performing semantic analysis on {} statements", program.statements.len());
+        coffee_debug!("DEBUG: compile_source: Second pass: performing semantic analysis on {} statements", program.statements.len());
         for statement in &program.statements {
             // Skip class and enum statements since they were already registered in the first pass
             match statement {

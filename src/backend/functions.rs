@@ -7,6 +7,7 @@
 //! declarations required by the compiler. It also manages function signatures for
 //! imported functions and C library functions.
 
+use crate::coffee_debug;
 use crate::parser::Function;
 use crate::backend::types::TypeMapper;
 use inkwell::{values::{FunctionValue, BasicValueEnum}, AddressSpace, types::BasicType};
@@ -126,10 +127,10 @@ pub fn declare_function<'ctx>(
     functions.insert(func.name.clone(), function);
 
     // Debug: print function signature
-    eprintln!("DEBUG: declare_function: function='{}', param_count={}, return_type={:?}", 
+    coffee_debug!("DEBUG: declare_function: function='{}', param_count={}, return_type={:?}", 
         func.name, function.get_params().len(), function.get_type().get_return_type());
     for (i, param) in function.get_params().into_iter().enumerate() {
-        eprintln!("DEBUG: declare_function: param {} type={:?}", i, param.get_type());
+        coffee_debug!("DEBUG: declare_function: param {} type={:?}", i, param.get_type());
     }
 
     Ok(function)

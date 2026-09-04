@@ -3,6 +3,7 @@
 //! Handles compilation of various statement types including control flow,
 //! memory operations, and return statements.
 
+use crate::coffee_debug;
 use super::codegen::CodeGenerator;
 use crate::parser::{Statement, MemoryOp};
 
@@ -12,7 +13,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         // Update current line for lifetime tracking (simple counter approach)
         self.memory_ctx.set_line(self.memory_ctx.current_line + 1);
 
-        eprintln!("DEBUG: compile_statement: stmt={:?}", stmt);
+        coffee_debug!("DEBUG: compile_statement: stmt={:?}", stmt);
 
         match stmt {
             Statement::Function(func) => {
@@ -73,18 +74,18 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         } else if line == "continue" {
             self.compile_continue()?;
         } else if line.starts_with("return ") {
-            eprintln!("DEBUG: compile_body_line: return statement: {}", line);
+            coffee_debug!("DEBUG: compile_body_line: return statement: {}", line);
             let expr_str = &line[7..];
             let value = self.compile_source_as_expr(expr_str)
                 .map_err(|e| self.error("return_statement", format!("failed to compile return expression '{}': {}", expr_str, e)))?;
             self.backend.builder.build_return(Some(&value))
                 .map_err(|e| self.error("return_statement", format!("failed to build return instruction: {}", e)))?;
         } else if line == "return" {
-            eprintln!("DEBUG: compile_body_line: return statement (void)");
+            coffee_debug!("DEBUG: compile_body_line: return statement (void)");
             self.backend.builder.build_return(None)
                 .map_err(|e| self.error("return_statement", format!("failed to build void return: {}", e)))?;
         } else if line.starts_with("let ") {
-            eprintln!("DEBUG: compile_body_line: let statement: {}", line);
+            coffee_debug!("DEBUG: compile_body_line: let statement: {}", line);
             self.compile_let_statement(line)?;
         } else if line.contains(" = ") && !line.starts_with("if ") && !line.starts_with("for ") && !line.starts_with("while ") {
             self.compile_assignment(line)?;
@@ -363,7 +364,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
     /// Strip inline comments from a string
     /// Coffee comments: /#/ ... /#/ (with closing) or /#/ ... (to end of line)
     pub fn strip_inline_comments(&self, s: &str) -> String {
-        eprintln!("DEBUG: strip_inline_comments: s='{}', len={}", s, s.len());
+        coffee_debug!("DEBUG: strip_inline_comments: s='{}', len={}", s, s.len());
         
         // Find comment start: /#/
         if let Some(start_pos) = s.find("/#/") {
@@ -379,18 +380,18 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                     // Found closing marker - remove comment and keep rest of line
                     let after_close = &after_open[end_pos + 3..];
                     let result = format!("{}{}", before, after_close).trim().to_string();
-                    eprintln!("DEBUG: strip_inline_comments: found comment, result='{}', len={}", result, result.len());
+                    coffee_debug!("DEBUG: strip_inline_comments: found comment, result='{}', len={}", result, result.len());
                     return result;
                 } else {
                     // No closing marker - comment extends to end of line
                     let result = before.trim().to_string();
-                    eprintln!("DEBUG: strip_inline_comments: found unclosed comment, result='{}', len={}", result, result.len());
+                    coffee_debug!("DEBUG: strip_inline_comments: found unclosed comment, result='{}', len={}", result, result.len());
                     return result;
                 }
             }
         }
         let result = s.trim().to_string();
-        eprintln!("DEBUG: strip_inline_comments: no comment, result='{}', len={}", result, result.len());
+        coffee_debug!("DEBUG: strip_inline_comments: no comment, result='{}', len={}", result, result.len());
         result
     }
 

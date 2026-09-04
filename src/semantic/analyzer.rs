@@ -1,3 +1,4 @@
+use crate::coffee_debug;
 use super::scope::ScopeSpace;
 use super::lifetime::LifetimeSpace;
 use super::symbols::SymbolSpace;
@@ -3588,7 +3589,7 @@ impl SemanticAnalyzer {
         };
 
         if function_already_declared {
-            eprintln!("DEBUG: declare_function_decl: function '{}' already declared, skipping", func.name);
+            coffee_debug!("DEBUG: declare_function_decl: function '{}' already declared, skipping", func.name);
             return Ok(());
         }
 
@@ -3646,7 +3647,7 @@ impl SemanticAnalyzer {
             registry.define_alias(func.name.clone(), func_type)?;
         }
 
-        eprintln!("DEBUG: declare_function_decl: declared function '{}'", func.name);
+        coffee_debug!("DEBUG: declare_function_decl: declared function '{}'", func.name);
         Ok(())
     }
 
@@ -3695,7 +3696,7 @@ impl SemanticAnalyzer {
             false
         };
 
-        eprintln!("DEBUG: analyze_function_decl: function_already_declared={} for function '{}'", function_already_declared, func.name);
+        coffee_debug!("DEBUG: analyze_function_decl: function_already_declared={} for function '{}'", function_already_declared, func.name);
 
         if !function_already_declared {
             // 在作用域中绑定
@@ -3731,7 +3732,7 @@ impl SemanticAnalyzer {
                 reason: "Failed to access type registry".to_string(),
             })?;
 
-        eprintln!("DEBUG: analyze_function_decl: binding parameters for function '{}', params: {:?}", func.name, func.parameters.iter().map(|p| &p.name).collect::<Vec<_>>());
+        coffee_debug!("DEBUG: analyze_function_decl: binding parameters for function '{}', params: {:?}", func.name, func.parameters.iter().map(|p| &p.name).collect::<Vec<_>>());
 
         // 在符号空间中绑定参数，使用限定名（function::parameter）
         if let Ok(mut symbols) = self.symbol_space.write() {
@@ -3742,7 +3743,7 @@ impl SemanticAnalyzer {
                     initialized: true,
                 };
                 let qualified_name = format!("{}::{}", func.name, param.name);
-                eprintln!("DEBUG: analyze_function_decl: binding parameter '{}' as '{}' in function '{}'", param.name, qualified_name, func.name);
+                coffee_debug!("DEBUG: analyze_function_decl: binding parameter '{}' as '{}' in function '{}'", param.name, qualified_name, func.name);
                 let binding = Binding {
                     name: qualified_name.clone(),
                     entity: param_entity,
@@ -4098,29 +4099,29 @@ impl SemanticAnalyzer {
         match expr {
             Expression::Literal(lit) => {
                 // Infer type from literal
-                eprintln!("[DEBUG] infer_expression_type: inferring type for literal '{}'", lit);
+                coffee_debug!("[DEBUG] infer_expression_type: inferring type for literal '{}'", lit);
                 // Check for float first (to handle 0.0, 1.0, etc.)
                 if lit.contains('.') || lit.contains('e') || lit.contains('E') {
                     if lit.parse::<f64>().is_ok() {
-                        eprintln!("[DEBUG] infer_expression_type: '{}' is a float literal", lit);
+                        coffee_debug!("[DEBUG] infer_expression_type: '{}' is a float literal", lit);
                         return Ok(Type::float());
                     }
                 }
                 
                 if lit == "true" || lit == "false" {
-                    eprintln!("[DEBUG] infer_expression_type: '{}' is a boolean literal", lit);
+                    coffee_debug!("[DEBUG] infer_expression_type: '{}' is a boolean literal", lit);
                     Ok(Type::bool())
                 } else if lit.parse::<i64>().is_ok() {
-                    eprintln!("[DEBUG] infer_expression_type: '{}' is an integer literal", lit);
+                    coffee_debug!("[DEBUG] infer_expression_type: '{}' is an integer literal", lit);
                     Ok(Type::int())
                 } else if lit.parse::<f64>().is_ok() {
-                    eprintln!("[DEBUG] infer_expression_type: '{}' is a float literal (fallback)", lit);
+                    coffee_debug!("[DEBUG] infer_expression_type: '{}' is a float literal (fallback)", lit);
                     Ok(Type::float())
                 } else if lit.starts_with('"') || lit.starts_with('\'') {
-                    eprintln!("[DEBUG] infer_expression_type: '{}' is a string literal", lit);
+                    coffee_debug!("[DEBUG] infer_expression_type: '{}' is a string literal", lit);
                     Ok(Type::string())
                 } else {
-                    eprintln!("[DEBUG] infer_expression_type: '{}' is unknown, defaulting to int", lit);
+                    coffee_debug!("[DEBUG] infer_expression_type: '{}' is unknown, defaulting to int", lit);
                     // Unknown literal type, default to int
                     Ok(Type::int())
                 }
@@ -4383,7 +4384,7 @@ impl SemanticAnalyzer {
                             let enum_name = parts[0].trim();
                             let variant_name = parts[1].trim();
                             
-                            eprintln!("[DEBUG] analyze_expression: checking enum variant '{}::{}'", enum_name, variant_name);
+                            coffee_debug!("[DEBUG] analyze_expression: checking enum variant '{}::{}'", enum_name, variant_name);
                             
                             // Check if this is a variant with parameters
                             let variant_name_clean = if variant_name.contains('(') {
@@ -4393,31 +4394,31 @@ impl SemanticAnalyzer {
                                 variant_name
                             };
                             
-                            eprintln!("[DEBUG] analyze_expression: variant_name_clean = '{}'", variant_name_clean);
+                            coffee_debug!("[DEBUG] analyze_expression: variant_name_clean = '{}'", variant_name_clean);
                             
                             // Try to resolve enum type
                             match self.type_registry.read() {
                                 Ok(reg) => {
-                                    eprintln!("[DEBUG] analyze_expression: checking type registry for enum '{}'", enum_name);
+                                    coffee_debug!("[DEBUG] analyze_expression: checking type registry for enum '{}'", enum_name);
                                     if let Some(TypeDef::Enum { variants, .. }) = reg.get_type(enum_name) {
-                                        eprintln!("[DEBUG] analyze_expression: found enum '{}' with {} variants", enum_name, variants.len());
+                                        coffee_debug!("[DEBUG] analyze_expression: found enum '{}' with {} variants", enum_name, variants.len());
                                         // Check if this variant exists
                                         if variants.iter().any(|v| v.name == variant_name_clean) {
-                                            eprintln!("[DEBUG] analyze_expression: found variant '{}' in enum '{}'", variant_name_clean, enum_name);
+                                            coffee_debug!("[DEBUG] analyze_expression: found variant '{}' in enum '{}'", variant_name_clean, enum_name);
                                             // Enum variant exists - just analyze arguments
                                             for arg in args {
                                                 self.analyze_expression(arg)?;
                                             }
                                             return Ok(());
                                         } else {
-                                            eprintln!("[DEBUG] analyze_expression: variant '{}' NOT found in enum '{}', available variants: {:?}", variant_name_clean, enum_name, variants.iter().map(|v| &v.name).collect::<Vec<_>>());
+                                            coffee_debug!("[DEBUG] analyze_expression: variant '{}' NOT found in enum '{}', available variants: {:?}", variant_name_clean, enum_name, variants.iter().map(|v| &v.name).collect::<Vec<_>>());
                                         }
                                     } else {
-                                        eprintln!("[DEBUG] analyze_expression: enum '{}' NOT found in type registry", enum_name);
+                                        coffee_debug!("[DEBUG] analyze_expression: enum '{}' NOT found in type registry", enum_name);
                                     }
                                 },
                                 Err(e) => {
-                                    eprintln!("[DEBUG] analyze_expression: failed to access type registry: {:?}", e);
+                                    coffee_debug!("[DEBUG] analyze_expression: failed to access type registry: {:?}", e);
                                 }
                             }
                         }
@@ -4454,9 +4455,9 @@ impl SemanticAnalyzer {
                                     continue;
                                 }
 
-                                eprintln!("[DEBUG] analyze_expression: checking arg {} of type {:?}", i, arg);
+                                coffee_debug!("[DEBUG] analyze_expression: checking arg {} of type {:?}", i, arg);
                                 let arg_type = self.infer_expression_type(arg)?;
-                                eprintln!("[DEBUG] analyze_expression: inferred arg type as {:?}", arg_type);
+                                coffee_debug!("[DEBUG] analyze_expression: inferred arg type as {:?}", arg_type);
                                 let param_type_str = &c_symbol.parameters[i].param_type;
 
                                 // Parse parameter type
@@ -4478,11 +4479,11 @@ impl SemanticAnalyzer {
                                     _ => arg_type == param_type,
                                 };
 
-                                eprintln!("[DEBUG] analyze_expression: checking arg {} type: {:?} vs {:?}", i, arg_type, param_type);
-                                eprintln!("[DEBUG] analyze_expression: types_match = {}", types_match);
+                                coffee_debug!("[DEBUG] analyze_expression: checking arg {} type: {:?} vs {:?}", i, arg_type, param_type);
+                                coffee_debug!("[DEBUG] analyze_expression: types_match = {}", types_match);
 
                                 if !types_match {
-                                    eprintln!("[DEBUG] analyze_expression: creating TypeMismatch error");
+                                    coffee_debug!("[DEBUG] analyze_expression: creating TypeMismatch error");
                                     return Err(TypeSystemError::TypeMismatch {
                                         expected: param_type,
                                         found: arg_type,

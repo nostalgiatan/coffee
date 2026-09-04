@@ -6,6 +6,8 @@ mod diagnostics;
 mod backend;
 mod c;
 mod library_finder;
+#[macro_use]
+mod debug_log;
 
 use diagnostics::{Diagnostic, ErrorKind, Severity};
 

@@ -16,6 +16,7 @@
 //! The code generator uses a modular design with dedicated contexts for different
 //! aspects of code generation such as arithmetic, memory management, and control flow.
 
+use crate::coffee_debug;
 use super::Backend;
 use super::types::TypeMapper;
 
@@ -619,9 +620,9 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         self.declare_runtime_functions();
 
         // Second pass: define functions and compile code
-        eprintln!("DEBUG: compile_program: Second pass: compiling {} statements", program.statements.len());
+        coffee_debug!("DEBUG: compile_program: Second pass: compiling {} statements", program.statements.len());
         for (idx, stmt) in program.statements.iter().enumerate() {
-            eprintln!("DEBUG: compile_program: compiling statement {}: {:?}", idx, stmt);
+            coffee_debug!("DEBUG: compile_program: compiling statement {}: {:?}", idx, stmt);
             // CRITICAL: Reset current_function before compiling top-level statements
             // This ensures that top-level statements (like main() calls) are not compiled
             // into the wrong function's basic block
@@ -1384,7 +1385,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         
                     // Check if pattern is a tuple pattern (contains variables)
                     let is_tuple_pattern = pattern.starts_with('(') && pattern.contains(',') && pattern.ends_with(')');
-                    eprintln!("DEBUG: compile_match: pattern='{}', is_tuple_pattern={}", pattern, is_tuple_pattern);
+                    coffee_debug!("DEBUG: compile_match: pattern='{}', is_tuple_pattern={}", pattern, is_tuple_pattern);
             // Match guard: binding + optional guard expression.
             if let Some(guard_expr) = &arm.guard {
                 let base = pattern.trim();
@@ -1428,12 +1429,12 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                         vars.push(&inner[start..].trim());
                     }
                     
-                    eprintln!("DEBUG: compile_match: parsed pattern '{}' into vars: {:?}", pattern, vars);
+                    coffee_debug!("DEBUG: compile_match: parsed pattern '{}' into vars: {:?}", pattern, vars);
 
                     // Check if match_val is a pointer (needs to load) or already a value
                     let tuple_val = if let BasicValueEnum::PointerValue(ptr_val) = match_val {
                         // Load the struct value from the pointer
-                        eprintln!("DEBUG: compile_match: match_val is PointerValue, loading struct value");
+                        coffee_debug!("DEBUG: compile_match: match_val is PointerValue, loading struct value");
                         
                         // Try to get the type from the variable
                         let var_type = if let Some((_, var_type)) = self.variables.get(&match_value_str) {
@@ -1442,34 +1443,34 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                             None
                         };
                         
-                        eprintln!("DEBUG: compile_match: var_type = {:?}", var_type);
+                        coffee_debug!("DEBUG: compile_match: var_type = {:?}", var_type);
                         
                         // Load the struct value from the pointer using the correct struct type
                         if let Some(BasicTypeEnum::StructType(struct_type)) = var_type {
-                            eprintln!("DEBUG: compile_match: using struct type {:?}", struct_type);
+                            coffee_debug!("DEBUG: compile_match: using struct type {:?}", struct_type);
                             // Use struct_type.clone() to create an owned StructType
                             self.backend.builder.build_load(BasicTypeEnum::StructType(struct_type.clone()), ptr_val, "tuple_val")
                                 .map_err(|e| format!("failed to load tuple value: {}", e))?
                         } else {
                             // Fallback: try to load as i64 (for simple tuples)
-                            eprintln!("DEBUG: compile_match: var_type is not StructType, using i64_type");
+                            coffee_debug!("DEBUG: compile_match: var_type is not StructType, using i64_type");
                             let i64_type = self.backend.context.i64_type();
                             self.backend.builder.build_load(BasicTypeEnum::IntType(i64_type), ptr_val, "tuple_val")
                                 .map_err(|e| format!("failed to load tuple value: {}", e))?
                         }
                     } else {
                         // Already a value
-                        eprintln!("DEBUG: compile_match: match_val is already a value: {:?}", match_val);
+                        coffee_debug!("DEBUG: compile_match: match_val is already a value: {:?}", match_val);
                         match_val
                     };
 
-                    eprintln!("DEBUG: compile_match: loaded value is {:?}", tuple_val);
+                    coffee_debug!("DEBUG: compile_match: loaded value is {:?}", tuple_val);
 
                     if let BasicValueEnum::StructValue(tuple_val) = tuple_val {
-                        eprintln!("DEBUG: compile_match: tuple_val is StructValue");
-                        eprintln!("DEBUG: compile_match: vars = {:?}", vars);
+                        coffee_debug!("DEBUG: compile_match: tuple_val is StructValue");
+                        coffee_debug!("DEBUG: compile_match: vars = {:?}", vars);
                         for (j, var_name) in vars.iter().enumerate() {
-                            eprintln!("DEBUG: compile_match: processing var '{}' (index {})", var_name, j);
+                            coffee_debug!("DEBUG: compile_match: processing var '{}' (index {})", var_name, j);
                             if *var_name != "_" {
                                 // Extract field from tuple using build_extract_value
                                 let field_val = self.backend.builder.build_extract_value(
@@ -1478,12 +1479,12 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                                     var_name
                                 ).map_err(|e| format!("failed to extract tuple field: {}", e))?;
                                 
-                                eprintln!("DEBUG: compile_match: extracted field '{}' (index {}), type: {:?}", var_name, j, field_val.get_type());
+                                coffee_debug!("DEBUG: compile_match: extracted field '{}' (index {}), type: {:?}", var_name, j, field_val.get_type());
 
                                 // Check if the field is itself a tuple pattern
                                 if var_name.starts_with('(') && var_name.contains(',') && var_name.ends_with(')') {
                                     // Recursively handle nested tuple pattern
-                                    eprintln!("DEBUG: compile_match: field '{}' is a nested tuple pattern", var_name);
+                                    coffee_debug!("DEBUG: compile_match: field '{}' is a nested tuple pattern", var_name);
                                     
                                     // Parse the nested tuple pattern
                                     let inner = &var_name[1..var_name.len()-1].trim();
@@ -1505,7 +1506,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                                         nested_vars.push(&inner[start..].trim());
                                     }
                                     
-                                    eprintln!("DEBUG: compile_match: nested vars: {:?}", nested_vars);
+                                    coffee_debug!("DEBUG: compile_match: nested vars: {:?}", nested_vars);
                                     
                                     // Extract nested tuple fields directly from the field value
                                     // Don't compile the pattern as an expression
@@ -1518,7 +1519,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                                                     nested_var_name
                                                 ).map_err(|e| format!("failed to extract nested tuple field: {}", e))?;
 
-                                                eprintln!("DEBUG: compile_match: extracted nested field '{}' (index {}), type: {:?}", nested_var_name, k, nested_field_val.get_type());
+                                                coffee_debug!("DEBUG: compile_match: extracted nested field '{}' (index {}), type: {:?}", nested_var_name, k, nested_field_val.get_type());
 
                                                 // Store the variable in the variables map
                                                 let var_type = nested_field_val.get_type();
@@ -1529,11 +1530,11 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
 
                                                 // Add to variables map
                                                 self.variables.insert(nested_var_name.to_string(), (var_alloca, var_type));
-                                                eprintln!("DEBUG: compile_match: inserted variable '{}' into variables map", nested_var_name);
+                                                coffee_debug!("DEBUG: compile_match: inserted variable '{}' into variables map", nested_var_name);
                                             }
                                         }
                                     } else {
-                                        eprintln!("DEBUG: compile_match: field '{}' is not a StructValue, it's {:?}", var_name, field_val);
+                                        coffee_debug!("DEBUG: compile_match: field '{}' is not a StructValue, it's {:?}", var_name, field_val);
                                     }
                                 } else {
                                     // Store the variable in the variables map
@@ -1545,7 +1546,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
 
                                     // Add to variables map
                                     self.variables.insert(var_name.to_string(), (var_alloca, var_type));
-                                    eprintln!("DEBUG: compile_match: inserted variable '{}' into variables map", var_name);
+                                    coffee_debug!("DEBUG: compile_match: inserted variable '{}' into variables map", var_name);
                                 }
                             }
                         }
@@ -1554,7 +1555,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                         self.backend.builder.build_unconditional_branch(arm_block)
                             .map_err(|e| e.to_string())?;
                     } else {
-                        eprintln!("DEBUG: compile_match: loaded value is not StructValue, it's {:?}", tuple_val);
+                        coffee_debug!("DEBUG: compile_match: loaded value is not StructValue, it's {:?}", tuple_val);
                         // Not a struct, compare as before
                         let pattern_val = self.compile_expr(&arm.pattern)?;
                         let cond = match (match_val, pattern_val) {
@@ -1574,7 +1575,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 } else {
                     // Check if pattern is a struct pattern (contains { and })
                     let is_struct_pattern = pattern.contains('{') && pattern.contains('}');
-                    eprintln!("DEBUG: compile_match: pattern='{}', is_struct_pattern={}", pattern, is_struct_pattern);
+                    coffee_debug!("DEBUG: compile_match: pattern='{}', is_struct_pattern={}", pattern, is_struct_pattern);
 
                     if is_struct_pattern {
                         // Struct pattern: extract fields and bind them
@@ -1583,7 +1584,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                         let struct_name = pattern[..struct_name_end].trim();
                         let fields_str = &pattern[struct_name_end + 1..pattern.len() - 1].trim();
 
-                        eprintln!("DEBUG: compile_match: struct_name='{}', fields_str='{}'", struct_name, fields_str);
+                        coffee_debug!("DEBUG: compile_match: struct_name='{}', fields_str='{}'", struct_name, fields_str);
 
                         // Parse fields: field1: var1, field2: var2, ...
                         let mut fields: Vec<(String, String)> = Vec::new();
@@ -1604,7 +1605,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                             fields.push(Self::parse_field_pair(&current_field));
                         }
 
-                        eprintln!("DEBUG: compile_match: parsed fields: {:?}", fields);
+                        coffee_debug!("DEBUG: compile_match: parsed fields: {:?}", fields);
 
                         // Load the struct value
                         let struct_val = if let BasicValueEnum::PointerValue(ptr_val) = match_val {
@@ -1643,7 +1644,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                                         var_name
                                     ).map_err(|e| format!("failed to extract field '{}': {}", field_name, e))?;
 
-                                    eprintln!("DEBUG: compile_match: extracted field '{}' (index {}), type: {:?}", var_name, field_index, field_val.get_type());
+                                    coffee_debug!("DEBUG: compile_match: extracted field '{}' (index {}), type: {:?}", var_name, field_index, field_val.get_type());
 
                                     // Store the variable in the variables map
                                     let var_type = field_val.get_type();
@@ -1654,7 +1655,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
 
                                     // Add to variables map
                                     self.variables.insert(var_name.to_string(), (var_alloca, var_type));
-                                    eprintln!("DEBUG: compile_match: inserted variable '{}' into variables map", var_name);
+                                    coffee_debug!("DEBUG: compile_match: inserted variable '{}' into variables map", var_name);
                                 }
                             }
                         } else {
@@ -1708,12 +1709,12 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         self.backend.builder.position_at_end(merge_block);
         
         // Print LLVM IR for debugging
-        eprintln!("DEBUG: compile_match: LLVM IR:\n{}", self.backend.module.print_to_string().to_string());
+        coffee_debug!("DEBUG: compile_match: LLVM IR:\n{}", self.backend.module.print_to_string().to_string());
         
         Ok(())
     }
     pub fn compile_function(&mut self, func: &Function) -> Result<(), String> {
-        eprintln!("DEBUG: compile_function: START compiling function '{}', parameters: {:?}", func.name, func.parameters.iter().map(|p| &p.name).collect::<Vec<_>>());
+        coffee_debug!("DEBUG: compile_function: START compiling function '{}', parameters: {:?}", func.name, func.parameters.iter().map(|p| &p.name).collect::<Vec<_>>());
         let function = *self.functions.get(&func.name)
             .ok_or_else(|| self.error("compile_function",
                 format!("function '{}' not declared - this is an internal compiler error", func.name)))?;
@@ -1771,9 +1772,9 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 .map_err(|e| self.error("compile_function",
                     format!("failed to store parameter '{}': {}", param.name, e)))?;
 
-            eprintln!("DEBUG: compile_function: inserting parameter '{}' into variables", param.name);
+            coffee_debug!("DEBUG: compile_function: inserting parameter '{}' into variables", param.name);
             self.variables.insert(param.name.clone(), (alloca, param_type));
-            eprintln!("DEBUG: compile_function: variables after inserting parameter '{}': {:?}", param.name, self.variables.keys().collect::<Vec<_>>());
+            coffee_debug!("DEBUG: compile_function: variables after inserting parameter '{}': {:?}", param.name, self.variables.keys().collect::<Vec<_>>());
         }
 
         // Create a body block where all actual code will be compiled

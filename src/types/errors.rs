@@ -1,3 +1,4 @@
+use crate::coffee_debug;
 use super::definition::{Span, SpaceKind, Type, type_from_str};
 use std::fmt;
 
@@ -145,7 +146,7 @@ impl TypeSystemError {
 
     /// 创建类型不匹配错误
     pub fn type_mismatch(expected: Type, found: Type, span: Span) -> Self {
-        eprintln!("[DEBUG] type_mismatch: creating error: expected {:?}, found {:?}", expected, found);
+        coffee_debug!("[DEBUG] type_mismatch: creating error: expected {:?}, found {:?}", expected, found);
         TypeSystemError::TypeMismatch { expected, found, span }
     }
 

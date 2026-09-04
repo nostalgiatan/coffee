@@ -1,3 +1,4 @@
+use crate::coffee_debug;
 use nom::{
     bytes::complete::tag,
     character::complete::{multispace0, space0, space1},
@@ -30,7 +31,7 @@ pub struct BreakStmt;
 pub struct ContinueStmt;
 
 pub fn parse_variable_decl(input: &str) -> IResult<&str, VariableDecl> {
-    eprintln!("DEBUG: parse_variable_decl: input='{}'", input);
+    coffee_debug!("DEBUG: parse_variable_decl: input='{}'", input);
     let (input, _) = tag("let")(input)?;
     let (input, _) = space1(input)?;
     let (input, name) = parse_identifier(input)?;
@@ -44,7 +45,7 @@ pub fn parse_variable_decl(input: &str) -> IResult<&str, VariableDecl> {
     let (input, _) = multispace0(input)?;
     let (input, value) = parse_expression(input)?;
 
-    eprintln!("DEBUG: parse_variable_decl: name='{}', var_type='{}', value='{}'", name, var_type, value);
+    coffee_debug!("DEBUG: parse_variable_decl: name='{}', var_type='{}', value='{}'", name, var_type, value);
 
     Ok((
         input,
@@ -60,7 +61,7 @@ pub fn parse_return(input: &str) -> IResult<&str, ReturnStmt> {
     let (input, _) = tag("return")(input)?;
     let (input, _) = multispace0(input)?;
     let (input, value) = opt(parse_expression).parse(input)?;
-    eprintln!("DEBUG: parse_return: value={:?}", value);
+    coffee_debug!("DEBUG: parse_return: value={:?}", value);
 
     Ok((
         input,

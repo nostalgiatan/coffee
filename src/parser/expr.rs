@@ -4,6 +4,7 @@
 // Expression types for the Coffee language
 
 /// Expression in the Coffee language
+use crate::coffee_debug;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expression {
     /// Literal value
@@ -472,11 +473,11 @@ pub fn parse_expression(input: &str) -> Result<Expression, String> {
         if input.ends_with('}') {
             let struct_name = input[..pos].trim();
             let fields_str = &input[pos + 1..input.len() - 1].trim();
-            eprintln!("DEBUG: parse_expression struct literal: struct_name='{}', fields_str='{}'", struct_name, fields_str);
+            coffee_debug!("DEBUG: parse_expression struct literal: struct_name='{}', fields_str='{}'", struct_name, fields_str);
 
             // Validate struct_name - must be a valid identifier (only alphanumeric and underscore)
             if !struct_name.chars().all(|c| c.is_alphanumeric() || c == '_') {
-                eprintln!("DEBUG: parse_expression struct literal: struct_name is not a valid identifier, skipping");
+                coffee_debug!("DEBUG: parse_expression struct literal: struct_name is not a valid identifier, skipping");
             } else {
                 // Parse fields: x: 10, y: 20
             // Use smart parsing to handle commas in expressions (like Point::new(x1, y1))
@@ -543,7 +544,7 @@ pub fn parse_expression(input: &str) -> Result<Expression, String> {
                                 if let Some(pos) = colon_pos {
                                     let field_name = field_pair[..pos].trim();
                                     let field_value = field_pair[pos + 1..].trim();
-                                    eprintln!("DEBUG: parse_expression struct field: field_pair='{}', field_name='{}', field_value='{}'", field_pair, field_name, field_value);
+                                    coffee_debug!("DEBUG: parse_expression struct field: field_pair='{}', field_name='{}', field_value='{}'", field_pair, field_name, field_value);
                                     fields.push((field_name.to_string(), parse_expression(field_value)?));
                                 }
                             }
@@ -582,7 +583,7 @@ pub fn parse_expression(input: &str) -> Result<Expression, String> {
                     if let Some(pos) = colon_pos {
                         let field_name = field_pair[..pos].trim();
                         let field_value = field_pair[pos + 1..].trim();
-                        eprintln!("DEBUG: parse_expression struct field (last): field_name='{}', field_value='{}'", field_name, field_value);
+                        coffee_debug!("DEBUG: parse_expression struct field (last): field_name='{}', field_value='{}'", field_name, field_value);
                         fields.push((field_name.to_string(), parse_expression(field_value)?));
                     }
                 }
@@ -604,18 +605,18 @@ pub fn parse_expression(input: &str) -> Result<Expression, String> {
             if matching_close_paren(input, pos) == Some(input.len() - 1) {
                 let func_name = input[..pos].trim().to_string();
                 let args_str = &input[pos + 1..input.len() - 1].trim();
-                eprintln!("DEBUG: parse_expression: input='{}', pos={}, func_name='{}', args_str='{}'", input, pos, func_name, args_str);
+                coffee_debug!("DEBUG: parse_expression: input='{}', pos={}, func_name='{}', args_str='{}'", input, pos, func_name, args_str);
     
                 // Skip if func_name contains '.' (member access like p.move(5, 5))
                 // This will be handled by member access logic below
                 // Also skip if func_name contains operators (like 'a /' in 'a / (b + c)')
                 if func_name.contains('.') || func_name.contains('+') || func_name.contains('-') || func_name.contains('*') || func_name.contains('/') || func_name.contains('%') || func_name.contains('&') || func_name.contains('|') || func_name.contains('^') || func_name.contains('<') || func_name.contains('>') || func_name.contains('=') || func_name.contains('!') {
-                    eprintln!("DEBUG: parse_expression: func_name contains operator or '.', skipping function call parsing");
+                    coffee_debug!("DEBUG: parse_expression: func_name contains operator or '.', skipping function call parsing");
                 } else {
                 // Check if this is a type conversion function: int(value), float(value), bool(value)
                 // Type conversion functions are basic type names followed by parentheses
                 if matches!(func_name.as_str(), "int" | "float" | "bool") {
-                    eprintln!("DEBUG: parse_expression: type conversion function '{}'", func_name);
+                    coffee_debug!("DEBUG: parse_expression: type conversion function '{}'", func_name);
                     // Parse the argument
                     let arg_expr = parse_expression(args_str)?;
                     return Ok(Expression::TypeCast {
@@ -625,7 +626,7 @@ pub fn parse_expression(input: &str) -> Result<Expression, String> {
                 }
                 
                 // Check if this is a constructor call: class::new(args)
-                eprintln!("DEBUG: parse_expression: func_name.contains(\"::new\")={}", func_name.contains("::new"));
+                coffee_debug!("DEBUG: parse_expression: func_name.contains(\"::new\")={}", func_name.contains("::new"));
                 if func_name.contains("::new") {
                     let parts: Vec<&str> = func_name.split("::").collect();
                     if parts.len() == 2 && parts[1] == "new" {

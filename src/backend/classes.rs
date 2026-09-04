@@ -2,13 +2,14 @@
 //!
 //! Handles class definitions, enum definitions, and their associated operations.
 
+use crate::coffee_debug;
 use super::codegen::CodeGenerator;
 use inkwell::types::BasicTypeEnum;
 
 impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
     /// Compile class definition
     pub fn compile_class(&mut self, class: &crate::parser::class::ClassDef) -> Result<(), String> {
-        eprintln!("DEBUG: compile_class: compiling class '{}', methods={:?}", class.name, class.methods.iter().map(|m| &m.name).collect::<Vec<_>>());
+        coffee_debug!("DEBUG: compile_class: compiling class '{}', methods={:?}", class.name, class.methods.iter().map(|m| &m.name).collect::<Vec<_>>());
         // Store class definition for C header generation
         self.classes.insert(class.name.clone(), class.clone());
 

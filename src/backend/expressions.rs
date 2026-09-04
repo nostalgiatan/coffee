@@ -3,6 +3,7 @@
 //! Compiles expressions including literals, variables, binary/unary operations,
 //! function calls, array indexing, and format strings.
 
+use crate::coffee_debug;
 use super::codegen::CodeGenerator;
 use inkwell::values::{BasicValueEnum, PointerValue};
 use crate::backend::type_inference::TypeInferenceContext;
@@ -642,7 +643,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
     /// Compile expression from string
     #[cfg(test)]
     pub fn compile_expression_str(&mut self, expr: &str) -> Result<BasicValueEnum<'ctx>, String> {
-        eprintln!("DEBUG: compile_expression_str: expr='{}', len={}", expr, expr.len());
+        coffee_debug!("DEBUG: compile_expression_str: expr='{}', len={}", expr, expr.len());
         self.compile_expression_str_with_inference(expr, &TypeInferenceContext::new())
     }
 
@@ -668,7 +669,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
     /// Inner expression compilation with type inference
     #[cfg(test)]
     fn compile_expression_str_inner_with_inference(&mut self, expr: &str, inference_ctx: &TypeInferenceContext<'ctx>) -> Result<BasicValueEnum<'ctx>, String> {
-        eprintln!("DEBUG: compile_expression_str_inner_with_inference: expr='{}', len={}", expr, expr.len());
+        coffee_debug!("DEBUG: compile_expression_str_inner_with_inference: expr='{}', len={}", expr, expr.len());
         
         // Check if it's a simple literal value (not containing operators or function calls)
         // But also check if it's a variable reference (alphanumeric + underscore)
@@ -681,7 +682,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         let is_variable = !expr.contains("::") && expr.chars().next().map(|c| c.is_alphabetic() || c == '_').unwrap_or(false) 
             && expr.chars().all(|c| c.is_alphanumeric() || c == '_');
         
-        eprintln!("DEBUG: compile_expression_str_inner_with_inference: is_simple_literal={}, is_variable={}", is_simple_literal, is_variable);
+        coffee_debug!("DEBUG: compile_expression_str_inner_with_inference: is_simple_literal={}, is_variable={}", is_simple_literal, is_variable);
         
         if is_simple_literal && !is_variable {
             // It's a simple literal (number, boolean, string) - use type inference
@@ -701,13 +702,13 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
     /// This doesn't manage depth tracking - that's handled by the outer function
     #[cfg(test)]
     fn compile_expression_str_inner(&mut self, expr: &str) -> Result<BasicValueEnum<'ctx>, String> {
-        eprintln!("DEBUG: compile_expression_str_inner: expr='{}', len={}", expr, expr.len());
+        coffee_debug!("DEBUG: compile_expression_str_inner: expr='{}', len={}", expr, expr.len());
         
         // IMPORTANT: Strip inline comments before processing the expression
         // This prevents comments from being parsed as part of the expression
         let expr = self.strip_inline_comments(expr);
         
-        eprintln!("DEBUG: compile_expression_str_inner: after strip_inline_comments, expr='{}', len={}", expr, expr.len());
+        coffee_debug!("DEBUG: compile_expression_str_inner: after strip_inline_comments, expr='{}', len={}", expr, expr.len());
 
         // Struct literal: Point { x: 10, y: 20 }
         // MUST come before binary operation check to avoid splitting struct literals
@@ -715,7 +716,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             if expr.ends_with('}') {
                 let struct_name = expr[..pos].trim();
                 let fields_str = &expr[pos + 1..expr.len() - 1].trim();
-                eprintln!("DEBUG: compile_expression_str_inner: struct literal, struct_name='{}', fields_str='{}'", struct_name, fields_str);
+                coffee_debug!("DEBUG: compile_expression_str_inner: struct literal, struct_name='{}', fields_str='{}'", struct_name, fields_str);
                 return self.compile_struct_literal(struct_name, fields_str);
             }
         }
@@ -1083,15 +1084,15 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         // Function call and constructor call
         // IMPORTANT: Must come before member access to avoid parsing function calls as member access
         // Example: printf("Point: %d, %d\n", p.x, p.y) should be parsed as function call, not member access
-        eprintln!("DEBUG: compile_expression_str_inner: expr='{}', expr.contains('(')={}, expr.ends_with(')')={}", expr, expr.contains('('), expr.ends_with(')'));
+        coffee_debug!("DEBUG: compile_expression_str_inner: expr='{}', expr.contains('(')={}, expr.ends_with(')')={}", expr, expr.contains('('), expr.ends_with(')'));
         if expr.contains('(') && expr.ends_with(')') {
-            eprintln!("DEBUG: compile_expression_str_inner: expr contains '(' and ends with ')', expr='{}'", expr);
+            coffee_debug!("DEBUG: compile_expression_str_inner: expr contains '(' and ends with ')', expr='{}'", expr);
 
             // Check if this is a type conversion function: int(value), float(value), bool(value)
             let paren_pos = expr.find('(').unwrap();
             let func_name = &expr[..paren_pos].trim();
             if *func_name == "int" || *func_name == "float" || *func_name == "bool" {
-                eprintln!("DEBUG: compile_expression_str_inner: type conversion function '{}'", func_name);
+                coffee_debug!("DEBUG: compile_expression_str_inner: type conversion function '{}'", func_name);
                 let args_str = &expr[paren_pos + 1..expr.len() - 1].trim();
                 let value = self.compile_expression_str(args_str)?;
                 
@@ -1194,9 +1195,9 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                     let variant_name = &func_name[scope_pos + 2..]; // Skip "::"
 
                     // Check if scope_str is an enum type
-                    eprintln!("DEBUG: compile_expression_str_inner: checking if '{}' is an enum type", scope_str);
+                    coffee_debug!("DEBUG: compile_expression_str_inner: checking if '{}' is an enum type", scope_str);
                     if self.enums.contains_key(&scope_str.to_string()) {
-                        eprintln!("DEBUG: compile_expression_str_inner: '{}' is an enum type, constructing variant '{}'", scope_str, variant_name);
+                        coffee_debug!("DEBUG: compile_expression_str_inner: '{}' is an enum type, constructing variant '{}'", scope_str, variant_name);
                         
                         // Compile arguments
                         let args_str = &expr[paren_pos + 1..expr.len() - 1].trim();
@@ -1269,24 +1270,24 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                     let object_str = &func_name[..dot_pos];
                     let method_name = &func_name[dot_pos + 1..];
                     let args_str = &expr[paren_pos + 1..expr.len() - 1].trim();
-                    eprintln!("DEBUG: compile_expression_str_inner: detected method call, object_str='{}', method_name='{}', args_str='{}'", object_str, method_name, args_str);
+                    coffee_debug!("DEBUG: compile_expression_str_inner: detected method call, object_str='{}', method_name='{}', args_str='{}'", object_str, method_name, args_str);
                     return self.compile_method_call(object_str, method_name, args_str);
                 }
             }
 
-            eprintln!("DEBUG: compile_expression_str_inner: expr.contains(\"::new\")={}", expr.contains("::new"));
+            coffee_debug!("DEBUG: compile_expression_str_inner: expr.contains(\"::new\")={}", expr.contains("::new"));
             // Check if this is a constructor call: class::new(args)
             if expr.contains("::new") {
                 let parts: Vec<&str> = expr.split("::").collect();
-                eprintln!("DEBUG: constructor call: expr='{}', expr.len()={}, parts={:?}", expr, expr.len(), parts);
+                coffee_debug!("DEBUG: constructor call: expr='{}', expr.len()={}, parts={:?}", expr, expr.len(), parts);
                 if parts.len() == 2 {
-                    eprintln!("DEBUG: constructor call: parts[0]='{}', parts[0].len()={}, parts[1]='{}', parts[1].len()={}", parts[0], parts[0].len(), parts[1], parts[1].len());
+                    coffee_debug!("DEBUG: constructor call: parts[0]='{}', parts[0].len()={}, parts[1]='{}', parts[1].len()={}", parts[0], parts[0].len(), parts[1], parts[1].len());
                     if parts[1].starts_with("new") {
                         let class_name = parts[0].trim();
                         let full_method = parts[1].trim();
-                        eprintln!("DEBUG: constructor call: class_name='{}', full_method='{}', full_method.len()={}", class_name, full_method, full_method.len());
+                        coffee_debug!("DEBUG: constructor call: class_name='{}', full_method='{}', full_method.len()={}", class_name, full_method, full_method.len());
                         let args_str = &full_method[4..full_method.len()-1].trim(); // Remove "new(" prefix and ")" suffix
-                        eprintln!("DEBUG: constructor call: args_str='{}', args_str.len()={}", args_str, args_str.len());
+                        coffee_debug!("DEBUG: constructor call: args_str='{}', args_str.len()={}", args_str, args_str.len());
 
                         return self.compile_constructor_call(class_name, args_str);
                     }
@@ -1311,9 +1312,9 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 if !is_float_literal {
                     // Check if this is an enum variant: Enum.Variant or Enum.Variant(args)
                     // Convert to Enum::Variant syntax for the backend
-                    eprintln!("DEBUG: compile_expression_str_inner: checking if '{}' is an enum type, enums.keys() = {:?}", object_str, self.enums.keys().collect::<Vec<_>>());
+                    coffee_debug!("DEBUG: compile_expression_str_inner: checking if '{}' is an enum type, enums.keys() = {:?}", object_str, self.enums.keys().collect::<Vec<_>>());
                     if self.enums.contains_key(&object_str.to_string()) {
-                        eprintln!("DEBUG: compile_expression_str_inner: '{}' is an enum type", object_str);
+                        coffee_debug!("DEBUG: compile_expression_str_inner: '{}' is an enum type", object_str);
                         // This is an enum variant: Enum.Variant or Enum.Variant(args)
                         let variant_name = if rest.contains('(') && rest.ends_with(')') {
                             // Enum.Variant(args) - extract variant name
@@ -1324,7 +1325,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                         };
 
                         let global_name = format!("{}_{}", object_str, variant_name);
-                        eprintln!("DEBUG: compile_expression_str_inner: loading enum variant '{}'", global_name);
+                        coffee_debug!("DEBUG: compile_expression_str_inner: loading enum variant '{}'", global_name);
 
                         // Try to load the global constant
                         if let Some(global) = self.backend.module.get_global(&global_name) {
@@ -1338,7 +1339,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                             return Ok(loaded);
                         }
                     } else {
-                        eprintln!("DEBUG: compile_expression_str_inner: '{}' is NOT an enum type", object_str);
+                        coffee_debug!("DEBUG: compile_expression_str_inner: '{}' is NOT an enum type", object_str);
                     }
 
                     // Check if this is a method call: object.method(args)
@@ -1459,7 +1460,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
 
         // Variable reference
         if let Some(&(ptr, var_type)) = self.variables.get(&expr) {
-            eprintln!("DEBUG: compile_expression_str_inner: found variable '{}' in variables", expr);
+            coffee_debug!("DEBUG: compile_expression_str_inner: found variable '{}' in variables", expr);
             
             // HIGH-10 FIX: Mark variable as used when referenced
             self.used_variables.insert(expr.clone());
@@ -1494,7 +1495,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             return Ok(value);
         }
 
-        eprintln!("DEBUG: compile_expression_str_inner: variable '{}' not found in variables, keys: {:?}", expr, self.variables.keys().collect::<Vec<_>>());
+        coffee_debug!("DEBUG: compile_expression_str_inner: variable '{}' not found in variables, keys: {:?}", expr, self.variables.keys().collect::<Vec<_>>());
 
         // Build helpful error message similar to rustc
         let mut help_msg = String::new();
@@ -1547,7 +1548,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
     /// Try to compile binary operation
     #[cfg(test)]
     fn try_compile_binary_op(&mut self, expr: &str) -> Result<Option<BasicValueEnum<'ctx>>, String> {
-        eprintln!("DEBUG: try_compile_binary_op: expr='{}'", expr);
+        coffee_debug!("DEBUG: try_compile_binary_op: expr='{}'", expr);
         // Check for binary operators (simple tokenization)
         // IMPORTANT: Respect operator precedence when finding operators
         // Operators are checked from LOWEST to HIGHEST precedence
@@ -1555,7 +1556,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         // Precedence (highest to lowest): !, *, /, %, +, -, <<, >>, &, |, ^, <, >, <=, >=, ==, !=, &&, ||
         for op in [" && ", " || ", " == ", " != ", " < ", " > ", " <= ", " >= ", " ^ ", " | ", " & ", " << ", " >> ", " + ", " - ", " * ", " / ", " % "] {
             if let Some(pos) = find_operator_outside_parens(expr, op) {
-                eprintln!("DEBUG: try_compile_binary_op: found op '{}' at pos={}", op, pos);
+                coffee_debug!("DEBUG: try_compile_binary_op: found op '{}' at pos={}", op, pos);
                 let left_str = &expr[..pos];
                 let right_str = &expr[pos + op.len()..];
 
@@ -1567,7 +1568,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             }
         }
 
-        eprintln!("DEBUG: try_compile_binary_op: no operator found");
+        coffee_debug!("DEBUG: try_compile_binary_op: no operator found");
         Ok(None)
     }
 
@@ -1777,7 +1778,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             self.split_function_args(args_str)?
         };
 
-        eprintln!("DEBUG: compile_function_call: func_name='{}', args_str='{}', args_list={:?}", func_name, args_str, args_list);
+        coffee_debug!("DEBUG: compile_function_call: func_name='{}', args_str='{}', args_list={:?}", func_name, args_str, args_list);
 
         // Type inference: Get parameter types first for context
         let mut param_types = Vec::new();
@@ -2565,7 +2566,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
 
         // Parse and initialize fields
         if !fields_str.trim().is_empty() {
-            eprintln!("DEBUG: compile_struct_literal: struct_name='{}', fields_str='{}'", struct_name, fields_str);
+            coffee_debug!("DEBUG: compile_struct_literal: struct_name='{}', fields_str='{}'", struct_name, fields_str);
             // Smart field parsing that handles commas in expressions
             let mut fields = Vec::new();
             let mut current_field = String::new();
@@ -2600,7 +2601,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                         current_field.push(ch);
                     },
                     ',' if !in_string && paren_depth == 0 && brace_depth == 0 => {
-                        eprintln!("DEBUG: compile_struct_literal: found comma at paren_depth={}, brace_depth={}, current_field='{}'", paren_depth, brace_depth, current_field);
+                        coffee_debug!("DEBUG: compile_struct_literal: found comma at paren_depth={}, brace_depth={}, current_field='{}'", paren_depth, brace_depth, current_field);
                         fields.push(current_field.trim().to_string());
                         current_field.clear();
                     }
@@ -2616,10 +2617,10 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             if !current_field.trim().is_empty() {
                 fields.push(current_field.trim().to_string());
             }
-            eprintln!("DEBUG: compile_struct_literal: fields={:?}", fields);
+            coffee_debug!("DEBUG: compile_struct_literal: fields={:?}", fields);
             
             for field_pair in fields {
-                eprintln!("DEBUG: compile_struct_literal: field_pair='{}'", field_pair);
+                coffee_debug!("DEBUG: compile_struct_literal: field_pair='{}'", field_pair);
                 let field_pair = field_pair.trim();
                 if field_pair.is_empty() {
                     continue;
@@ -2649,12 +2650,12 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                     }
                 }
 
-                eprintln!("DEBUG: compile_struct_literal: field_pair='{}', colon_pos={:?}", field_pair, colon_pos);
+                coffee_debug!("DEBUG: compile_struct_literal: field_pair='{}', colon_pos={:?}", field_pair, colon_pos);
 
                 if let Some(pos) = colon_pos {
                     let field_name = field_pair[..pos].trim();
                     let field_value_expr = field_pair[pos + 1..].trim();
-                    eprintln!("DEBUG: compile_struct_literal: field_name='{}', field_value_expr='{}'", field_name, field_value_expr);
+                    coffee_debug!("DEBUG: compile_struct_literal: field_name='{}', field_value_expr='{}'", field_name, field_value_expr);
 
                     // Compile field value
                     // Special handling for wildcard _ (skip compilation, will be ignored in match)
@@ -2672,7 +2673,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                             format!("field '{}' not found in struct '{}'", field_name, struct_name)))?;
 
                     // Get field type
-                    eprintln!("DEBUG: compile_struct_literal: struct_type.name={:?}, field_index={}, struct_type.count_fields()={}", 
+                    coffee_debug!("DEBUG: compile_struct_literal: struct_type.name={:?}, field_index={}, struct_type.count_fields()={}", 
                         struct_type.get_name(), field_index, struct_type.count_fields());
                     let field_type = struct_type.get_field_type_at_index(field_index as u32)
                         .ok_or_else(|| self.error("compile_struct_literal",
@@ -2816,7 +2817,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         // Get the object type
         let object_type = object_value.get_type();
         
-        eprintln!("DEBUG: compile_field_access: object_str='{}', field_name='{}', object_type={:?}",
+        coffee_debug!("DEBUG: compile_field_access: object_str='{}', field_name='{}', object_type={:?}",
             object_str, field_name, object_type);
         
         match object_type {
@@ -3003,8 +3004,8 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             object_str.to_string()
         };
         
-        eprintln!("DEBUG: compile_method_call: variable_types keys: {:?}", self.variable_types.keys().collect::<Vec<_>>());
-        eprintln!("DEBUG: compile_method_call: object_str='{}', variable_types.get(object_str)={:?}", 
+        coffee_debug!("DEBUG: compile_method_call: variable_types keys: {:?}", self.variable_types.keys().collect::<Vec<_>>());
+        coffee_debug!("DEBUG: compile_method_call: object_str='{}', variable_types.get(object_str)={:?}", 
             object_str, self.variable_types.get(object_str));
         
         // Parse arguments
@@ -3043,9 +3044,9 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         // Construct the full function name: ClassName_method
         let full_method_name = format!("{}_{}", class_name, method_name);
         
-        eprintln!("DEBUG: compile_method_call: object_str='{}', method_name='{}', class_name='{}', full_method_name='{}'", 
+        coffee_debug!("DEBUG: compile_method_call: object_str='{}', method_name='{}', class_name='{}', full_method_name='{}'", 
             object_str, method_name, class_name, full_method_name);
-        eprintln!("DEBUG: compile_method_call: functions keys: {:?}", self.functions.keys().collect::<Vec<_>>());
+        coffee_debug!("DEBUG: compile_method_call: functions keys: {:?}", self.functions.keys().collect::<Vec<_>>());
         
         // Try to get the function
         let function = self.functions.get(&full_method_name)
@@ -3055,9 +3056,9 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 format!("method '{}' not found\n  = help: ensure the method is defined in the class", method_name)))?;
         
         // Debug: print function signature
-        eprintln!("DEBUG: compile_method_call: function='{}', param_count={}", function.get_name().to_str().unwrap_or("unknown"), function.get_params().len());
+        coffee_debug!("DEBUG: compile_method_call: function='{}', param_count={}", function.get_name().to_str().unwrap_or("unknown"), function.get_params().len());
         for (i, param) in function.get_params().into_iter().enumerate() {
-            eprintln!("DEBUG: compile_method_call: param {} type={:?}", i, param.get_type());
+            coffee_debug!("DEBUG: compile_method_call: param {} type={:?}", i, param.get_type());
         }
         
         // Build the call with object as first argument (self)

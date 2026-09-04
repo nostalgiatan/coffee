@@ -2,6 +2,7 @@
 //!
 //! Handles variable declarations, assignments, and array operations.
 
+use crate::coffee_debug;
 use super::codegen::CodeGenerator;
 use super::memory_ops::VariableState;
 use inkwell::values::{BasicValueEnum, PointerValue};
@@ -131,11 +132,11 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         
         // Store the class name if this is a class type
         // This is needed for method calls to find the correct method
-        eprintln!("DEBUG: compile_let_statement: name='{}', type_str='{}'", name, type_str);
+        coffee_debug!("DEBUG: compile_let_statement: name='{}', type_str='{}'", name, type_str);
         if type_str.chars().all(|c| c.is_alphanumeric() || c == '_') {
             // Check if this is a class type (not a primitive type like int, float, bool, string)
             if !matches!(type_str, "int" | "float" | "bool" | "string" | "void" | "()") {
-                eprintln!("DEBUG: compile_let_statement: inserting class_name '{}' for variable '{}'", type_str, name);
+                coffee_debug!("DEBUG: compile_let_statement: inserting class_name '{}' for variable '{}'", type_str, name);
                 self.variable_types.insert(name.to_string(), type_str.to_string());
             }
         }
@@ -845,11 +846,11 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             
             // Store the class name if this is a class type
             // This is needed for method calls to find the correct method
-            eprintln!("DEBUG: compile_local_variable_decl: name='{}', type_str='{}'", name, type_str);
+            coffee_debug!("DEBUG: compile_local_variable_decl: name='{}', type_str='{}'", name, type_str);
             if type_str.chars().all(|c| c.is_alphanumeric() || c == '_') {
                 // Check if this is a class type (not a primitive type like int, float, bool, string)
                 if !matches!(type_str, "int" | "float" | "bool" | "string" | "void" | "()") {
-                    eprintln!("DEBUG: compile_local_variable_decl: inserting class_name '{}' for variable '{}'", type_str, name);
+                    coffee_debug!("DEBUG: compile_local_variable_decl: inserting class_name '{}' for variable '{}'", type_str, name);
                     self.variable_types.insert(name.to_string(), type_str.to_string());
                 }
             }

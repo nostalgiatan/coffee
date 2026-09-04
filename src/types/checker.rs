@@ -1,3 +1,4 @@
+use crate::coffee_debug;
 use super::definition::*;
 use super::registry::TypeRegistry;
 use super::errors::{TypeSystemError, Diagnostic};
@@ -206,7 +207,7 @@ impl TypeChecker {
 
     /// Add an error
     fn add_error(&mut self, error: TypeSystemError) {
-        eprintln!("[DEBUG] add_error: adding error: {:?}", error);
+        coffee_debug!("[DEBUG] add_error: adding error: {:?}", error);
         self.errors.push(error);
     }
 
@@ -247,18 +248,18 @@ impl TypeChecker {
 
     /// Check a return statement
     pub fn check_return_statement(&mut self, return_stmt: &parser::var::ReturnStmt) -> Result<(), TypeSystemError> {
-        eprintln!("[DEBUG] check_return_statement: checking return statement");
+        coffee_debug!("[DEBUG] check_return_statement: checking return statement");
         if let Some(ref expr) = return_stmt.value {
             // Infer expression type
-            eprintln!("[DEBUG] check_return_statement: inferring type for return value '{}'", expr);
+            coffee_debug!("[DEBUG] check_return_statement: inferring type for return value '{}'", expr);
             let expr_type = self.infer_value_type(expr)?;
-            eprintln!("[DEBUG] check_return_statement: inferred return value type as {:?}", expr_type);
+            coffee_debug!("[DEBUG] check_return_statement: inferred return value type as {:?}", expr_type);
             
             // Check against expected return type
             if let Some(ref expected_type) = self.current_return_type {
-                eprintln!("[DEBUG] check_return_statement: expected return type is {:?}", expected_type);
+                coffee_debug!("[DEBUG] check_return_statement: expected return type is {:?}", expected_type);
                 if !self.types_compatible(&expr_type, expected_type)? {
-                    eprintln!("[DEBUG] check_return_statement: return type mismatch");
+                    coffee_debug!("[DEBUG] check_return_statement: return type mismatch");
                     let error = TypeSystemError::type_mismatch(
                         expected_type.clone(),
                         expr_type,
@@ -276,7 +277,7 @@ impl TypeChecker {
     pub fn check_variable_decl(&mut self, decl: &parser::var::VariableDecl) -> Result<(), TypeSystemError> {
         let location = Span::new(0, decl.name.len());
 
-        eprintln!("[DEBUG] check_variable_decl: checking variable '{}' with type '{}', value '{}'", decl.name, decl.var_type, decl.value);
+        coffee_debug!("[DEBUG] check_variable_decl: checking variable '{}' with type '{}', value '{}'", decl.name, decl.var_type, decl.value);
 
         // Check if variable already exists (comprehensive mode only)
         if self.mode == CheckingMode::Comprehensive {
@@ -310,20 +311,20 @@ impl TypeChecker {
             }
         }?;
 
-        eprintln!("[DEBUG] check_variable_decl: resolved type to {:?}", ty);
+        coffee_debug!("[DEBUG] check_variable_decl: resolved type to {:?}", ty);
 
         // Check value type if value is provided
         if !decl.value.is_empty() {
             let value_type = self.infer_value_type(&decl.value)?;
-            eprintln!("[DEBUG] check_variable_decl: inferred value type as {:?}", value_type);
+            coffee_debug!("[DEBUG] check_variable_decl: inferred value type as {:?}", value_type);
             if !self.types_compatible(&value_type, &ty)? {
-                eprintln!("[DEBUG] check_variable_decl: types NOT compatible: {:?} vs {:?}", value_type, ty);
+                coffee_debug!("[DEBUG] check_variable_decl: types NOT compatible: {:?} vs {:?}", value_type, ty);
                 let error = TypeSystemError::TypeMismatch {
                     expected: ty.clone(),
                     found: value_type.clone(),
                     span: Span::new(0, decl.value.len()),
                 };
-                eprintln!("[DEBUG] check_variable_decl: creating TypeMismatch error: expected {:?}, found {:?}", ty, value_type);
+                coffee_debug!("[DEBUG] check_variable_decl: creating TypeMismatch error: expected {:?}, found {:?}", ty, value_type);
                 self.add_error(error.clone());
                 return Err(error);
             }
@@ -787,9 +788,9 @@ impl TypeChecker {
 
         // Check argument types
         for (i, (arg, expected_type)) in call.args.iter().zip(param_types.iter()).enumerate() {
-            eprintln!("[DEBUG] check_function_call: checking arg {} '{}' with expected type {:?}", i, arg, expected_type);
+            coffee_debug!("[DEBUG] check_function_call: checking arg {} '{}' with expected type {:?}", i, arg, expected_type);
             let arg_type = self.infer_value_type(arg)?;
-            eprintln!("[DEBUG] check_function_call: inferred arg type as {:?}", arg_type);
+            coffee_debug!("[DEBUG] check_function_call: inferred arg type as {:?}", arg_type);
             if !self.types_compatible(&arg_type, expected_type)? {
                 let arg_location = Span::new(location.start + i * 10, location.start + (i + 1) * 10);
                 let error = TypeSystemError::type_mismatch(expected_type.clone(), arg_type, arg_location);
@@ -872,17 +873,17 @@ impl TypeChecker {
                     if let Ok(analyzer) = analyzer.read() {
                         // Check C function symbols
                         if let Ok(cfc_symbols) = analyzer.get_cfc_symbols() {
-                            eprintln!("[DEBUG] infer_value_type: found {} C symbol tables", cfc_symbols.len());
+                            coffee_debug!("[DEBUG] infer_value_type: found {} C symbol tables", cfc_symbols.len());
                             for (lib_name, symbol_table) in cfc_symbols.iter() {
-                                eprintln!("[DEBUG] infer_value_type: checking library '{}', {} symbols", lib_name, symbol_table.symbols.len());
+                                coffee_debug!("[DEBUG] infer_value_type: checking library '{}', {} symbols", lib_name, symbol_table.symbols.len());
                                 if let Some(c_symbol) = symbol_table.symbols.get(*func_name) {
-                                    eprintln!("[DEBUG] infer_value_type: found C symbol '{}' with return type '{}', {} parameters", func_name, c_symbol.return_type, c_symbol.parameters.len());
+                                    coffee_debug!("[DEBUG] infer_value_type: found C symbol '{}' with return type '{}', {} parameters", func_name, c_symbol.return_type, c_symbol.parameters.len());
                                     
                                     // Check argument types
                                     if !args_str.is_empty() {
                                         let args: Vec<&str> = args_str.split(',').map(|s| s.trim()).collect();
                                         if args.len() != c_symbol.parameters.len() {
-                                            eprintln!("[DEBUG] infer_value_type: argument count mismatch: expected {}, got {}", c_symbol.parameters.len(), args.len());
+                                            coffee_debug!("[DEBUG] infer_value_type: argument count mismatch: expected {}, got {}", c_symbol.parameters.len(), args.len());
                                         }
                                         
                                         for (i, (arg, param)) in args.iter().zip(c_symbol.parameters.iter()).enumerate() {
@@ -891,10 +892,10 @@ impl TypeChecker {
                                                 Err(_) => Type::unit(),
                                             };
                                             let arg_type = self.infer_value_type(arg)?;
-                                            eprintln!("[DEBUG] infer_value_type: checking arg {} '{}' vs expected type {:?}", i, arg, expected_type);
-                                            eprintln!("[DEBUG] infer_value_type: inferred arg type as {:?}", arg_type);
+                                            coffee_debug!("[DEBUG] infer_value_type: checking arg {} '{}' vs expected type {:?}", i, arg, expected_type);
+                                            coffee_debug!("[DEBUG] infer_value_type: inferred arg type as {:?}", arg_type);
                                             if !self.types_compatible(&arg_type, &expected_type)? {
-                                                eprintln!("[DEBUG] infer_value_type: argument type mismatch at position {}", i);
+                                                coffee_debug!("[DEBUG] infer_value_type: argument type mismatch at position {}", i);
                                                 let error = TypeSystemError::TypeMismatch {
                                                     expected: expected_type,
                                                     found: arg_type,
@@ -908,11 +909,11 @@ impl TypeChecker {
                                     // Return the function's return type
                                     return match self.registry.read().unwrap().resolve_type(&c_symbol.return_type) {
                                         Ok(ty) => {
-                                            eprintln!("[DEBUG] infer_value_type: resolved return type to {:?}", ty);
+                                            coffee_debug!("[DEBUG] infer_value_type: resolved return type to {:?}", ty);
                                             Ok(ty)
                                         },
                                         Err(e) => {
-                                            eprintln!("[DEBUG] infer_value_type: failed to resolve return type: {:?}", e);
+                                            coffee_debug!("[DEBUG] infer_value_type: failed to resolve return type: {:?}", e);
                                             Ok(Type::unit())
                                         },
                                     };
@@ -943,7 +944,7 @@ impl TypeChecker {
                                         };
                                         
                                         if args.len() != variant.fields.len() {
-                                            eprintln!("[DEBUG] infer_value_type: enum variant argument count mismatch: expected {}, got {}", variant.fields.len(), args.len());
+                                            coffee_debug!("[DEBUG] infer_value_type: enum variant argument count mismatch: expected {}, got {}", variant.fields.len(), args.len());
                                             let error = TypeSystemError::arity_mismatch(variant.fields.len(), args.len(), Span::new(0, value.len()));
                                             return Err(error);
                                         }
@@ -967,7 +968,7 @@ impl TypeChecker {
                                         }
                                         
                                         // Return enum type
-                                        eprintln!("[DEBUG] infer_value_type: enum variant '{}' returns type '{}'", func_name, enum_name);
+                                        coffee_debug!("[DEBUG] infer_value_type: enum variant '{}' returns type '{}'", func_name, enum_name);
                                         return Ok(Type::NamedType { name: enum_name });
                                     }
                                 }
@@ -981,21 +982,21 @@ impl TypeChecker {
                 match self.registry.read() {
                     Ok(reg) => {
                         if let Ok(Type::Function { return_type, params }) = reg.resolve_type(*func_name) {
-                            eprintln!("[DEBUG] infer_value_type: found function in registry, return type {:?}", return_type);
+                            coffee_debug!("[DEBUG] infer_value_type: found function in registry, return type {:?}", return_type);
                             
                             // Check argument types
                             if !args_str.is_empty() {
                                 let args: Vec<&str> = args_str.split(',').map(|s| s.trim()).collect();
                                 if args.len() != params.len() {
-                                    eprintln!("[DEBUG] infer_value_type: argument count mismatch: expected {}, got {}", params.len(), args.len());
+                                    coffee_debug!("[DEBUG] infer_value_type: argument count mismatch: expected {}, got {}", params.len(), args.len());
                                 }
                                 
                                 for (i, (arg, expected_type)) in args.iter().zip(params.iter()).enumerate() {
                                     let arg_type = self.infer_value_type(arg)?;
-                                    eprintln!("[DEBUG] infer_value_type: checking arg {} '{}' vs expected type {:?}", i, arg, expected_type);
-                                    eprintln!("[DEBUG] infer_value_type: inferred arg type as {:?}", arg_type);
+                                    coffee_debug!("[DEBUG] infer_value_type: checking arg {} '{}' vs expected type {:?}", i, arg, expected_type);
+                                    coffee_debug!("[DEBUG] infer_value_type: inferred arg type as {:?}", arg_type);
                                     if !self.types_compatible(&arg_type, expected_type)? {
-                                        eprintln!("[DEBUG] infer_value_type: argument type mismatch at position {}", i);
+                                        coffee_debug!("[DEBUG] infer_value_type: argument type mismatch at position {}", i);
                                         let error = TypeSystemError::TypeMismatch {
                                             expected: expected_type.clone(),
                                             found: arg_type,
@@ -1008,7 +1009,7 @@ impl TypeChecker {
                             
                             Ok(*return_type)
                         } else {
-                            eprintln!("[DEBUG] infer_value_type: function '{}' not found in registry", func_name);
+                            coffee_debug!("[DEBUG] infer_value_type: function '{}' not found in registry", func_name);
                             Err(TypeSystemError::undefined_function(func_name.to_string(), Span::new(0, value.len())))
                         }
                     },
@@ -1027,7 +1028,7 @@ impl TypeChecker {
         // Try to parse as float literal (only if it contains a decimal point)
         else if value.contains('.') {
             if let Ok(val) = value.parse::<f64>() {
-                eprintln!("[DEBUG] infer_value_type: '{}' parsed as float {}", value, val);
+                coffee_debug!("[DEBUG] infer_value_type: '{}' parsed as float {}", value, val);
                 if self.mode == CheckingMode::Comprehensive {
                     if val < self.bounds.float_min || val > self.bounds.float_max {
                         return Err(TypeSystemError::ParseError {
@@ -1040,7 +1041,7 @@ impl TypeChecker {
             } else {
                 // Contains '.' but not a valid float, try integer
                 if let Ok(val) = value.parse::<i64>() {
-                    eprintln!("[DEBUG] infer_value_type: '{}' parsed as integer {}", value, val);
+                    coffee_debug!("[DEBUG] infer_value_type: '{}' parsed as integer {}", value, val);
                     if self.mode == CheckingMode::Comprehensive {
                         if val < self.bounds.int_min || val > self.bounds.int_max {
                             return Err(TypeSystemError::ParseError {
@@ -1060,7 +1061,7 @@ impl TypeChecker {
         }
         // Try to parse as integer literal
         else if let Ok(val) = value.parse::<i64>() {
-            eprintln!("[DEBUG] infer_value_type: '{}' parsed as integer {}", value, val);
+            coffee_debug!("[DEBUG] infer_value_type: '{}' parsed as integer {}", value, val);
             if self.mode == CheckingMode::Comprehensive {
                 if val < self.bounds.int_min || val > self.bounds.int_max {
                     return Err(TypeSystemError::ParseError {
@@ -1169,15 +1170,15 @@ impl TypeChecker {
 
     /// Check if types are compatible
     fn types_compatible(&self, ty1: &Type, ty2: &Type) -> Result<bool, TypeSystemError> {
-        eprintln!("[DEBUG] types_compatible: comparing {:?} vs {:?}", ty1, ty2);
+        coffee_debug!("[DEBUG] types_compatible: comparing {:?} vs {:?}", ty1, ty2);
         if ty1 == ty2 {
-            eprintln!("[DEBUG] types_compatible: types are equal, returning true");
+            coffee_debug!("[DEBUG] types_compatible: types are equal, returning true");
             return Ok(true);
         }
 
         // Check coercion
         if ty1.can_coerce_from(ty2) || ty2.can_coerce_from(ty1) {
-            eprintln!("[DEBUG] types_compatible: types can be coerced, returning true");
+            coffee_debug!("[DEBUG] types_compatible: types can be coerced, returning true");
             return Ok(true);
         }
 
@@ -1186,16 +1187,16 @@ impl TypeChecker {
             match self.registry.read() {
                 Ok(reg) => {
                     let is_compatible = reg.is_compatible(ty1, ty2);
-                    eprintln!("[DEBUG] types_compatible: registry says {} (comprehensive mode)", is_compatible);
+                    coffee_debug!("[DEBUG] types_compatible: registry says {} (comprehensive mode)", is_compatible);
                     Ok(is_compatible)
                 },
                 Err(_) => {
-                    eprintln!("[DEBUG] types_compatible: failed to read registry, returning false");
+                    coffee_debug!("[DEBUG] types_compatible: failed to read registry, returning false");
                     Ok(false)
                 },
             }
         } else {
-            eprintln!("[DEBUG] types_compatible: not comprehensive mode, returning false");
+            coffee_debug!("[DEBUG] types_compatible: not comprehensive mode, returning false");
             Ok(false)
         }
     }
@@ -1487,24 +1488,24 @@ impl TypeChecker {
 
     /// Check main entry point arguments
     pub fn check_main_entry(&mut self, main_entry: &parser::main::MainEntry) -> Result<(), TypeSystemError> {
-        eprintln!("[DEBUG] check_main_entry: checking main entry '{}'", main_entry.entry_function);
+        coffee_debug!("[DEBUG] check_main_entry: checking main entry '{}'", main_entry.entry_function);
         
         // Find the function type
         let function_type = {
             let registry_result = self.registry.read();
             match registry_result {
                 Ok(reg) => {
-                    eprintln!("[DEBUG] check_main_entry: accessing registry");
+                    coffee_debug!("[DEBUG] check_main_entry: accessing registry");
                     if let Ok(func_type) = reg.resolve_type(&main_entry.entry_function) {
-                        eprintln!("[DEBUG] check_main_entry: found function '{}' in registry", main_entry.entry_function);
+                        coffee_debug!("[DEBUG] check_main_entry: found function '{}' in registry", main_entry.entry_function);
                         Ok(func_type)
                     } else {
-                        eprintln!("[DEBUG] check_main_entry: function '{}' not found in registry", main_entry.entry_function);
+                        coffee_debug!("[DEBUG] check_main_entry: function '{}' not found in registry", main_entry.entry_function);
                         Err("not_found")
                     }
                 }
                 Err(_) => {
-                    eprintln!("[DEBUG] check_main_entry: failed to access registry");
+                    coffee_debug!("[DEBUG] check_main_entry: failed to access registry");
                     Err("registry_error")
                 }
             }
@@ -1512,11 +1513,11 @@ impl TypeChecker {
 
         let param_types = match function_type {
             Ok(Type::Function { params, return_type: _ }) => {
-                eprintln!("[DEBUG] check_main_entry: function has {} parameters", params.len());
+                coffee_debug!("[DEBUG] check_main_entry: function has {} parameters", params.len());
                 Ok(params)
             },
             Ok(_) => {
-                eprintln!("[DEBUG] check_main_entry: '{}' is not a function", main_entry.entry_function);
+                coffee_debug!("[DEBUG] check_main_entry: '{}' is not a function", main_entry.entry_function);
                 let error = TypeSystemError::ParseError {
                     type_str: main_entry.entry_function.clone(),
                     reason: format!("'{}' is not a function", main_entry.entry_function),
@@ -1526,14 +1527,14 @@ impl TypeChecker {
             },
             Err("not_found") => {
                 // Try to find function in semantic analyzer's C symbols
-                eprintln!("[DEBUG] check_main_entry: trying to find '{}' in C symbols", main_entry.entry_function);
+                coffee_debug!("[DEBUG] check_main_entry: trying to find '{}' in C symbols", main_entry.entry_function);
                 let mut c_param_types = None;
                 if let Some(ref analyzer) = self.analyzer {
                     if let Ok(analyzer) = analyzer.read() {
                         if let Ok(cfc_symbols) = analyzer.get_cfc_symbols() {
-                            eprintln!("[DEBUG] check_main_entry: found {} C symbol tables", cfc_symbols.len());
+                            coffee_debug!("[DEBUG] check_main_entry: found {} C symbol tables", cfc_symbols.len());
                             for (lib_name, symbol_table) in cfc_symbols.iter() {
-                                eprintln!("[DEBUG] check_main_entry: checking library '{}', {} symbols", lib_name, symbol_table.symbols.len());
+                                coffee_debug!("[DEBUG] check_main_entry: checking library '{}', {} symbols", lib_name, symbol_table.symbols.len());
                                 if let Some(c_symbol) = symbol_table.symbols.get(&main_entry.entry_function) {
                                     let mut param_types = Vec::new();
                                     for param in &c_symbol.parameters {
@@ -1545,7 +1546,7 @@ impl TypeChecker {
                                         Ok(ty) => ty,
                                         Err(_) => Type::unit(),
                                     };
-                                    eprintln!("[DEBUG] check_main_entry: found C function '{}' with {} parameters, return type {:?}", main_entry.entry_function, param_types.len(), return_type);
+                                    coffee_debug!("[DEBUG] check_main_entry: found C function '{}' with {} parameters, return type {:?}", main_entry.entry_function, param_types.len(), return_type);
                                     c_param_types = Some(param_types);
                                     break;
                                 }
@@ -1557,7 +1558,7 @@ impl TypeChecker {
                 match c_param_types {
                     Some(param_types) => Ok(param_types),
                     None => {
-                        eprintln!("[DEBUG] check_main_entry: function '{}' not found in C symbols", main_entry.entry_function);
+                        coffee_debug!("[DEBUG] check_main_entry: function '{}' not found in C symbols", main_entry.entry_function);
                         let error = TypeSystemError::undefined_function(&main_entry.entry_function, Span::new(0, main_entry.entry_function.len()));
                         self.add_error(error.clone());
                         Err(error)
@@ -1576,7 +1577,7 @@ impl TypeChecker {
 
         match param_types {
             Ok(param_types) => {
-                eprintln!("[DEBUG] check_main_entry: found function with {} parameters", param_types.len());
+                coffee_debug!("[DEBUG] check_main_entry: found function with {} parameters", param_types.len());
                 self.check_main_args(&main_entry.args, &param_types)
             },
             Err(error) => Err(error)
@@ -1585,7 +1586,7 @@ impl TypeChecker {
 
     /// Check main entry point arguments against parameter types
     fn check_main_args(&mut self, args: &[String], param_types: &[Type]) -> Result<(), TypeSystemError> {
-        eprintln!("[DEBUG] check_main_args: checking {} args against {} param_types", args.len(), param_types.len());
+        coffee_debug!("[DEBUG] check_main_args: checking {} args against {} param_types", args.len(), param_types.len());
         if args.len() != param_types.len() {
             let error = TypeSystemError::arity_mismatch(param_types.len(), args.len(), Span::new(0, 0));
             self.add_error(error.clone());
@@ -1593,11 +1594,11 @@ impl TypeChecker {
         }
 
         for (i, (arg, expected_type)) in args.iter().zip(param_types.iter()).enumerate() {
-            eprintln!("[DEBUG] check_main_args: checking arg {} '{}' vs expected type {:?}", i, arg, expected_type);
+            coffee_debug!("[DEBUG] check_main_args: checking arg {} '{}' vs expected type {:?}", i, arg, expected_type);
             let arg_type = self.infer_value_type(arg)?;
-            eprintln!("[DEBUG] check_main_args: inferred arg type as {:?}", arg_type);
+            coffee_debug!("[DEBUG] check_main_args: inferred arg type as {:?}", arg_type);
             if !self.types_compatible(&arg_type, expected_type)? {
-                eprintln!("[DEBUG] check_main_args: argument type mismatch at position {}", i);
+                coffee_debug!("[DEBUG] check_main_args: argument type mismatch at position {}", i);
                 let error = TypeSystemError::TypeMismatch {
                     expected: expected_type.clone(),
                     found: arg_type,
@@ -1608,7 +1609,7 @@ impl TypeChecker {
             }
         }
 
-        eprintln!("[DEBUG] check_main_args: all arguments checked successfully");
+        coffee_debug!("[DEBUG] check_main_args: all arguments checked successfully");
         Ok(())
     }
 

@@ -20,6 +20,8 @@ use nom::{
     IResult, Parser,
 };
 
+use crate::coffee_debug;
+
 /// Main entry point statement
 /// 
 /// This structure represents the main entry point of a Coffee program, which specifies
@@ -78,7 +80,7 @@ impl MainEntry {
 /// * `Ok((remaining, MainEntry))` - Successfully parsed main entry and remaining input
 /// * `Err(nom::Err)` - If the input does not match the main entry point pattern
 pub fn parse_main_entry(input: &str) -> IResult<&str, MainEntry> {
-    eprintln!("DEBUG: parse_main_entry: input='{}'", input);
+    coffee_debug!("DEBUG: parse_main_entry: input='{}'", input);
 
     // Check if input is "main(" or just "main"
     if input.starts_with("main(") {
@@ -86,7 +88,7 @@ pub fn parse_main_entry(input: &str) -> IResult<&str, MainEntry> {
         let (input, _) = preceded(space0, tag("main(")).parse(input)?;
         let (input, _) = space0.parse(input)?;
 
-        eprintln!("DEBUG: parse_main_entry: after parsing 'main(', input='{}'", input);
+        coffee_debug!("DEBUG: parse_main_entry: after parsing 'main(', input='{}'", input);
 
         // Now we need to parse: function_name(arg1, arg2, ...))
         // Find the closing parenthesis for main( that matches the opening
@@ -114,7 +116,7 @@ pub fn parse_main_entry(input: &str) -> IResult<&str, MainEntry> {
             }
         }
 
-        eprintln!("DEBUG: parse_main_entry: end_pos={}, depth={}", end_pos, depth);
+        coffee_debug!("DEBUG: parse_main_entry: end_pos={}, depth={}", end_pos, depth);
 
         if depth != 0 {
             return Err(nom::Err::Error(nom::error::Error::new(
@@ -128,7 +130,7 @@ pub fn parse_main_entry(input: &str) -> IResult<&str, MainEntry> {
         let content = &input[..end_pos];
         let remaining = &input[end_pos + 1..];
 
-        eprintln!("DEBUG: parse_main_entry: content='{}', remaining='{}'", content, remaining);
+        coffee_debug!("DEBUG: parse_main_entry: content='{}', remaining='{}'", content, remaining);
 
         // Parse content as function_name(args) or just function_name
         if let Some(paren_pos) = content.find('(') {
@@ -145,7 +147,7 @@ pub fn parse_main_entry(input: &str) -> IResult<&str, MainEntry> {
             // Get everything between the ( and its matching )
             let args_str = &content[paren_pos + 1..];
 
-            eprintln!("DEBUG: parse_main_entry: func_name='{}', args_str='{}'", func_name, args_str);
+            coffee_debug!("DEBUG: parse_main_entry: func_name='{}', args_str='{}'", func_name, args_str);
 
             // Find matching closing paren for the function call
             let mut arg_depth = 1;
@@ -167,7 +169,7 @@ pub fn parse_main_entry(input: &str) -> IResult<&str, MainEntry> {
             }
 
             let actual_args = &args_str[..arg_end];
-            eprintln!("DEBUG: parse_main_entry: actual_args='{}'", actual_args);
+            coffee_debug!("DEBUG: parse_main_entry: actual_args='{}'", actual_args);
 
             // Parse arguments (if any)
             let args = if actual_args.trim().is_empty() {
@@ -179,7 +181,7 @@ pub fn parse_main_entry(input: &str) -> IResult<&str, MainEntry> {
                     .collect()
             };
 
-            eprintln!("DEBUG: parse_main_entry: args={:?}", args);
+            coffee_debug!("DEBUG: parse_main_entry: args={:?}", args);
 
             Ok((remaining, MainEntry::new(func_name.to_string(), args)))
         } else {

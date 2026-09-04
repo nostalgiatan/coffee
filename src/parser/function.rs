@@ -11,6 +11,7 @@
 //! - External function declarations (no body)
 //! - Various type annotations including parametric types (int(4)+, float(8), etc.)
 
+use crate::coffee_debug;
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_till, take_while1},
@@ -455,15 +456,15 @@ fn parse_function_body(input: &str) -> IResult<&str, FunctionBody> {
     // Original block/expression parsing
     if input.starts_with('\n') {
         let after_newline = &input[1..];
-        eprintln!("DEBUG: parse_function_body: after newline='{}'", after_newline);
+        coffee_debug!("DEBUG: parse_function_body: after newline='{}'", after_newline);
         if let Ok((_, indent)) = parse_indent(after_newline) {
-            eprintln!("DEBUG: parse_function_body: indent='{}'", indent);
+            coffee_debug!("DEBUG: parse_function_body: indent='{}'", indent);
             // Collect all body lines WITH indentation removed
             let mut body_lines_vec = Vec::new();
             let mut consumed = 0;
 
             for line in after_newline.lines() {
-                eprintln!("DEBUG: parse_function_body: line='{}', starts_with_indent={}", line, line.starts_with(indent));
+                coffee_debug!("DEBUG: parse_function_body: line='{}', starts_with_indent={}", line, line.starts_with(indent));
                 if line.is_empty() || line.starts_with(indent) {
                     // Remove the indentation prefix
                     let content = if line.starts_with(indent) {
@@ -504,13 +505,13 @@ fn parse_function_body(input: &str) -> IResult<&str, FunctionBody> {
                 }
 
                 // Try multiline statement first
-                eprintln!("DEBUG: parse_function_body: trying parse_multiline_statement for line='{}'", line);
+                coffee_debug!("DEBUG: parse_function_body: trying parse_multiline_statement for line='{}'", line);
                 if let Some((stmt, lines_consumed)) = super::parse_multiline_statement(&body_lines_vec[i..]) {
-                    eprintln!("DEBUG: parse_function_body: parse_multiline_statement succeeded, lines_consumed={}", lines_consumed);
+                    coffee_debug!("DEBUG: parse_function_body: parse_multiline_statement succeeded, lines_consumed={}", lines_consumed);
                     statements.push(stmt);
                     i += lines_consumed;
                 } else if line.starts_with("let ") {
-                    eprintln!("DEBUG: parse_function_body: line='{}', starts with let", line);
+                    coffee_debug!("DEBUG: parse_function_body: line='{}', starts with let", line);
                     // Check for multiline variable declarations (struct literals, etc.)
                     if let Some((multiline_content, lines_consumed)) = super::collect_multiline_variable_decl(&body_lines_vec[i..]) {
                         if let Ok((remaining, var_decl)) = super::var::parse_variable_decl(&multiline_content) {
@@ -529,7 +530,7 @@ fn parse_function_body(input: &str) -> IResult<&str, FunctionBody> {
                         i += 1;
                     }
                 } else {
-                    eprintln!("DEBUG: parse_function_body: line='{}', calling parse_single_line_statement", line);
+                    coffee_debug!("DEBUG: parse_function_body: line='{}', calling parse_single_line_statement", line);
                     if let Some(stmt) = super::parse_single_line_statement(line) {
                         statements.push(stmt);
                         i += 1;

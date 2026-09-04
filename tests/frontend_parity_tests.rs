@@ -71,3 +71,14 @@ fn test_single_and_project_emit_llvm_both_succeed() {
         project.stderr
     );
 }
+
+#[test]
+fn test_default_compile_stderr_has_no_debug_prefix() {
+    let r = compile_coffee(tiny_program(), &["--emit-llvm"]).unwrap();
+    assert_eq!(r.exit_code, 0, "{}", r.stderr);
+    assert!(
+        !r.stderr.lines().any(|l| l.starts_with("DEBUG:")),
+        "stderr still has DEBUG lines:\n{}",
+        r.stderr
+    );
+}

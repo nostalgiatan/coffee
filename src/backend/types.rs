@@ -8,6 +8,7 @@
 //! 
 //! Uses unified Type from crate::types
 
+use crate::coffee_debug;
 use inkwell::context::Context;
 use inkwell::types::{BasicTypeEnum, StructType};
 use inkwell::AddressSpace;
@@ -343,15 +344,15 @@ impl<'ctx> TypeMapper<'ctx> {
     /// * `Some(usize)` - The index of the field
     /// * `None` - If the field is not found
     pub fn get_field_index(&self, struct_name: &str, field_name: &str) -> Option<usize> {
-        eprintln!("DEBUG: get_field_index: struct_name='{}', field_name='{}'", struct_name, field_name);
-        eprintln!("DEBUG: get_field_index: struct_fields.keys()={:?}", self.struct_fields.keys().collect::<Vec<_>>());
+        coffee_debug!("DEBUG: get_field_index: struct_name='{}', field_name='{}'", struct_name, field_name);
+        coffee_debug!("DEBUG: get_field_index: struct_fields.keys()={:?}", self.struct_fields.keys().collect::<Vec<_>>());
         if let Some(fields) = self.struct_fields.get(struct_name) {
-            eprintln!("DEBUG: get_field_index: struct '{}' has fields: {:?}", struct_name, fields);
+            coffee_debug!("DEBUG: get_field_index: struct '{}' has fields: {:?}", struct_name, fields);
             let result = fields.iter().position(|name| name == field_name);
-            eprintln!("DEBUG: get_field_index: position result={:?}", result);
+            coffee_debug!("DEBUG: get_field_index: position result={:?}", result);
             result
         } else {
-            eprintln!("DEBUG: get_field_index: struct '{}' not found in struct_fields", struct_name);
+            coffee_debug!("DEBUG: get_field_index: struct '{}' not found in struct_fields", struct_name);
             None
         }
     }
