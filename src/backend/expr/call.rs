@@ -34,27 +34,65 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
 
     pub(crate) fn compile_enum_variant_call(&mut self, scope_str: &str, variant_name: &str, args: &[Expression]) -> Result<BasicValueEnum<'ctx>, String> {
         if self.enums.contains_key(scope_str) {
+            let tag_index = self.enums.get(scope_str)
+                .and_then(|enum_def| enum_def.variants.iter().position(|v| v.name == variant_name))
+                .unwrap_or(0) as u64;
             let compiled_args: Vec<BasicValueEnum<'ctx>> = args.iter()
-                .map(|arg| self.compile_expr(arg))
+                .map(|arg| self.compile_enum_payload_arg(arg))
                 .collect::<Result<Vec<_>, _>>()?;
-            let tag_value = self.backend.context.i64_type().const_int(1, false);
-            let mut field_values = vec![BasicValueEnum::IntValue(tag_value)];
+            let tag_value = self.backend.context.i64_type().const_int(tag_index, false);
+            let mut field_values: Vec<BasicValueEnum<'ctx>> = vec![BasicValueEnum::IntValue(tag_value)];
             field_values.extend(compiled_args);
             let field_types: Vec<BasicTypeEnum<'ctx>> = field_values.iter().map(|v| v.get_type()).collect();
             let variant_type = self.backend.context.struct_type(&field_types, false);
-            let variant_value = variant_type.const_named_struct(&field_values);
+            // Runtime payloads (literals, nested variants) are not LLVM constants, so
+            // build via alloca + insertvalue rather than const_named_struct.
             let variant_ptr = self.backend.builder.build_alloca(variant_type, &format!("{}_{}", scope_str, variant_name))
                 .map_err(|e| self.error("compile_expression",
                     format!("failed to allocate space for enum variant: {}", e)))?;
-            self.backend.builder.build_store(variant_ptr, variant_value)
+            let mut current_value = variant_type.const_zero();
+            for (i, field) in field_values.iter().enumerate() {
+                let inserted = self.backend.builder.build_insert_value(
+                    current_value,
+                    *field,
+                    i as u32,
+                    &format!("{}_{}_insert_{}", scope_str, variant_name, i)
+                ).map_err(|e| self.error("compile_expression",
+                    format!("failed to insert enum variant field {}: {}", i, e)))?;
+                current_value = match inserted {
+                    inkwell::values::AggregateValueEnum::StructValue(v) => v,
+                    _ => return Err(self.error("compile_expression",
+                        "insert_value did not return a StructValue".to_string())),
+                };
+            }
+            self.backend.builder.build_store(variant_ptr, current_value)
                 .map_err(|e| self.error("compile_expression",
                     format!("failed to store enum variant value: {}", e)))?;
-            let loaded = self.backend.builder.build_load(variant_type, variant_ptr, &format!("{}_{}_loaded", scope_str, variant_name))
-                .map_err(|e| self.error("compile_expression",
-                    format!("failed to load enum variant: {}", e)))?;
-            return Ok(loaded);
+            // Named enum types map to ptr; return the alloca rather than a loaded struct.
+            return Ok(variant_ptr.into());
         }
         self.compile_named_call(&format!("{}::{}", scope_str, variant_name), args)
+    }
+
+    /// Compile a payload field of `Enum.Variant(...)`.
+    /// Unbound identifiers (match bindings such as `Option.Some(x)`) become
+    /// i64 zeros and are registered so arm bodies can mention the name.
+    fn compile_enum_payload_arg(&mut self, arg: &Expression) -> Result<BasicValueEnum<'ctx>, String> {
+        if let Expression::Variable(name) = arg {
+            if name != "_" && !self.variables.contains_key(name) && !name.contains('.') {
+                let ty = self.backend.context.i64_type();
+                let alloca = self.backend.builder.build_alloca(ty, name)
+                    .map_err(|e| self.error("compile_expression",
+                        format!("failed to allocate enum pattern binding '{}': {}", name, e)))?;
+                let zero = ty.const_zero();
+                self.backend.builder.build_store(alloca, zero)
+                    .map_err(|e| self.error("compile_expression",
+                        format!("failed to store enum pattern binding '{}': {}", name, e)))?;
+                self.variables.insert(name.clone(), (alloca, ty.into()));
+                return Ok(zero.into());
+            }
+        }
+        self.compile_expr(arg)
     }
 
     pub(crate) fn compile_constructor_from_ast(&mut self, class_name: &str, args: &[Expression]) -> Result<BasicValueEnum<'ctx>, String> {

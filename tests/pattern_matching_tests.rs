@@ -178,7 +178,6 @@ fn main() => int:
 }
 
 #[test]
-#[ignore = "E700: enum variant construction (Option.Some) not codegen; not a match terminator bug"]
 fn test_match_enum_with_value() {
     let source = r#"
 enum Option:
@@ -198,7 +197,6 @@ fn main() => int:
 }
 
 #[test]
-#[ignore = "E700: enum variant construction (Result.Ok) not codegen; not a match terminator bug"]
 fn test_match_enum_with_named_fields() {
     let source = r#"
 enum Result:
@@ -245,7 +243,6 @@ fn main() => int:
 }
 
 #[test]
-#[ignore = "E700: enum variant construction (Point.Coord) not codegen; not a match terminator bug"]
 fn test_match_enum_with_multiple_fields() {
     let source = r#"
 enum Point:
@@ -347,7 +344,7 @@ fn main() => int:
 //=============================================================================
 
 #[test]
-#[ignore = "E700: nested enum construction not codegen; not a match terminator bug"]
+#[ignore = "nested Enum.Variant(Enum.Variant) misparsed (inner dot); not E700 construction"]
 fn test_match_nested_enum() {
     let source = r#"
 enum Option:
@@ -372,7 +369,7 @@ fn main() => int:
 }
 
 #[test]
-#[ignore = "E700: nested enum construction not codegen; not a match terminator bug"]
+#[ignore = "nested Enum.Variant(Enum.Variant) misparsed (inner dot); not E700 construction"]
 fn test_match_complex_nested() {
     let source = r#"
 enum Option:
