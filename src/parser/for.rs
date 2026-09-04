@@ -311,7 +311,7 @@ fn parse_indented_block(input: &str) -> IResult<&str, String> {
     for line in lines {
         if line.starts_with(indent) || line.trim().is_empty() {
             let content = if line.starts_with(indent) {
-                line[indent.len()..].trim()
+                line[indent.len()..].trim_end()
             } else {
                 ""
             };

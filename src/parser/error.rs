@@ -132,6 +132,59 @@ impl ParseError {
             return Self::analyze_function_error(line_num, trimmed);
         }
 
+        // Incomplete / invalid block starters — prefer MissingBlockBody over a generic hint
+        if trimmed.starts_with("if ")
+            || trimmed == "if"
+            || trimmed.starts_with("while ")
+            || trimmed == "while"
+            || trimmed.starts_with("for ")
+            || trimmed == "for"
+            || trimmed.starts_with("match ")
+            || trimmed == "match"
+            || trimmed.starts_with("enum ")
+            || trimmed == "enum"
+            || trimmed.starts_with("class ")
+            || trimmed == "class"
+            || trimmed.starts_with("packed class ")
+        {
+            let statement_type = if trimmed.starts_with("packed class ") || trimmed.starts_with("class ") || trimmed == "class" {
+                "class"
+            } else if trimmed.starts_with("while ") || trimmed == "while" {
+                "while"
+            } else if trimmed.starts_with("for ") || trimmed == "for" {
+                "for"
+            } else if trimmed.starts_with("match ") || trimmed == "match" {
+                "match"
+            } else if trimmed.starts_with("enum ") || trimmed == "enum" {
+                "enum"
+            } else {
+                "if"
+            };
+            return ParseError::MissingBlockBody {
+                line: line_num,
+                statement_type: statement_type.to_string(),
+            };
+        }
+
+        // Unknown keyword at the start of a failed statement
+        if let Some(word) = trimmed.split(|c: char| c.is_whitespace() || c == '(').next() {
+            const KNOWN: &[&str] = &[
+                "fn", "c", "if", "elif", "else", "while", "for", "match", "enum", "class",
+                "packed", "let", "return", "raise", "break", "continue", "use", "main",
+                "mv", "copy", "clone", "rm", "clean", "true", "false",
+            ];
+            if !word.is_empty()
+                && word.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+                && !KNOWN.contains(&word)
+            {
+                return ParseError::UnexpectedKeyword {
+                    line: line_num,
+                    keyword: word.to_string(),
+                    expected: KNOWN.iter().map(|s| (*s).to_string()).collect(),
+                };
+            }
+        }
+
         // Check for missing colon patterns
         if trimmed.contains("=>") && !trimmed.contains(':') {
             // Found arrow but no colon
@@ -192,11 +245,11 @@ impl ParseError {
                 };
             }
 
-            // Check for parameter without type: "fn test1(x int)"
+            // Check for parameter without type: "fn test1(x int)" — only look inside ( )
             if let Some(param_part) = line.split('(').nth(1) {
-                if param_part.contains(' ') && !param_part.contains(':') {
-                    // Has space but no colon - likely missing type annotation
-                    if let Some(param_name) = param_part.split_whitespace().next() {
+                let inside = param_part.split(')').next().unwrap_or(param_part);
+                if !inside.trim().is_empty() && inside.contains(' ') && !inside.contains(':') {
+                    if let Some(param_name) = inside.split_whitespace().next() {
                         return ParseError::MissingTypeAnnotation {
                             line: line_num,
                             parameter_name: param_name.trim_end_matches(',').to_string(),
@@ -495,5 +548,23 @@ mod tests {
     fn test_extract_function_name() {
         assert_eq!(ParseError::extract_function_name("fn test1("), Some("test1".to_string()));
         assert_eq!(ParseError::extract_function_name("fn my_function(x:"), Some("my_function".to_string()));
+    }
+
+    #[test]
+    fn test_missing_block_body_for_if() {
+        let error = ParseError::detect_error(1, "if");
+        assert!(matches!(error, ParseError::MissingBlockBody { statement_type, .. } if statement_type == "if"));
+    }
+
+    #[test]
+    fn test_unexpected_keyword() {
+        let error = ParseError::detect_error(1, "def foo():");
+        assert!(matches!(error, ParseError::UnexpectedKeyword { keyword, .. } if keyword == "def"));
+    }
+
+    #[test]
+    fn test_wrong_comment_syntax() {
+        let error = ParseError::detect_error(1, "// not coffee");
+        assert!(matches!(error, ParseError::WrongCommentSyntax { .. }));
     }
 }

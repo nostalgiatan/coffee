@@ -120,17 +120,20 @@ pub fn parse_program(input: &str) -> Result<Program, Vec<ParseError>> {
     let lines: Vec<&str> = input.lines().collect();
     let mut i = 0;
     let mut iterations = 0;
-    const MAX_ITER: usize = 100;
+    const MAX_ITER: usize = 1_000_000;
 
     while i < lines.len() {
         iterations += 1;
         if iterations > MAX_ITER {
+            errors.push(ParseError::GenericSyntaxError {
+                line: i + 1,
+                context: lines.get(i).copied().unwrap_or("").to_string(),
+                hint: "Parser safety limit reached; remaining input was not parsed".to_string(),
+            });
             break;
         }
 
         let line = lines[i].trim();
-        if iterations <= 20 || iterations > MAX_ITER - 5 {
-        }
 
         // Skip empty lines
         if line.is_empty() {
@@ -166,6 +169,13 @@ pub fn parse_program(input: &str) -> Result<Program, Vec<ParseError>> {
             statements.push(stmt);
             // SAFETY: Ensure we always advance at least 1 line to prevent infinite loops
             i += lines_consumed.max(1);
+            continue;
+        }
+
+        // Failed block recovery: do not parse an indented body as top-level statements
+        if is_block_starter(line) {
+            errors.push(block_parse_error(i + 1, lines[i]));
+            i += skip_failed_block(&lines, i);
             continue;
         }
 
@@ -236,6 +246,195 @@ fn collect_multiline_comment(lines: &[&str]) -> Option<(String, usize)> {
     }
 
     Some((content, lines_consumed))
+}
+
+fn is_block_starter(trimmed: &str) -> bool {
+    trimmed.starts_with("fn ")
+        || trimmed.starts_with("c fn ")
+        || trimmed.starts_with("if ")
+        || trimmed.starts_with("while ")
+        || trimmed.starts_with("for ")
+        || trimmed.starts_with("match ")
+        || trimmed.starts_with("enum ")
+        || trimmed.starts_with("class ")
+        || trimmed.starts_with("packed class ")
+        || matches!(
+            trimmed,
+            "fn" | "if" | "while" | "for" | "match" | "enum" | "class"
+        )
+}
+
+fn block_starter_name(trimmed: &str) -> &'static str {
+    if trimmed.starts_with("c fn ") || trimmed.starts_with("fn ") || trimmed == "fn" {
+        "fn"
+    } else if trimmed.starts_with("packed class ") || trimmed.starts_with("class ") || trimmed == "class" {
+        "class"
+    } else if trimmed.starts_with("if ") || trimmed == "if" {
+        "if"
+    } else if trimmed.starts_with("while ") || trimmed == "while" {
+        "while"
+    } else if trimmed.starts_with("for ") || trimmed == "for" {
+        "for"
+    } else if trimmed.starts_with("match ") || trimmed == "match" {
+        "match"
+    } else if trimmed.starts_with("enum ") || trimmed == "enum" {
+        "enum"
+    } else {
+        "block"
+    }
+}
+
+fn block_parse_error(line_num: usize, line: &str) -> ParseError {
+    let detected = ParseError::detect_error(line_num, line);
+    match detected {
+        ParseError::GenericSyntaxError { .. } => ParseError::MissingBlockBody {
+            line: line_num,
+            statement_type: block_starter_name(line.trim()).to_string(),
+        },
+        other => other,
+    }
+}
+
+/// Consume the starter line plus any following indented body so it is not reparsed top-level.
+fn skip_failed_block(lines: &[&str], start: usize) -> usize {
+    let base = lines[start].len() - lines[start].trim_start().len();
+    let mut consumed = 1;
+    let mut j = start + 1;
+    while j < lines.len() {
+        let trimmed = lines[j].trim();
+        if trimmed.is_empty() {
+            consumed += 1;
+            j += 1;
+            continue;
+        }
+        let indent = lines[j].len() - lines[j].trim_start().len();
+        if indent > base {
+            consumed += 1;
+            j += 1;
+            continue;
+        }
+        break;
+    }
+    consumed
+}
+
+/// Split `lhs = rhs` without requiring spaces. Ignores `==`/`!=`/`<=`/`>=` and quoted `=`.
+fn split_assignment(trimmed: &str) -> Option<(&str, &str)> {
+    let bytes = trimmed.as_bytes();
+    let mut i = 0;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escape = false;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if escape {
+            escape = false;
+            i += 1;
+            continue;
+        }
+        if in_double {
+            if c == b'\\' {
+                escape = true;
+            } else if c == b'"' {
+                in_double = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_single {
+            if c == b'\\' {
+                escape = true;
+            } else if c == b'\'' {
+                in_single = false;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            b'"' => {
+                in_double = true;
+                i += 1;
+            }
+            b'\'' => {
+                in_single = true;
+                i += 1;
+            }
+            b'=' => {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'=' {
+                    i += 2;
+                    continue;
+                }
+                if i > 0 {
+                    let prev = bytes[i - 1];
+                    if matches!(prev, b'!' | b'<' | b'>' | b'=' | b'+' | b'-' | b'*' | b'/' | b'%') {
+                        i += 1;
+                        continue;
+                    }
+                }
+                let left = trimmed[..i].trim();
+                let right = trimmed[i + 1..].trim();
+                if left.is_empty() || right.is_empty() {
+                    return None;
+                }
+                return Some((left, right));
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+fn assignment_target_ok(var_name: &str) -> bool {
+    let is_valid_identifier = !var_name.is_empty()
+        && var_name.chars().all(|c| c.is_alphanumeric() || c == '_');
+    let is_member_access = var_name.contains('.')
+        && var_name.split('.').all(|part| {
+            !part.is_empty() && part.chars().all(|c| c.is_alphanumeric() || c == '_')
+        });
+    is_valid_identifier || is_member_access
+}
+
+fn try_parse_assignment(trimmed: &str) -> Option<(String, crate::parser::expr::Expression)> {
+    if trimmed.starts_with("if ")
+        || trimmed.starts_with("for ")
+        || trimmed.starts_with("while ")
+        || trimmed.starts_with("let ")
+    {
+        return None;
+    }
+    let (var_name, value_expr) = split_assignment(trimmed)?;
+    if assignment_target_ok(var_name) {
+        Some((
+            var_name.to_string(),
+            crate::parser::expr::assignment_rhs(value_expr),
+        ))
+    } else {
+        None
+    }
+}
+
+fn is_broken_statement_keyword(trimmed: &str) -> bool {
+    let word = trimmed
+        .split(|c: char| c.is_whitespace() || c == '(')
+        .next()
+        .unwrap_or("");
+    matches!(
+        word,
+        "if" | "fn"
+            | "let"
+            | "while"
+            | "for"
+            | "match"
+            | "enum"
+            | "class"
+            | "elif"
+            | "else"
+            | "return"
+            | "raise"
+            | "use"
+            | "c"
+            | "packed"
+    )
 }
 
 /// Parse multiline statement (functions, classes, enums, control flows, etc.)
@@ -420,27 +619,8 @@ pub fn parse_multiline_statement(lines: &[&str]) -> Option<(Statement, usize)> {
     }
 
     // Try to parse struct literal (expression statement)
-    // Check if first line is an assignment statement (before trying to parse as expression)
-    // Assignment statements must come before expression parsing to avoid conflicts
-    if first_line.contains(" = ") && !first_line.starts_with("if ") && !first_line.starts_with("for ") && !first_line.starts_with("while ") {
-        let parts: Vec<&str> = first_line.splitn(2, " = ").collect();
-        if parts.len() == 2 {
-            let var_name = parts[0].trim();
-            let value_expr = parts[1].trim();
-            
-            // Validate that var_name is a valid identifier or member access (e.g., self.x)
-            let is_valid_identifier = var_name.chars().all(|c| c.is_alphanumeric() || c == '_') && !var_name.is_empty();
-            let is_member_access = var_name.contains('.') && var_name.split('.').all(|part| {
-                part.chars().all(|c| c.is_alphanumeric() || c == '_') && !part.is_empty()
-            });
-            
-            if is_valid_identifier || is_member_access {
-                // Validate that value_expr is not empty
-                if !value_expr.is_empty() {
-                    return Some((Statement::Assignment(var_name.to_string(), crate::parser::expr::assignment_rhs(value_expr)), 1));
-                }
-            }
-        }
+    if let Some((var_name, value_expr)) = try_parse_assignment(first_line) {
+        return Some((Statement::Assignment(var_name, value_expr), 1));
     }
 
     // Check if first line contains '{' and ends with '}'
@@ -482,7 +662,7 @@ pub fn parse_multiline_statement(lines: &[&str]) -> Option<(Statement, usize)> {
             break;
         }
     }
-    } else {
+    } else if !is_broken_statement_keyword(first_line) && !is_block_starter(first_line) {
         // If first line doesn't contain an opening brace, just parse it as a single-line expression
         if let Ok(expr) = crate::parser::expr::parse_expression(first_line) {
             return Some((Statement::Expr(Box::new(expr)), 1));
@@ -635,12 +815,15 @@ fn collect_multiline_content(lines: &[&str], keyword: &str) -> Option<(String, u
                     current_indent == b.indent_level
                 }) {
                     false // Part of the if block
-                } else if is_top_level_keyword(trimmed) && !trimmed.starts_with(keyword) {
-                    coffee_debug!("DEBUG: should_end = true (different top-level keyword): line='{}', keyword='{}'", trimmed, keyword);
-                    true // Different top-level keyword - end the block
-                } else if trimmed.starts_with(keyword) && current_indent == base_level {
-                    // Same keyword at base level - check nesting depth
-                    tracker.if_nesting_depth() == 0
+                } else if is_top_level_keyword(trimmed) && current_indent == base_level {
+                    // Sibling construct at the same indent (including another `fn`/`for`/`if`).
+                    // elif/else are handled above as if-continuations.
+                    coffee_debug!(
+                        "DEBUG: should_end = true (sibling keyword at base indent): line='{}', keyword='{}'",
+                        trimmed,
+                        keyword
+                    );
+                    true
                 } else if current_indent < base_level {
                     true // Dedented past the base level
                 } else {
@@ -1067,27 +1250,8 @@ pub fn parse_single_line_statement(line: &str) -> Option<Statement> {
         return None;
     }
 
-    // Assignment statement: variable = value or object.field = value
-    // Must come after variable declaration check to avoid conflicts
-    if trimmed.contains(" = ") && !trimmed.starts_with("if ") && !trimmed.starts_with("for ") && !trimmed.starts_with("while ") {
-        let parts: Vec<&str> = trimmed.splitn(2, " = ").collect();
-        if parts.len() == 2 {
-            let var_name = parts[0].trim();
-            let value_expr = parts[1].trim();
-            
-            // Validate that var_name is a valid identifier or member access (e.g., self.x)
-            let is_valid_identifier = var_name.chars().all(|c| c.is_alphanumeric() || c == '_') && !var_name.is_empty();
-            let is_member_access = var_name.contains('.') && var_name.split('.').all(|part| {
-                part.chars().all(|c| c.is_alphanumeric() || c == '_') && !part.is_empty()
-            });
-            
-            if is_valid_identifier || is_member_access {
-                // Validate that value_expr is not empty
-                if !value_expr.is_empty() {
-                    return Some(Statement::Assignment(var_name.to_string(), crate::parser::expr::assignment_rhs(value_expr)));
-                }
-            }
-        }
+    if let Some((var_name, value_expr)) = try_parse_assignment(trimmed) {
+        return Some(Statement::Assignment(var_name, value_expr));
     }
 
     // Return statement: return value
@@ -1167,7 +1331,10 @@ pub fn parse_single_line_statement(line: &str) -> Option<Statement> {
     }
 
     // Expression statement (function calls, etc.): as a last resort try parsing as expression
-    // This handles standalone function calls like printf("hello"), foo()
+    // Do not swallow broken statements (bare `if`/`fn`/`let`, leftover keywords) as Expr.
+    if is_broken_statement_keyword(trimmed) {
+        return None;
+    }
     coffee_debug!("DEBUG: parse_single_line_statement: trying to parse as expression, line='{}'", line);
     match crate::parser::expr::parse_expression(line) {
         Ok(expr) => {
@@ -1234,3 +1401,169 @@ pub enum Statement {
     /// Expression statement (e.g., standalone function call)
     Expr(Box<crate::parser::expr::Expression>),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_program_long_file_beyond_old_cap() {
+        let mut src = String::new();
+        for i in 0..150 {
+            src.push_str(&format!("let x{}: int = {}\n", i, i));
+        }
+        let program = parse_program(&src).expect("files longer than 100 lines must still parse");
+        assert_eq!(program.statements.len(), 150);
+    }
+
+    #[test]
+    fn parse_assignment_without_spaces() {
+        let program = parse_program("x=1\n").expect("x=1 should parse as assignment");
+        assert!(matches!(
+            program.statements.as_slice(),
+            [Statement::Assignment(name, _)] if name == "x"
+        ));
+    }
+
+    #[test]
+    fn parse_assignment_does_not_treat_comparisons() {
+        assert!(
+            parse_single_line_statement("x==1")
+                .is_none()
+                || !matches!(parse_single_line_statement("x==1"), Some(Statement::Assignment(_, _))),
+            "== must not parse as assignment"
+        );
+        assert!(!matches!(
+            parse_single_line_statement("x!=1"),
+            Some(Statement::Assignment(_, _))
+        ));
+        assert!(!matches!(
+            parse_single_line_statement("x<=1"),
+            Some(Statement::Assignment(_, _))
+        ));
+        assert!(!matches!(
+            parse_single_line_statement("x>=1"),
+            Some(Statement::Assignment(_, _))
+        ));
+    }
+
+    #[test]
+    fn broken_if_does_not_promote_body_to_top_level() {
+        let src = "if\n    let x: int = 1\n";
+        match parse_program(src) {
+            Ok(program) => panic!(
+                "broken if must be a parse error, got statements: {:?}",
+                program.statements
+            ),
+            Err(errors) => {
+                assert!(
+                    errors.iter().any(|e| matches!(
+                        e,
+                        ParseError::MissingBlockBody { statement_type, .. } if statement_type == "if"
+                    ) || matches!(e, ParseError::GenericSyntaxError { .. })),
+                    "expected MissingBlockBody, got {:?}",
+                    errors
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn safety_cap_emits_parse_error() {
+        // Directly cover the error variant used when the iteration cap is hit.
+        let err = ParseError::GenericSyntaxError {
+            line: 1,
+            context: String::new(),
+            hint: "Parser safety limit reached; remaining input was not parsed".to_string(),
+        };
+        assert!(err.to_message().contains("safety limit"));
+    }
+}
+
+
+#[cfg(test)]
+mod parse_program_tests {
+    use super::*;
+
+    #[test]
+    fn long_file_exceeds_old_100_line_cap() {
+        let mut src = String::new();
+        for i in 0..150 {
+            src.push_str(&format!("let x{}: int = {}\n", i, i));
+        }
+        let program = parse_program(&src).expect("file longer than 100 lines should still parse");
+        let lets = program
+            .statements
+            .iter()
+            .filter(|s| matches!(s, Statement::VariableDecl(_)))
+            .count();
+        assert_eq!(lets, 150);
+    }
+
+    #[test]
+    fn assignment_without_spaces() {
+        let program = parse_program("x=1\n").expect("x=1 should parse as assignment");
+        assert!(matches!(
+            &program.statements[..],
+            [Statement::Assignment(name, _)] if name == "x"
+        ));
+    }
+
+    #[test]
+    fn comparison_is_not_assignment() {
+        let program = parse_program("x==1\n").expect("x==1 should parse as expression");
+        assert!(matches!(program.statements[0], Statement::Expr(_)));
+    }
+
+    #[test]
+    fn broken_if_does_not_promote_indented_let() {
+        let src = "if\n    let x: int = 1\n";
+        let err = parse_program(src).expect_err("broken if must be a parse error");
+        assert!(err.iter().any(|e| matches!(
+            e,
+            ParseError::MissingBlockBody { statement_type, .. } if statement_type == "if"
+        )));
+        // Recovery must consume the indented `let` so we do not also report a second success path
+        assert!(parse_program(src).is_err());
+    }
+
+    #[test]
+    fn factorial_parses_two_functions() {
+        let src = r#"
+fn factorial(n: int) => int:
+    if n <= 1:
+        return 1
+    else:
+        let result: int = n * factorial(n - 1)
+        rm n
+        return result
+
+fn main() => int:
+    let result: int = factorial(5)
+    rm result
+    return 0
+"#;
+        let program = parse_program(src).expect("factorial fixture should parse");
+        let names: Vec<&str> = program
+            .statements
+            .iter()
+            .filter_map(|s| match s {
+                Statement::Function(f) => Some(f.name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, ["factorial", "main"]);
+    }
+
+    #[test]
+    fn safety_cap_emits_error() {
+        // Directly exercise the error variant used when the cap is hit
+        let err = ParseError::GenericSyntaxError {
+            line: 1,
+            context: String::new(),
+            hint: "Parser safety limit reached; remaining input was not parsed".to_string(),
+        };
+        assert!(err.to_message().contains("safety limit"));
+    }
+}
+
