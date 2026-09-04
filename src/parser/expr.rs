@@ -317,7 +317,7 @@ pub fn parse_expression(input: &str) -> Result<Expression, String> {
     }
 
     // Handle parentheses - could be tuple or just grouping
-    if input.starts_with('(') && input.ends_with(')') {
+    if input.starts_with('(') && matching_close_paren(input, 0) == Some(input.len() - 1) {
         let inner = &input[1..input.len()-1].trim();
 
         // Check if it's a tuple (contains comma)
@@ -601,7 +601,7 @@ pub fn parse_expression(input: &str) -> Result<Expression, String> {
         // But must skip if func_name contains '.' (member access like p.move(5, 5))
         // Or if func_name contains operators (like 'a /' in 'a / (b + c)')
         if let Some(pos) = input.find('(') {
-            if input.ends_with(')') {
+            if matching_close_paren(input, pos) == Some(input.len() - 1) {
                 let func_name = input[..pos].trim().to_string();
                 let args_str = &input[pos + 1..input.len() - 1].trim();
                 eprintln!("DEBUG: parse_expression: input='{}', pos={}, func_name='{}', args_str='{}'", input, pos, func_name, args_str);
@@ -778,44 +778,34 @@ pub fn parse_expression(input: &str) -> Result<Expression, String> {
     // Handle member access: object.method(args) or object.field
     // Must come after function calls to avoid treating printf("...", p.x) as member access
     if !input.starts_with('"') && !input.ends_with('"') && input.contains('.') {
-        if let Some(pos) = input.find('.') {
+        if let Some(pos) = input.rfind('.') {
             let object_str = &input[..pos].trim();
             let rest = &input[pos + 1..].trim();
-            
-            // Validate object_str - must be a valid identifier (only alphanumeric and underscore)
-            if !object_str.chars().all(|c| c.is_alphanumeric() || c == '_') {
-                eprintln!("DEBUG: parse_expression member access: object_str is not a valid identifier, skipping");
-            } else {
-                // Check if this is actually a float literal
-                // A float literal should have the format: <number>.<number>
-                // where both parts are valid numbers (possibly with scientific notation)
+            let object_ok = !object_str.is_empty()
+                && object_str.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.');
+            if object_ok && !object_str.chars().all(|c| c.is_ascii_digit() || c == '.') {
                 let is_float_literal = object_str.parse::<f64>().is_ok() && rest.parse::<u64>().is_ok();
-                
-                // If it's not a float literal, treat as member access
                 if !is_float_literal {
-                    // Check if this is a method call: object.method(args)
                     if rest.contains('(') && rest.ends_with(')') {
                         let method_name = &rest[..rest.find('(').unwrap()];
-                        let args_str = &rest[method_name.len() + 1..rest.len() - 1].trim();
-                        
-                        // Parse arguments
-                        let args = parse_arg_list(args_str)?;
-                    
-                    return Ok(Expression::Member {
-                        object: Box::new(parse_expression(object_str)?),
-                        field: method_name.to_string(),
-                        args,
-                    });
-                } else {
-                    // Field access: object.field
-                    return Ok(Expression::Member {
-                        object: Box::new(parse_expression(object_str)?),
-                        field: rest.to_string(),
-                        args: Vec::new(),
-                    });
+                        if is_valid_identifier(method_name) {
+                            let args_str = &rest[method_name.len() + 1..rest.len() - 1].trim();
+                            let args = parse_arg_list(args_str)?;
+                            return Ok(Expression::Member {
+                                object: Box::new(parse_expression(object_str)?),
+                                field: method_name.to_string(),
+                                args,
+                            });
+                        }
+                    } else if is_valid_identifier(rest) {
+                        return Ok(Expression::Member {
+                            object: Box::new(parse_expression(object_str)?),
+                            field: rest.to_string(),
+                            args: Vec::new(),
+                        });
+                    }
                 }
             }
-        }
         }
     }
 
@@ -832,15 +822,12 @@ pub fn parse_expression(input: &str) -> Result<Expression, String> {
         }
     }
     if !in_string {
-        for op in ["&&", "||", "==", "!=", "<=", ">=", "<", ">", "+", "-", "*", "/", "%"] {
-            if let Some(pos) = input.find(op) {
+        for op in ["&&", "||", "==", "!=", "<=", ">=", "<<", ">>", "<", ">", "^", "|", "&", "+", "-", "*", "/", "%"] {
+            if let Some(pos) = find_bin_op_outside_parens(input, op) {
                 if pos > 0 {
-                    // Check if operator is inside a string literal
-                    let before_op = &input[..pos];
-                    let in_string = before_op.matches('"').count() % 2 == 1;
-                    if !in_string {
-                        let left_str = &input[..pos].trim();
-                        let right_str = &input[pos + op.len()..].trim();
+                    let left_str = &input[..pos].trim();
+                    let right_str = &input[pos + op.len()..].trim();
+                    if !left_str.is_empty() && !right_str.is_empty() {
                         let left = parse_expression(left_str)?;
                         let right = parse_expression(right_str)?;
                         return Ok(Expression::Binary {
@@ -895,6 +882,93 @@ pub fn is_valid_identifier(s: &str) -> bool {
 
     // Remaining characters must be alphanumeric or underscore
     chars.all(|c| c.is_alphanumeric() || c == '_')
+}
+
+fn matching_close_paren(input: &str, open_pos: usize) -> Option<usize> {
+    let bytes = input.as_bytes();
+    if open_pos >= bytes.len() || bytes[open_pos] != b'(' {
+        return None;
+    }
+    let mut depth = 0;
+    let mut in_string = false;
+    let mut escape = false;
+    for i in open_pos..bytes.len() {
+        let ch = bytes[i] as char;
+        if escape {
+            escape = false;
+            continue;
+        }
+        if ch == '\\' {
+            escape = true;
+            continue;
+        }
+        if ch == '"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        if ch == '(' {
+            depth += 1;
+        } else if ch == ')' {
+            depth -= 1;
+            if depth == 0 {
+                return Some(i);
+            }
+        }
+    }
+    None
+}
+
+fn find_bin_op_outside_parens(expr: &str, op: &str) -> Option<usize> {
+    let mut depth = 0;
+    let mut in_string = false;
+    let mut escape_next = false;
+    let expr_bytes = expr.as_bytes();
+    let op_bytes = op.as_bytes();
+    let mut i = 0;
+    while i < expr_bytes.len() {
+        let ch = expr_bytes[i] as char;
+        if escape_next {
+            escape_next = false;
+            i += 1;
+        } else if ch == '\\' {
+            escape_next = true;
+            i += 1;
+        } else if ch == '"' && !in_string {
+            in_string = true;
+            i += 1;
+        } else if ch == '"' && in_string {
+            in_string = false;
+            i += 1;
+        } else if !in_string && ch == '(' {
+            depth += 1;
+            i += 1;
+        } else if !in_string && ch == ')' {
+            depth -= 1;
+            i += 1;
+        } else if !in_string && depth == 0 && i + op_bytes.len() <= expr_bytes.len()
+            && &expr_bytes[i..i + op_bytes.len()] == op_bytes
+        {
+            // Do not match a short operator that is a prefix of a longer one.
+            let after = i + op_bytes.len();
+            let next = expr_bytes.get(after).copied().map(|b| b as char);
+            let skip = match op {
+                "<" | ">" => next == Some(op.chars().next().unwrap()) || next == Some('='),
+                "&" | "|" => next == Some(op.chars().next().unwrap()),
+                "=" => next == Some('='),
+                _ => false,
+            };
+            if !skip {
+                return Some(i);
+            }
+            i += 1;
+        } else {
+            i += 1;
+        }
+    }
+    None
 }
 
 #[cfg(test)]

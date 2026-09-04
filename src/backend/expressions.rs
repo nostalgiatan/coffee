@@ -7,16 +7,647 @@ use super::codegen::CodeGenerator;
 use inkwell::values::{BasicValueEnum, PointerValue};
 use crate::backend::type_inference::TypeInferenceContext;
 use crate::backend::type_inference;
+use crate::parser::expr::Expression;
 use inkwell::types::BasicTypeEnum;
 
 impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
+    /// Compile an expression from leftover source text (e.g. `VariableDecl.value`).
+    pub fn compile_source_as_expr(&mut self, src: &str) -> Result<BasicValueEnum<'ctx>, String> {
+        let expr = self.strip_inline_comments(src);
+        let expr = expr.trim();
+        if expr.is_empty() {
+            return Err(self.error("compile_expr", "empty expression"));
+        }
+        match Expression::parse(expr) {
+            Ok(tree) => self.compile_expr(&tree),
+            Err(_) => self.compile_expr(&Expression::Literal(expr.to_string())),
+        }
+    }
+
+    /// Compile LLVM IR from an `Expression` tree (production path).
+    pub fn compile_expr(&mut self, expr: &Expression) -> Result<BasicValueEnum<'ctx>, String> {
+        self.expression_depth += 1;
+        if self.expression_depth > self.max_expression_depth {
+            self.expression_depth -= 1;
+            return Err(self.error("compile_expression",
+                format!("expression nesting depth {} exceeds maximum {}",
+                    self.expression_depth, self.max_expression_depth)));
+        }
+        let result = self.compile_expr_inner(expr);
+        self.expression_depth -= 1;
+        result
+    }
+
+    fn compile_expr_inner(&mut self, expr: &Expression) -> Result<BasicValueEnum<'ctx>, String> {
+        match expr {
+            Expression::Literal(s) => self.compile_literal_atom(s),
+            Expression::Variable(name) => self.compile_variable_ref(name),
+            Expression::FString { template, placeholders } => {
+                self.compile_fstring_from_ast(template, placeholders)
+            }
+            Expression::Binary { left, op, right } => {
+                let l = self.compile_expr(left)?;
+                let r = self.compile_expr(right)?;
+                self.build_binary_op(op, l, r)
+            }
+            Expression::Unary { op, operand } => {
+                let operand_val = self.compile_expr(operand)?;
+                self.compile_unary_op(op, operand_val)
+            }
+            Expression::Call { function, args } => self.compile_call_expr(function, args),
+            Expression::ConstructorCall { class_name, args } => {
+                self.compile_constructor_from_ast(class_name, args)
+            }
+            Expression::Member { object, field, args } => {
+                self.compile_member_expr(object, field, args)
+            }
+            Expression::Index { array, index } => self.compile_index_expr(array, index),
+            Expression::ArrayLiteral { elements } => self.compile_array_literal_expr(elements),
+            Expression::TupleLiteral { elements } => self.compile_tuple_literal_expr(elements),
+            Expression::StructLiteral { struct_name, fields } => {
+                self.compile_struct_literal_from_ast(struct_name, fields)
+            }
+            Expression::Assign { object, field_name, value } => {
+                self.compile_assign_expr(object, field_name, value)
+            }
+            Expression::TypeCast { target_type, value } => {
+                self.compile_type_cast_expr(target_type, value)
+            }
+        }
+    }
+
+    fn compile_unary_op(&mut self, op: &str, operand: BasicValueEnum<'ctx>) -> Result<BasicValueEnum<'ctx>, String> {
+        match op {
+            "-" => match operand {
+                BasicValueEnum::IntValue(i) => {
+                    Ok(self.arithmetic_ctx.build_int_neg(
+                        self.backend.context,
+                        &self.backend.builder,
+                        i
+                    )?.into())
+                }
+                BasicValueEnum::FloatValue(f) => {
+                    let negated = self.backend.builder.build_float_neg(f, "fneg")
+                        .map_err(|e| self.error("compile_expression",
+                            format!("failed to build float negation: {}", e)))?;
+                    Ok(negated.into())
+                }
+                _ => Err(self.error("compile_expression", "negation not supported for this type")),
+            },
+            "!" => match operand {
+                BasicValueEnum::IntValue(i) => {
+                    let one = i.get_type().const_int(1, false);
+                    Ok(self.backend.builder.build_xor(i, one, "not")
+                        .map_err(|e| self.error("compile_expression",
+                            format!("failed to build logical NOT: {}", e)))?
+                        .into())
+                }
+                _ => Err(self.error("compile_expression", "logical NOT not supported for this type")),
+            },
+            _ => Err(self.error("compile_expression", format!("unknown unary operator: {}", op))),
+        }
+    }
+
+    fn compile_literal_atom(&mut self, expr: &str) -> Result<BasicValueEnum<'ctx>, String> {
+        let expr = expr.trim();
+        if let Ok(v) = type_inference::compile_literal_with_inference(
+            self.backend.context,
+            &self.backend.builder,
+            expr,
+            &TypeInferenceContext::new(),
+        ) {
+            return Ok(v);
+        }
+        if expr.contains("**") {
+            return Err(self.error("compile_expression",
+                "syntax error: '**' is not a valid operator in Coffee\n  = note: Coffee does not have a power operator".to_string()));
+        }
+        self.compile_variable_ref(expr)
+    }
+
+    fn compile_variable_ref(&mut self, expr: &str) -> Result<BasicValueEnum<'ctx>, String> {
+        if let Some(arg_num) = Self::parse_arg_number(expr) {
+            if let (Some(argv), Some(argc)) = (self.main_argv, self.main_argc) {
+                return self.get_command_line_arg(argv, argc, arg_num);
+            }
+            return Err(self.error("compile_expression",
+                format!("command-line argument '{}' can only be used in the main() statement", expr)));
+        }
+
+        if let Some(&(ptr, var_type)) = self.variables.get(expr) {
+            self.used_variables.insert(expr.to_string());
+            self.memory_ctx.record_use(expr);
+            if self.memory_ctx.is_moved(expr) {
+                return Err(self.error("compile_expression",
+                    format!("use of moved variable: '{}'", expr)));
+            }
+            if self.memory_ctx.is_dropped(expr) {
+                return Err(self.error("compile_expression",
+                    format!("use of dropped variable: '{}'", expr)));
+            }
+            if let BasicTypeEnum::StructType(_) = var_type {
+                return Ok(ptr.into());
+            }
+            let value = self.backend.builder.build_load(var_type, ptr, expr)
+                .map_err(|e| self.error("compile_expression",
+                    format!("failed to load variable '{}': {}", expr, e)))?;
+            return Ok(value);
+        }
+
+        if expr.contains("::") {
+            let parts: Vec<&str> = expr.split("::").collect();
+            if parts.len() == 2 {
+                return self.compile_enum_simple_variant(parts[0].trim(), parts[1].trim());
+            }
+        }
+
+        let mut help_msg = String::new();
+        if !self.variables.is_empty() {
+            help_msg.push_str(&format!("\n  = note: available variables in current scope: {}",
+                self.variables.keys().map(|k| format!("'{}'", k)).collect::<Vec<_>>().join(", ")));
+        }
+        Err(self.error("compile_expression",
+            format!("cannot find value '{}' in this scope{}", expr, help_msg)))
+    }
+
+    fn compile_enum_simple_variant(&mut self, enum_name: &str, variant_name: &str) -> Result<BasicValueEnum<'ctx>, String> {
+        let global_name = format!("{}_{}", enum_name, variant_name);
+        if let Some(global) = self.backend.module.get_global(&global_name) {
+            let value = global.as_pointer_value();
+            let loaded = self.backend.builder.build_load(
+                self.backend.context.i64_type(),
+                value,
+                &global_name
+            ).map_err(|e| self.error("compile_expression",
+                format!("failed to load enum variant '{}': {}", global_name, e)))?;
+            return Ok(loaded);
+        }
+        Err(self.error("compile_expression",
+            format!("cannot find enum variant '{}::{}'", enum_name, variant_name)))
+    }
+
+    fn compile_call_expr(&mut self, function: &Expression, args: &[Expression]) -> Result<BasicValueEnum<'ctx>, String> {
+        match function {
+            Expression::Variable(name) if name.contains("::") => {
+                let parts: Vec<&str> = name.split("::").collect();
+                if parts.len() == 2 {
+                    return self.compile_enum_variant_call(parts[0], parts[1], args);
+                }
+                self.compile_named_call(name, args)
+            }
+            Expression::Variable(name) => self.compile_named_call(name, args),
+            Expression::Member { object, field, args: member_args } if member_args.is_empty() => {
+                let mut all_args = Vec::new();
+                all_args.extend_from_slice(args);
+                self.compile_member_expr(object, field, &all_args)
+            }
+            other => {
+                let name = other.to_string();
+                self.compile_named_call(&name, args)
+            }
+        }
+    }
+
+    fn compile_enum_variant_call(&mut self, scope_str: &str, variant_name: &str, args: &[Expression]) -> Result<BasicValueEnum<'ctx>, String> {
+        if self.enums.contains_key(scope_str) {
+            let compiled_args: Vec<BasicValueEnum<'ctx>> = args.iter()
+                .map(|arg| self.compile_expr(arg))
+                .collect::<Result<Vec<_>, _>>()?;
+            let tag_value = self.backend.context.i64_type().const_int(1, false);
+            let mut field_values = vec![BasicValueEnum::IntValue(tag_value)];
+            field_values.extend(compiled_args);
+            let field_types: Vec<BasicTypeEnum<'ctx>> = field_values.iter().map(|v| v.get_type()).collect();
+            let variant_type = self.backend.context.struct_type(&field_types, false);
+            let variant_value = variant_type.const_named_struct(&field_values);
+            let variant_ptr = self.backend.builder.build_alloca(variant_type, &format!("{}_{}", scope_str, variant_name))
+                .map_err(|e| self.error("compile_expression",
+                    format!("failed to allocate space for enum variant: {}", e)))?;
+            self.backend.builder.build_store(variant_ptr, variant_value)
+                .map_err(|e| self.error("compile_expression",
+                    format!("failed to store enum variant value: {}", e)))?;
+            let loaded = self.backend.builder.build_load(variant_type, variant_ptr, &format!("{}_{}_loaded", scope_str, variant_name))
+                .map_err(|e| self.error("compile_expression",
+                    format!("failed to load enum variant: {}", e)))?;
+            return Ok(loaded);
+        }
+        self.compile_named_call(&format!("{}::{}", scope_str, variant_name), args)
+    }
+
+    fn compile_member_expr(&mut self, object: &Expression, field: &str, args: &[Expression]) -> Result<BasicValueEnum<'ctx>, String> {
+        if let Expression::Variable(obj_name) = object {
+            if self.enums.contains_key(obj_name) {
+                if args.is_empty() {
+                    return self.compile_enum_simple_variant(obj_name, field);
+                }
+                return self.compile_enum_variant_call(obj_name, field, args);
+            }
+            if args.is_empty() {
+                return self.compile_field_access(obj_name, field);
+            }
+            return self.compile_method_call_from_ast(obj_name, field, args);
+        }
+        if args.is_empty() {
+            let object_str = object.to_string();
+            return self.compile_field_access(&object_str, field);
+        }
+        let object_str = object.to_string();
+        self.compile_method_call_from_ast(&object_str, field, args)
+    }
+
+    fn compile_index_expr(&mut self, array: &Expression, index: &Expression) -> Result<BasicValueEnum<'ctx>, String> {
+        let array_name = match array {
+            Expression::Variable(n) => n.clone(),
+            other => other.to_string(),
+        };
+        let index_src = match index {
+            Expression::Literal(s) | Expression::Variable(s) => s.clone(),
+            other => other.to_string(),
+        };
+        self.compile_array_index(&array_name, &index_src)
+    }
+
+    fn compile_array_literal_expr(&mut self, elements: &[Expression]) -> Result<BasicValueEnum<'ctx>, String> {
+        let mut compiled = Vec::new();
+        for elem in elements {
+            compiled.push(self.compile_expr(elem)?);
+        }
+        if compiled.is_empty() {
+            return Err(self.error("compile_expression", "empty array literal"));
+        }
+        let elem_type = compiled[0].get_type();
+        let array_type = match elem_type {
+            BasicTypeEnum::IntType(t) => t.array_type(compiled.len() as u32),
+            _ => return Err(self.error("compile_expression", "unsupported array element type")),
+        };
+        let alloca = self.backend.builder.build_alloca(array_type, "array_lit")
+            .map_err(|e| self.error("compile_expression", format!("failed to allocate array literal: {}", e)))?;
+        for (i, val) in compiled.iter().enumerate() {
+            let idx = self.backend.context.i32_type().const_int(i as u64, false);
+            let zero = self.backend.context.i32_type().const_int(0, false);
+            let ptr = unsafe {
+                self.backend.builder.build_in_bounds_gep(
+                    array_type,
+                    alloca,
+                    &[zero, idx],
+                    "elem_ptr",
+                )
+            }.map_err(|e| self.error("compile_expression", format!("GEP failed: {}", e)))?;
+            self.backend.builder.build_store(ptr, *val)
+                .map_err(|e| self.error("compile_expression", format!("store failed: {}", e)))?;
+        }
+        Ok(alloca.into())
+    }
+
+    fn compile_tuple_literal_expr(&mut self, elements: &[Expression]) -> Result<BasicValueEnum<'ctx>, String> {
+        let mut compiled_elements = Vec::new();
+        for elem in elements {
+            compiled_elements.push(self.compile_expr(elem)?);
+        }
+        let element_types: Vec<BasicTypeEnum> = compiled_elements.iter().map(|v| v.get_type()).collect();
+        let tuple_type = self.backend.context.struct_type(&element_types, false);
+        let tuple_ptr = self.backend.builder.build_alloca(tuple_type, "tuple")
+            .map_err(|e| self.error("compile_expression", format!("failed to allocate space for tuple: {}", e)))?;
+        let mut current_value = tuple_type.const_zero();
+        for (i, elem) in compiled_elements.iter().enumerate() {
+            let inserted = self.backend.builder.build_insert_value(
+                current_value,
+                *elem,
+                i as u32,
+                &format!("tuple_insert_{}", i)
+            ).map_err(|e| self.error("compile_expression",
+                format!("failed to insert tuple element {}: {}", i, e)))?;
+            current_value = match inserted {
+                inkwell::values::AggregateValueEnum::StructValue(v) => v,
+                _ => return Err(self.error("compile_expression",
+                    "insert_value did not return a StructValue".to_string())),
+            };
+        }
+        self.backend.builder.build_store(tuple_ptr, current_value)
+            .map_err(|e| self.error("compile_expression", format!("failed to store tuple value: {}", e)))?;
+        self.backend.builder.build_load(tuple_type, tuple_ptr, "tuple_loaded")
+            .map_err(|e| self.error("compile_expression", format!("failed to load tuple: {}", e)))
+    }
+
+    fn compile_struct_literal_from_ast(
+        &mut self,
+        struct_name: &str,
+        fields: &[(String, Expression)],
+    ) -> Result<BasicValueEnum<'ctx>, String> {
+        let class_def = self.classes.get(struct_name)
+            .ok_or_else(|| self.error("compile_struct_literal",
+                format!("unknown class '{}'", struct_name)))?
+            .clone();
+        let struct_type = self.type_mapper.get_or_create_struct_type_from_class(struct_name, &class_def, &self.classes)
+            .ok_or_else(|| self.error("compile_struct_literal",
+                format!("failed to create struct type for '{}'", struct_name)))?;
+        let alloca = self.backend.builder.build_alloca(struct_type, &format!("{}_literal", struct_name))
+            .map_err(|e| self.error("compile_struct_literal",
+                format!("failed to allocate struct '{}': {}", struct_name, e)))?;
+        for (field_name, field_value_expr) in fields {
+            let field_value = if field_name == "_" || matches!(field_value_expr, Expression::Variable(v) if v == "_") {
+                self.backend.context.i64_type().const_int(0, false).into()
+            } else {
+                self.compile_expr(field_value_expr)?
+            };
+            let field_index = self.type_mapper.get_field_index(struct_name, field_name)
+                .ok_or_else(|| self.error("compile_struct_literal",
+                    format!("field '{}' not found in struct '{}'", field_name, struct_name)))?;
+            let field_type = struct_type.get_field_type_at_index(field_index as u32)
+                .ok_or_else(|| self.error("compile_struct_literal",
+                    format!("field '{}' not found in struct '{}'", field_name, struct_name)))?;
+            let field_ptr = unsafe {
+                self.backend.builder.build_in_bounds_gep(
+                    struct_type,
+                    alloca,
+                    &[
+                        self.backend.context.i32_type().const_int(0, false),
+                        self.backend.context.i32_type().const_int(field_index as u64, false),
+                    ],
+                    &format!("{}_{}_ptr", struct_name, field_name)
+                ).map_err(|e| self.error("compile_struct_literal",
+                    format!("failed to get field pointer: {}", e)))?
+            };
+            let converted_value = self.convert_value_to_type(field_value, field_type, field_name)?;
+            self.backend.builder.build_store(field_ptr, converted_value)
+                .map_err(|e| self.error("compile_struct_literal",
+                    format!("failed to store field '{}': {}", field_name, e)))?;
+        }
+        Ok(alloca.into())
+    }
+
+    fn compile_constructor_from_ast(&mut self, class_name: &str, args: &[Expression]) -> Result<BasicValueEnum<'ctx>, String> {
+        let ctor_name = format!("{}_new", class_name);
+        let ctor_fn = *self.functions.get(&ctor_name)
+            .ok_or_else(|| self.error("compile_constructor_call",
+                format!("constructor not found: '{}'", ctor_name)))?;
+        let mut compiled = Vec::new();
+        for arg in args {
+            compiled.push(self.compile_expr(arg)?);
+        }
+        let call_result = self.backend.builder.build_call(
+            ctor_fn,
+            &compiled.iter().map(|a| (*a).into()).collect::<Vec<_>>(),
+            &format!("{}_call", ctor_name)
+        ).map_err(|e| self.error("compile_constructor_call",
+            format!("failed to call constructor '{}': {}", ctor_name, e)))?;
+        let return_value = match call_result.try_as_basic_value() {
+            inkwell::values::ValueKind::Basic(val) => val,
+            inkwell::values::ValueKind::Instruction(_) => {
+                return Err(self.error("compile_constructor_call",
+                    "constructor returned void (should return object)"));
+            }
+        };
+        match return_value {
+            BasicValueEnum::PointerValue(ptr) => Ok(ptr.into()),
+            BasicValueEnum::IntValue(int_val) => {
+                let ptr_type = self.backend.context.ptr_type(inkwell::AddressSpace::default());
+                let ptr = self.backend.builder.build_int_to_ptr(int_val, ptr_type, &format!("{}_ptr", ctor_name))
+                    .map_err(|e| self.error("compile_constructor_call",
+                        format!("failed to convert int to ptr: {}", e)))?;
+                Ok(ptr.into())
+            }
+            BasicValueEnum::StructValue(struct_val) => {
+                let malloc_fn = self.functions.get("malloc")
+                    .copied()
+                    .ok_or_else(|| self.error("compile_constructor_call",
+                        "malloc function not found for heap allocation"))?;
+                let size = 64u64;
+                let size_value = self.backend.context.i64_type().const_int(size, false);
+                let heap_ptr = self.backend.builder.build_call(
+                    malloc_fn,
+                    &[size_value.into()],
+                    &format!("{}_malloc", ctor_name)
+                ).map_err(|e| self.error("compile_constructor_call",
+                    format!("failed to call malloc: {}", e)))?;
+                let heap_ptr_value = match heap_ptr.try_as_basic_value() {
+                    inkwell::values::ValueKind::Basic(val) => val,
+                    _ => return Err(self.error("compile_constructor_call",
+                        "malloc returned unexpected value")),
+                };
+                let heap_ptr = match heap_ptr_value {
+                    BasicValueEnum::PointerValue(ptr) => ptr,
+                    _ => return Err(self.error("compile_constructor_call",
+                        "malloc did not return a pointer")),
+                };
+                self.backend.builder.build_store(heap_ptr, struct_val)
+                    .map_err(|e| self.error("compile_constructor_call",
+                        format!("failed to store struct to heap: {}", e)))?;
+                Ok(heap_ptr.into())
+            }
+            _ => Err(self.error("compile_constructor_call",
+                "constructor did not return an object (should return struct or pointer)")),
+        }
+    }
+
+    fn compile_assign_expr(
+        &mut self,
+        object: &Expression,
+        field_name: &str,
+        value: &Expression,
+    ) -> Result<BasicValueEnum<'ctx>, String> {
+        let object_str = match object {
+            Expression::Variable(n) => n.clone(),
+            other => other.to_string(),
+        };
+        let field_ptr = self.compile_field_access_ptr(&object_str, field_name)?;
+        let val = self.compile_expr(value)?;
+        self.backend.builder.build_store(field_ptr, val)
+            .map_err(|e| self.error("compile_assign", format!("failed to store field '{}': {}", field_name, e)))?;
+        Ok(val)
+    }
+
+    fn compile_type_cast_expr(&mut self, target_type: &str, value: &Expression) -> Result<BasicValueEnum<'ctx>, String> {
+        let value = self.compile_expr(value)?;
+        match target_type {
+            "int" => match value {
+                BasicValueEnum::FloatValue(f) => {
+                    let result = self.backend.builder.build_float_to_signed_int(
+                        f, self.backend.context.i64_type(), "fptosi"
+                    ).map_err(|e| self.error("compile_expression",
+                        format!("failed to convert float to int: {}", e)))?;
+                    Ok(result.into())
+                }
+                BasicValueEnum::IntValue(i) => Ok(i.into()),
+                _ => Err(self.error("compile_expression", "cannot convert type to int: unsupported type".to_string())),
+            },
+            "float" => match value {
+                BasicValueEnum::IntValue(i) => {
+                    let result = self.backend.builder.build_signed_int_to_float(
+                        i, self.backend.context.f64_type(), "sitofp"
+                    ).map_err(|e| self.error("compile_expression",
+                        format!("failed to convert int to float: {}", e)))?;
+                    Ok(result.into())
+                }
+                BasicValueEnum::FloatValue(f) => Ok(f.into()),
+                _ => Err(self.error("compile_expression", "cannot convert type to float: unsupported type".to_string())),
+            },
+            "bool" => match value {
+                BasicValueEnum::IntValue(i) => {
+                    let result = self.backend.builder.build_int_truncate_or_bit_cast(
+                        i, self.backend.context.i8_type(), "trunc"
+                    ).map_err(|e| self.error("compile_expression",
+                        format!("failed to convert to bool: {}", e)))?;
+                    Ok(result.into())
+                }
+                BasicValueEnum::FloatValue(f) => {
+                    let i64_val = self.backend.builder.build_float_to_signed_int(
+                        f, self.backend.context.i64_type(), "fptosi"
+                    ).map_err(|e| self.error("compile_expression",
+                        format!("failed to convert float to bool: {}", e)))?;
+                    let result = self.backend.builder.build_int_truncate_or_bit_cast(
+                        i64_val, self.backend.context.i8_type(), "trunc"
+                    ).map_err(|e| self.error("compile_expression",
+                        format!("failed to convert to bool: {}", e)))?;
+                    Ok(result.into())
+                }
+                _ => Err(self.error("compile_expression", "cannot convert type to bool: unsupported type".to_string())),
+            },
+            other => Err(self.error("compile_expression", format!("unknown type conversion function: {}", other))),
+        }
+    }
+
+    fn compile_method_call_from_ast(
+        &mut self,
+        object_str: &str,
+        method_name: &str,
+        args: &[Expression],
+    ) -> Result<BasicValueEnum<'ctx>, String> {
+        let mut args_src = String::new();
+        for (i, arg) in args.iter().enumerate() {
+            if i > 0 {
+                args_src.push_str(", ");
+            }
+            args_src.push_str(&arg.to_string());
+        }
+        self.compile_method_call(object_str, method_name, &args_src)
+    }
+
+    fn compile_named_call(&mut self, func_name: &str, args: &[Expression]) -> Result<BasicValueEnum<'ctx>, String> {
+        if func_name.contains('.') && !func_name.contains("::") {
+            let dot_pos = func_name.rfind('.').unwrap();
+            let object_str = &func_name[..dot_pos];
+            let method_name = &func_name[dot_pos + 1..];
+            if self.variables.contains_key(object_str) {
+                return self.compile_method_call_from_ast(object_str, method_name, args);
+            }
+        }
+        self.compile_named_function_call(func_name, args)
+    }
+
+    fn compile_named_function_call(&mut self, func_name: &str, args: &[Expression]) -> Result<BasicValueEnum<'ctx>, String> {
+        let function = match self.functions.get(func_name).copied() {
+            Some(f) => f,
+            None => {
+                let qualified_name = if let Some(current_fn) = self.current_function {
+                    let current_name = current_fn.get_name().to_str().unwrap_or("");
+                    if current_name.contains('.') {
+                        let parts: Vec<&str> = current_name.rsplitn(2, '.').collect();
+                        if parts.len() == 2 {
+                            let module_path = parts[1];
+                            let qualified = format!("{}.{}", module_path, func_name);
+                            if self.functions.contains_key(&qualified) {
+                                Some(qualified)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                if let Some(qual_name) = qualified_name {
+                    *self.functions.get(&qual_name).unwrap()
+                } else if func_name.contains('.') && !func_name.contains("::") {
+                    self.declare_external_function(func_name)?
+                } else if self.is_c_library_function(func_name) {
+                    self.declare_external_function(func_name)?
+                } else {
+                    let mut help = String::new();
+                    let candidates: Vec<String> = self.functions.keys()
+                        .filter(|k| {
+                            !k.starts_with("coffee_") && *k != "printf" && *k != "puts" && *k != "malloc" && *k != "free"
+                        })
+                        .cloned()
+                        .collect();
+                    let similar = crate::diagnostics::find_similar_names(func_name, &candidates, 2, 3);
+                    if !similar.is_empty() {
+                        help.push_str(&format!("\n  = help: did you mean {}?", similar.join(" or ")));
+                    }
+                    return Err(self.error("function_call", format!("cannot find function '{}' in this scope{}", func_name, help)));
+                }
+            }
+        };
+
+        let fixed_param_count = function.count_params() as usize;
+        let mut param_types = Vec::new();
+        for i in 0..args.len() {
+            let param_type = if i < fixed_param_count {
+                function.get_nth_param(i as u32)
+                    .map(|p| p.get_type())
+                    .ok_or_else(|| self.error("function_call",
+                        format!("failed to get type for parameter {} of function '{}'", i, func_name)))?
+            } else {
+                self.backend.context.i64_type().into()
+            };
+            param_types.push(param_type);
+        }
+
+        let compiled_args: Vec<BasicValueEnum<'ctx>> = args.iter().enumerate()
+            .map(|(i, arg)| {
+                self.compile_expr(arg)
+                    .map_err(|e| self.error("function_call",
+                        format!("failed to compile argument {} in call to '{}': {}", i + 1, func_name, e)))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        if compiled_args.len() < fixed_param_count {
+            return Err(self.error("function_call",
+                format!("wrong number of arguments for function '{}'\n  = note: expected at least {} arguments, got {} arguments",
+                    func_name, fixed_param_count, compiled_args.len())));
+        }
+
+        let mut converted_args = Vec::new();
+        for (i, arg) in compiled_args.iter().enumerate() {
+            let param_type = param_types[i];
+            let arg_type = arg.get_type();
+            if !self.are_types_compatible(arg_type, param_type) {
+                let arg_type_str = self.type_to_string(arg_type);
+                let param_type_str = self.type_to_string(param_type);
+                return Err(self.error("function_call",
+                    format!("type mismatch in argument {} of function '{}'\n  = note: expected type '{}', found type '{}'",
+                        i + 1, func_name, param_type_str, arg_type_str)));
+            }
+            let converted_arg = self.convert_value_to_type(*arg, param_type, &format!("arg_{}", i))?;
+            converted_args.push(converted_arg);
+        }
+
+        let args_ref: Vec<_> = converted_args.iter().map(|a| (*a).into()).collect();
+        let call = self.backend.builder
+            .build_call(function, &args_ref, "call")
+            .map_err(|e| self.error("function_call",
+                format!("failed to build call to '{}': {}", func_name, e)))?;
+        match call.try_as_basic_value() {
+            inkwell::values::ValueKind::Basic(val) => Ok(val),
+            inkwell::values::ValueKind::Instruction(_) => {
+                Ok(self.backend.context.i64_type().const_zero().into())
+            }
+        }
+    }
+
     /// Compile expression from string
+    #[cfg(test)]
     pub fn compile_expression_str(&mut self, expr: &str) -> Result<BasicValueEnum<'ctx>, String> {
         eprintln!("DEBUG: compile_expression_str: expr='{}', len={}", expr, expr.len());
         self.compile_expression_str_with_inference(expr, &TypeInferenceContext::new())
     }
 
     /// Compile expression from string with type inference
+    #[cfg(test)]
     pub fn compile_expression_str_with_inference(&mut self, expr: &str, inference_ctx: &TypeInferenceContext<'ctx>) -> Result<BasicValueEnum<'ctx>, String> {
         // HIGH-13: Track expression depth to prevent stack overflow
         self.expression_depth += 1;
@@ -35,6 +666,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
     }
 
     /// Inner expression compilation with type inference
+    #[cfg(test)]
     fn compile_expression_str_inner_with_inference(&mut self, expr: &str, inference_ctx: &TypeInferenceContext<'ctx>) -> Result<BasicValueEnum<'ctx>, String> {
         eprintln!("DEBUG: compile_expression_str_inner_with_inference: expr='{}', len={}", expr, expr.len());
         
@@ -67,6 +699,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
 
     /// Inner expression compilation (called by compile_expression_str)
     /// This doesn't manage depth tracking - that's handled by the outer function
+    #[cfg(test)]
     fn compile_expression_str_inner(&mut self, expr: &str) -> Result<BasicValueEnum<'ctx>, String> {
         eprintln!("DEBUG: compile_expression_str_inner: expr='{}', len={}", expr, expr.len());
         
@@ -912,6 +1545,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
     }
 
     /// Try to compile binary operation
+    #[cfg(test)]
     fn try_compile_binary_op(&mut self, expr: &str) -> Result<Option<BasicValueEnum<'ctx>>, String> {
         eprintln!("DEBUG: try_compile_binary_op: expr='{}'", expr);
         // Check for binary operators (simple tokenization)
@@ -1045,6 +1679,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
     }
 
     /// Compile function call
+    #[cfg(test)]
     fn compile_function_call(&mut self, expr: &str) -> Result<BasicValueEnum<'ctx>, String> {
         let paren_pos = expr.find('(')
             .ok_or_else(|| self.error("function_call", "invalid function call syntax - missing '('"))?;
@@ -2028,7 +2663,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                         // This will be ignored in pattern matching anyway
                         self.backend.context.i64_type().const_int(0, false).into()
                     } else {
-                        self.compile_expression_str(field_value_expr)?
+                        self.compile_source_as_expr(field_value_expr)?
                     };
 
                     // Get field index
@@ -2085,7 +2720,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             for arg_str in args_str.split(',') {
                 let arg_str = arg_str.trim();
                 if !arg_str.is_empty() {
-                    let arg_value = self.compile_expression_str(arg_str)?;
+                    let arg_value = self.compile_source_as_expr(arg_str)?;
                     args.push(arg_value);
                 }
             }
@@ -2176,7 +2811,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
     /// Compile field access: object.field
     pub fn compile_field_access(&mut self, object_str: &str, field_name: &str) -> Result<BasicValueEnum<'ctx>, String> {
         // Compile the object expression
-        let object_value = self.compile_expression_str(object_str)?;
+        let object_value = self.compile_source_as_expr(object_str)?;
         
         // Get the object type
         let object_type = object_value.get_type();
@@ -2253,7 +2888,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
     /// Compile field access to get field pointer (for assignment): object.field
     pub fn compile_field_access_ptr(&mut self, object_str: &str, field_name: &str) -> Result<PointerValue<'ctx>, String> {
         // Compile the object expression
-        let object_value = self.compile_expression_str(object_str)?;
+        let object_value = self.compile_source_as_expr(object_str)?;
         
         // Get the object type
         let object_type = object_value.get_type();
@@ -2341,7 +2976,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
     /// Compile method call: object.method(args)
     pub fn compile_method_call(&mut self, object_str: &str, method_name: &str, args_str: &str) -> Result<BasicValueEnum<'ctx>, String> {
         // Compile the object expression
-        let object_value = self.compile_expression_str(object_str)?;
+        let object_value = self.compile_source_as_expr(object_str)?;
         
         // Get the object type
         let object_type = object_value.get_type();
@@ -2402,7 +3037,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         // Compile arguments
         let mut compiled_args = Vec::new();
         for arg in &args {
-            compiled_args.push(self.compile_expression_str(arg)?);
+            compiled_args.push(self.compile_source_as_expr(arg)?);
         }
         
         // Construct the full function name: ClassName_method
@@ -2480,6 +3115,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
 
 /// Find the position of an operator outside of parentheses and string literals
 /// Returns the first position where the operator appears outside any parentheses or string literals
+#[cfg(test)]
 fn find_operator_outside_parens(expr: &str, op: &str) -> Option<usize> {
     let mut depth = 0;
     let mut in_string = false;

@@ -323,7 +323,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                     }
 
                     // Parse and compile the expression
-                    let result = self.compile_expression_str(&super::codegen::expr_to_legacy_str(expr_str))?;
+                    let result = self.compile_expr(expr_str)?;
 
                     // Build return instruction
                     let ret_type = fn_value.get_type().get_return_type();

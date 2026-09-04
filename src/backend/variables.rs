@@ -121,7 +121,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         // Update stack size tracking
         self.current_stack_size += alloc_size;
 
-        let value = self.compile_expression_str(value_part)
+        let value = self.compile_source_as_expr(value_part)
             .map_err(|e| self.error("compile_let", format!("failed to compile initial value '{}' for variable '{}': {}", value_part, name, e)))?;
 
         self.backend.builder.build_store(alloca, value)
@@ -179,7 +179,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             self.parse_array_literal(value_part, 0)? // Start at depth 0
         } else {
             // Single value or expression
-            let value = self.compile_expression_str(value_part)?;
+            let value = self.compile_source_as_expr(value_part)?;
             (vec![value], array_size.unwrap_or(1))
         };
 
@@ -322,7 +322,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 format!("failed to store array length: {}", e)))?;
 
         // Store array info in dedicated HashMaps, NOT in self.variables
-        // This prevents compile_expression_str from trying to load the array as i64
+        // This prevents treating the array as a scalar i64 load
         self.array_allocas.insert(name.to_string(), array_alloca);
         self.array_sizes.insert(name.to_string(), final_size as u32);
         self.array_lengths.insert(name.to_string(), len_alloca);
@@ -359,7 +359,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                     "Multi-dimensional arrays are not supported yet"));
             }
 
-            let elem_value = self.compile_expression_str(elem_str)
+            let elem_value = self.compile_source_as_expr(elem_str)
                 .map_err(|e| self.error("parse_array_literal",
                     format!("failed to compile element '{}': {}", elem_str, e)))?;
             elements.push(elem_value);
@@ -380,7 +380,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         let name = parts[0].trim();
         let value_str = parts[1].trim();
 
-        let value = self.compile_expression_str(value_str)
+        let value = self.compile_source_as_expr(value_str)
             .map_err(|e| self.error("compile_assignment",
                 format!("failed to compile value expression '{}' for variable '{}': {}", value_str, name, e)))?;
 
@@ -409,7 +409,6 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
     /// This is used when assignment statements are parsed from the AST
     /// Supports both simple variable assignment (x = value) and member access assignment (self.x = value)
     pub fn compile_assignment_from_ast(&mut self, var_name: &str, value_expr: &crate::parser::expr::Expression) -> Result<(), String> {
-        let value_expr = super::codegen::expr_to_legacy_str(value_expr);
         // Check if this is a member access assignment (e.g., self.x = value)
         if var_name.contains('.') {
             let parts: Vec<&str> = var_name.splitn(2, '.').collect();
@@ -423,9 +422,9 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                         format!("failed to get field pointer for '{}.{}': {}", object_str, field_name, e)))?;
                 
                 // Compile the value expression
-                let value = self.compile_expression_str(&value_expr)
+                let value = self.compile_expr(value_expr)
                     .map_err(|e| self.error("compile_assignment_from_ast",
-                        format!("failed to compile value expression '{}' for field '{}.{}': {}", value_expr, object_str, field_name, e)))?;
+                        format!("failed to compile value expression for field '{}.{}': {}", object_str, field_name, e)))?;
                 
                 // Mark object as used
                 self.used_variables.insert(object_str.to_string());
@@ -460,9 +459,9 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             }
         }
 
-        let value = self.compile_expression_str(&value_expr)
+        let value = self.compile_expr(value_expr)
             .map_err(|e| self.error("compile_assignment_from_ast",
-                format!("failed to compile value expression '{}' for variable '{}': {}", value_expr, var_name, e)))?;
+                format!("failed to compile value expression for variable '{}': {}", var_name, e)))?;
 
         // Mark assigned variable as used (both read and write)
         self.used_variables.insert(var_name.to_string());
@@ -502,7 +501,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
     /// Generates safe array access: array[index]
     pub fn compile_array_index(&mut self, array_str: &str, index_str: &str) -> Result<BasicValueEnum<'ctx>, String> {
         // Compile the index expression
-        let index_value = self.compile_expression_str(index_str)
+        let index_value = self.compile_source_as_expr(index_str)
             .map_err(|e| self.error("compile_array_index",
                 format!("failed to compile index expression '{}': {}", index_str, e)))?;
 
@@ -829,7 +828,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             (trimmed_value[5..].trim(), "copy")
         } else {
             // 普通表达式 - 需要进行类型转换
-            let value = self.compile_expression_str(value_part)
+            let value = self.compile_source_as_expr(value_part)
                 .map_err(|e| self.error("compile_local_variable_decl",
                     format!("failed to compile initial value '{}' for variable '{}': {}", value_part, name, e)))?;
             

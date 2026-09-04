@@ -50,28 +50,14 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             Statement::MemoryOp(op) => self.compile_memory_op(op),
             Statement::Raise(raise_stmt) => self.compile_raise(raise_stmt),
             Statement::Expr(expr) => {
-                // 表达式语句：编译表达式并丢弃结果（如独立函数调用）
-                // For FString, we need to handle it specially
-                match expr.as_ref() {
-                    crate::parser::expr::Expression::FString { template, placeholders } => {
-                        // Compile f-string directly from AST
-                        self.compile_fstring_from_ast(template, placeholders)?;
-                    }
-                    _ => {
-                        let expr_str = expr.to_string();
-                        self.compile_expression_str(&expr_str)?;
-                    }
-                }
+                self.compile_expr(expr)?;
                 Ok(())
             }
         }
     }
 
     /// Compile a line of function body
-    ///
-    /// This handles simple statements that can be parsed from strings.
-    /// Control flow statements (if/while/for) are represented as AST nodes
-    /// and compiled via compile_statement().
+    #[cfg(test)]
     pub fn compile_body_line(&mut self, line: &str) -> Result<(), String> {
         // Strip inline comments first
         let line = self.strip_inline_comments(line);
@@ -89,7 +75,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         } else if line.starts_with("return ") {
             eprintln!("DEBUG: compile_body_line: return statement: {}", line);
             let expr_str = &line[7..];
-            let value = self.compile_expression_str(expr_str)
+            let value = self.compile_source_as_expr(expr_str)
                 .map_err(|e| self.error("return_statement", format!("failed to compile return expression '{}': {}", expr_str, e)))?;
             self.backend.builder.build_return(Some(&value))
                 .map_err(|e| self.error("return_statement", format!("failed to build return instruction: {}", e)))?;
@@ -104,7 +90,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             self.compile_assignment(line)?;
         } else if line.contains("(") {
             // Function call (discard result)
-            self.compile_expression_str(line)?;
+            self.compile_source_as_expr(line)?;
         } else {
             // Note: This is not an error - it might be a comment or empty line after trimming
             // Control flow statements should be in the AST, not in string bodies
@@ -130,7 +116,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 }
             }
 
-            let value = self.compile_expression_str(expr_str)?;
+            let value = self.compile_source_as_expr(expr_str)?;
 
             // Convert return value to match function return type
             if let Some(current_fn) = self.current_function {

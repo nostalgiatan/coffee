@@ -150,11 +150,6 @@ pub struct CodeGenerator<'a, 'ctx> {
     pub enums: std::collections::HashMap<String, crate::parser::class::EnumDef>,
 }
 
-// BRIDGE: compile_expression_str helpers until Task 7
-pub(crate) fn expr_to_legacy_str(e: &crate::parser::expr::Expression) -> String {
-    e.to_string()
-}
-
 impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
     /// Create a new code generator instance
     /// 
@@ -766,7 +761,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             .ok_or_else(|| self.error("compile_if", "if expression outside function context"))?;
 
         // Compile condition
-        let cond_val = self.compile_expression_str(&expr_to_legacy_str(&if_expr.condition))?;
+        let cond_val = self.compile_expr(&if_expr.condition)?;
         let cond_bool = self.value_to_bool(cond_val)?;
 
         // Create blocks
@@ -815,7 +810,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                     break;
                 }
 
-                let elif_cond = self.compile_expression_str(&expr_to_legacy_str(&elif.condition))?;
+                let elif_cond = self.compile_expr(&elif.condition)?;
                 let elif_bool = self.value_to_bool(elif_cond)?;
 
                 let elif_then = self.backend.context.append_basic_block(function, &format!("elif_then_{}", i));
@@ -1041,7 +1036,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
 
         // User condition check block
         self.backend.builder.position_at_end(cond_check_block);
-        let cond_val = self.compile_expression_str(&expr_to_legacy_str(&while_loop.condition))
+        let cond_val = self.compile_expr(&while_loop.condition)
             .map_err(|e| self.error("compile_while", format!("failed to compile loop condition: {}", e)))?;
         let cond_bool = self.value_to_bool(cond_val)
             .map_err(|e| self.error("compile_while", format!("failed to convert condition to boolean: {}", e)))?;
@@ -1126,14 +1121,12 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         // Initialize based on iterator type
         let (start_val, end_val) = match &for_loop.iterator {
             crate::parser::ForIterator::Range { start, end } => {
-                let start_s = expr_to_legacy_str(start);
-                let end_s = expr_to_legacy_str(end);
-                let start_v = self.compile_expression_str(&start_s)
+                let start_v = self.compile_expr(start)
                     .map_err(|e| self.error("compile_for",
-                        format!("failed to compile range start '{}': {}", start_s, e)))?;
-                let end_v = self.compile_expression_str(&end_s)
+                        format!("failed to compile range start: {}", e)))?;
+                let end_v = self.compile_expr(end)
                     .map_err(|e| self.error("compile_for",
-                        format!("failed to compile range end '{}': {}", end_s, e)))?;
+                        format!("failed to compile range end: {}", e)))?;
 
                 let start_int = match start_v {
                     BasicValueEnum::IntValue(i) => i,
@@ -1368,8 +1361,11 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 let function = self.current_function
                     .ok_or("match outside function")?;
         
-                let match_value_str = expr_to_legacy_str(&match_expr.value);
-                let match_val = self.compile_expression_str(&match_value_str)?;
+                let match_value_str = match &match_expr.value {
+                    crate::parser::expr::Expression::Variable(n) => n.clone(),
+                    other => other.to_string(),
+                };
+                let match_val = self.compile_expr(&match_expr.value)?;
                 let merge_block = self.backend.context.append_basic_block(function, "matchend");
         
                 // For each arm, create a comparison and branch
@@ -1380,7 +1376,11 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                     let next_block = self.backend.context.append_basic_block(function, &format!("matchnext_{}", i));
         
                     self.backend.builder.position_at_end(current_block);
-                    let pattern = expr_to_legacy_str(&arm.pattern);
+                    let pattern = match &arm.pattern {
+                    crate::parser::expr::Expression::Variable(n) => n.clone(),
+                    crate::parser::expr::Expression::Literal(s) => s.clone(),
+                    other => other.to_string(),
+                };
         
                     // Check if pattern is a tuple pattern (contains variables)
                     let is_tuple_pattern = pattern.starts_with('(') && pattern.contains(',') && pattern.ends_with(')');
@@ -1399,9 +1399,8 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                         .map_err(|e| format!("match guard: failed to store '{}': {}", base, e))?;
                     self.variables.insert(base.to_string(), (alloca, bind_ty));
                 }
-                let guard_s = expr_to_legacy_str(guard_expr);
-                let guard_val = self.compile_expression_str(&guard_s)
-                    .map_err(|e| format!("match guard '{}': {}", guard_s, e))?;
+                let guard_val = self.compile_expr(guard_expr)
+                    .map_err(|e| format!("match guard: {}", e))?;
                 let guard_bool = super::control_flow::value_to_bool(guard_val, &self.backend.builder)?;
                 self.backend.builder.build_conditional_branch(guard_bool, arm_block, next_block)
                     .map_err(|e| e.to_string())?;
@@ -1557,7 +1556,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                     } else {
                         eprintln!("DEBUG: compile_match: loaded value is not StructValue, it's {:?}", tuple_val);
                         // Not a struct, compare as before
-                        let pattern_val = self.compile_expression_str(&pattern)?;
+                        let pattern_val = self.compile_expr(&arm.pattern)?;
                         let cond = match (match_val, pattern_val) {
                             (BasicValueEnum::IntValue(a), BasicValueEnum::IntValue(b)) => {
                                 self.backend.builder.build_int_compare(IntPredicate::EQ, a, b, "matchcmp")
@@ -1667,7 +1666,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                             .map_err(|e| e.to_string())?;
                     } else {
                         // Non-tuple, non-struct pattern: compare as before
-                        let pattern_val = self.compile_expression_str(&pattern)?;
+                        let pattern_val = self.compile_expr(&arm.pattern)?;
                         let cond = match (match_val, pattern_val) {
                             (BasicValueEnum::IntValue(a), BasicValueEnum::IntValue(b)) => {
                                 self.backend.builder.build_int_compare(IntPredicate::EQ, a, b, "matchcmp")
@@ -1801,9 +1800,8 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             }
             FunctionBody::Expression(expr) => {
                 // Single expression - evaluate and return
-                let expr_s = expr_to_legacy_str(expr);
-                if !expr_s.is_empty() {
-                    let value = self.compile_expression_str(&expr_s)
+                if !matches!(expr, crate::parser::expr::Expression::Literal(s) if s.is_empty()) {
+                    let value = self.compile_expr(expr)
                         .map_err(|e| self.error("compile_function",
                             format!("failed to compile function body expression: {}", e)))?;
                     functions::build_return(&self.backend.builder, &func.return_type, self.backend.context, Some(value))
@@ -2042,7 +2040,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 compiled_args.push(argv.into());
             } else {
                 // Regular expression - compile as usual
-                let arg_value = self.compile_expression_str(arg_str).map_err(|e| {
+                let arg_value = self.compile_source_as_expr(arg_str).map_err(|e| {
                     self.error("generate_main",
                         format!("failed to compile entry function argument '{}': {}", arg_str, e))
                 })?;
