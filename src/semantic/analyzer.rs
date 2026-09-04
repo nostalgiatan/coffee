@@ -753,8 +753,21 @@ impl SemanticAnalyzer {
                 self.analyze_expression(value)
             }
             crate::parser::Statement::Main(_) => Ok(()),
-            crate::parser::Statement::Match(_) => {
-                // Do not walk arm bodies until pattern bindings live in the symbol table.
+            crate::parser::Statement::Match(match_expr) => {
+                self.analyze_expression(&match_expr.value)?;
+                for arm in &match_expr.arms {
+                    let bound = Self::pattern_binding_names(&arm.pattern);
+                    for name in &bound {
+                        self.bind_ephemeral_var(name)?;
+                    }
+                    if let Some(guard) = &arm.guard {
+                        self.analyze_expression(guard)?;
+                    }
+                    self.analyze_block_scope(&arm.body)?;
+                    for name in bound.iter().rev() {
+                        self.unbind_ephemeral_var(name);
+                    }
+                }
                 Ok(())
             }
             _ => Ok(())
@@ -821,6 +834,34 @@ impl SemanticAnalyzer {
                 symbols.remove(&format!("{}::{}", func_name, name));
             }
             symbols.remove(name);
+        }
+    }
+
+    fn pattern_binding_names(pattern: &crate::parser::Pattern) -> Vec<String> {
+        let mut names = Vec::new();
+        Self::collect_pattern_binding_names(pattern, &mut names);
+        names
+    }
+
+    fn collect_pattern_binding_names(pattern: &crate::parser::Pattern, names: &mut Vec<String>) {
+        match pattern {
+            crate::parser::Pattern::Ident(name) => names.push(name.clone()),
+            crate::parser::Pattern::Tuple(elems) | crate::parser::Pattern::Or(elems) => {
+                for el in elems {
+                    Self::collect_pattern_binding_names(el, names);
+                }
+            }
+            crate::parser::Pattern::Struct { fields, .. } => {
+                for (_, pat) in fields {
+                    Self::collect_pattern_binding_names(pat, names);
+                }
+            }
+            crate::parser::Pattern::EnumVariant { args, .. } => {
+                for arg in args {
+                    Self::collect_pattern_binding_names(arg, names);
+                }
+            }
+            crate::parser::Pattern::Wildcard | crate::parser::Pattern::Literal(_) => {}
         }
     }
 
