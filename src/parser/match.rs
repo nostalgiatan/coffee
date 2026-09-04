@@ -6,6 +6,7 @@ use nom::{
 };
 
 use super::expr::Expression;
+use super::pattern::Pattern;
 use super::Statement;
 
 /// Match 表达式
@@ -21,7 +22,7 @@ pub struct MatchExpr {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct MatchArm {
-    pub pattern: Expression,
+    pub pattern: Pattern,
     pub guard: Option<Expression>,
     pub body: Vec<Statement>,
 }
@@ -59,12 +60,9 @@ fn parse_match_arm(input: &str) -> IResult<&str, MatchArm> {
     let (pattern, guard) = if let Some(pos) = pattern_raw.find(" if ") {
         let base = pattern_raw[..pos].trim();
         let guard_s = pattern_raw[pos + 4..].trim();
-        (
-            parse_expr_or_literal(base),
-            Some(parse_expr_or_literal(guard_s)),
-        )
+        (parse_pattern(base), Some(parse_expr_or_literal(guard_s)))
     } else {
-        (parse_expr_or_literal(pattern_raw), None)
+        (parse_pattern(pattern_raw), None)
     };
 
     let line = result.trim();
@@ -86,6 +84,21 @@ fn parse_match_arm(input: &str) -> IResult<&str, MatchArm> {
             body,
         },
     ))
+}
+
+fn parse_pattern(raw: &str) -> Pattern {
+    let raw = raw.trim();
+    crate::parser::expr::parse_expression(raw)
+        .map(Pattern::from_expr)
+        .unwrap_or_else(|_| {
+            if raw == "_" {
+                Pattern::Wildcard
+            } else if crate::parser::expr::is_valid_identifier(raw) {
+                Pattern::Ident(raw.to_string())
+            } else {
+                Pattern::Literal(raw.to_string())
+            }
+        })
 }
 
 fn parse_expr_or_literal(raw: &str) -> Expression {
@@ -144,7 +157,8 @@ mod tests {
             Expression::Variable(n) => assert_eq!(n, "x"),
             other => panic!("{:?}", other),
         }
-        assert!(matches!(m.arms[0].pattern, Expression::Literal(_)));
+        assert!(matches!(m.arms[0].pattern, Pattern::Literal(_)));
+        assert!(matches!(m.arms[1].pattern, Pattern::Wildcard));
         assert!(matches!(m.arms[0].body[0], Statement::Expr(_)));
         assert!(m.arms[0].guard.is_none());
     }
@@ -154,12 +168,23 @@ mod tests {
         let src = "match x:\n    n if n > 5 => 1\n    _ => 0\n";
         let (_, m) = parse_match(src).expect("parse");
         match &m.arms[0].pattern {
-            Expression::Variable(n) => assert_eq!(n, "n"),
+            Pattern::Ident(n) => assert_eq!(n, "n"),
             other => panic!("{:?}", other),
         }
         match m.arms[0].guard.as_ref() {
             Some(Expression::Binary { op, .. }) => assert_eq!(op, ">"),
             other => panic!("{:?}", other),
         }
+    }
+
+    #[test]
+    fn match_tuple_struct_enum_or_patterns() {
+        let src = "match v:\n    (a, _) => 1\n    Point { x: a, y: b } => 2\n    Color.Red => 3\n    1 | 2 => 4\n    _ => 0\n";
+        let (_, m) = parse_match(src).expect("parse");
+        assert!(matches!(m.arms[0].pattern, Pattern::Tuple(_)));
+        assert!(matches!(m.arms[1].pattern, Pattern::Struct { .. }));
+        assert!(matches!(m.arms[2].pattern, Pattern::EnumVariant { .. }));
+        assert!(matches!(m.arms[3].pattern, Pattern::Or(_)));
+        assert!(matches!(m.arms[4].pattern, Pattern::Wildcard));
     }
 }

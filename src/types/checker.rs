@@ -501,7 +501,7 @@ impl TypeChecker {
         Ok(())
     }
 
-    fn bind_pattern_vars(&mut self, pattern: &crate::parser::expr::Expression) -> Vec<(String, Option<ValueInfo>)> {
+    fn bind_pattern_vars(&mut self, pattern: &crate::parser::Pattern) -> Vec<(String, Option<ValueInfo>)> {
         let mut bound = Vec::new();
         self.collect_pattern_bindings(pattern, &mut bound);
         bound
@@ -509,11 +509,11 @@ impl TypeChecker {
 
     fn collect_pattern_bindings(
         &mut self,
-        pattern: &crate::parser::expr::Expression,
+        pattern: &crate::parser::Pattern,
         bound: &mut Vec<(String, Option<ValueInfo>)>,
     ) {
         match pattern {
-            crate::parser::expr::Expression::Variable(name) if name != "_" => {
+            crate::parser::Pattern::Ident(name) => {
                 let prev = self.values.remove(name);
                 self.values.insert(name.clone(), ValueInfo {
                     name: name.clone(),
@@ -525,32 +525,22 @@ impl TypeChecker {
                 });
                 bound.push((name.clone(), prev));
             }
-            crate::parser::expr::Expression::Call { args, .. } => {
-                for arg in args {
-                    self.collect_pattern_bindings(arg, bound);
-                }
-            }
-            crate::parser::expr::Expression::Member { args, .. } => {
-                for arg in args {
-                    self.collect_pattern_bindings(arg, bound);
-                }
-            }
-            crate::parser::expr::Expression::TupleLiteral { elements }
-            | crate::parser::expr::Expression::ArrayLiteral { elements } => {
+            crate::parser::Pattern::Tuple(elements) | crate::parser::Pattern::Or(elements) => {
                 for el in elements {
                     self.collect_pattern_bindings(el, bound);
                 }
             }
-            crate::parser::expr::Expression::StructLiteral { fields, .. } => {
+            crate::parser::Pattern::Struct { fields, .. } => {
                 for (_, value) in fields {
                     self.collect_pattern_bindings(value, bound);
                 }
             }
-            crate::parser::expr::Expression::Binary { left, right, .. } => {
-                self.collect_pattern_bindings(left, bound);
-                self.collect_pattern_bindings(right, bound);
+            crate::parser::Pattern::EnumVariant { args, .. } => {
+                for arg in args {
+                    self.collect_pattern_bindings(arg, bound);
+                }
             }
-            _ => {}
+            crate::parser::Pattern::Wildcard | crate::parser::Pattern::Literal(_) => {}
         }
     }
 
