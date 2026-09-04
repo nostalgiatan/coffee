@@ -1368,7 +1368,8 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 let function = self.current_function
                     .ok_or("match outside function")?;
         
-                let match_val = self.compile_expression_str(&match_expr.value)?;
+                let match_value_str = expr_to_legacy_str(&match_expr.value);
+                let match_val = self.compile_expression_str(&match_value_str)?;
                 let merge_block = self.backend.context.append_basic_block(function, "matchend");
         
                 // For each arm, create a comparison and branch
@@ -1379,17 +1380,14 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                     let next_block = self.backend.context.append_basic_block(function, &format!("matchnext_{}", i));
         
                     self.backend.builder.position_at_end(current_block);
+                    let pattern = expr_to_legacy_str(&arm.pattern);
         
                     // Check if pattern is a tuple pattern (contains variables)
-                    let is_tuple_pattern = arm.pattern.starts_with('(') && arm.pattern.contains(',') && arm.pattern.ends_with(')');
-                    eprintln!("DEBUG: compile_match: pattern='{}', is_tuple_pattern={}", arm.pattern, is_tuple_pattern);
-            // Match guard: "binding if guard_expr => result". The base pattern is
-            // a binding that matches anything; the arm is taken only when the
-            // guard evaluates to true, otherwise control falls through to the
-            // next arm (next_block).
-            if let Some(guard_pos) = arm.pattern.find(" if ") {
-                let base = arm.pattern[..guard_pos].trim();
-                let guard_expr = arm.pattern[guard_pos + 4..].trim();
+                    let is_tuple_pattern = pattern.starts_with('(') && pattern.contains(',') && pattern.ends_with(')');
+                    eprintln!("DEBUG: compile_match: pattern='{}', is_tuple_pattern={}", pattern, is_tuple_pattern);
+            // Match guard: binding + optional guard expression.
+            if let Some(guard_expr) = &arm.guard {
+                let base = pattern.trim();
                 let is_binding = !base.is_empty() && base != "_"
                     && base.chars().next().map_or(false, |c| c.is_ascii_alphabetic() || c == '_')
                     && base.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
@@ -1401,15 +1399,16 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                         .map_err(|e| format!("match guard: failed to store '{}': {}", base, e))?;
                     self.variables.insert(base.to_string(), (alloca, bind_ty));
                 }
-                let guard_val = self.compile_expression_str(guard_expr)
-                    .map_err(|e| format!("match guard '{}': {}", guard_expr, e))?;
+                let guard_s = expr_to_legacy_str(guard_expr);
+                let guard_val = self.compile_expression_str(&guard_s)
+                    .map_err(|e| format!("match guard '{}': {}", guard_s, e))?;
                 let guard_bool = super::control_flow::value_to_bool(guard_val, &self.backend.builder)?;
                 self.backend.builder.build_conditional_branch(guard_bool, arm_block, next_block)
                     .map_err(|e| e.to_string())?;
-            } else if arm.pattern != "_" {
+            } else if pattern != "_" {
                 if is_tuple_pattern {
                     // Tuple pattern: extract variables and bind them
-                    let inner = &arm.pattern[1..arm.pattern.len()-1].trim();
+                    let inner = &pattern[1..pattern.len()-1].trim();
                     
                     // Parse the tuple pattern correctly, handling nested tuples
                     let mut vars: Vec<&str> = Vec::new();
@@ -1430,7 +1429,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                         vars.push(&inner[start..].trim());
                     }
                     
-                    eprintln!("DEBUG: compile_match: parsed pattern '{}' into vars: {:?}", arm.pattern, vars);
+                    eprintln!("DEBUG: compile_match: parsed pattern '{}' into vars: {:?}", pattern, vars);
 
                     // Check if match_val is a pointer (needs to load) or already a value
                     let tuple_val = if let BasicValueEnum::PointerValue(ptr_val) = match_val {
@@ -1438,7 +1437,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                         eprintln!("DEBUG: compile_match: match_val is PointerValue, loading struct value");
                         
                         // Try to get the type from the variable
-                        let var_type = if let Some((_, var_type)) = self.variables.get(&match_expr.value) {
+                        let var_type = if let Some((_, var_type)) = self.variables.get(&match_value_str) {
                             Some(var_type)
                         } else {
                             None
@@ -1558,7 +1557,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                     } else {
                         eprintln!("DEBUG: compile_match: loaded value is not StructValue, it's {:?}", tuple_val);
                         // Not a struct, compare as before
-                        let pattern_val = self.compile_expression_str(&arm.pattern)?;
+                        let pattern_val = self.compile_expression_str(&pattern)?;
                         let cond = match (match_val, pattern_val) {
                             (BasicValueEnum::IntValue(a), BasicValueEnum::IntValue(b)) => {
                                 self.backend.builder.build_int_compare(IntPredicate::EQ, a, b, "matchcmp")
@@ -1575,15 +1574,15 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                     }
                 } else {
                     // Check if pattern is a struct pattern (contains { and })
-                    let is_struct_pattern = arm.pattern.contains('{') && arm.pattern.contains('}');
-                    eprintln!("DEBUG: compile_match: pattern='{}', is_struct_pattern={}", arm.pattern, is_struct_pattern);
+                    let is_struct_pattern = pattern.contains('{') && pattern.contains('}');
+                    eprintln!("DEBUG: compile_match: pattern='{}', is_struct_pattern={}", pattern, is_struct_pattern);
 
                     if is_struct_pattern {
                         // Struct pattern: extract fields and bind them
                         // Parse the struct pattern: ClassName { field1: var1, field2: var2, ... }
-                        let struct_name_end = arm.pattern.find('{').unwrap();
-                        let struct_name = arm.pattern[..struct_name_end].trim();
-                        let fields_str = &arm.pattern[struct_name_end + 1..arm.pattern.len() - 1].trim();
+                        let struct_name_end = pattern.find('{').unwrap();
+                        let struct_name = pattern[..struct_name_end].trim();
+                        let fields_str = &pattern[struct_name_end + 1..pattern.len() - 1].trim();
 
                         eprintln!("DEBUG: compile_match: struct_name='{}', fields_str='{}'", struct_name, fields_str);
 
@@ -1615,7 +1614,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                             // pointers — the variable's type is PointerType. In the
                             // latter case, fall back to the class name in the pattern
                             // (struct_name) to look up the named struct type.
-                            let struct_type = match self.variables.get(&match_expr.value) {
+                            let struct_type = match self.variables.get(&match_value_str) {
                                 Some((_, BasicTypeEnum::StructType(st))) => Some(*st),
                                 _ => self.type_mapper.struct_types.get(struct_name).copied(),
                             };
@@ -1624,7 +1623,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                                 self.backend.builder.build_load(BasicTypeEnum::StructType(struct_type.clone()), ptr_val, "struct_val")
                                     .map_err(|e| format!("failed to load struct value: {}", e))?
                             } else {
-                                return Err(format!("variable '{}' is not a struct (no struct type found for '{}')", match_expr.value, struct_name));
+                                return Err(format!("variable '{}' is not a struct (no struct type found for '{}')", match_value_str, struct_name));
                             }
                         } else {
                             match_val
@@ -1668,7 +1667,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                             .map_err(|e| e.to_string())?;
                     } else {
                         // Non-tuple, non-struct pattern: compare as before
-                        let pattern_val = self.compile_expression_str(&arm.pattern)?;
+                        let pattern_val = self.compile_expression_str(&pattern)?;
                         let cond = match (match_val, pattern_val) {
                             (BasicValueEnum::IntValue(a), BasicValueEnum::IntValue(b)) => {
                                 self.backend.builder.build_int_compare(IntPredicate::EQ, a, b, "matchcmp")
@@ -1690,28 +1689,10 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                     .map_err(|e| e.to_string())?;
             }
 
-            // Compile arm result (result is a String expression, could be multi-line)
+            // Compile arm body as statements (not a newline-joined string)
             self.backend.builder.position_at_end(arm_block);
-            for line in arm.result.split('\n') {
-                let line = line.trim();
-                if line.is_empty() {
-                    continue;
-                }
-                self.compile_body_line(line)?;
-                // compile_body_line skips pure expressions without '(' (e.g. `y + 1`).
-                // Emit them so overflow-check merge blocks exist, then terminate below.
-                let looks_like_stmt = line.starts_with("let ")
-                    || line.starts_with("return")
-                    || line == "break"
-                    || line == "continue"
-                    || (line.contains(" = ") && !line.starts_with("if "));
-                if !looks_like_stmt {
-                    if let Some(b) = self.backend.builder.get_insert_block() {
-                        if b.get_terminator().is_none() && !line.contains('(') {
-                            let _ = self.compile_expression_str(line);
-                        }
-                    }
-                }
+            for stmt in &arm.body {
+                self.compile_statement(stmt)?;
             }
             // CRITICAL: check the builder's CURRENT block for a terminator, not
             // arm_block. Overflow-check sub-blocks (add_merge, mul_merge, …) are
