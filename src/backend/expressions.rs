@@ -718,7 +718,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                     coffee_debug!("DEBUG: constructor call: parts[0]='{}', parts[0].len()={}, parts[1]='{}', parts[1].len()={}", parts[0], parts[0].len(), parts[1], parts[1].len());
                     if parts[1].starts_with("new") {
                         coffee_debug!("DEBUG: constructor call: class_name='{}', full_method='{}'", parts[0].trim(), parts[1].trim());
-                        match Expression::parse(expr) {
+                        match Expression::parse(&expr) {
                             Ok(Expression::ConstructorCall { class_name, args }) => {
                                 return self.compile_constructor_call(&class_name, &args);
                             }

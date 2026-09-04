@@ -87,9 +87,148 @@ impl TypeInferencer {
         self.context_stack.last_mut().expect("Context stack should never be empty")
     }
 
-    /// 推导表达式类型
+    /// Infer a type from an expression string.
+    ///
+    /// Tries [`crate::parser::expr::Expression::parse`] first, then falls back to
+    /// string heuristics. This helper is **not** the main type checker
+    /// (`crate::types::checker`); it exists for lightweight inference only.
     pub fn infer_expression(&mut self, expr: &str) -> Result<Type, TypeSystemError> {
         let expr = expr.trim();
+
+        if let Ok(ast) = crate::parser::expr::Expression::parse(expr) {
+            if let Ok(ty) = self.infer_parsed_expression(&ast) {
+                return Ok(ty);
+            }
+        }
+
+        self.infer_expression_str(expr)
+    }
+
+    fn infer_parsed_expression(&mut self, expr: &crate::parser::expr::Expression) -> Result<Type, TypeSystemError> {
+        use crate::parser::expr::Expression;
+        match expr {
+            Expression::Literal(value) => {
+                self.infer_literal(value).ok_or_else(|| TypeSystemError::ParseError {
+                    type_str: value.clone(),
+                    reason: "Unable to infer literal type".to_string(),
+                })
+            }
+            Expression::Variable(name) => {
+                if let Some(ty) = self.lookup_variable(name) {
+                    return Ok(ty);
+                }
+                if let Ok(registry) = self.registry.read() {
+                    if let Ok(ty) = registry.resolve_type(name) {
+                        return Ok(ty);
+                    }
+                }
+                Ok(Type::NamedType { name: name.clone() })
+            }
+            Expression::FString { .. } => Ok(Type::String),
+            Expression::Binary { left, op, right } => {
+                let left_type = self.infer_parsed_expression(left)?;
+                let right_type = self.infer_parsed_expression(right)?;
+                self.infer_binary_op(op, left_type, right_type)
+            }
+            Expression::Unary { operand, .. } => self.infer_parsed_expression(operand),
+            Expression::Call { function, args } => {
+                let func_name = match function.as_ref() {
+                    Expression::Variable(name) => name.clone(),
+                    _ => {
+                        return Err(TypeSystemError::ParseError {
+                            type_str: format!("{:?}", function),
+                            reason: "Call target is not an identifier".to_string(),
+                        });
+                    }
+                };
+                let mut arg_types = Vec::new();
+                for arg in args {
+                    arg_types.push(self.infer_parsed_expression(arg)?);
+                }
+                if let Ok(registry) = self.registry.read() {
+                    if let Ok(Type::Function { params, return_type }) = registry.resolve_type(&func_name) {
+                        if params.len() != arg_types.len() {
+                            return Err(TypeSystemError::ArityMismatch {
+                                expected: params.len(),
+                                found: arg_types.len(),
+                                span: Span::new(0, 0),
+                            });
+                        }
+                        return Ok(*return_type);
+                    }
+                }
+                self.infer_generic_instantiation(&func_name, arg_types)
+            }
+            Expression::ConstructorCall { class_name, .. } => Ok(Type::NamedType {
+                name: class_name.clone(),
+            }),
+            Expression::Index { array, index } => {
+                let container_type = self.infer_parsed_expression(array)?;
+                let index_type = self.infer_parsed_expression(index)?;
+                match container_type {
+                    Type::Array { elem, .. } | Type::Slice(elem) if index_type.is_int() => Ok(*elem),
+                    other => Err(TypeSystemError::InvalidOperation {
+                        op: "[]".to_string(),
+                        left: other,
+                        right: index_type,
+                        span: Span::new(0, 0),
+                    }),
+                }
+            }
+            Expression::Member { object, field, .. } => {
+                let object_type = self.infer_parsed_expression(object)?;
+                match object_type {
+                    Type::NamedType { name, .. } => {
+                        if let Ok(registry) = self.registry.read() {
+                            for f in registry.get_fields(&name) {
+                                if f.name == *field {
+                                    return registry.resolve_type(&f.ty).map_err(|_| TypeSystemError::ParseError {
+                                        type_str: f.ty.clone(),
+                                        reason: "Failed to resolve field type".to_string(),
+                                    });
+                                }
+                            }
+                            return Err(TypeSystemError::field_not_found(&name, field, Span::new(0, 0)));
+                        }
+                    }
+                    _ => {}
+                }
+                Err(TypeSystemError::ParseError {
+                    type_str: field.clone(),
+                    reason: "Invalid field access".to_string(),
+                })
+            }
+            Expression::ArrayLiteral { elements } => {
+                let elem = if let Some(first) = elements.first() {
+                    self.infer_parsed_expression(first)?
+                } else {
+                    Type::int()
+                };
+                Ok(Type::Array {
+                    elem: Box::new(elem),
+                    size: elements.len(),
+                })
+            }
+            Expression::TypeCast { target_type, .. } => {
+                if let Ok(registry) = self.registry.read() {
+                    registry.resolve_type(target_type)
+                } else {
+                    Err(TypeSystemError::ParseError {
+                        type_str: target_type.clone(),
+                        reason: "Failed to access type registry".to_string(),
+                    })
+                }
+            }
+            Expression::TupleLiteral { .. }
+            | Expression::StructLiteral { .. }
+            | Expression::Assign { .. } => Err(TypeSystemError::ParseError {
+                type_str: format!("{:?}", expr),
+                reason: "Fall back to string inference".to_string(),
+            }),
+        }
+    }
+
+    fn infer_expression_str(&mut self, expr: &str) -> Result<Type, TypeSystemError> {
 
         // 字面量推导
         if let Some(ty) = self.infer_literal(expr) {

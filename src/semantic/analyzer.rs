@@ -1,6 +1,6 @@
 use crate::coffee_debug;
 use super::scope::ScopeSpace;
-use super::lifetime::LifetimeSpace;
+use super::lifetime::{LifetimeParam, LifetimeSpace};
 use super::symbols::SymbolSpace;
 use crate::types::definition::*;
 use crate::types::registry::TypeRegistry;
@@ -396,6 +396,17 @@ impl SemanticAnalyzer {
         // Note: func_type is already registered in declare_function_decl (first pass)
         // We don't need to register it again here
 
+        // Register a lifetime parameter for this function so LifetimeSpace is
+        // actually used. This is not a borrow checker.
+        if let Ok(mut lifetimes) = self.lifetime_space.write() {
+            if lifetimes.get_param(&func.name).is_none() {
+                let _ = lifetimes.add_param(LifetimeParam {
+                    name: func.name.clone(),
+                    bounds: Vec::new(),
+                });
+            }
+        }
+
         // Create a child scope for the function
         let function_scope = self.enter_scope(&func.name);
 
@@ -749,7 +760,12 @@ impl SemanticAnalyzer {
                 }
                 self.analyze_expression(value)
             }
-            crate::parser::Statement::Main(_) => Ok(()),
+            crate::parser::Statement::Main(main_entry) => {
+                for arg in &main_entry.args {
+                    self.analyze_expression(arg)?;
+                }
+                Ok(())
+            }
             crate::parser::Statement::Match(match_expr) => {
                 self.analyze_expression(&match_expr.value)?;
                 for arm in &match_expr.arms {
@@ -1423,7 +1439,11 @@ impl SemanticAnalyzer {
             SymbolInfo {
                 declared: symbols.declared_symbols().len(),
                 referenced: symbols.referenced_symbols().len(),
-                unused: symbols.unused_symbols(),
+                unused: symbols
+                    .unused_symbols()
+                    .into_iter()
+                    .filter(|name| !name.starts_with('_') && name != "main")
+                    .collect(),
             }
         } else {
             SymbolInfo::default()
