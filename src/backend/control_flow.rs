@@ -548,26 +548,31 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 (start_int, end_int)
             }
             crate::parser::ForIterator::Collection(coll) => {
-                // For collections, we iterate from 0 to len
+                let crate::parser::expr::Expression::Variable(name) = coll else {
+                    if let Err(e) = self.compile_expr(coll) {
+                        return Err(self.error("compile_for", format!(
+                            "failed to compile for-in collection expression: {}\n  = note: for-in over arbitrary expressions is not yet supported\n  = help: use a simple collection name (`for x in items`) or an explicit range (`for i in 0..n`)",
+                            e
+                        )));
+                    }
+                    return Err(self.error("compile_for",
+                        format!("for-in over arbitrary expressions is not yet supported\n  = note: collection is `{}`\n  = help: bind the collection to a variable first, or use an explicit range (`for i in 0..n`)", coll)));
+                };
+
                 let start_int = i64_type.const_int(0, false);
 
-                // Try to get array length from tracking
-                let end_int = if let Some(&len_ptr) = self.array_lengths.get(coll) {
-                    // Load the tracked length
+                let end_int = if let Some(&len_ptr) = self.array_lengths.get(name) {
                     self.backend.builder.build_load(i64_type, len_ptr, "arr_len")
                         .map_err(|e| self.error("compile_for",
-                            format!("failed to load length of collection '{}': {}", coll, e)))?
+                            format!("failed to load length of collection '{}': {}", name, e)))?
                         .into_int_value()
-                } else if let Some(&(_var_ptr, _)) = self.variables.get(coll) {
-                    // HIGH-10 FIX: Mark collection variable as used
-                    self.used_variables.insert(coll.to_string());
-                    // Variable exists but no length tracked
+                } else if let Some(&(_var_ptr, _)) = self.variables.get(name) {
+                    self.used_variables.insert(name.to_string());
                     return Err(self.error("compile_for",
-                        format!("cannot iterate over collection '{}' - length information not available\n  = note: collection length must be tracked when the collection is created\n  = help: use explicit range instead: for i in 0..length", coll)));
+                        format!("cannot iterate over collection '{}' - length information not available\n  = note: collection length must be tracked when the collection is created\n  = help: use explicit range instead: for i in 0..length", name)));
                 } else {
-                    // Unknown collection
                     return Err(self.error("compile_for",
-                        format!("cannot find collection '{}' in this scope\n  = note: for-in loops require an existing collection or range", coll)));
+                        format!("cannot find collection '{}' in this scope\n  = note: for-in loops require an existing collection or range", name)));
                 };
                 (start_int, end_int)
             }

@@ -1064,33 +1064,34 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
 
         // Compile the entry function arguments
         let mut compiled_args = Vec::new();
-        for arg_str in &entry_args {
-            // Check if this is a special command-line argument (arg1, arg2, arg3, etc.)
-            if let Some(arg_num) = Self::parse_arg_number(arg_str) {
-                // Get command-line argument: argv[arg_num]
-                let arg_value = self.get_command_line_arg(argv, argc, arg_num)?;
-                compiled_args.push(arg_value);
-            } else if arg_str == "argc" {
-                // Special case: argc parameter
-                // Convert i32 to i64 (Coffee's default int type)
-                let i64_type = context.i64_type();
-                let argc_i64 = self.backend.builder.build_int_s_extend(argc, i64_type, "argc_i64")
-                    .map_err(|e| self.error("generate_main", format!("failed to extend argc to i64: {}", e)))?;
-                compiled_args.push(argc_i64.into());
-            } else if arg_str == "argv" {
-                // Special case: argv parameter
-                // argv is already a pointer (char**), which matches Coffee's string type
-                compiled_args.push(argv.into());
-            } else {
-                let arg_expr = match Expression::parse(arg_str) {
-                    Ok(tree) => tree,
-                    Err(_) => Expression::Literal(arg_str.clone()),
-                };
-                let arg_value = self.compile_expr(&arg_expr).map_err(|e| {
-                    self.error("generate_main",
-                        format!("failed to compile entry function argument '{}': {}", arg_str, e))
-                })?;
-                compiled_args.push(arg_value);
+        for arg_expr in &entry_args {
+            match arg_expr {
+                Expression::Variable(name) => {
+                    if let Some(arg_num) = Self::parse_arg_number(name) {
+                        let arg_value = self.get_command_line_arg(argv, argc, arg_num)?;
+                        compiled_args.push(arg_value);
+                    } else if name == "argc" {
+                        let i64_type = context.i64_type();
+                        let argc_i64 = self.backend.builder.build_int_s_extend(argc, i64_type, "argc_i64")
+                            .map_err(|e| self.error("generate_main", format!("failed to extend argc to i64: {}", e)))?;
+                        compiled_args.push(argc_i64.into());
+                    } else if name == "argv" {
+                        compiled_args.push(argv.into());
+                    } else {
+                        let arg_value = self.compile_expr(arg_expr).map_err(|e| {
+                            self.error("generate_main",
+                                format!("failed to compile entry function argument '{}': {}", arg_expr, e))
+                        })?;
+                        compiled_args.push(arg_value);
+                    }
+                }
+                _ => {
+                    let arg_value = self.compile_expr(arg_expr).map_err(|e| {
+                        self.error("generate_main",
+                            format!("failed to compile entry function argument '{}': {}", arg_expr, e))
+                    })?;
+                    compiled_args.push(arg_value);
+                }
             }
         }
 

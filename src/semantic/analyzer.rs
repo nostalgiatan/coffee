@@ -728,8 +728,8 @@ impl SemanticAnalyzer {
                         self.analyze_expression(start)?;
                         self.analyze_expression(end)?;
                     }
-                    crate::parser::ForIterator::Collection(name) => {
-                        self.analyze_expression(&crate::parser::expr::Expression::Variable(name.clone()))?;
+                    crate::parser::ForIterator::Collection(expr) => {
+                        self.analyze_expression(expr)?;
                     }
                 }
                 self.bind_ephemeral_var(&for_loop.variable)?;

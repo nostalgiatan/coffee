@@ -454,8 +454,8 @@ impl TypeChecker {
                 self.check_expr_stmt(start)?;
                 self.check_expr_stmt(end)?;
             }
-            parser::ForIterator::Collection(name) => {
-                let _ = self.infer_value_type(name);
+            parser::ForIterator::Collection(expr) => {
+                self.check_expr_stmt(expr)?;
             }
         }
         let prev = self.values.remove(&for_loop.variable);
@@ -1888,7 +1888,7 @@ impl TypeChecker {
     }
 
     /// Check main entry point arguments against parameter types
-    fn check_main_args(&mut self, args: &[String], param_types: &[Type]) -> Result<(), TypeSystemError> {
+    fn check_main_args(&mut self, args: &[crate::parser::expr::Expression], param_types: &[Type]) -> Result<(), TypeSystemError> {
         coffee_debug!("[DEBUG] check_main_args: checking {} args against {} param_types", args.len(), param_types.len());
         if args.len() != param_types.len() {
             let error = TypeSystemError::arity_mismatch(param_types.len(), args.len(), Span::new(0, 0));
@@ -1898,14 +1898,20 @@ impl TypeChecker {
 
         for (i, (arg, expected_type)) in args.iter().zip(param_types.iter()).enumerate() {
             coffee_debug!("[DEBUG] check_main_args: checking arg {} '{}' vs expected type {:?}", i, arg, expected_type);
-            let arg_type = self.infer_value_type(arg)?;
+            let arg_type = match self.check_expression(arg) {
+                Ok(ty) => ty,
+                Err(e) => {
+                    self.add_error(e.clone());
+                    return Err(e);
+                }
+            };
             coffee_debug!("[DEBUG] check_main_args: inferred arg type as {:?}", arg_type);
             if !self.types_compatible(&arg_type, expected_type)? {
                 coffee_debug!("[DEBUG] check_main_args: argument type mismatch at position {}", i);
                 let error = TypeSystemError::TypeMismatch {
                     expected: expected_type.clone(),
                     found: arg_type,
-                    span: Span::new(0, arg.len()),
+                    span: Span::new(0, 0),
                 };
                 self.add_error(error.clone());
                 return Err(error);

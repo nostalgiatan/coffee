@@ -37,7 +37,7 @@ pub struct ForLoop {
 #[derive(Debug, PartialEq, Clone)]
 pub enum ForIterator {
     /// Collection iterator - iterates over a collection
-    Collection(String),
+    Collection(crate::parser::expr::Expression),
     /// Range iterator - iterates from start to end
     Range { start: crate::parser::expr::Expression, end: crate::parser::expr::Expression },
 }
@@ -98,10 +98,10 @@ pub fn parse_for(input: &str) -> IResult<&str, ForLoop> {
                     end: parse_range_bound(parts[1].trim())?,
                 }
             } else {
-                ForIterator::Collection(iterator.to_string())
+                ForIterator::Collection(parse_range_bound(iterator.trim())?)
             }
         } else {
-            ForIterator::Collection(iterator.to_string())
+            ForIterator::Collection(parse_range_bound(iterator.trim())?)
         }
     } else if iterator.contains("..") {
         // start..end syntax (Rust-style range)
@@ -112,11 +112,10 @@ pub fn parse_for(input: &str) -> IResult<&str, ForLoop> {
                 end: parse_range_bound(parts[1].trim())?,
             }
         } else {
-            ForIterator::Collection(iterator.to_string())
+            ForIterator::Collection(parse_range_bound(iterator.trim())?)
         }
     } else {
-        // Collection name
-        ForIterator::Collection(iterator.to_string())
+        ForIterator::Collection(parse_range_bound(iterator.trim())?)
     };
 
     // 递归解析 body 中的语句
