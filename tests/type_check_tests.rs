@@ -404,3 +404,140 @@ fn main() => int:
 "#;
     assert_compile_error(source, "type mismatch").unwrap();
 }
+
+#[test]
+fn test_nested_field_assign_type_error() {
+    let source = r#"
+class Inner:
+    n: int
+
+class Outer:
+    inner: Inner
+
+fn main() => int:
+    let i: Inner = Inner { n: 0 }
+    let o: Outer = Outer { inner: i }
+    o.inner.n = true
+    rm o
+    return 0
+
+"#;
+    assert_compile_error(source, "type mismatch").unwrap();
+}
+
+#[test]
+fn test_raise_undefined_name_is_error() {
+    let source = r#"
+fn main() => int:
+    raise nope
+
+"#;
+    assert_compile_error(source, "undefined").unwrap();
+}
+
+#[test]
+fn test_for_in_non_array_is_error() {
+    let source = r#"
+fn main() => int:
+    for x in 1:
+        return 0
+    return 0
+
+"#;
+    assert_compile_error(source, "type mismatch").unwrap();
+}
+
+#[test]
+fn test_malloc_pointer_as_int_compiles() {
+    let source = r#"
+use malloc in libc of c
+
+fn main() => int:
+    let ptr: int = malloc(8)
+    rm ptr
+    return 0
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_printf_variadic_extra_arg_compiles() {
+    let source = r#"
+use printf in libc of c
+
+fn main() => int:
+    printf("%d", 1)
+    return 0
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_int_cast_from_bool_is_error() {
+    let source = r#"
+fn main() => int:
+    let x: int = int(true)
+    rm x
+    return 0
+
+"#;
+    assert_compile_error(source, "type mismatch").unwrap();
+}
+
+#[test]
+fn test_unknown_field_expr_stmt_is_error() {
+    let source = r#"
+class Box:
+    n: int
+
+    fn new(n: int) => Box:
+        Box { n: n }
+
+fn main() => int:
+    let b: Box = Box::new(1)
+    b.missing
+    rm b
+    return 0
+
+"#;
+    assert_compile_error(source, "field").unwrap();
+}
+
+#[test]
+fn test_zero_arg_method_call_compiles() {
+    let source = r#"
+class Box:
+    n: int
+
+    fn new(n: int) => Box:
+        Box { n: n }
+
+    fn ping(self) => int:
+        return self.n
+
+fn main() => int:
+    let b: Box = Box::new(1)
+    b.ping()
+    rm b
+    return 0
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_tuple_pattern_on_int_is_error() {
+    let source = r#"
+fn main() => int:
+    let n: int = 1
+    match n:
+        (x, y) => x
+        _ => 0
+    rm n
+    return 0
+
+"#;
+    assert_compile_error(source, "type mismatch").unwrap();
+}
