@@ -25,6 +25,7 @@
 #![allow(dead_code)]
 
 use crate::coffee_debug;
+use rayon::prelude::*;
 
 pub mod import;
 pub mod function;
@@ -123,6 +124,22 @@ pub fn parse_program(input: &str) -> Result<Program, Vec<ParseError>> {
     let mut i = 0;
     let mut iterations = 0;
     const MAX_ITER: usize = 1_000_000;
+    const PARALLEL_MIN_LINES: usize = 200;
+    const PARALLEL_MIN_UNITS: usize = 8;
+
+    // Sequential indent scan first: locate independent top-level fn/class/enum/c fn spans.
+    let independent = scan_independent_top_level_spans(&lines);
+    let parallelize =
+        lines.len() >= PARALLEL_MIN_LINES || independent.len() >= PARALLEL_MIN_UNITS;
+    let parsed_units: Vec<(Vec<Statement>, Vec<ParseError>)> = if parallelize {
+        independent
+            .par_iter()
+            .map(|&(start, end)| parse_independent_unit(&lines, start, end))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let mut unit_idx = 0;
 
     while i < lines.len() {
         iterations += 1;
@@ -133,6 +150,15 @@ pub fn parse_program(input: &str) -> Result<Program, Vec<ParseError>> {
                 hint: "Parser safety limit reached; remaining input was not parsed".to_string(),
             });
             break;
+        }
+
+        if parallelize && unit_idx < independent.len() && i == independent[unit_idx].0 {
+            let (unit_stmts, unit_errs) = &parsed_units[unit_idx];
+            statements.extend_from_slice(unit_stmts);
+            errors.extend_from_slice(unit_errs);
+            i = independent[unit_idx].1;
+            unit_idx += 1;
+            continue;
         }
 
         let line = lines[i].trim();
@@ -211,6 +237,90 @@ pub fn parse_program(input: &str) -> Result<Program, Vec<ParseError>> {
         Ok(Program::new(statements))
     } else {
         Err(errors)
+    }
+}
+
+/// Sequential indent scan: complete top-level `fn` / `class` / `enum` / `c fn` spans.
+/// Nested bodies stay inside the parent span and are never listed separately.
+fn scan_independent_top_level_spans(lines: &[&str]) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut cache = crate::parser::indent::IndentCache::new();
+    let mut i = 0;
+    let mut iterations = 0;
+    const MAX_ITER: usize = 1_000_000;
+
+    while i < lines.len() {
+        iterations += 1;
+        if iterations > MAX_ITER {
+            break;
+        }
+
+        let trimmed = lines[i].trim();
+        if trimmed.is_empty() || trimmed.starts_with("/#/") {
+            i += 1;
+            continue;
+        }
+        if trimmed.starts_with("/#*") {
+            i += collect_multiline_comment(&lines[i..])
+                .map(|(_, n)| n.max(1))
+                .unwrap_or(1);
+            continue;
+        }
+
+        if BlockTracker::detect_block_type(lines[i])
+            .map(BlockType::is_independent_top_level)
+            .unwrap_or(false)
+        {
+            let end = cache.indented_block_end(lines, i).max(i + 1);
+            spans.push((i, end));
+            i = end;
+            continue;
+        }
+
+        if is_block_starter(trimmed) {
+            i = cache.indented_block_end(lines, i).max(i + 1);
+            continue;
+        }
+
+        if trimmed.starts_with("let ") {
+            if let Some((_, n)) = collect_multiline_variable_decl(&lines[i..]) {
+                i += n.max(1);
+                continue;
+            }
+        }
+
+        i += 1;
+    }
+
+    spans
+}
+
+/// Parse one already-identified independent top-level span. Line numbers stay absolute.
+fn parse_independent_unit(
+    lines: &[&str],
+    start: usize,
+    end: usize,
+) -> (Vec<Statement>, Vec<ParseError>) {
+    let end = end.min(lines.len());
+    if start >= end {
+        return (Vec::new(), Vec::new());
+    }
+    let slice = &lines[start..end];
+
+    if let Some((stmt, _)) = parse_multiline_statement(slice) {
+        return (vec![stmt], Vec::new());
+    }
+
+    if is_block_starter(slice[0].trim()) {
+        return (Vec::new(), vec![block_parse_error(start + 1, slice[0])]);
+    }
+
+    match parse_single_line_statement(slice[0].trim()) {
+        Some(stmt) => (vec![stmt], Vec::new()),
+        None => (
+            Vec::new(),
+            vec![ParseError::detect_error(start + 1, slice[0])],
+        ),
     }
 }
 
@@ -299,25 +409,8 @@ fn block_parse_error(line_num: usize, line: &str) -> ParseError {
 
 /// Consume the starter line plus any following indented body so it is not reparsed top-level.
 fn skip_failed_block(lines: &[&str], start: usize) -> usize {
-    let base = lines[start].len() - lines[start].trim_start().len();
-    let mut consumed = 1;
-    let mut j = start + 1;
-    while j < lines.len() {
-        let trimmed = lines[j].trim();
-        if trimmed.is_empty() {
-            consumed += 1;
-            j += 1;
-            continue;
-        }
-        let indent = lines[j].len() - lines[j].trim_start().len();
-        if indent > base {
-            consumed += 1;
-            j += 1;
-            continue;
-        }
-        break;
-    }
-    consumed
+    let mut cache = crate::parser::indent::IndentCache::new();
+    cache.indented_block_end(lines, start).saturating_sub(start).max(1)
 }
 
 /// Split `lhs = rhs` without requiring spaces. Ignores `==`/`!=`/`<=`/`>=` and quoted `=`.
@@ -715,11 +808,10 @@ fn collect_multiline_content(lines: &[&str], keyword: &str) -> Option<(String, u
     // Initialize block tracker
     let mut tracker = BlockTracker::new();
     let mut base_indent = None;
-    const MAX_LINES: usize = 1000;  // Prevent infinite loops
+    const MAX_ITER: usize = 1_000_000;
 
     for (line_idx, line) in lines.iter().enumerate() {
-        // Prevent infinite loops
-        if line_idx >= MAX_LINES {
+        if line_idx >= MAX_ITER {
             break;
         }
 
@@ -932,10 +1024,10 @@ fn collect_multiline_variable_decl(lines: &[&str]) -> Option<(String, usize)> {
     // Collect multiline content
     let mut content = String::new();
     let mut lines_consumed = 0;
-    const MAX_LINES: usize = 100;
+    const MAX_ITER: usize = 1_000_000;
 
     for (line_idx, line) in lines.iter().enumerate() {
-        if line_idx >= MAX_LINES {
+        if line_idx >= MAX_ITER {
             break;
         }
 
@@ -1419,6 +1511,34 @@ mod tests {
     }
 
     #[test]
+    fn long_file_several_functions_all_parse() {
+        let mut src = String::new();
+        let mut expected = Vec::new();
+        for f in 0..6 {
+            expected.push(format!("func{}", f));
+            src.push_str(&format!("fn func{}() => int:\n", f));
+            for i in 0..30 {
+                src.push_str(&format!("    let a{}: int = {}\n", i, i));
+            }
+            for i in 0..30 {
+                src.push_str(&format!("    rm a{}\n", i));
+            }
+            src.push_str("    return 0\n\n");
+        }
+        assert!(src.lines().count() >= 150, "fixture must exceed 150 lines");
+        let program = parse_program(&src).expect("150+ line file with several fn must parse");
+        let names: Vec<&str> = program
+            .statements
+            .iter()
+            .filter_map(|s| match s {
+                Statement::Function(func) => Some(func.name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, expected);
+    }
+
+    #[test]
     fn parse_assignment_without_spaces() {
         let program = parse_program("x=1\n").expect("x=1 should parse as assignment");
         assert!(matches!(
@@ -1500,6 +1620,47 @@ mod parse_program_tests {
             .filter(|s| matches!(s, Statement::VariableDecl(_)))
             .count();
         assert_eq!(lets, 150);
+    }
+
+    #[test]
+    fn eight_top_level_functions_preserve_source_order() {
+        let mut src = String::new();
+        for i in 0..8 {
+            src.push_str(&format!("fn f{}() => int:\n    return {}\n\n", i, i));
+        }
+        let program = parse_program(&src).expect("eight top-level functions should parse");
+        let names: Vec<&str> = program
+            .statements
+            .iter()
+            .filter_map(|s| match s {
+                Statement::Function(f) => Some(f.name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, ["f0", "f1", "f2", "f3", "f4", "f5", "f6", "f7"]);
+    }
+
+    #[test]
+    fn parallel_unit_error_uses_absolute_line() {
+        let mut src = String::new();
+        for i in 0..8 {
+            if i == 3 {
+                src.push_str("fn\n    return 0\n\n");
+            } else {
+                src.push_str(&format!("fn f{}() => int:\n    return 0\n\n", i));
+            }
+        }
+        let err = parse_program(&src).expect_err("broken fn among eight units should error");
+        assert!(
+            err.iter().any(|e| matches!(
+                e,
+                ParseError::MissingBlockBody { line: 10, .. }
+                    | ParseError::InvalidFunctionSyntax { line: 10, .. }
+                    | ParseError::GenericSyntaxError { line: 10, .. }
+            )),
+            "error must attach to the broken unit's source line, got {:?}",
+            err
+        );
     }
 
     #[test]

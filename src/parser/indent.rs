@@ -140,6 +140,31 @@ impl IndentCache {
             .collect()
     }
 
+    /// Exclusive end index of the indented block starting at `start`.
+    ///
+    /// Sequential indent scan only: empty lines are included; the first
+    /// non-empty line at indent `<=` the starter line ends the span.
+    pub fn indented_block_end(&mut self, lines: &[&str], start: usize) -> usize {
+        if start >= lines.len() {
+            return start;
+        }
+        let base = self.get_line_indent(start + 1, lines[start]).indent_level;
+        let mut j = start + 1;
+        while j < lines.len() {
+            if lines[j].trim().is_empty() {
+                j += 1;
+                continue;
+            }
+            let indent = self.get_line_indent(j + 1, lines[j]).indent_level;
+            if indent > base {
+                j += 1;
+                continue;
+            }
+            break;
+        }
+        j
+    }
+
     /// Validate indent consistency across all cached lines
     pub fn validate_consistency(&self) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
@@ -210,5 +235,19 @@ mod tests {
         cache.get_line_indent(2, "\tline");
 
         assert!(cache.has_inconsistent_indent());
+    }
+
+    #[test]
+    fn indented_block_end_does_not_cross_sibling() {
+        let lines = [
+            "fn a() => int:",
+            "    return 1",
+            "",
+            "fn b() => int:",
+            "    return 2",
+        ];
+        let mut cache = IndentCache::new();
+        assert_eq!(cache.indented_block_end(&lines, 0), 3);
+        assert_eq!(cache.indented_block_end(&lines, 3), 5);
     }
 }

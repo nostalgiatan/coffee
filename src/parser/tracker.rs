@@ -46,6 +46,11 @@ impl BlockType {
         )
     }
 
+    /// Independent top-level units (`fn` / `class` / `enum`) that do not nest in each other.
+    pub fn is_independent_top_level(self) -> bool {
+        matches!(self, BlockType::Function | BlockType::Class | BlockType::Enum)
+    }
+
     /// Get the keyword that starts this block
     pub fn keyword(&self) -> &str {
         match self {
@@ -311,11 +316,11 @@ impl BlockTracker {
 
         // Check for block-starting keywords
         // Handle both "fn" and "c fn"
-        if trimmed.starts_with("c fn") || trimmed.starts_with("fn ") {
+        if trimmed.starts_with("c fn") || trimmed.starts_with("fn ") || trimmed == "fn" {
             Some(BlockType::Function)
-        } else if trimmed.starts_with("class ") {
+        } else if trimmed.starts_with("packed class ") || trimmed.starts_with("class ") || trimmed == "class" {
             Some(BlockType::Class)
-        } else if trimmed.starts_with("enum ") {
+        } else if trimmed.starts_with("enum ") || trimmed == "enum" {
             Some(BlockType::Enum)
         } else if trimmed.starts_with("if ") {
             Some(BlockType::IfStatement)
@@ -442,5 +447,9 @@ mod tests {
         assert_eq!(BlockTracker::detect_block_type("if x > 0:"), Some(BlockType::IfStatement));
         assert_eq!(BlockTracker::detect_block_type("while true:"), Some(BlockType::WhileLoop));
         assert_eq!(BlockTracker::detect_block_type("let x = 5"), None);
+        assert_eq!(BlockTracker::detect_block_type("packed class P:"), Some(BlockType::Class));
+        assert_eq!(BlockTracker::detect_block_type("c fn foo():"), Some(BlockType::Function));
+        assert!(BlockType::Function.is_independent_top_level());
+        assert!(!BlockType::IfStatement.is_independent_top_level());
     }
 }

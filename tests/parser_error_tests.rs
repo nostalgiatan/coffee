@@ -16,6 +16,24 @@ fn long_file_still_parses() {
 }
 
 #[test]
+fn long_file_several_functions_still_parses() {
+    let mut source = String::new();
+    for f in 0..6 {
+        source.push_str(&format!("fn helper{}(n: int) => int:\n", f));
+        for i in 0..15 {
+            source.push_str(&format!("    let x{}: int = {}\n", i, i));
+        }
+        for i in 0..15 {
+            source.push_str(&format!("    rm x{}\n", i));
+        }
+        source.push_str("    rm n\n    return 0\n\n");
+    }
+    source.push_str("fn main() => int:\n    return 0\n");
+    assert!(source.lines().count() >= 150);
+    assert_compiles(&source).unwrap();
+}
+
+#[test]
 fn assignment_without_spaces() {
     let source = r#"
 fn main() => int:
