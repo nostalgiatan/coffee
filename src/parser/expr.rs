@@ -779,7 +779,7 @@ pub fn parse_expression(input: &str) -> Result<Expression, String> {
     // Handle member access: object.method(args) or object.field
     // Must come after function calls to avoid treating printf("...", p.x) as member access
     if !input.starts_with('"') && !input.ends_with('"') && input.contains('.') {
-        if let Some(pos) = input.rfind('.') {
+        if let Some(pos) = find_last_dot_outside_parens(input) {
             let object_str = &input[..pos].trim();
             let rest = &input[pos + 1..].trim();
             let object_ok = !object_str.is_empty()
@@ -922,6 +922,28 @@ fn matching_close_paren(input: &str, open_pos: usize) -> Option<usize> {
     None
 }
 
+fn find_last_dot_outside_parens(input: &str) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escape_next = false;
+    let mut last = None;
+    for (i, ch) in input.char_indices() {
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+        match ch {
+            '\\' if in_string => escape_next = true,
+            '"' => in_string = !in_string,
+            '(' if !in_string => depth += 1,
+            ')' if !in_string => depth -= 1,
+            '.' if !in_string && depth == 0 => last = Some(i),
+            _ => {}
+        }
+    }
+    last
+}
+
 fn find_bin_op_outside_parens(expr: &str, op: &str) -> Option<usize> {
     let mut depth = 0;
     let mut in_string = false;
@@ -1006,6 +1028,24 @@ mod tests {
             assert_eq!(op, "+");
         } else {
             panic!("Expected Binary expression");
+        }
+    }
+
+    #[test]
+    fn nested_enum_construction_keeps_outer_dot() {
+        match parse_expression("Result.Success(Option.Some(42))").expect("parse") {
+            Expression::Member { field, args, .. } => {
+                assert_eq!(field, "Success");
+                assert_eq!(args.len(), 1);
+                match &args[0] {
+                    Expression::Member { field, args, .. } => {
+                        assert_eq!(field, "Some");
+                        assert_eq!(args.len(), 1);
+                    }
+                    other => panic!("inner: {:?}", other),
+                }
+            }
+            other => panic!("outer: {:?}", other),
         }
     }
 

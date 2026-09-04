@@ -749,7 +749,15 @@ impl SemanticAnalyzer {
                 result
             }
             crate::parser::Statement::Assignment(name, value) => {
-                self.analyze_expression(&crate::parser::expr::Expression::Variable(name.clone()))?;
+                if let Some((object, field)) = name.split_once('.') {
+                    self.analyze_expression(&crate::parser::expr::Expression::Member {
+                        object: Box::new(crate::parser::expr::Expression::Variable(object.to_string())),
+                        field: field.to_string(),
+                        args: Vec::new(),
+                    })?;
+                } else {
+                    self.analyze_expression(&crate::parser::expr::Expression::Variable(name.clone()))?;
+                }
                 self.analyze_expression(value)
             }
             crate::parser::Statement::Main(_) => Ok(()),

@@ -344,7 +344,6 @@ fn main() => int:
 //=============================================================================
 
 #[test]
-#[ignore = "nested Enum.Variant(Enum.Variant) misparsed (inner dot); not E700 construction"]
 fn test_match_nested_enum() {
     let source = r#"
 enum Option:
@@ -369,7 +368,6 @@ fn main() => int:
 }
 
 #[test]
-#[ignore = "nested Enum.Variant(Enum.Variant) misparsed (inner dot); not E700 construction"]
 fn test_match_complex_nested() {
     let source = r#"
 enum Option:
