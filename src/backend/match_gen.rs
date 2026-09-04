@@ -4,6 +4,7 @@
 //! live here so they stay off the codegen coordinator.
 
 use crate::coffee_debug;
+use crate::parser::expr::Expression;
 use crate::parser::Pattern;
 use super::codegen::CodeGenerator;
 
@@ -44,38 +45,56 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         Ok(())
     }
 
+    /// Pointee type for a pointer scrutinee: Pattern struct name, else `Expression::Variable`.
+    fn aggregate_pointee_type(
+        &self,
+        scrutinee: &Expression,
+        struct_name: Option<&str>,
+    ) -> Result<inkwell::types::StructType<'ctx>, String> {
+        if let Some(name) = struct_name {
+            if let Some(st) = self.type_mapper.struct_types.get(name).copied() {
+                return Ok(st);
+            }
+        }
+        match scrutinee {
+            Expression::Variable(name) => {
+                if let Some((_, BasicTypeEnum::StructType(st))) = self.variables.get(name) {
+                    Ok(*st)
+                } else if let Some(ty_name) = struct_name {
+                    Err(format!(
+                        "variable '{}' is not a struct (no struct type found for '{}')",
+                        name, ty_name
+                    ))
+                } else {
+                    Err(format!(
+                        "variable '{}' is not an aggregate type (cannot destructure in match)",
+                        name
+                    ))
+                }
+            }
+            _ => match struct_name {
+                Some(ty_name) => Err(format!(
+                    "cannot load struct '{}' from a non-variable match scrutinee (need a variable, not a computed expression)",
+                    ty_name
+                )),
+                None => Err(
+                    "tuple/aggregate match requires a variable scrutinee; cannot look up the pointee type for a non-variable match value".to_string(),
+                ),
+            },
+        }
+    }
+
     fn load_aggregate_value(
         &mut self,
         match_val: BasicValueEnum<'ctx>,
-        match_value_str: &str,
+        scrutinee: &Expression,
         struct_name: Option<&str>,
     ) -> Result<BasicValueEnum<'ctx>, String> {
         if let BasicValueEnum::PointerValue(ptr_val) = match_val {
-            let struct_type = if let Some((_, BasicTypeEnum::StructType(st))) =
-                self.variables.get(match_value_str)
-            {
-                Some(*st)
-            } else if let Some(name) = struct_name {
-                self.type_mapper.struct_types.get(name).copied()
-            } else {
-                None
-            };
-
-            if let Some(struct_type) = struct_type {
-                self.backend.builder
-                    .build_load(BasicTypeEnum::StructType(struct_type), ptr_val, "agg_val")
-                    .map_err(|e| format!("failed to load aggregate value: {}", e))
-            } else if let Some(name) = struct_name {
-                Err(format!(
-                    "variable '{}' is not a struct (no struct type found for '{}')",
-                    match_value_str, name
-                ))
-            } else {
-                let i64_type = self.backend.context.i64_type();
-                self.backend.builder
-                    .build_load(BasicTypeEnum::IntType(i64_type), ptr_val, "agg_val")
-                    .map_err(|e| format!("failed to load tuple value: {}", e))
-            }
+            let struct_type = self.aggregate_pointee_type(scrutinee, struct_name)?;
+            self.backend.builder
+                .build_load(BasicTypeEnum::StructType(struct_type), ptr_val, "agg_val")
+                .map_err(|e| format!("failed to load aggregate value: {}", e))
         } else {
             Ok(match_val)
         }
@@ -85,13 +104,13 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         &mut self,
         pattern: &Pattern,
         value: BasicValueEnum<'ctx>,
-        match_value_str: &str,
+        scrutinee: &Expression,
     ) -> Result<(), String> {
         match pattern {
             Pattern::Wildcard | Pattern::Literal(_) => Ok(()),
             Pattern::Ident(name) => self.store_pattern_binding(name, value),
             Pattern::Tuple(elems) => {
-                let loaded = self.load_aggregate_value(value, match_value_str, None)?;
+                let loaded = self.load_aggregate_value(value, scrutinee, None)?;
                 let BasicValueEnum::StructValue(tuple_val) = loaded else {
                     coffee_debug!("DEBUG: compile_match: tuple value is not StructValue, {:?}", loaded);
                     return Ok(());
@@ -103,12 +122,12 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                     let field_val = self.backend.builder
                         .build_extract_value(tuple_val, j as u32, &format!("tup_{}", j))
                         .map_err(|e| format!("failed to extract tuple field: {}", e))?;
-                    self.bind_pattern_value(elem, field_val, match_value_str)?;
+                    self.bind_pattern_value(elem, field_val, scrutinee)?;
                 }
                 Ok(())
             }
             Pattern::Struct { name, fields } => {
-                let loaded = self.load_aggregate_value(value, match_value_str, Some(name))?;
+                let loaded = self.load_aggregate_value(value, scrutinee, Some(name))?;
                 let BasicValueEnum::StructValue(struct_val) = loaded else {
                     return Err("match value is not a struct".to_string());
                 };
@@ -127,19 +146,19 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                     let field_val = self.backend.builder
                         .build_extract_value(struct_val, field_index as u32, field_name)
                         .map_err(|e| format!("failed to extract field '{}': {}", field_name, e))?;
-                    self.bind_pattern_value(field_pat, field_val, match_value_str)?;
+                    self.bind_pattern_value(field_pat, field_val, scrutinee)?;
                 }
                 Ok(())
             }
             Pattern::EnumVariant { args, .. } => {
                 for arg in args {
-                    self.bind_pattern_value(arg, value, match_value_str)?;
+                    self.bind_pattern_value(arg, value, scrutinee)?;
                 }
                 Ok(())
             }
             Pattern::Or(alts) => {
                 if let Some(first) = alts.first() {
-                    self.bind_pattern_value(first, value, match_value_str)?;
+                    self.bind_pattern_value(first, value, scrutinee)?;
                 }
                 Ok(())
             }
@@ -184,9 +203,9 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         &mut self,
         pattern: &Pattern,
         match_val: BasicValueEnum<'ctx>,
-        match_value_str: &str,
+        scrutinee: &Expression,
     ) -> Result<Option<inkwell::values::IntValue<'ctx>>, String> {
-        coffee_debug!("DEBUG: compile_match: pattern='{}'", pattern);
+        coffee_debug!("DEBUG: compile_match: pattern={:?}", pattern);
         match pattern {
             Pattern::Wildcard => Ok(None),
             Pattern::Ident(name) => {
@@ -194,7 +213,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 Ok(None)
             }
             Pattern::Tuple(_) | Pattern::Struct { .. } => {
-                self.bind_pattern_value(pattern, match_val, match_value_str)?;
+                self.bind_pattern_value(pattern, match_val, scrutinee)?;
                 Ok(None)
             }
             Pattern::Literal(_) | Pattern::EnumVariant { .. } => {
@@ -207,7 +226,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             Pattern::Or(alts) => {
                 let mut acc: Option<inkwell::values::IntValue<'ctx>> = None;
                 for alt in alts {
-                    match self.pattern_condition(alt, match_val, match_value_str)? {
+                    match self.pattern_condition(alt, match_val, scrutinee)? {
                         None => return Ok(None),
                         Some(cond) => acc = Some(self.or_conds(acc, cond)?),
                     }
@@ -227,10 +246,6 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         let function = self.current_function
             .ok_or("match outside function")?;
 
-        let match_value_str = match &match_expr.value {
-            crate::parser::expr::Expression::Variable(n) => n.clone(),
-            other => other.to_string(),
-        };
         let match_val = self.compile_expr(&match_expr.value)?;
         let merge_block = self.backend.context.append_basic_block(function, "matchend");
 
@@ -243,14 +258,14 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             self.backend.builder.position_at_end(current_block);
 
             if let Some(guard_expr) = &arm.guard {
-                self.bind_pattern_value(&arm.pattern, match_val, &match_value_str)?;
+                self.bind_pattern_value(&arm.pattern, match_val, &match_expr.value)?;
                 let guard_val = self.compile_expr(guard_expr)
                     .map_err(|e| format!("match guard: {}", e))?;
                 let guard_bool = super::control_flow::value_to_bool(guard_val, &self.backend.builder)?;
                 self.backend.builder.build_conditional_branch(guard_bool, arm_block, next_block)
                     .map_err(|e| e.to_string())?;
             } else {
-                match self.pattern_condition(&arm.pattern, match_val, &match_value_str)? {
+                match self.pattern_condition(&arm.pattern, match_val, &match_expr.value)? {
                     None => {
                         self.backend.builder.build_unconditional_branch(arm_block)
                             .map_err(|e| e.to_string())?;
