@@ -444,21 +444,8 @@ impl CompilationPipeline {
     /// Type check a statement
     fn type_check_statement(&self, statement: &parser::Statement) {
         let mut type_checker = self.session.type_checker.write().unwrap();
-
-        match statement {
-            parser::Statement::VariableDecl(decl) => {
-                if let Err(diagnostic) = type_checker.check_variable_decl(decl) {
-                    type_checker.report(diagnostic.into());
-                }
-            }
-            parser::Statement::MemoryOp(op) => {
-                if let Err(diagnostic) = type_checker.check_memory_op(op) {
-                    type_checker.report(diagnostic);
-                }
-            }
-            _ => {
-                // Other statements don't need type checking yet
-            }
+        if let Err(err) = type_checker.check_statement(statement) {
+            type_checker.report(err.into());
         }
     }
 

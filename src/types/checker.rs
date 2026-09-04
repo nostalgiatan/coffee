@@ -250,9 +250,11 @@ impl TypeChecker {
     pub fn check_return_statement(&mut self, return_stmt: &parser::var::ReturnStmt) -> Result<(), TypeSystemError> {
         coffee_debug!("[DEBUG] check_return_statement: checking return statement");
         if let Some(ref expr) = return_stmt.value {
-            // Infer expression type
             coffee_debug!("[DEBUG] check_return_statement: inferring type for return value '{}'", expr);
-            let expr_type = self.infer_value_type(expr)?;
+            let expr_type = match crate::parser::expr::parse_expression(expr) {
+                Ok(parsed) => self.check_expression(&parsed)?,
+                Err(_) => self.infer_value_type(expr)?,
+            };
             coffee_debug!("[DEBUG] check_return_statement: inferred return value type as {:?}", expr_type);
             
             // Check against expected return type
@@ -315,7 +317,10 @@ impl TypeChecker {
 
         // Check value type if value is provided
         if !decl.value.is_empty() {
-            let value_type = self.infer_value_type(&decl.value)?;
+            let value_type = match crate::parser::expr::parse_expression(&decl.value) {
+                Ok(expr) => self.check_expression(&expr)?,
+                Err(_) => self.infer_value_type(&decl.value)?,
+            };
             coffee_debug!("[DEBUG] check_variable_decl: inferred value type as {:?}", value_type);
             if !self.types_compatible(&value_type, &ty)? {
                 coffee_debug!("[DEBUG] check_variable_decl: types NOT compatible: {:?} vs {:?}", value_type, ty);
@@ -350,7 +355,120 @@ impl TypeChecker {
         Ok(())
     }
 
-    /// Check an assignment
+    /// Type-check a statement, recursing into function / if / while / match bodies
+    /// so nested `let` and memory ops are checked. Compiler hookup: call this from
+    /// `CompilationPipeline::type_check_statement`.
+    pub fn check_statement(&mut self, statement: &parser::Statement) -> Result<(), TypeSystemError> {
+        match statement {
+            parser::Statement::VariableDecl(decl) => self.check_variable_decl(decl),
+            parser::Statement::MemoryOp(op) => self.check_memory_op(op).map_err(Into::into),
+            parser::Statement::Function(func) => self.check_function(func),
+            parser::Statement::If(if_expr) => self.check_if(if_expr),
+            parser::Statement::While(while_loop) => self.check_while(while_loop),
+            parser::Statement::Match(match_expr) => self.check_match(match_expr),
+            parser::Statement::For(for_loop) => self.check_stmt_list(&for_loop.body),
+            parser::Statement::Expr(expr) => self.check_expr_stmt(expr),
+            parser::Statement::Return(ret) => self.check_return_statement(ret),
+            parser::Statement::Assignment(_, value) => self.check_expr_stmt(value),
+            parser::Statement::Raise(_)
+            | parser::Statement::Import(_)
+            | parser::Statement::Main(_)
+            | parser::Statement::Class(_)
+            | parser::Statement::Enum(_)
+            | parser::Statement::Break(_)
+            | parser::Statement::Continue(_)
+            | parser::Statement::SingleLineComment(_)
+            | parser::Statement::MultiLineComment(_) => Ok(()),
+        }
+    }
+
+    fn check_stmt_list(&mut self, statements: &[parser::Statement]) -> Result<(), TypeSystemError> {
+        let mut first_err = None;
+        for stmt in statements {
+            if let Err(e) = self.check_statement(stmt) {
+                if first_err.is_none() {
+                    first_err = Some(e);
+                }
+            }
+        }
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
+    fn check_expr_stmt(&mut self, expr: &crate::parser::expr::Expression) -> Result<(), TypeSystemError> {
+        match self.check_expression(expr) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                self.add_error(e.clone());
+                Err(e)
+            }
+        }
+    }
+
+    fn check_function(&mut self, func: &parser::Function) -> Result<(), TypeSystemError> {
+        let prev_return = self.current_return_type.clone();
+        let prev_values = self.values.clone();
+        if let Err(e) = self.set_function_return_type(&func.return_type) {
+            self.add_error(e.clone());
+            self.current_return_type = prev_return;
+            return Err(e);
+        }
+        for param in &func.parameters {
+            let ty = match self.registry.read() {
+                Ok(reg) => reg.resolve_type(&param.param_type).unwrap_or(Type::unit()),
+                Err(_) => Type::unit(),
+            };
+            self.values.insert(param.name.clone(), ValueInfo {
+                name: param.name.clone(),
+                ty,
+                state: ValueState::Alive,
+                scope: SpaceId::new(),
+                location: Span::new(0, param.name.len()),
+                lifetime: None,
+            });
+        }
+        let result = match &func.body {
+            parser::FunctionBody::Block(stmts) => self.check_stmt_list(stmts),
+            parser::FunctionBody::Expression(expr) => self.check_expr_stmt(expr),
+            parser::FunctionBody::External => Ok(()),
+        };
+        self.current_return_type = prev_return;
+        self.values = prev_values;
+        result
+    }
+
+    fn check_if(&mut self, if_expr: &parser::IfExpr) -> Result<(), TypeSystemError> {
+        self.check_expr_stmt(&if_expr.condition)?;
+        self.check_stmt_list(&if_expr.body)?;
+        for elif in &if_expr.elifs {
+            self.check_expr_stmt(&elif.condition)?;
+            self.check_stmt_list(&elif.body)?;
+        }
+        if let Some(else_body) = &if_expr.else_body {
+            self.check_stmt_list(else_body)?;
+        }
+        Ok(())
+    }
+
+    fn check_while(&mut self, while_loop: &parser::WhileLoop) -> Result<(), TypeSystemError> {
+        self.check_expr_stmt(&while_loop.condition)?;
+        self.check_stmt_list(&while_loop.body)
+    }
+
+    fn check_match(&mut self, match_expr: &parser::MatchExpr) -> Result<(), TypeSystemError> {
+        self.check_expr_stmt(&match_expr.value)?;
+        for arm in &match_expr.arms {
+            let _ = self.check_expression(&arm.pattern);
+            if let Some(guard) = &arm.guard {
+                self.check_expr_stmt(guard)?;
+            }
+            self.check_stmt_list(&arm.body)?;
+        }
+        Ok(())
+    }
+
     /// Check an expression
     pub fn check_expression(&mut self, expr: &crate::parser::expr::Expression) -> Result<Type, TypeSystemError> {
         match expr {
@@ -390,17 +508,7 @@ impl TypeChecker {
                 self.check_function_call(&function_call)
             },
             crate::parser::expr::Expression::Member { object, field, args } => {
-                // Check the object expression
                 let object_type = self.check_expression(object)?;
-                
-                // Get the type registry to look up class definitions
-                let registry = self.registry.read()
-                    .map_err(|_| TypeSystemError::ParseError {
-                        type_str: "member access".to_string(),
-                        reason: "Failed to access type registry".to_string(),
-                    })?;
-                
-                // Check if the object is a class type
                 let class_name = match &object_type {
                     Type::NamedType { name } => name.clone(),
                     _ => {
@@ -410,62 +518,31 @@ impl TypeChecker {
                         })
                     }
                 };
-                
-                // Get the class definition from the registry
-                let fields = match registry.get_type(&class_name) {
-                    Some(TypeDef::Class { fields, .. }) => fields,
-                    Some(_) => {
-                        return Err(TypeSystemError::ParseError {
-                            type_str: "member access".to_string(),
-                            reason: format!("'{}' is not a class", class_name),
-                        })
-                    }
-                    None => {
-                        return Err(TypeSystemError::UndefinedType {
-                            name: class_name.clone(),
-                            span: Span::new(0, 0),
-                        })
-                    }
-                };
-                
-                // Check if the field exists in the class
-                let field_type_str = match fields.iter().find(|f| f.name == *field) {
-                    Some(field_def) => field_def.ty.clone(),
-                    None => {
-                        return Err(TypeSystemError::FieldNotFound {
-                            type_name: class_name,
-                            field_name: field.clone(),
-                            span: Span::new(0, 0),
-                        })
-                    }
-                };
-                
-                // Resolve the field type string to a Type
-                let field_type = registry.resolve_type(&field_type_str)
-                    .map_err(|_| TypeSystemError::ParseError {
-                        type_str: field_type_str.clone(),
-                        reason: format!("Failed to resolve field type '{}'", field_type_str),
-                    })?;
-                
-                // If this is a method call, check the method signature
+
                 if !args.is_empty() {
-                    // TODO: Implement method call type checking
-                    // For now, just return the field type
-                    Ok(field_type)
-                } else {
-                    // Field access - return the field type
-                    Ok(field_type)
+                    return self.check_method_call(&class_name, field, args);
+                }
+
+                // Field access. Zero-arg `obj.method()` is also Member with empty args;
+                // if there is no field, fall back to a method lookup.
+                match self.lookup_field_type(&class_name, field) {
+                    Ok(field_type) => Ok(field_type),
+                    Err(TypeSystemError::FieldNotFound { .. }) => {
+                        match self.lookup_method(&class_name, field) {
+                            Some(method) => Ok(method.return_type),
+                            None => Ok(Type::void()),
+                        }
+                    }
+                    Err(e) => Err(e),
                 }
             },
             crate::parser::expr::Expression::StructLiteral { struct_name, .. } => {
                 // Return the struct type
                 Ok(crate::types::Type::NamedType { name: struct_name.clone() })
             },
-            crate::parser::expr::Expression::Unary { .. } => {
-                Err(TypeSystemError::ParseError {
-                    type_str: "unary operation".to_string(),
-                    reason: "Unary operations not yet implemented".to_string(),
-                })
+            crate::parser::expr::Expression::Unary { op, operand } => {
+                let operand_type = self.check_expression(operand)?;
+                self.check_unary_operation(op, &operand_type)
             },
             crate::parser::expr::Expression::FString { template: _, placeholders } => {
                 // Validate that all placeholders exist in current scope
@@ -591,6 +668,110 @@ impl TypeChecker {
                     }),
                 }
             },
+        }
+    }
+
+    fn lookup_field_type(&self, class_name: &str, field: &str) -> Result<Type, TypeSystemError> {
+        let registry = self.registry.read()
+            .map_err(|_| TypeSystemError::ParseError {
+                type_str: "member access".to_string(),
+                reason: "Failed to access type registry".to_string(),
+            })?;
+
+        let fields = match registry.get_type(class_name) {
+            Some(TypeDef::Class { fields, .. }) | Some(TypeDef::Struct { fields, .. }) => fields,
+            Some(_) => {
+                return Err(TypeSystemError::ParseError {
+                    type_str: "member access".to_string(),
+                    reason: format!("'{}' is not a class", class_name),
+                })
+            }
+            None => {
+                return Err(TypeSystemError::UndefinedType {
+                    name: class_name.to_string(),
+                    span: Span::new(0, 0),
+                })
+            }
+        };
+
+        let field_type_str = match fields.iter().find(|f| f.name == field) {
+            Some(field_def) => field_def.ty.clone(),
+            None => {
+                return Err(TypeSystemError::FieldNotFound {
+                    type_name: class_name.to_string(),
+                    field_name: field.to_string(),
+                    span: Span::new(0, 0),
+                })
+            }
+        };
+
+        registry.resolve_type(&field_type_str)
+            .map_err(|_| TypeSystemError::ParseError {
+                type_str: field_type_str.clone(),
+                reason: format!("Failed to resolve field type '{}'", field_type_str),
+            })
+    }
+
+    fn lookup_method(&self, class_name: &str, method_name: &str) -> Option<MethodSignature> {
+        let registry = self.registry.read().ok()?;
+        registry.get_methods(class_name).into_iter().find(|m| m.name == method_name)
+    }
+
+    fn check_method_call(
+        &mut self,
+        class_name: &str,
+        method_name: &str,
+        args: &[crate::parser::expr::Expression],
+    ) -> Result<Type, TypeSystemError> {
+        let method = self.lookup_method(class_name, method_name).ok_or_else(|| {
+            TypeSystemError::MethodNotFound {
+                type_name: class_name.to_string(),
+                method_name: method_name.to_string(),
+                span: Span::new(0, 0),
+            }
+        })?;
+
+        let param_types: Vec<Type> = match method.params.first() {
+            Some(Type::NamedType { name }) if name == class_name => method.params[1..].to_vec(),
+            _ => method.params.clone(),
+        };
+
+        if args.len() != param_types.len() {
+            let error = TypeSystemError::arity_mismatch(param_types.len(), args.len(), Span::new(0, 0));
+            self.add_error(error.clone());
+            return Err(error);
+        }
+
+        for (arg, expected) in args.iter().zip(param_types.iter()) {
+            let arg_type = self.check_expression(arg)?;
+            if !self.types_compatible(&arg_type, expected)? {
+                let error = TypeSystemError::type_mismatch(expected.clone(), arg_type, Span::new(0, 0));
+                self.add_error(error.clone());
+                return Err(error);
+            }
+        }
+
+        Ok(method.return_type)
+    }
+
+    fn check_unary_operation(&self, op: &str, operand_type: &Type) -> Result<Type, TypeSystemError> {
+        let location = Span::new(0, 1);
+        match op {
+            "!" => {
+                if *operand_type == Type::bool() {
+                    Ok(Type::bool())
+                } else {
+                    Err(TypeSystemError::invalid_operation(op, operand_type.clone(), Type::unit(), location))
+                }
+            }
+            "-" => {
+                if operand_type.is_numeric() {
+                    Ok(operand_type.clone())
+                } else {
+                    Err(TypeSystemError::invalid_operation(op, operand_type.clone(), Type::unit(), location))
+                }
+            }
+            _ => Err(TypeSystemError::invalid_operation(op, operand_type.clone(), Type::unit(), location)),
         }
     }
 
@@ -861,6 +1042,18 @@ impl TypeChecker {
 
     /// Infer type from value string
     fn infer_value_type(&self, value: &str) -> Result<Type, TypeSystemError> {
+        let value = value.trim();
+        if let Some(rest) = value.strip_prefix('!') {
+            let inner = self.infer_value_type(rest.trim())?;
+            return self.check_unary_operation("!", &inner);
+        }
+        if let Some(rest) = value.strip_prefix('-') {
+            if !rest.is_empty() {
+                let inner = self.infer_value_type(rest.trim())?;
+                return self.check_unary_operation("-", &inner);
+            }
+        }
+
         // Check for function calls (e.g., "sin(0.0)")
         if value.contains('(') && value.ends_with(')') {
             // Extract function name and arguments
@@ -1698,5 +1891,28 @@ mod tests {
         // Test memory operation
         checker.check_memory_operation("x", "move").unwrap();
         assert_eq!(checker.values.get("x").unwrap().state, ValueState::Moved);
+    }
+
+    #[test]
+    fn test_unary_not_and_neg() {
+        let registry = Arc::new(RwLock::new(TypeRegistry::root()));
+        let mut checker = TypeChecker::simple(registry);
+        let not_true = parser::expr::Expression::Unary {
+            op: "!".to_string(),
+            operand: Box::new(parser::expr::Expression::Literal("true".to_string())),
+        };
+        assert_eq!(checker.check_expression(&not_true).unwrap(), Type::bool());
+
+        let neg = parser::expr::Expression::Unary {
+            op: "-".to_string(),
+            operand: Box::new(parser::expr::Expression::Literal("10".to_string())),
+        };
+        assert_eq!(checker.check_expression(&neg).unwrap(), Type::int());
+
+        let bad = parser::expr::Expression::Unary {
+            op: "!".to_string(),
+            operand: Box::new(parser::expr::Expression::Literal("1".to_string())),
+        };
+        assert!(checker.check_expression(&bad).is_err());
     }
 }
