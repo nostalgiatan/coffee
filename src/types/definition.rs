@@ -164,6 +164,21 @@ impl Type {
         }
     }
 
+    /// Pointer-sized integer (`int` / `int(8)±`), used as a C handle alongside `object`.
+    pub fn is_pointer_sized_int(&self) -> bool {
+        matches!(self, Type::Int { bits, .. } if *bits >= 64)
+    }
+
+    /// `object` (`Type::Variadic`) as a C handle: ints, strings, named types, refs.
+    /// Does not include `bool` (object must not coerce to/from bool).
+    pub fn is_c_handle_value(&self) -> bool {
+        match self {
+            Type::Int { .. } | Type::String | Type::NamedType { .. } | Type::Ref { .. }
+            | Type::Variadic => true,
+            _ => false,
+        }
+    }
+
     /// 检查类型是否可以被隐式转换
     pub fn can_coerce_from(&self, from: &Type) -> bool {
         match (self, from) {
@@ -180,6 +195,12 @@ impl Type {
             // This prevents precision loss and security bypasses
             // Explicit casts should be required instead
             // (Type::Float { .. }, Type::Int { .. }) => true,  // REMOVED
+            // C `object` parameter: accept ints, strings, named, refs, objects (not bool)
+            (Type::Variadic, from) if from.is_c_handle_value() => true,
+            // C `object` result: assign to pointer-sized int (`let p: int = malloc(...)`)
+            (to, Type::Variadic) if to.is_pointer_sized_int() => true,
+            // C `char *` / `object`: string ↔ object
+            (Type::String, Type::Variadic) => true,
             // &T 可以是 &mut T
             (Type::Ref { elem: e1, mutable: false }, Type::Ref { elem: e2, mutable: true }) => {
                 e1.can_coerce_from(e2)
@@ -1024,5 +1045,35 @@ mod tests {
 
         assert!(region.lookup("x").is_some());
         assert!(region.lookup("y").is_none());
+    }
+
+    #[test]
+    fn test_object_c_handle_coercion() {
+        let object = Type::Variadic;
+        let i64 = Type::int();
+        let i32 = Type::i32();
+        let s = Type::String;
+        let named = Type::NamedType { name: "Foo".to_string() };
+        let r = Type::Ref { elem: Box::new(Type::int()), mutable: false };
+
+        assert!(object.can_coerce_from(&i64));
+        assert!(object.can_coerce_from(&i32));
+        assert!(object.can_coerce_from(&s));
+        assert!(object.can_coerce_from(&named));
+        assert!(object.can_coerce_from(&r));
+        assert!(object.can_coerce_from(&object));
+        assert!(!object.can_coerce_from(&Type::Bool));
+        assert!(!Type::Bool.can_coerce_from(&object));
+
+        assert!(i64.can_coerce_from(&object));
+        assert!(!i32.can_coerce_from(&object));
+        assert!(s.can_coerce_from(&object));
+
+        assert!(Type::Int { bits: 64, signed: true }
+            .can_coerce_from(&Type::Int { bits: 32, signed: true }));
+        assert!(!Type::Int { bits: 32, signed: true }
+            .can_coerce_from(&Type::Int { bits: 64, signed: true }));
+        assert!(!Type::float().can_coerce_from(&i64));
+        assert!(!i64.can_coerce_from(&Type::float()));
     }
 }

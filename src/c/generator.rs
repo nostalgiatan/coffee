@@ -515,13 +515,13 @@ fn convert_ctype_to_coffee_raw(ctype: CXType) -> Result<String, String> {
                 let pointee = clang_getPointeeType(ctype);
                 let pointee_name = cxstring_to_string(clang_getTypeSpelling(pointee));
 
-                // Check the actual type name instead of just kind
-                if pointee_name == "char" {
+                // Coffee C style: `char *` / `const char *` text → string;
+                // `void *` and other/unknown pointers → object (not int(4)+).
+                let pointee_trimmed = pointee_name.trim();
+                if pointee_trimmed == "char" || pointee_trimmed == "const char" {
                     Ok("string".to_string())
-                } else if pointee_name == "void" {
-                    Ok("int".to_string())
                 } else {
-                    Ok("int".to_string())
+                    Ok("object".to_string())
                 }
             }
         }

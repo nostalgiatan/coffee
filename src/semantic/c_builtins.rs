@@ -47,7 +47,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                 param_type: "int".to_string(),
                 is_variadic: false,
             }],
-            return_type: "int(4)+".to_string(), // pointer as int
+            return_type: "object".to_string(), // pointer as int
             is_variadic: false,
         });
 
@@ -56,7 +56,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             name: "free".to_string(),
             parameters: vec![Parameter {
                 name: "ptr".to_string(),
-                param_type: "int".to_string(), // pointer as int
+                param_type: "object".to_string(), // pointer as int
                 is_variadic: false,
             }],
             return_type: "void".to_string(),
@@ -75,13 +75,13 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             is_variadic: true,
         });
 
-        // int fprintf(int stream, const char *format, ...)
+        // int fprintf(FILE *stream, const char *format, ...)
         libc_symbols.insert("fprintf".to_string(), CSymbol {
             name: "fprintf".to_string(),
             parameters: vec![
                 Parameter {
                     name: "stream".to_string(),
-                    param_type: "string".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 },
                 Parameter {
@@ -105,7 +105,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                 },
                 Parameter {
                     name: "stream".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 }
             ],
@@ -131,7 +131,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             parameters: vec![
                 Parameter {
                     name: "ptr".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 },
                 Parameter {
@@ -146,7 +146,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                 },
                 Parameter {
                     name: "stream".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 }
             ],
@@ -191,7 +191,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             parameters: vec![
                 Parameter {
                     name: "dest".to_string(),
-                    param_type: "int".to_string(), // pointer as int
+                    param_type: "object".to_string(), // pointer as int
                     is_variadic: false,
                 },
                 Parameter {
@@ -205,7 +205,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                     is_variadic: false,
                 }
             ],
-            return_type: "int(4)+".to_string(), // pointer as int
+            return_type: "object".to_string(), // pointer as int
             is_variadic: false,
         });
 
@@ -248,7 +248,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                     is_variadic: false,
                 }
             ],
-            return_type: "int(4)+".to_string(), // pointer as int
+            return_type: "object".to_string(), // pointer as int
             is_variadic: false,
         });
 
@@ -267,7 +267,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                     is_variadic: false,
                 }
             ],
-            return_type: "int(4)+".to_string(), // pointer as int
+            return_type: "object".to_string(), // pointer as int
             is_variadic: false,
         });
 
@@ -277,12 +277,12 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             parameters: vec![
                 Parameter {
                     name: "dest".to_string(),
-                    param_type: "int".to_string(), // pointer as int
+                    param_type: "object".to_string(), // pointer as int
                     is_variadic: false,
                 },
                 Parameter {
                     name: "src".to_string(),
-                    param_type: "int".to_string(), // pointer as int
+                    param_type: "object".to_string(), // pointer as int
                     is_variadic: false,
                 },
                 Parameter {
@@ -291,7 +291,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                     is_variadic: false,
                 }
             ],
-            return_type: "int(4)+".to_string(), // pointer as int
+            return_type: "object".to_string(), // pointer as int
             is_variadic: false,
         });
 
@@ -301,7 +301,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             parameters: vec![
                 Parameter {
                     name: "s".to_string(),
-                    param_type: "int".to_string(), // pointer as int
+                    param_type: "object".to_string(), // pointer as int
                     is_variadic: false,
                 },
                 Parameter {
@@ -315,7 +315,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                     is_variadic: false,
                 }
             ],
-            return_type: "int(4)+".to_string(), // pointer as int
+            return_type: "object".to_string(), // pointer as int
             is_variadic: false,
         });
 
@@ -325,12 +325,12 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             parameters: vec![
                 Parameter {
                     name: "ptr1".to_string(),
-                    param_type: "int".to_string(), // pointer as int
+                    param_type: "object".to_string(), // pointer as int
                     is_variadic: false,
                 },
                 Parameter {
                     name: "ptr2".to_string(),
-                    param_type: "int".to_string(), // pointer as int
+                    param_type: "object".to_string(), // pointer as int
                     is_variadic: false,
                 },
                 Parameter {
@@ -407,7 +407,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                 param_type: "string".to_string(),
                 is_variadic: false,
             }],
-            return_type: "int(4)+".to_string(), // pointer as int
+            return_type: "object".to_string(), // pointer as int
             is_variadic: false,
         });
 
@@ -472,7 +472,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             name: "time".to_string(),
             parameters: vec![Parameter {
                 name: "tloc".to_string(),
-                param_type: "int".to_string(), // pointer as int
+                param_type: "object".to_string(), // pointer as int
                 is_variadic: false,
             }],
             return_type: "int(4)+".to_string(),
@@ -497,7 +497,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             parameters: vec![
                 Parameter {
                     name: "dest".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 },
                 Parameter {
@@ -506,7 +506,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                     is_variadic: false,
                 }
             ],
-            return_type: "int(4)+".to_string(),
+            return_type: "object".to_string(),
             is_variadic: false,
         });
 
@@ -516,7 +516,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             parameters: vec![
                 Parameter {
                     name: "dest".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 },
                 Parameter {
@@ -530,7 +530,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                     is_variadic: false,
                 }
             ],
-            return_type: "int(4)+".to_string(),
+            return_type: "object".to_string(),
             is_variadic: false,
         });
 
@@ -540,7 +540,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             parameters: vec![
                 Parameter {
                     name: "dest".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 },
                 Parameter {
@@ -549,7 +549,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                     is_variadic: false,
                 }
             ],
-            return_type: "int(4)+".to_string(),
+            return_type: "object".to_string(),
             is_variadic: false,
         });
 
@@ -664,7 +664,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                     is_variadic: false,
                 }
             ],
-            return_type: "int(4)+".to_string(), // FILE* as int
+            return_type: "object".to_string(), // FILE* as int
             is_variadic: false,
         });
 
@@ -673,7 +673,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             name: "fclose".to_string(),
             parameters: vec![Parameter {
                 name: "stream".to_string(),
-                param_type: "int".to_string(), // FILE* as int
+                param_type: "object".to_string(), // FILE* as int
                 is_variadic: false,
             }],
             return_type: "int(4)+".to_string(),
@@ -686,7 +686,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             parameters: vec![
                 Parameter {
                     name: "stream".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 },
                 Parameter {
@@ -709,7 +709,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             name: "ftell".to_string(),
             parameters: vec![Parameter {
                 name: "stream".to_string(),
-                param_type: "int".to_string(),
+                param_type: "object".to_string(),
                 is_variadic: false,
             }],
             return_type: "int(4)+".to_string(),
@@ -721,7 +721,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             name: "rewind".to_string(),
             parameters: vec![Parameter {
                 name: "stream".to_string(),
-                param_type: "int".to_string(),
+                param_type: "object".to_string(),
                 is_variadic: false,
             }],
             return_type: "void".to_string(),
@@ -733,7 +733,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             name: "fflush".to_string(),
             parameters: vec![Parameter {
                 name: "stream".to_string(),
-                param_type: "int".to_string(),
+                param_type: "object".to_string(),
                 is_variadic: false,
             }],
             return_type: "int(4)+".to_string(),
@@ -745,7 +745,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             name: "feof".to_string(),
             parameters: vec![Parameter {
                 name: "stream".to_string(),
-                param_type: "int".to_string(),
+                param_type: "object".to_string(),
                 is_variadic: false,
             }],
             return_type: "int(4)+".to_string(),
@@ -757,7 +757,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             name: "ferror".to_string(),
             parameters: vec![Parameter {
                 name: "stream".to_string(),
-                param_type: "int".to_string(),
+                param_type: "object".to_string(),
                 is_variadic: false,
             }],
             return_type: "int(4)+".to_string(),
@@ -769,7 +769,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             name: "clearerr".to_string(),
             parameters: vec![Parameter {
                 name: "stream".to_string(),
-                param_type: "int".to_string(),
+                param_type: "object".to_string(),
                 is_variadic: false,
             }],
             return_type: "void".to_string(),
@@ -811,7 +811,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
         libc_symbols.insert("tmpfile".to_string(), CSymbol {
             name: "tmpfile".to_string(),
             parameters: vec![],
-            return_type: "int(4)+".to_string(),
+            return_type: "object".to_string(),
             is_variadic: false,
         });
 
@@ -820,10 +820,10 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             name: "tmpnam".to_string(),
             parameters: vec![Parameter {
                 name: "s".to_string(),
-                param_type: "int".to_string(),
+                param_type: "object".to_string(),
                 is_variadic: false,
             }],
-            return_type: "int(4)+".to_string(),
+            return_type: "object".to_string(),
             is_variadic: false,
         });
 
@@ -833,12 +833,12 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             parameters: vec![
                 Parameter {
                     name: "stream".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 },
                 Parameter {
                     name: "buf".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 },
                 Parameter {
@@ -862,12 +862,12 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             parameters: vec![
                 Parameter {
                     name: "stream".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 },
                 Parameter {
                     name: "buf".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 }
             ],
@@ -912,7 +912,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             name: "gets".to_string(),
             parameters: vec![Parameter {
                 name: "s".to_string(),
-                param_type: "int".to_string(),
+                param_type: "object".to_string(),
                 is_variadic: false,
             }],
             return_type: "int(4)+".to_string(),
@@ -925,7 +925,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             parameters: vec![
                 Parameter {
                     name: "s".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 },
                 Parameter {
@@ -935,11 +935,11 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                 },
                 Parameter {
                     name: "stream".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 }
             ],
-            return_type: "int(4)+".to_string(),
+            return_type: "object".to_string(),
             is_variadic: false,
         });
 
@@ -954,7 +954,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                 },
                 Parameter {
                     name: "stream".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 }
             ],
@@ -1219,7 +1219,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                 param_type: "int".to_string(),
                 is_variadic: false,
             }],
-            return_type: "int(4)+".to_string(), // pointer as int
+            return_type: "object".to_string(), // pointer as int
             is_variadic: false,
         });
 
@@ -1228,7 +1228,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             name: "free".to_string(),
             parameters: vec![Parameter {
                 name: "ptr".to_string(),
-                param_type: "int".to_string(),
+                param_type: "object".to_string(),
                 is_variadic: false,
             }],
             return_type: "void".to_string(),
@@ -1250,7 +1250,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                     is_variadic: false,
                 }
             ],
-            return_type: "int(4)+".to_string(),
+            return_type: "object".to_string(),
             is_variadic: false,
         });
 
@@ -1260,7 +1260,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             parameters: vec![
                 Parameter {
                     name: "ptr".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 },
                 Parameter {
@@ -1269,7 +1269,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                     is_variadic: false,
                 }
             ],
-            return_type: "int(4)+".to_string(),
+            return_type: "object".to_string(),
             is_variadic: false,
         });
 
@@ -1280,7 +1280,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             parameters: vec![
                 Parameter {
                     name: "base".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 },
                 Parameter {
@@ -1295,7 +1295,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                 },
                 Parameter {
                     name: "compar".to_string(),
-                    param_type: "int".to_string(), // function pointer as int
+                    param_type: "object".to_string(), // function pointer as object
                     is_variadic: false,
                 }
             ],
@@ -1309,12 +1309,12 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             parameters: vec![
                 Parameter {
                     name: "key".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 },
                 Parameter {
                     name: "base".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 },
                 Parameter {
@@ -1329,11 +1329,11 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                 },
                 Parameter {
                     name: "compar".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 }
             ],
-            return_type: "int(4)+".to_string(),
+            return_type: "object".to_string(),
             is_variadic: false,
         });
 
@@ -1436,7 +1436,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             parameters: vec![
                 Parameter {
                     name: "str".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 },
                 Parameter {
@@ -1455,7 +1455,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             parameters: vec![
                 Parameter {
                     name: "str".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 },
                 Parameter {
@@ -1498,7 +1498,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             parameters: vec![
                 Parameter {
                     name: "stream".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 },
                 Parameter {
@@ -1531,7 +1531,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                 param_type: "string".to_string(),
                 is_variadic: false,
             }],
-            return_type: "int(4)+".to_string(),
+            return_type: "object".to_string(),
             is_variadic: false,
         });
 
@@ -1550,7 +1550,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                     is_variadic: false,
                 }
             ],
-            return_type: "int(4)+".to_string(),
+            return_type: "object".to_string(),
             is_variadic: false,
         });
 
@@ -1669,7 +1669,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                     is_variadic: false,
                 }
             ],
-            return_type: "int(4)+".to_string(),
+            return_type: "object".to_string(),
             is_variadic: false,
         });
 
@@ -1688,7 +1688,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                     is_variadic: false,
                 }
             ],
-            return_type: "int(4)+".to_string(),
+            return_type: "object".to_string(),
             is_variadic: false,
         });
 
@@ -1698,7 +1698,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             parameters: vec![
                 Parameter {
                     name: "dest".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 },
                 Parameter {
@@ -1722,7 +1722,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             parameters: vec![
                 Parameter {
                     name: "s".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 },
                 Parameter {
@@ -1736,7 +1736,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                     is_variadic: false,
                 }
             ],
-            return_type: "int(4)+".to_string(),
+            return_type: "object".to_string(),
             is_variadic: false,
         });
 
@@ -1746,12 +1746,12 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             parameters: vec![
                 Parameter {
                     name: "dest".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 },
                 Parameter {
                     name: "src".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 },
                 Parameter {
@@ -1760,7 +1760,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                     is_variadic: false,
                 }
             ],
-            return_type: "int(4)+".to_string(),
+            return_type: "object".to_string(),
             is_variadic: false,
         });
 
@@ -1770,12 +1770,12 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             parameters: vec![
                 Parameter {
                     name: "dest".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 },
                 Parameter {
                     name: "src".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 },
                 Parameter {
@@ -1789,7 +1789,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                     is_variadic: false,
                 }
             ],
-            return_type: "int(4)+".to_string(),
+            return_type: "object".to_string(),
             is_variadic: false,
         });
 
@@ -1953,7 +1953,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             name: "wait".to_string(),
             parameters: vec![Parameter {
                 name: "status".to_string(),
-                param_type: "int".to_string(),
+                param_type: "object".to_string(),
                 is_variadic: false,
             }],
             return_type: "int(4)+".to_string(),
@@ -1971,7 +1971,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                 },
                 Parameter {
                     name: "status".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 },
                 Parameter {
@@ -2050,7 +2050,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                 },
                 Parameter {
                     name: "buf".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 },
                 Parameter {
@@ -2074,7 +2074,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                 },
                 Parameter {
                     name: "buf".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 },
                 Parameter {
@@ -2215,7 +2215,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             parameters: vec![
                 Parameter {
                     name: "buf".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 },
                 Parameter {
@@ -2224,7 +2224,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                     is_variadic: false,
                 }
             ],
-            return_type: "int(4)+".to_string(),
+            return_type: "object".to_string(),
             is_variadic: false,
         });
 
@@ -2258,7 +2258,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                 },
                 Parameter {
                     name: "statbuf".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 }
             ],
@@ -2277,7 +2277,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                 },
                 Parameter {
                     name: "statbuf".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 }
             ],
@@ -2296,7 +2296,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                 },
                 Parameter {
                     name: "statbuf".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 }
             ],
@@ -2372,7 +2372,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                 },
                 Parameter {
                     name: "buf".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 },
                 Parameter {
@@ -2448,7 +2448,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                     is_variadic: false,
                 }
             ],
-            return_type: "int(4)+".to_string(),
+            return_type: "object".to_string(),
             is_variadic: false,
         });
 
@@ -2457,7 +2457,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             name: "dlclose".to_string(),
             parameters: vec![Parameter {
                 name: "handle".to_string(),
-                param_type: "int".to_string(),
+                param_type: "object".to_string(),
                 is_variadic: false,
             }],
             return_type: "int(4)+".to_string(),
@@ -2470,7 +2470,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             parameters: vec![
                 Parameter {
                     name: "handle".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 },
                 Parameter {
@@ -2479,7 +2479,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                     is_variadic: false,
                 }
             ],
-            return_type: "int(4)+".to_string(),
+            return_type: "object".to_string(),
             is_variadic: false,
         });
 
@@ -2487,7 +2487,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
         libc_symbols.insert("dlerror".to_string(), CSymbol {
             name: "dlerror".to_string(),
             parameters: vec![],
-            return_type: "int(4)+".to_string(),
+            return_type: "object".to_string(),
             is_variadic: false,
         });
 
@@ -2532,7 +2532,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             name: "fileno".to_string(),
             parameters: vec![Parameter {
                 name: "stream".to_string(),
-                param_type: "int".to_string(),
+                param_type: "object".to_string(),
                 is_variadic: false,
             }],
             return_type: "int(4)+".to_string(),
@@ -2554,7 +2554,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                     is_variadic: false,
                 }
             ],
-            return_type: "int(4)+".to_string(),
+            return_type: "object".to_string(),
             is_variadic: false,
         });
 
@@ -2563,7 +2563,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             name: "fgetc".to_string(),
             parameters: vec![Parameter {
                 name: "stream".to_string(),
-                param_type: "int".to_string(),
+                param_type: "object".to_string(),
                 is_variadic: false,
             }],
             return_type: "int(4)+".to_string(),
@@ -2581,7 +2581,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                 },
                 Parameter {
                     name: "stream".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 }
             ],
@@ -2595,7 +2595,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             parameters: vec![
                 Parameter {
                     name: "s".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 },
                 Parameter {
@@ -2605,11 +2605,11 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                 },
                 Parameter {
                     name: "stream".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 }
             ],
-            return_type: "int(4)+".to_string(),
+            return_type: "object".to_string(),
             is_variadic: false,
         });
 
@@ -2624,7 +2624,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                 },
                 Parameter {
                     name: "stream".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 }
             ],
@@ -2643,7 +2643,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                 },
                 Parameter {
                     name: "stream".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 }
             ],
@@ -2657,7 +2657,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             parameters: vec![
                 Parameter {
                     name: "ptr".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 },
                 Parameter {
@@ -2672,7 +2672,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                 },
                 Parameter {
                     name: "stream".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 }
             ],
@@ -2686,7 +2686,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             parameters: vec![
                 Parameter {
                     name: "ptr".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 },
                 Parameter {
@@ -2701,7 +2701,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                 },
                 Parameter {
                     name: "stream".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 }
             ],
@@ -2715,7 +2715,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             parameters: vec![
                 Parameter {
                     name: "stream".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 },
                 Parameter {
@@ -2738,7 +2738,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             name: "ftell".to_string(),
             parameters: vec![Parameter {
                 name: "stream".to_string(),
-                param_type: "int".to_string(),
+                param_type: "object".to_string(),
                 is_variadic: false,
             }],
             return_type: "int(4)+".to_string(),
@@ -2750,7 +2750,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             name: "rewind".to_string(),
             parameters: vec![Parameter {
                 name: "stream".to_string(),
-                param_type: "int".to_string(),
+                param_type: "object".to_string(),
                 is_variadic: false,
             }],
             return_type: "void".to_string(),
@@ -2763,12 +2763,12 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             parameters: vec![
                 Parameter {
                     name: "stream".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 },
                 Parameter {
                     name: "pos".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 }
             ],
@@ -2782,12 +2782,12 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             parameters: vec![
                 Parameter {
                     name: "stream".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 },
                 Parameter {
                     name: "pos".to_string(),
-                    param_type: "int".to_string(),
+                    param_type: "object".to_string(),
                     is_variadic: false,
                 }
             ],
@@ -2800,7 +2800,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             name: "clearerr".to_string(),
             parameters: vec![Parameter {
                 name: "stream".to_string(),
-                param_type: "int".to_string(),
+                param_type: "object".to_string(),
                 is_variadic: false,
             }],
             return_type: "void".to_string(),
@@ -2812,7 +2812,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             name: "feof".to_string(),
             parameters: vec![Parameter {
                 name: "stream".to_string(),
-                param_type: "int".to_string(),
+                param_type: "object".to_string(),
                 is_variadic: false,
             }],
             return_type: "int(4)+".to_string(),
@@ -2824,7 +2824,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             name: "ferror".to_string(),
             parameters: vec![Parameter {
                 name: "stream".to_string(),
-                param_type: "int".to_string(),
+                param_type: "object".to_string(),
                 is_variadic: false,
             }],
             return_type: "int(4)+".to_string(),
@@ -2836,7 +2836,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             name: "fflush".to_string(),
             parameters: vec![Parameter {
                 name: "stream".to_string(),
-                param_type: "int".to_string(),
+                param_type: "object".to_string(),
                 is_variadic: false,
             }],
             return_type: "int(4)+".to_string(),
@@ -2849,7 +2849,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
             parameters: vec![
                 Parameter {
                     name: "dest".to_string(),
-                    param_type: "int".to_string(), // pointer as int
+                    param_type: "object".to_string(), // pointer as int
                     is_variadic: false,
                 },
                 Parameter {
@@ -2858,7 +2858,7 @@ pub fn builtin_cfc_tables() -> HashMap<String, CSymbolTable> {
                     is_variadic: false,
                 }
             ],
-            return_type: "int(4)+".to_string(), // pointer as int
+            return_type: "object".to_string(), // pointer as int
             is_variadic: false,
         });
 
