@@ -170,67 +170,6 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         for method in &class.methods {
             let method_name = format!("{}_{}", class.name, method.name);
             
-            // Parse method body into statements
-            let method_statements = if method.body.contains('\n') {
-                // Multi-line method body - parse as statements
-                match crate::parser::parse_program(&method.body) {
-                    Ok(program) => program.statements,
-                    Err(_) => {
-                        // If parsing fails, try to parse line by line
-                        let lines: Vec<&str> = method.body.lines().collect();
-                        let mut statements = Vec::new();
-                        for line in lines {
-                            let trimmed = line.trim();
-                            if !trimmed.is_empty() && !trimmed.starts_with("/#") {
-                                if let Some(stmt) = crate::parser::parse_single_line_statement(trimmed) {
-                                    statements.push(stmt);
-                                }
-                            }
-                        }
-                        if statements.is_empty() {
-                            // Last resort: treat as single expression wrapped in return
-                            vec![crate::parser::Statement::Return(crate::parser::var::ReturnStmt {
-                                value: Some(method.body.clone()),
-                            })]
-                        } else {
-                            statements
-                        }
-                    }
-                }
-            } else {
-                // Single-line method body
-                let trimmed = method.body.trim();
-                
-                // Check if it's an assignment statement (e.g., self.x = value)
-                if trimmed.contains(" = ") && !trimmed.starts_with("return ") {
-                    // It's an assignment statement - parse it directly
-                    if let Some(stmt) = crate::parser::parse_single_line_statement(trimmed) {
-                        vec![stmt]
-                    } else {
-                        // Fallback: treat as expression wrapped in return
-                        vec![crate::parser::Statement::Return(crate::parser::var::ReturnStmt {
-                            value: Some(method.body.clone()),
-                        })]
-                    }
-                } else if trimmed.starts_with("return ") {
-                    // It's already a return statement - parse it as is
-                    if let Some(stmt) = crate::parser::parse_single_line_statement(trimmed) {
-                        vec![stmt]
-                    } else {
-                        // Fallback: treat as expression wrapped in return (without "return" keyword)
-                        let expr = trimmed.strip_prefix("return ").unwrap_or(trimmed);
-                        vec![crate::parser::Statement::Return(crate::parser::var::ReturnStmt {
-                            value: Some(expr.to_string()),
-                        })]
-                    }
-                } else {
-                    // It's an expression - wrap in return
-                    vec![crate::parser::Statement::Return(crate::parser::var::ReturnStmt {
-                        value: Some(method.body.clone()),
-                    })]
-                }
-            };
-            
             // Convert method to Function
             // Add self parameter as the first parameter (except for constructors)
             let method_parameters = if method.name == "new" {
@@ -267,7 +206,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 return_type: method.return_type.clone(),
                 error_handler: None,
                 is_c: false,
-                body: crate::parser::function::FunctionBody::Block(method_statements),
+                body: crate::parser::function::FunctionBody::Block(method.body.clone()),
             };
 
             // Declare and compile the function

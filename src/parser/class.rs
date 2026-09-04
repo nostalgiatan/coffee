@@ -2,9 +2,11 @@ use nom::{
     bytes::complete::tag,
     character::complete::{multispace0, space1},
     combinator::opt,
-    multi::many0,
     IResult, Parser,
 };
+
+use super::var::ReturnStmt;
+use super::Statement;
 
 /// Class definition
 /// class Name<T> of Parent:
@@ -37,7 +39,7 @@ pub struct MethodDef {
     pub name: String,
     pub parameters: Vec<MethodParameter>,
     pub return_type: String,
-    pub body: String,
+    pub body: Vec<Statement>,
 }
 
 /// Method parameter
@@ -363,7 +365,7 @@ fn parse_method(input: &str) -> IResult<&str, MethodDef> {
             let mut body_lines = Vec::new();
             let mut consumed = 0;
 
-            for (line_idx, line) in lines.iter().enumerate() {
+            for line in lines.iter() {
                 let trimmed = line.trim();
                 let current_indent = line.len() - trimmed.len();
 
@@ -381,10 +383,8 @@ fn parse_method(input: &str) -> IResult<&str, MethodDef> {
                     break;
                 }
 
-                // Add non-empty lines to the method body
-                if !trimmed.is_empty() {
-                    body_lines.push(line.to_string());  // Keep original indentation
-                }
+                // Keep original indentation; empty lines stay so block parsers see structure
+                body_lines.push(*line);
 
                 // Update consumed (include the newline character)
                 consumed += line.len() + 1;
@@ -399,12 +399,18 @@ fn parse_method(input: &str) -> IResult<&str, MethodDef> {
             consumed = consumed.min(input.len());
 
             let remaining = &input[consumed..];
-            let body = body_lines.join("\n");
+            let body = parse_method_body_lines(&body_lines, false);
             (remaining, body)
         } else {
             // Single-line method body
             let (input, body) = take_until_line_end(input)?;
-            (input, body.trim().to_string())
+            let trimmed = body.trim();
+            let body = if trimmed.is_empty() {
+                Vec::new()
+            } else {
+                parse_method_body_lines(&[trimmed], true)
+            };
+            (input, body)
         };
 
     Ok((
@@ -416,6 +422,75 @@ fn parse_method(input: &str) -> IResult<&str, MethodDef> {
             body,
         },
     ))
+}
+
+fn strip_inline_comment(s: &str) -> &str {
+    if let Some(start_pos) = s.find("/#/") {
+        let before = &s[..start_pos];
+        let quote_count = before.matches('"').count() + before.matches('\'').count();
+        if quote_count % 2 == 0 {
+            return before;
+        }
+    }
+    s
+}
+
+/// Dedent method body lines by the indent of the first non-empty line, then parse statements.
+fn parse_method_body_lines(raw_lines: &[&str], implicit_return: bool) -> Vec<Statement> {
+    let first_indent = raw_lines
+        .iter()
+        .find(|l| !l.trim().is_empty())
+        .map(|l| l.len() - l.trim_start().len())
+        .unwrap_or(0);
+
+    let dedented: Vec<&str> = raw_lines
+        .iter()
+        .map(|line| {
+            if line.len() >= first_indent
+                && line[..first_indent]
+                    .chars()
+                    .all(|c| c == ' ' || c == '\t')
+            {
+                &line[first_indent..]
+            } else {
+                line.trim_start()
+            }
+        })
+        .collect();
+
+    let mut statements = Vec::new();
+    let mut i = 0;
+    while i < dedented.len() {
+        let line_original = dedented[i];
+        let line = strip_inline_comment(line_original).trim();
+
+        if line.is_empty() || line.starts_with("/#") {
+            i += 1;
+            continue;
+        }
+
+        if let Some((stmt, lines_consumed)) = super::parse_multiline_statement(&dedented[i..]) {
+            statements.push(stmt);
+            i += lines_consumed;
+        } else if let Some(stmt) = super::parse_single_line_statement(line) {
+            statements.push(stmt);
+            i += 1;
+        } else {
+            i += 1;
+        }
+    }
+
+    // Preserve single-line method implicit return (bare expression => return)
+    if implicit_return && statements.len() == 1 {
+        if let Statement::Expr(_) = &statements[0] {
+            let line = strip_inline_comment(dedented.iter().find(|l| !l.trim().is_empty()).copied().unwrap_or("")).trim();
+            return vec![Statement::Return(ReturnStmt {
+                value: Some(line.to_string()),
+            })];
+        }
+    }
+
+    statements
 }
 
 fn parse_method_params(input: &str) -> IResult<&str, Vec<MethodParameter>> {
