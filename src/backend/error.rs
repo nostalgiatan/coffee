@@ -50,20 +50,10 @@ pub fn generate_error_class<'ctx>(
     Ok(())
 }
 
-/// Check if a class is an error class (inherits from Error)
+/// Name heuristic only — not inheritance.
 ///
-/// # Arguments
-///
-/// * `class_name` - The name of the class to check
-/// * `_type_mapper` - The type mapper to check inheritance (unused for now)
-///
-/// # Returns
-///
-/// * `true` - If the class inherits from Error
-/// * `false` - Otherwise
+/// Returns true when `class_name` is `"Error"`, ends with `"Error"`, or starts with
+/// `"Error"`. `_type_mapper` is unused; Coffee has no error-class inheritance graph here.
 pub fn is_error_class(class_name: &str, _type_mapper: &TypeMapper) -> bool {
-    // Check if the class type inherits from Error
-    // This will be implemented when we have proper inheritance tracking
-    // For now, we can check if the class name ends with "Error" or starts with "Error"
     class_name == "Error" || class_name.ends_with("Error") || class_name.starts_with("Error")
 }

@@ -5,6 +5,7 @@
 
 use crate::coffee_debug;
 use super::codegen::CodeGenerator;
+use crate::parser::expr::Expression;
 use crate::parser::{Statement, MemoryOp};
 
 impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
@@ -163,75 +164,36 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         // This will trigger automatic generation of Error class definition
         self.needs_error_class = true;
 
-        // Parse the error expression (e.g., "ErrorType(code)" or "ErrorType(code, note)" or "ErrorType(code, note, e)")
-        let error_expr = &raise_stmt.error_expr;
-
-        // Extract error type
-        let error_type = if let Some(paren_pos) = error_expr.find('(') {
-            &error_expr[..paren_pos]
-        } else {
-            "Error"
+        let src = self.strip_inline_comments(&raise_stmt.error_expr);
+        let parsed = match Expression::parse(&src) {
+            Ok(tree) => tree,
+            Err(_) => Expression::Literal(src.trim().to_string()),
         };
 
-        // Extract arguments if present
-        let args_str = if let Some(start) = error_expr.find('(') {
-            if let Some(end) = error_expr.find(')') {
-                &error_expr[start + 1..end]
-            } else {
-                ""
-            }
-        } else {
-            ""
-        };
+        let (error_type, args) = Self::raise_ctor_parts(parsed);
+        for arg in &args {
+            let _ = self.compile_expr(arg)?;
+        }
 
-        // Build elegant error message
-        // Format: "[E{code}]: e \n note:..."
-        let error_msg = if args_str.trim().is_empty() {
-            // No arguments, just show error type with default code
+        // Format: "[E{code}]: e \n note:..." — literals for the static fprintf string;
+        // non-literals still compile above, then panic via fprintf+exit (no try/catch).
+        let error_msg = if args.is_empty() {
             format!("[E-1]: {}", error_type)
         } else {
-            // Has arguments, parse them
-            // Try to extract code and string literals
             let mut error_code: i64 = -1;
-            let mut error_extra: String = String::new();
-            let mut error_note: String = String::new();
+            let mut error_extra = String::new();
+            let mut error_note = String::new();
 
-            // Split arguments by comma (handling nested parentheses)
-            if let Ok(args) = self.split_function_args(args_str) {
-                // Parse code (first argument)
-                if args.len() >= 1 {
-                    let code_expr = args[0].trim();
-                    if let Ok(code) = code_expr.parse::<i64>() {
-                        error_code = code;
-                    } else if let Ok(code) = code_expr.parse::<i32>() {
-                        error_code = code as i64;
-                    }
-                }
-
-                // Parse note (second argument) - string literal
-                if args.len() >= 2 {
-                    let note_expr = args[1].trim();
-                    if note_expr.starts_with('"') && note_expr.ends_with('"') {
-                        error_note = note_expr[1..note_expr.len() - 1].to_string();
-                    } else if note_expr.starts_with('\'') && note_expr.ends_with('\'') {
-                        error_note = note_expr[1..note_expr.len() - 1].to_string();
-                    } else {
-                        error_note = note_expr.to_string();
-                    }
-                }
-
-                // Parse extra (third argument)
-                if args.len() >= 3 {
-                    let extra_expr = args[2].trim();
-                    if extra_expr.starts_with('"') && extra_expr.ends_with('"') {
-                        error_extra = extra_expr[1..extra_expr.len() - 1].to_string();
-                    } else {
-                        error_extra = extra_expr.to_string();
-                    }
-                }
+            if let Some(code) = Self::raise_int_literal(&args[0]) {
+                error_code = code;
+            }
+            if args.len() >= 2 {
+                error_note = Self::raise_display_text(&args[1]);
+            }
+            if args.len() >= 3 {
+                error_extra = Self::raise_display_text(&args[2]);
             }
 
-            // Build elegant message: [E{code}]: e \n note:...
             if error_extra.is_empty() && error_note.is_empty() {
                 format!("[E{}]: {}", error_code, error_type)
             } else if error_note.is_empty() {
@@ -332,6 +294,55 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         let _ = self.backend.builder.build_unreachable();
 
         Ok(())
+    }
+
+    fn raise_ctor_parts(expr: Expression) -> (String, Vec<Expression>) {
+        match expr {
+            Expression::Call { function, args } => {
+                let name = match function.as_ref() {
+                    Expression::Variable(n) | Expression::Literal(n) => n.clone(),
+                    _ => "Error".to_string(),
+                };
+                (name, args)
+            }
+            Expression::ConstructorCall { class_name, args } => (class_name, args),
+            Expression::TypeCast { target_type, value } => (target_type, vec![*value]),
+            Expression::Variable(n) | Expression::Literal(n) => {
+                (if n.is_empty() { "Error".to_string() } else { n }, Vec::new())
+            }
+            _ => ("Error".to_string(), Vec::new()),
+        }
+    }
+
+    fn raise_int_literal(expr: &Expression) -> Option<i64> {
+        match expr {
+            Expression::Literal(s) => {
+                let t = s.trim();
+                t.parse::<i64>().ok().or_else(|| t.parse::<i32>().ok().map(|n| n as i64))
+            }
+            Expression::Unary { op, operand } if op == "-" => {
+                Self::raise_int_literal(operand).map(|n| -n)
+            }
+            _ => None,
+        }
+    }
+
+    fn raise_display_text(expr: &Expression) -> String {
+        match expr {
+            Expression::Literal(s) => {
+                let t = s.trim();
+                if t.len() >= 2
+                    && ((t.starts_with('"') && t.ends_with('"'))
+                        || (t.starts_with('\'') && t.ends_with('\'')))
+                {
+                    t[1..t.len() - 1].to_string()
+                } else {
+                    t.to_string()
+                }
+            }
+            Expression::Variable(n) => n.clone(),
+            _ => String::new(),
+        }
     }
 
     /// Compile memory operation
