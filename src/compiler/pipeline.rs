@@ -41,8 +41,10 @@ impl CompilationPipeline {
 
     /// Compile source code
     pub fn compile(&self, source: &str, file_name: Option<&str>) -> CompilationResult {
-        // Clear previous diagnostics
+        // Clear previous diagnostics (emitter + leftover frontend error lists)
         self.session.emitter.clear();
+        self.session.analyzer.write().unwrap().clear_errors();
+        self.session.type_checker.write().unwrap().clear_errors();
 
         // Initialize statistics
         let mut stats = CompilationStatistics::default();
