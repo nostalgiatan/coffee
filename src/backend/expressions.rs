@@ -1228,7 +1228,10 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                         // This will be ignored in pattern matching anyway
                         self.backend.context.i64_type().const_int(0, false).into()
                     } else {
-                        self.compile_source_as_expr(field_value_expr)?
+                        match Expression::parse(field_value_expr) {
+                            Ok(tree) => self.compile_expr(&tree)?,
+                            Err(_) => self.compile_expr(&Expression::Literal(field_value_expr.to_string()))?,
+                        }
                     };
 
                     // Get field index

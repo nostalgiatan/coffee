@@ -31,6 +31,7 @@ use super::memory::{LayoutCollector, safety::SafetyContext};
 use crate::c;
 
 use crate::parser::{Program, Statement};
+use crate::parser::expr::Expression;
 use crate::parser::function::{Function, FunctionBody};
 
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
@@ -102,7 +103,7 @@ pub struct CodeGenerator<'a, 'ctx> {
     /// Array sizes tracking (variable name -> size)
     pub array_sizes: HashMap<String, u32>,
     /// Main entry point (function name and args)
-    pub main_entry: Option<(String, Vec<String>)>,
+    pub main_entry: Option<(String, Vec<crate::parser::expr::Expression>)>,
     /// Current function's entry->body successor (for terminator restoration)
     pub entry_successor: Option<inkwell::basic_block::BasicBlock<'ctx>>,
     /// CRITICAL-5 FIX: Track total stack allocation size to prevent stack overflow
@@ -1081,8 +1082,11 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 // argv is already a pointer (char**), which matches Coffee's string type
                 compiled_args.push(argv.into());
             } else {
-                // Regular expression - compile as usual
-                let arg_value = self.compile_source_as_expr(arg_str).map_err(|e| {
+                let arg_expr = match Expression::parse(arg_str) {
+                    Ok(tree) => tree,
+                    Err(_) => Expression::Literal(arg_str.clone()),
+                };
+                let arg_value = self.compile_expr(&arg_expr).map_err(|e| {
                     self.error("generate_main",
                         format!("failed to compile entry function argument '{}': {}", arg_str, e))
                 })?;
