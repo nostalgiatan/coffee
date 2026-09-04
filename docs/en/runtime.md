@@ -108,7 +108,7 @@ for (name, signature) in runtime::RUNTIME_SYMBOLS {
 
 ### Exception Handling
 
-The runtime provides support for exception handling:
+The runtime supports **raising** exceptions with `raise` only. `try` / `catch` / `except` are not implemented; there is no catch handler in the language.
 
 ```coffee
 fn divide(a: int, b: int) => int:
@@ -120,7 +120,7 @@ fn divide(a: int, b: int) => int:
 When an exception is raised:
 1. The runtime captures the exception
 2. The stack is unwound
-3. `coffee_panic` may be called if unhandled
+3. `coffee_panic` may be called (there is no `catch` to recover)
 
 ### Panic Handling
 
@@ -397,20 +397,14 @@ raise ValueError
 
 ### 3. Handle Errors Appropriately
 
-```coffee
-# Good: Handle specific errors
-fn process(input: string) => Result:
-    try:
-        return parse(input)
-    catch ParseError as e:
-        return Error(e)
+Coffee has `raise` only. `try` / `catch` / `except` are not implemented, so you cannot catch a raised exception in Coffee. Check conditions before calling code that would `raise`, or return an error value instead of raising when recovery is needed.
 
-# Bad: Catch all errors
+```coffee
+# Recover without catch: validate, then proceed
 fn process(input: string) => Result:
-    try:
-        return parse(input)
-    catch:
-        return Error("unknown error")
+    if not is_valid(input):
+        return Error("invalid input")
+    return parse(input)
 ```
 
 ### 4. Clean Up Resources
@@ -436,8 +430,10 @@ fn critical_operation() => Result:
 
 ### Python
 
+Python can catch exceptions with `try` / `except`. Coffee cannot: only `raise` exists; `try` / `catch` / `except` are not implemented.
+
 ```python
-# Python
+# Python — catch is language syntax
 try:
     result = 10 / 0
 except ZeroDivisionError as e:
@@ -445,7 +441,7 @@ except ZeroDivisionError as e:
 ```
 
 ```coffee
-# Coffee
+# Coffee — raise only; no try/catch
 fn divide(a: int, b: int) => int:
     if b == 0:
         raise DivisionByZero("division by zero")

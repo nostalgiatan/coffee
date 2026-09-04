@@ -108,7 +108,7 @@ for (name, signature) in runtime::RUNTIME_SYMBOLS {
 
 ### 异常处理
 
-运行时提供异常处理支持：
+运行时只支持用 `raise` **抛出**异常。`try` / `catch` / `except` 未实现；语言中没有捕获处理器。
 
 ```coffee
 fn divide(a: int, b: int) => int:
@@ -118,9 +118,9 @@ fn divide(a: int, b: int) => int:
 ```
 
 当引发异常时：
-1. 运行时捕获异常
+1. 运行时记录异常
 2. 栈被展开
-3. 如果未处理，可能调用 `coffee_panic`
+3. 可能调用 `coffee_panic`（没有 `catch` 可恢复）
 
 ### Panic 处理
 
@@ -397,20 +397,14 @@ raise ValueError
 
 ### 3. 适当地处理错误
 
-```coffee
-# 好的：处理特定错误
-fn process(input: string) => Result:
-    try:
-        return parse(input)
-    catch ParseError as e:
-        return Error(e)
+Coffee 只有 `raise`。`try` / `catch` / `except` 未实现，因此无法在 Coffee 中捕获已抛出的异常。在会 `raise` 的代码之前先检查条件，或在需要恢复时返回错误值而不是抛出。
 
-# 不好的：捕获所有错误
+```coffee
+# 无 catch 的恢复：先校验再继续
 fn process(input: string) => Result:
-    try:
-        return parse(input)
-    catch:
-        return Error("未知错误")
+    if not is_valid(input):
+        return Error("invalid input")
+    return parse(input)
 ```
 
 ### 4. 清理资源
@@ -436,8 +430,10 @@ fn critical_operation() => Result:
 
 ### Python
 
+Python 可用 `try` / `except` 捕获异常。Coffee 不能：只有 `raise`；`try` / `catch` / `except` 未实现。
+
 ```python
-# Python
+# Python — catch 是语言语法
 try:
     result = 10 / 0
 except ZeroDivisionError as e:
@@ -445,7 +441,7 @@ except ZeroDivisionError as e:
 ```
 
 ```coffee
-# Coffee
+# Coffee — 仅 raise；无 try/catch
 fn divide(a: int, b: int) => int:
     if b == 0:
         raise DivisionByZero("除以零")
