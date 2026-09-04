@@ -47,7 +47,7 @@ pub struct Parameter {
 #[derive(Debug, PartialEq, Clone)]
 pub enum FunctionBody {
     /// Function body with a single expression
-    Expression(String),
+    Expression(crate::parser::expr::Expression),
     /// Function body with a block of statements
     Block(Vec<Statement>),
     /// External declaration (no body, e.g., C function declaration)
@@ -546,12 +546,18 @@ fn parse_function_body(input: &str) -> IResult<&str, FunctionBody> {
         }
     }
 
-    let (input, expr) = {
+    let (input, expr_str) = {
         let mut parser = alt((
             map(take_while1(|c: char| !matches!(c, '\n' | '\r')), |s: &str| s.trim().to_string()),
             map(tag(""), |_| String::new()),
         ));
         Parser::parse(&mut parser, input)?
+    };
+
+    let expr = if expr_str.is_empty() {
+        super::expr::Expression::Literal(String::new())
+    } else {
+        super::expr::assignment_rhs(&expr_str)
     };
 
     Ok((

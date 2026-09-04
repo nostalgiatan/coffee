@@ -4571,14 +4571,8 @@ impl SemanticAnalyzer {
                 
                 // If args is not empty, this is a method call
                 if !args.is_empty() {
-                    // Check argument expressions
                     for arg in args {
-                        let arg_expr = crate::parser::expr::parse_expression(arg)
-                            .map_err(|e| TypeSystemError::ParseError {
-                                type_str: "method argument".to_string(),
-                                reason: e,
-                            })?;
-                        self.analyze_expression(&arg_expr)?;
+                        self.analyze_expression(arg)?;
                     }
                 }
                 Ok(())
@@ -4600,12 +4594,7 @@ impl SemanticAnalyzer {
 
                 // Check argument expressions
                 for arg in args {
-                    let arg_expr = crate::parser::expr::parse_expression(arg)
-                        .map_err(|e| TypeSystemError::ParseError {
-                            type_str: "constructor argument".to_string(),
-                            reason: e,
-                        })?;
-                    self.analyze_expression(&arg_expr)?;
+                    self.analyze_expression(arg)?;
                 }
                 Ok(())
             }

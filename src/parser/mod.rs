@@ -435,7 +435,7 @@ pub fn parse_multiline_statement(lines: &[&str]) -> Option<(Statement, usize)> {
             if is_valid_identifier || is_member_access {
                 // Validate that value_expr is not empty
                 if !value_expr.is_empty() {
-                    return Some((Statement::Assignment(var_name.to_string(), value_expr.to_string()), 1));
+                    return Some((Statement::Assignment(var_name.to_string(), crate::parser::expr::assignment_rhs(value_expr)), 1));
                 }
             }
         }
@@ -1082,7 +1082,7 @@ pub fn parse_single_line_statement(line: &str) -> Option<Statement> {
             if is_valid_identifier || is_member_access {
                 // Validate that value_expr is not empty
                 if !value_expr.is_empty() {
-                    return Some(Statement::Assignment(var_name.to_string(), value_expr.to_string()));
+                    return Some(Statement::Assignment(var_name.to_string(), crate::parser::expr::assignment_rhs(value_expr)));
                 }
             }
         }
@@ -1210,7 +1210,7 @@ pub enum Statement {
     /// Variable declaration (e.g., `let x: int = 5`)
     VariableDecl(VariableDecl),
     /// Assignment statement (e.g., `x = x + 1`)
-    Assignment(String, String),  // (variable_name, value_expression)
+    Assignment(String, crate::parser::expr::Expression),  // (variable_name, value_expression)
     /// Return statement (e.g., `return value`)
     Return(ReturnStmt),
     /// Break statement (e.g., `break`)

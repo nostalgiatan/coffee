@@ -34,13 +34,13 @@ pub enum Expression {
     /// Constructor call: class::new(args)
     ConstructorCall {
         class_name: String,
-        args: Vec<String>,
+        args: Vec<Expression>,
     },
     /// Member access
     Member {
         object: Box<Expression>,
         field: String,
-        args: Vec<String>,  // Arguments for method call (empty for field access)
+        args: Vec<Expression>,  // Arguments for method call (empty for field access)
     },
     /// Array index access: array[index]
     Index {
@@ -226,6 +226,72 @@ impl Expression {
             }
         }
     }
+}
+
+/// Split a comma-separated argument list, respecting nested parens and strings.
+fn parse_arg_list(args_str: &str) -> Result<Vec<Expression>, String> {
+    let mut args = Vec::new();
+    if args_str.is_empty() {
+        return Ok(args);
+    }
+    let mut current_arg = String::new();
+    let mut depth = 0;
+    let mut in_string = false;
+    let mut escape_next = false;
+
+    for ch in args_str.chars() {
+        if escape_next {
+            current_arg.push(ch);
+            escape_next = false;
+            continue;
+        }
+
+        match ch {
+            '\\' => {
+                escape_next = true;
+                current_arg.push(ch);
+            }
+            '"' if !in_string => {
+                in_string = true;
+                current_arg.push(ch);
+            }
+            '"' if in_string => {
+                in_string = false;
+                current_arg.push(ch);
+            }
+            '(' if !in_string => {
+                depth += 1;
+                current_arg.push(ch);
+            }
+            ')' if !in_string => {
+                depth -= 1;
+                current_arg.push(ch);
+            }
+            ',' if !in_string && depth == 0 => {
+                let arg = current_arg.trim().to_string();
+                if !arg.is_empty() {
+                    args.push(parse_expression(&arg)?);
+                }
+                current_arg.clear();
+            }
+            _ => {
+                current_arg.push(ch);
+            }
+        }
+    }
+    let arg = current_arg.trim().to_string();
+    if !arg.is_empty() {
+        args.push(parse_expression(&arg)?);
+    }
+    Ok(args)
+}
+
+fn parse_rhs_or_literal(s: &str) -> Expression {
+    parse_expression(s).unwrap_or_else(|_| Expression::Literal(s.to_string()))
+}
+
+pub(crate) fn assignment_rhs(s: &str) -> Expression {
+    parse_rhs_or_literal(s)
 }
 
 /// Simple recursive descent expression parser
@@ -564,59 +630,7 @@ pub fn parse_expression(input: &str) -> Result<Expression, String> {
                     let parts: Vec<&str> = func_name.split("::").collect();
                     if parts.len() == 2 && parts[1] == "new" {
                         let class_name = parts[0].to_string();
-                        let mut args: Vec<String> = Vec::new();
-                        
-                        // Parse arguments
-                        if !args_str.is_empty() {
-                            let mut current_arg = String::new();
-                            let mut depth = 0;
-                            let mut in_string = false;
-                            let mut escape_next = false;
-    
-                            for ch in args_str.chars() {
-                                if escape_next {
-                                    current_arg.push(ch);
-                                    escape_next = false;
-                                    continue;
-                                }
-    
-                                match ch {
-                                    '\\' => {
-                                        escape_next = true;
-                                        current_arg.push(ch);
-                                    }
-                                    '"' if !in_string => {
-                                        in_string = true;
-                                        current_arg.push(ch);
-                                    }
-                                    '"' if in_string => {
-                                        in_string = false;
-                                        current_arg.push(ch);
-                                    }
-                                    '(' if !in_string => {
-                                        depth += 1;
-                                        current_arg.push(ch);
-                                    }
-                                    ')' if !in_string => {
-                                        depth -= 1;
-                                        current_arg.push(ch);
-                                    }
-                                    ',' if !in_string && depth == 0 => {
-                                        let arg = current_arg.trim().to_string();
-                                        if !arg.is_empty() {
-                                            args.push(arg);
-                                        }
-                                        current_arg.clear();
-                                    }
-                                    _ => {
-                                        current_arg.push(ch);
-                                    }
-                                }
-                            }
-                            if !current_arg.trim().is_empty() {
-                                args.push(current_arg.trim().to_string());
-                            }
-                        }
+                        let args = parse_arg_list(args_str)?;
     
                         return Ok(Expression::ConstructorCall {
                             class_name,
@@ -785,57 +799,7 @@ pub fn parse_expression(input: &str) -> Result<Expression, String> {
                         let args_str = &rest[method_name.len() + 1..rest.len() - 1].trim();
                         
                         // Parse arguments
-                        let mut args = Vec::new();
-                        if !args_str.is_empty() {
-                            let mut current_arg = String::new();
-                            let mut depth = 0;
-                            let mut in_string = false;
-                            let mut escape_next = false;
-                        
-                        for ch in args_str.chars() {
-                            if escape_next {
-                                current_arg.push(ch);
-                                escape_next = false;
-                                continue;
-                            }
-                            
-                            match ch {
-                                '\\' => {
-                                    escape_next = true;
-                                    current_arg.push(ch);
-                                }
-                                '"' if !in_string => {
-                                    in_string = true;
-                                    current_arg.push(ch);
-                                }
-                                '"' if in_string => {
-                                    in_string = false;
-                                    current_arg.push(ch);
-                                }
-                                '(' if !in_string => {
-                                    depth += 1;
-                                    current_arg.push(ch);
-                                }
-                                ')' if !in_string => {
-                                    depth -= 1;
-                                    current_arg.push(ch);
-                                }
-                                ',' if !in_string && depth == 0 => {
-                                    let arg = current_arg.trim().to_string();
-                                    if !arg.is_empty() {
-                                        args.push(arg);
-                                    }
-                                    current_arg.clear();
-                                }
-                                _ => {
-                                    current_arg.push(ch);
-                                }
-                            }
-                        }
-                        if !current_arg.trim().is_empty() {
-                            args.push(current_arg.trim().to_string());
-                        }
-                    }
+                        let args = parse_arg_list(args_str)?;
                     
                     return Ok(Expression::Member {
                         object: Box::new(parse_expression(object_str)?),
@@ -1020,6 +984,19 @@ mod tests {
             assert!(matches!(*index, Expression::Binary { .. }));
         } else {
             panic!("Expected Index expression with binary index");
+        }
+    }
+
+    #[test]
+    fn constructor_args_are_expressions() {
+        let result = parse_expression("Point::new(1, 2)").unwrap();
+        match result {
+            Expression::ConstructorCall { args, .. } => {
+                assert_eq!(args.len(), 2);
+                assert!(matches!(args[0], Expression::Literal(_)));
+                assert!(matches!(args[1], Expression::Literal(_)));
+            }
+            other => panic!("{:?}", other),
         }
     }
 }

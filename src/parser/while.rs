@@ -13,6 +13,7 @@ use nom::{
 
 // Import Statement for while body
 use super::Statement;
+use super::expr::Expression;
 
 /// Represents a while loop with condition and body
 /// 
@@ -22,7 +23,7 @@ use super::Statement;
 #[derive(Debug, PartialEq, Clone)]
 pub struct WhileLoop {
     /// The condition expression for the while loop
-    pub condition: String,
+    pub condition: Expression,
     /// The body statements for the while loop
     pub body: Vec<Statement>,  // Changed from String to Vec<Statement>
 }
@@ -49,7 +50,8 @@ pub struct WhileLoop {
 pub fn parse_while(input: &str) -> IResult<&str, WhileLoop> {
     let (input, _) = tag("while")(input)?;
     let (input, _) = space1(input)?;
-    let (input, condition) = take_until_colon(input)?;
+    let (input, condition_raw) = take_until_colon(input)?;
+    let condition = parse_expr_from_slice(condition_raw)?;
     let (input, _) = char(':')(input)?;
     let (input, _) = space0(input)?;
 
@@ -59,10 +61,19 @@ pub fn parse_while(input: &str) -> IResult<&str, WhileLoop> {
     Ok((
         input,
         WhileLoop {
-            condition: condition.trim().to_string(),
+            condition,
             body,
         },
     ))
+}
+
+fn parse_expr_from_slice(raw: &str) -> Result<Expression, nom::Err<nom::error::Error<&str>>> {
+    crate::parser::expr::parse_expression(raw.trim()).map_err(|_| {
+        nom::Err::Error(nom::error::Error {
+            input: raw,
+            code: nom::error::ErrorKind::Fail,
+        })
+    })
 }
 
 /// Take characters from input until a colon is encountered

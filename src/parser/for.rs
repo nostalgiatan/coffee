@@ -39,7 +39,7 @@ pub enum ForIterator {
     /// Collection iterator - iterates over a collection
     Collection(String),
     /// Range iterator - iterates from start to end
-    Range { start: String, end: String },
+    Range { start: crate::parser::expr::Expression, end: crate::parser::expr::Expression },
 }
 
 /// Parse a complete Coffee for loop
@@ -94,8 +94,8 @@ pub fn parse_for(input: &str) -> IResult<&str, ForLoop> {
             let parts: Vec<&str> = range_content.split(',').collect();
             if parts.len() == 2 {
                 ForIterator::Range {
-                    start: parts[0].trim().to_string(),
-                    end: parts[1].trim().to_string(),
+                    start: parse_range_bound(parts[0].trim())?,
+                    end: parse_range_bound(parts[1].trim())?,
                 }
             } else {
                 ForIterator::Collection(iterator.to_string())
@@ -108,8 +108,8 @@ pub fn parse_for(input: &str) -> IResult<&str, ForLoop> {
         let parts: Vec<&str> = iterator.split("..").collect();
         if parts.len() == 2 {
             ForIterator::Range {
-                start: parts[0].trim().to_string(),
-                end: parts[1].trim().to_string(),
+                start: parse_range_bound(parts[0].trim())?,
+                end: parse_range_bound(parts[1].trim())?,
             }
         } else {
             ForIterator::Collection(iterator.to_string())
@@ -155,7 +155,7 @@ pub fn parse_for(input: &str) -> IResult<&str, ForLoop> {
                             if var_name.chars().all(|c| c.is_alphanumeric() || c == '_') && !var_name.is_empty() {
                                 // Validate that value_expr is not empty
                                 if !value_expr.is_empty() {
-                                    statements.push(crate::parser::Statement::Assignment(var_name.to_string(), value_expr.to_string()));
+                                    statements.push(crate::parser::Statement::Assignment(var_name.to_string(), crate::parser::expr::assignment_rhs(value_expr)));
                                     idx += 1;
                                     continue;
                                 }
@@ -183,6 +183,15 @@ pub fn parse_for(input: &str) -> IResult<&str, ForLoop> {
             body,
         },
     ))
+}
+
+fn parse_range_bound(raw: &str) -> Result<crate::parser::expr::Expression, nom::Err<nom::error::Error<&str>>> {
+    crate::parser::expr::parse_expression(raw.trim()).map_err(|_| {
+        nom::Err::Error(nom::error::Error {
+            input: raw,
+            code: nom::error::ErrorKind::Fail,
+        })
+    })
 }
 
 /// Take characters from input until a space is encountered

@@ -323,7 +323,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                     }
 
                     // Parse and compile the expression
-                    let result = self.compile_expression_str(expr_str)?;
+                    let result = self.compile_expression_str(&super::codegen::expr_to_legacy_str(expr_str))?;
 
                     // Build return instruction
                     let ret_type = fn_value.get_type().get_return_type();
@@ -458,7 +458,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 return_type: "void".to_string(),
                 error_handler: None,
                 is_c: false,
-                body: crate::parser::function::FunctionBody::Expression(String::new()),
+                body: crate::parser::function::FunctionBody::Expression(crate::parser::expr::Expression::Literal(String::new())),
             };
 
             // Declare the drop function
