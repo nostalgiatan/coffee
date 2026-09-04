@@ -491,13 +491,80 @@ impl TypeChecker {
     fn check_match(&mut self, match_expr: &parser::MatchExpr) -> Result<(), TypeSystemError> {
         self.check_expr_stmt(&match_expr.value)?;
         for arm in &match_expr.arms {
-            let _ = self.check_expression(&arm.pattern);
+            let bound = self.bind_pattern_vars(&arm.pattern);
             if let Some(guard) = &arm.guard {
                 self.check_expr_stmt(guard)?;
             }
             self.check_stmt_list(&arm.body)?;
+            self.unbind_pattern_vars(bound);
         }
         Ok(())
+    }
+
+    fn bind_pattern_vars(&mut self, pattern: &crate::parser::expr::Expression) -> Vec<(String, Option<ValueInfo>)> {
+        let mut bound = Vec::new();
+        self.collect_pattern_bindings(pattern, &mut bound);
+        bound
+    }
+
+    fn collect_pattern_bindings(
+        &mut self,
+        pattern: &crate::parser::expr::Expression,
+        bound: &mut Vec<(String, Option<ValueInfo>)>,
+    ) {
+        match pattern {
+            crate::parser::expr::Expression::Variable(name) if name != "_" => {
+                let prev = self.values.remove(name);
+                self.values.insert(name.clone(), ValueInfo {
+                    name: name.clone(),
+                    ty: Type::int(),
+                    state: ValueState::Alive,
+                    scope: SpaceId::new(),
+                    location: Span::new(0, name.len()),
+                    lifetime: None,
+                });
+                bound.push((name.clone(), prev));
+            }
+            crate::parser::expr::Expression::Call { args, .. } => {
+                for arg in args {
+                    self.collect_pattern_bindings(arg, bound);
+                }
+            }
+            crate::parser::expr::Expression::Member { args, .. } => {
+                for arg in args {
+                    self.collect_pattern_bindings(arg, bound);
+                }
+            }
+            crate::parser::expr::Expression::TupleLiteral { elements }
+            | crate::parser::expr::Expression::ArrayLiteral { elements } => {
+                for el in elements {
+                    self.collect_pattern_bindings(el, bound);
+                }
+            }
+            crate::parser::expr::Expression::StructLiteral { fields, .. } => {
+                for (_, value) in fields {
+                    self.collect_pattern_bindings(value, bound);
+                }
+            }
+            crate::parser::expr::Expression::Binary { left, right, .. } => {
+                self.collect_pattern_bindings(left, bound);
+                self.collect_pattern_bindings(right, bound);
+            }
+            _ => {}
+        }
+    }
+
+    fn unbind_pattern_vars(&mut self, bound: Vec<(String, Option<ValueInfo>)>) {
+        for (name, prev) in bound.into_iter().rev() {
+            match prev {
+                Some(info) => {
+                    self.values.insert(name, info);
+                }
+                None => {
+                    self.values.remove(&name);
+                }
+            }
+        }
     }
 
     /// Check an expression
@@ -541,6 +608,21 @@ impl TypeChecker {
                 self.check_function_call(&function_call)
             },
             crate::parser::expr::Expression::Member { object, field, args } => {
+                if let crate::parser::expr::Expression::Variable(type_name) = object.as_ref() {
+                    let is_enum = self.registry.read().ok().and_then(|reg| {
+                        match reg.get_type(type_name) {
+                            Some(TypeDef::Enum { .. }) => Some(()),
+                            _ => None,
+                        }
+                    }).is_some();
+                    if is_enum {
+                        for arg in args {
+                            self.check_expression(arg)?;
+                        }
+                        return Ok(Type::NamedType { name: type_name.clone() });
+                    }
+                }
+
                 let object_type = self.check_expression(object)?;
                 let class_name = match &object_type {
                     Type::NamedType { name } => name.clone(),
