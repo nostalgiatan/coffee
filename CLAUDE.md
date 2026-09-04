@@ -23,14 +23,16 @@ cargo test control_flow_tests::test_name -- --nocapture   # run a single test
 - **`clang` must be installed** — the driver shells out to `clang` as the linker in `--bin` mode (`src/main.rs`).
 - Dev environment is **Termux on Android** (`aarch64-linux-android`). `backend/mod.rs::clean_target_triple` strips the trailing Android API level (e.g. `aarch64-linux-android24`) from target triples; keep this in mind when touching cross-compilation.
 
-## Architecture: two frontends, two modes
+## Architecture: one pipeline, two drivers
 
-`main.rs` selects a mode by looking for `coffee.toml`, and there are **two parallel frontend implementations** that do nearly the same work. This is the most important non-obvious fact:
+`main.rs` selects a **driver** by looking for `coffee.toml`. Both drivers run the same frontend:
 
-- **Single-file mode** (`coffee input.cf`, no `coffee.toml`): uses `compiler::CompilerFrontend` in `src/compiler.rs`. `main.rs` reads the file, runs the frontend, then drives `backend::codegen::CodeGenerator` directly and writes output.
-- **Project mode** (`coffee.toml` present, or `coffee init`): uses `compiler::ProjectBuilder` (`src/compiler/builder.rs`), which scans `src/`, builds a dependency graph, schedules parallel compilation via `rayon`, and links. Inside project mode, compilation goes through `compiler::CompilationPipeline` (`src/compiler/pipeline.rs`) backed by a shared `Session` — not `CompilerFrontend`.
+- **Single-file mode** (`coffee input.cf`, no `coffee.toml`): `CompilerFrontend::compile` forwards to `CompilationPipeline` (`src/compiler/pipeline.rs`), then `main.rs` drives `backend::codegen::CodeGenerator` and writes `.o` / `.ll` / etc.
+- **Project mode** (`coffee.toml` present, or `coffee init`): `ProjectBuilder` (`src/compiler/builder.rs`) scans `src/`, validates entry points (`fn main` or `main(...)`), schedules units, and either links objects or (with `--emit-llvm` / `--emit-bc` / `--emit-asm`) writes the **entry module** artifact without clang. Per-file frontend work is the same `CompilationPipeline` via `CompilerFrontend`.
 
-If you change parsing/semantic/type-checking behavior, **check both `src/compiler.rs` (single-file) and `src/compiler/pipeline.rs` (project)** — they duplicate the staged flow (declare functions → register types → analyze → type-check → emit `CompilationResult`). Diverging them causes project vs. single-file behavior differences.
+`CompilerFrontend` holds `Arc<Session>` plus `CompilationPipeline` and must not grow a second copy of the declare-functions / type-check loop.
+
+If you change parsing/semantic/type-checking behavior, change it in `src/compiler/pipeline.rs` only (then both modes pick it up).
 
 ### Compilation pipeline (stages → files)
 
@@ -46,7 +48,7 @@ If you change parsing/semantic/type-checking behavior, **check both `src/compile
 
 ## Things that will surprise you
 
-- **`eprintln!("DEBUG: ...")` is everywhere** in `src/compiler.rs` and `src/compiler/pipeline.rs`. Compilation is very noisy on stderr by design (current state). Do not assume stderr is clean; tests check exit codes and specific stderr substrings, not silence.
+- **`eprintln!("DEBUG: ...")` is everywhere** in `src/compiler/pipeline.rs`. Compilation is very noisy on stderr by design (current state). Do not assume stderr is clean; tests check exit codes and specific stderr substrings, not silence.
 - **Process mutex lock.** On startup `main.rs` acquires an exclusive `fs2` file lock at `.coffee_compiler.lock` in the project dir (found by walking up for `coffee.toml`, else cwd). Concurrent `coffee` invocations on the same project will fail. **Tests must pass `--test-mode`** (sets `COFFEE_TEST_MODE=1`) to skip the lock — the test harness in `tests/common/mod.rs` already does this; if you invoke the binary yourself, add `--test-mode`.
 - **Explicit memory management is mandatory in Coffee.** The language has no implicit drop: variables must be cleaned up with `rm` / `clean out` (see `SYNTAX.md` §内存管理). Codegen and the type checker treat `mv`/`clone`/`copy`/`rm`/`clean` as first-class statements (`parser::Statement::MemoryOp`, checked in `types::checker::check_memory_op`). Test fixtures must `rm` what they `let`.
 - **Integer type notation.** `int(N)+` / `int(N)-` mean N-*byte* signed/unsigned (e.g. `int(4)+` = C `int`), not bits. `float(N)` is N-byte float. `int` and `float` default to 8 bytes. The type mapper in `src/backend/types.rs` and `src/types/definition.rs::type_from_str` must agree on this.
