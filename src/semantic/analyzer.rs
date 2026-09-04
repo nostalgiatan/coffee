@@ -7,7 +7,7 @@ use crate::types::registry::TypeRegistry;
 use crate::types::errors::TypeSystemError;
 use crate::c::CSymbolTable;
 use std::sync::{Arc, RwLock};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 //=============================================================================
 // Constant Folding Types
@@ -690,13 +690,11 @@ impl SemanticAnalyzer {
                 self.analyze_expression(expr)
             }
             crate::parser::Statement::Return(ret_stmt) => {
-                // Check void function return validation
                 if let Some(ref return_type) = self.current_function_return_type {
                     let is_void = return_type == "void" || return_type == "()";
 
                     if is_void {
                         if let Some(ref ret_value) = ret_stmt.value {
-                            // Void function has a return value - provide clear error message
                             let func_name = self.current_function_name.as_ref()
                                 .map(|s| s.as_str())
                                 .unwrap_or("<unknown>");
@@ -712,28 +710,117 @@ impl SemanticAnalyzer {
                     }
                 }
 
-                // Return value is stored as String, not parsed Expression
-                // Will be analyzed during code generation
+                if let Some(ref ret_value) = ret_stmt.value {
+                    if let Ok(expr) = crate::parser::expr::parse_expression(ret_value) {
+                        self.analyze_expression(&expr)?;
+                    }
+                }
                 Ok(())
             }
-            crate::parser::Statement::If(_) => {
-                // If condition is stored as String, not parsed Expression
-                // Will be analyzed during code generation
+            crate::parser::Statement::If(if_expr) => {
+                self.analyze_expression(&if_expr.condition)?;
+                self.analyze_block_scope(&if_expr.body)?;
+                for elif in &if_expr.elifs {
+                    self.analyze_expression(&elif.condition)?;
+                    self.analyze_block_scope(&elif.body)?;
+                }
+                if let Some(else_body) = &if_expr.else_body {
+                    self.analyze_block_scope(else_body)?;
+                }
                 Ok(())
             }
-            crate::parser::Statement::While(_) => {
-                // While condition is stored as String, not parsed Expression
-                // Will be analyzed during code generation
+            crate::parser::Statement::While(while_loop) => {
+                self.analyze_expression(&while_loop.condition)?;
+                self.analyze_block_scope(&while_loop.body)
+            }
+            crate::parser::Statement::For(for_loop) => {
+                match &for_loop.iterator {
+                    crate::parser::ForIterator::Range { start, end } => {
+                        self.analyze_expression(start)?;
+                        self.analyze_expression(end)?;
+                    }
+                    crate::parser::ForIterator::Collection(name) => {
+                        self.analyze_expression(&crate::parser::expr::Expression::Variable(name.clone()))?;
+                    }
+                }
+                self.bind_ephemeral_var(&for_loop.variable)?;
+                let result = self.analyze_block_scope(&for_loop.body);
+                self.unbind_ephemeral_var(&for_loop.variable);
+                result
+            }
+            crate::parser::Statement::Assignment(name, value) => {
+                self.analyze_expression(&crate::parser::expr::Expression::Variable(name.clone()))?;
+                self.analyze_expression(value)
+            }
+            crate::parser::Statement::Main(_) => Ok(()),
+            crate::parser::Statement::Match(_) => {
+                // Do not walk arm bodies until pattern bindings live in the symbol table.
                 Ok(())
             }
-            crate::parser::Statement::Main(_) => {
-                // Main entry point - no expression analysis needed
-                Ok(())
+            _ => Ok(())
+        }
+    }
+
+    fn analyze_stmt_list(&mut self, stmts: &[crate::parser::Statement]) -> Result<(), TypeSystemError> {
+        for stmt in stmts {
+            self.analyze_statement(stmt)?;
+        }
+        Ok(())
+    }
+
+    /// Nested block: names declared here are dropped afterward so if/elif/else
+    /// can reuse the same `let` identifier.
+    fn analyze_block_scope(&mut self, stmts: &[crate::parser::Statement]) -> Result<(), TypeSystemError> {
+        let before: HashSet<String> = if let Ok(symbols) = self.symbol_space.read() {
+            symbols.declared_symbols().into_iter().collect()
+        } else {
+            HashSet::new()
+        };
+        let result = self.analyze_stmt_list(stmts);
+        if let Ok(mut symbols) = self.symbol_space.write() {
+            let extra: Vec<String> = symbols
+                .declared_symbols()
+                .into_iter()
+                .filter(|name| !before.contains(name))
+                .collect();
+            for name in extra {
+                symbols.remove(&name);
             }
-            _ => {
-                // 其他语句类型的简化处理
-                Ok(())
+        }
+        result
+    }
+
+    fn bind_ephemeral_var(&mut self, name: &str) -> Result<(), TypeSystemError> {
+        let symbol_name = if let Some(ref func_name) = self.current_function_name {
+            format!("{}::{}", func_name, name)
+        } else {
+            name.to_string()
+        };
+        if let Ok(mut symbols) = self.symbol_space.write() {
+            if symbols.lookup(&symbol_name).is_some() || symbols.lookup(name).is_some() {
+                return Ok(());
             }
+            let binding = Binding {
+                name: symbol_name.clone(),
+                entity: Entity::Variable {
+                    ty: Type::int(),
+                    initialized: true,
+                },
+                span: Span::new(0, name.len()),
+                mutable: true,
+                visibility: Visibility::Private,
+            };
+            symbols.declare(symbol_name, binding)?;
+        }
+        Ok(())
+    }
+
+    fn unbind_ephemeral_var(&mut self, name: &str) {
+        if let Ok(mut symbols) = self.symbol_space.write() {
+            if let Some(ref func_name) = self.current_function_name {
+                symbols.remove(&format!("{}::{}", func_name, name));
+            }
+            symbols.remove(name);
         }
     }
 

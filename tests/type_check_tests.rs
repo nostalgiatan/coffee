@@ -52,6 +52,31 @@ fn main() => int:
 }
 
 #[test]
+fn test_undefined_in_if_body_is_error() {
+    let source = r#"
+fn main() => int:
+    if true:
+        let x: int = missing
+        rm x
+    return 0
+
+"#;
+    assert_compile_error(source, "undefined").unwrap();
+}
+
+#[test]
+fn test_undefined_in_while_condition_is_error() {
+    let source = r#"
+fn main() => int:
+    while missing:
+        break
+    return 0
+
+"#;
+    assert_compile_error(source, "undefined").unwrap();
+}
+
+#[test]
 fn test_missing_method_is_error() {
     let source = r#"
 class Box:
