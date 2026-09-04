@@ -150,6 +150,11 @@ pub struct CodeGenerator<'a, 'ctx> {
     pub enums: std::collections::HashMap<String, crate::parser::class::EnumDef>,
 }
 
+// BRIDGE: compile_expression_str helpers until Task 7
+fn expr_to_legacy_str(e: &crate::parser::expr::Expression) -> String {
+    e.to_string()
+}
+
 impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
     /// Create a new code generator instance
     /// 
@@ -761,7 +766,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             .ok_or_else(|| self.error("compile_if", "if expression outside function context"))?;
 
         // Compile condition
-        let cond_val = self.compile_expression_str(&if_expr.condition)?;
+        let cond_val = self.compile_expression_str(&expr_to_legacy_str(&if_expr.condition))?;
         let cond_bool = self.value_to_bool(cond_val)?;
 
         // Create blocks
@@ -810,7 +815,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                     break;
                 }
 
-                let elif_cond = self.compile_expression_str(&elif.condition)?;
+                let elif_cond = self.compile_expression_str(&expr_to_legacy_str(&elif.condition))?;
                 let elif_bool = self.value_to_bool(elif_cond)?;
 
                 let elif_then = self.backend.context.append_basic_block(function, &format!("elif_then_{}", i));
@@ -1036,7 +1041,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
 
         // User condition check block
         self.backend.builder.position_at_end(cond_check_block);
-        let cond_val = self.compile_expression_str(&while_loop.condition)
+        let cond_val = self.compile_expression_str(&expr_to_legacy_str(&while_loop.condition))
             .map_err(|e| self.error("compile_while", format!("failed to compile loop condition: {}", e)))?;
         let cond_bool = self.value_to_bool(cond_val)
             .map_err(|e| self.error("compile_while", format!("failed to convert condition to boolean: {}", e)))?;
@@ -1121,12 +1126,14 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         // Initialize based on iterator type
         let (start_val, end_val) = match &for_loop.iterator {
             crate::parser::ForIterator::Range { start, end } => {
-                let start_v = self.compile_expression_str(start)
+                let start_s = expr_to_legacy_str(start);
+                let end_s = expr_to_legacy_str(end);
+                let start_v = self.compile_expression_str(&start_s)
                     .map_err(|e| self.error("compile_for",
-                        format!("failed to compile range start '{}': {}", start, e)))?;
-                let end_v = self.compile_expression_str(end)
+                        format!("failed to compile range start '{}': {}", start_s, e)))?;
+                let end_v = self.compile_expression_str(&end_s)
                     .map_err(|e| self.error("compile_for",
-                        format!("failed to compile range end '{}': {}", end, e)))?;
+                        format!("failed to compile range end '{}': {}", end_s, e)))?;
 
                 let start_int = match start_v {
                     BasicValueEnum::IntValue(i) => i,

@@ -20,6 +20,7 @@ use nom::{
 
 // Import Statement for if body
 use super::Statement;
+use super::expr::Expression;
 
 /// Represents an if expression with condition, body, elif branches, and else body
 /// 
@@ -29,7 +30,7 @@ use super::Statement;
 #[derive(Debug, PartialEq, Clone)]
 pub struct IfExpr {
     /// The condition expression for the main if branch
-    pub condition: String,
+    pub condition: Expression,
     /// The body statements for the main if branch
     pub body: Vec<Statement>,  // Changed from String to Vec<Statement>
     /// A list of elif branches, each with a condition and body
@@ -46,7 +47,7 @@ pub struct IfExpr {
 #[derive(Debug, PartialEq, Clone)]
 pub struct ElifBranch {
     /// The condition expression for this elif branch
-    pub condition: String,
+    pub condition: Expression,
     /// The body statements for this elif branch
     pub body: Vec<Statement>,  // Changed from String to Vec<Statement>
 }
@@ -73,7 +74,8 @@ pub struct ElifBranch {
 pub fn parse_if(input: &str) -> IResult<&str, IfExpr> {
     let (input, _) = tag("if")(input)?;
     let (input, _) = space1(input)?;
-    let (input, condition) = take_until_colon(input)?;
+    let (input, condition_raw) = take_until_colon(input)?;
+    let condition = parse_expr_from_slice(condition_raw)?;
     let (input, _) = char(':')(input)?;
 
     // Check if there's a newline (multiline body) or just whitespace (single line)
@@ -108,7 +110,7 @@ pub fn parse_if(input: &str) -> IResult<&str, IfExpr> {
     Ok((
         input,
         IfExpr {
-            condition: condition.trim().to_string(),
+            condition,
             body,
             elifs,
             else_body,
@@ -139,7 +141,8 @@ fn parse_elif(input: &str) -> IResult<&str, ElifBranch> {
     let (input, _) = multispace0(input)?;
     let (input, _) = tag("elif")(input)?;
     let (input, _) = space1(input)?;
-    let (input, condition) = take_until_colon(input)?;
+    let (input, condition_raw) = take_until_colon(input)?;
+    let condition = parse_expr_from_slice(condition_raw)?;
     let (input, _) = char(':')(input)?;
 
     // Check if there's a newline (multiline body)
@@ -166,7 +169,7 @@ fn parse_elif(input: &str) -> IResult<&str, ElifBranch> {
     Ok((
         input,
         ElifBranch {
-            condition: condition.trim().to_string(),
+            condition,
             body,
         },
     ))
@@ -237,6 +240,15 @@ fn parse_else(input: &str) -> IResult<&str, Vec<Statement>> {
 /// 
 /// * `Ok((remaining, content))` - The part after the colon and the part before the colon
 /// * `Err(nom::Err)` - If no colon is found in the input
+fn parse_expr_from_slice(raw: &str) -> Result<Expression, nom::Err<nom::error::Error<&str>>> {
+    crate::parser::expr::parse_expression(raw.trim()).map_err(|_| {
+        nom::Err::Error(nom::error::Error {
+            input: raw,
+            code: nom::error::ErrorKind::Fail,
+        })
+    })
+}
+
 fn take_until_colon(input: &str) -> IResult<&str, &str> {
     for (i, c) in input.char_indices() {
         if c == ':' {
@@ -423,5 +435,20 @@ fn take_until_newline(input: &str) -> IResult<&str, &str> {
         Ok((&input[pos..], &input[..pos]))
     } else {
         Ok(("", input))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn if_condition_is_binary_expr() {
+        let src = "if x > 0:\n    return 1\n";
+        let (_, ife) = parse_if(src).expect("parse");
+        match ife.condition {
+            crate::parser::expr::Expression::Binary { op, .. } => assert_eq!(op, ">"),
+            other => panic!("{:?}", other),
+        }
     }
 }
