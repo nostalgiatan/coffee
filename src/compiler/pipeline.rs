@@ -1255,34 +1255,28 @@ impl CompilationPipeline {
         let source = fs::read_to_string(&unit.source)
             .map_err(|e| format!("failed to read source: {}", e))?;
 
-        // Parse
-        let statements = self.parse_source(&source, Some(unit.source.to_str().unwrap_or("")))
-            .map_err(|diagnostics| {
-                // Format each diagnostic error clearly
-                let mut error_msg = String::new();
-                for diag in &diagnostics {
-                    error_msg.push_str(&format!("{}\n", diag.format()));
-                }
-                error_msg
-            })?;
+        // Same frontend as single-file: parse + imports + semantic + type-check
+        let result = self.compile(&source, Some(unit.source.to_str().unwrap_or("")));
 
-        // Extract dependencies and C imports
-        let mut c_imports = Vec::new();
-        for stmt in &statements {
+        if !result.success {
+            let mut error_msg = String::new();
+            for diag in &result.errors {
+                error_msg.push_str(&format!("{}\n", diag.format()));
+            }
+            return Err(error_msg);
+        }
+
+        // Track Coffee-module dependencies (C imports live on CompilationResult)
+        for stmt in &result.program.statements {
             if let parser::Statement::Import(import) = stmt {
                 let module_path = match import {
                     parser::Import::Simple { path } => path.clone(),
                     parser::Import::Aliased { path, .. } => path.clone(),
                     parser::Import::InModule { path, .. } => path.clone(),
-                    parser::Import::InModuleWithLang { paths, module, lang, .. } => {
+                    parser::Import::InModuleWithLang { paths, module: _, lang, .. } => {
                         if lang == "c" {
-                            // Collect C library imports as "library:symbol"
-                            for path in paths {
-                                c_imports.push(format!("{}:{}", module, path));
-                            }
-                            continue; // Don't add C imports as dependencies
+                            continue;
                         } else {
-                            // For other languages, add as dependency
                             paths.join(",")
                         }
                     }
@@ -1291,29 +1285,24 @@ impl CompilationPipeline {
             }
         }
 
-        // Filter out main() statements for non-entry modules
-        // This allows modules to have main() for standalone testing
-        let filtered_statements: Vec<parser::Statement> = if is_entry {
-            statements
+        // Filter out main() for non-entry modules (standalone-test mains)
+        let program = if is_entry {
+            result.program
         } else {
-            statements.into_iter()
-                .filter(|stmt| !matches!(stmt, parser::Statement::Main(_)))
-                .collect()
+            parser::Program {
+                statements: result.program.statements.into_iter()
+                    .filter(|stmt| !matches!(stmt, parser::Statement::Main(_)))
+                    .collect(),
+            }
         };
 
-        // Wrap into Program
-        let program = parser::Program { statements: filtered_statements };
-
-        // Generate LLVM IR
+        // Generate LLVM IR from the fully compiled program
         let context = Context::create();
         let backend = Backend::with_target(&context, &unit.name, self.session.config.target_triple.clone());
 
         let mut codegen = crate::backend::codegen::CodeGenerator::new(&backend);
 
-        // Get CFC symbols for this compilation unit
-        let cfc_symbols = self.session.cfc_symbols.read().unwrap();
-
-        codegen.compile_program(&program, &c_imports, cfc_symbols.clone())
+        codegen.compile_program(&program, &result.c_imports, result.cfc_symbols)
             .map_err(|e| format!("codegen error: {}", e))?;
 
         // Verify
