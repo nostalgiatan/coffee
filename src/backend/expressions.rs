@@ -22,19 +22,6 @@ use inkwell::types::BasicTypeEnum;
 mod expr;
 
 impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
-    /// Compile an expression from leftover source text (e.g. `VariableDecl.value`).
-    pub fn compile_source_as_expr(&mut self, src: &str) -> Result<BasicValueEnum<'ctx>, String> {
-        let expr = self.strip_inline_comments(src);
-        let expr = expr.trim();
-        if expr.is_empty() {
-            return Err(self.error("compile_expr", "empty expression"));
-        }
-        match Expression::parse(expr) {
-            Ok(tree) => self.compile_expr(&tree),
-            Err(_) => self.compile_expr(&Expression::Literal(expr.to_string())),
-        }
-    }
-
     /// Compile LLVM IR from an `Expression` tree (production path).
     pub fn compile_expr(&mut self, expr: &Expression) -> Result<BasicValueEnum<'ctx>, String> {
         self.expression_depth += 1;
@@ -730,13 +717,14 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 if parts.len() == 2 {
                     coffee_debug!("DEBUG: constructor call: parts[0]='{}', parts[0].len()={}, parts[1]='{}', parts[1].len()={}", parts[0], parts[0].len(), parts[1], parts[1].len());
                     if parts[1].starts_with("new") {
-                        let class_name = parts[0].trim();
-                        let full_method = parts[1].trim();
-                        coffee_debug!("DEBUG: constructor call: class_name='{}', full_method='{}', full_method.len()={}", class_name, full_method, full_method.len());
-                        let args_str = &full_method[4..full_method.len()-1].trim(); // Remove "new(" prefix and ")" suffix
-                        coffee_debug!("DEBUG: constructor call: args_str='{}', args_str.len()={}", args_str, args_str.len());
-
-                        return self.compile_constructor_call(class_name, args_str);
+                        coffee_debug!("DEBUG: constructor call: class_name='{}', full_method='{}'", parts[0].trim(), parts[1].trim());
+                        match Expression::parse(expr) {
+                            Ok(Expression::ConstructorCall { class_name, args }) => {
+                                return self.compile_constructor_call(&class_name, &args);
+                            }
+                            Ok(other) => return self.compile_expr(&other),
+                            Err(e) => return Err(self.error("compile_constructor_call", e)),
+                        }
                     }
                 }
             }
@@ -1272,109 +1260,10 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         Ok(alloca.into())
     }
 
-    /// Compile constructor call: class::new(args)
+    /// Test helper: constructor call with already-parsed argument trees.
     #[cfg(test)]
-    fn compile_constructor_call(&mut self, class_name: &str, args_str: &str) -> Result<BasicValueEnum<'ctx>, String> {
-        // Construct function name: class_name + "_new"
-        let ctor_name = format!("{}_new", class_name);
-        
-        // Get constructor function
-        let ctor_fn = *self.functions.get(&ctor_name)
-            .ok_or_else(|| self.error("compile_constructor_call",
-                format!("constructor not found: '{}'", ctor_name)))?;
-        
-        // Parse and compile arguments
-        let mut args = Vec::new();
-        if !args_str.is_empty() {
-            for arg_str in args_str.split(',') {
-                let arg_str = arg_str.trim();
-                if !arg_str.is_empty() {
-                    let arg_value = self.compile_source_as_expr(arg_str)?;
-                    args.push(arg_value);
-                }
-            }
-        }
-        
-        // Call constructor
-        let call_result = self.backend.builder.build_call(
-            ctor_fn,
-            &args.iter().map(|a| (*a).into()).collect::<Vec<_>>(),
-            &format!("{}_call", ctor_name)
-        ).map_err(|e| self.error("compile_constructor_call",
-            format!("failed to call constructor '{}': {}", ctor_name, e)))?;
-        
-        // Extract return value
-        let return_value = match call_result.try_as_basic_value() {
-            inkwell::values::ValueKind::Basic(val) => val,
-            inkwell::values::ValueKind::Instruction(_) => {
-                return Err(self.error("compile_constructor_call",
-                    "constructor returned void (should return object)"));
-            }
-        };
-        
-        // Check if return value is a pointer (heap-allocated object)
-        match return_value {
-            inkwell::values::BasicValueEnum::PointerValue(ptr) => {
-                // Constructor returns a pointer to heap-allocated object
-                Ok(ptr.into())
-            }
-            inkwell::values::BasicValueEnum::IntValue(int_val) => {
-                // Constructor returns struct by value (as i64 for simplicity)
-                // This is a workaround - in real implementation, we'd need proper struct handling
-                // For now, just return the int value as a pointer
-                let ptr_type = self.backend.context.i64_type().ptr_type(inkwell::AddressSpace::default());
-                let ptr = self.backend.builder.build_int_to_ptr(int_val, ptr_type, &format!("{}_ptr", ctor_name))
-                    .map_err(|e| self.error("compile_constructor_call",
-                        format!("failed to convert int to ptr: {}", e)))?;
-                Ok(ptr.into())
-            }
-            inkwell::values::BasicValueEnum::StructValue(struct_val) => {
-                // Constructor returns struct by value (stack-allocated)
-                // Allocate heap memory and copy the struct
-                let struct_type = struct_val.get_type();
-                
-                // Get malloc function
-                let malloc_fn = self.functions.get("malloc")
-                    .copied()
-                    .ok_or_else(|| self.error("compile_constructor_call",
-                        "malloc function not found for heap allocation"))?;
-                
-                // Calculate struct size (simplified approach - use 64 bytes as default)
-                let size = 64u64;
-                
-                // Call malloc to allocate heap memory
-                let size_value = self.backend.context.i64_type().const_int(size, false);
-                let heap_ptr = self.backend.builder.build_call(
-                    malloc_fn,
-                    &[size_value.into()],
-                    &format!("{}_malloc", ctor_name)
-                ).map_err(|e| self.error("compile_constructor_call",
-                    format!("failed to call malloc: {}", e)))?;
-                
-                let heap_ptr_value = match heap_ptr.try_as_basic_value() {
-                    inkwell::values::ValueKind::Basic(val) => val,
-                    _ => return Err(self.error("compile_constructor_call",
-                        "malloc returned unexpected value"))?,
-                };
-                
-                let heap_ptr = match heap_ptr_value {
-                    inkwell::values::BasicValueEnum::PointerValue(ptr) => ptr,
-                    _ => return Err(self.error("compile_constructor_call",
-                        "malloc did not return a pointer"))?,
-                };
-                
-                // Copy struct to heap memory
-                self.backend.builder.build_store(heap_ptr, struct_val)
-                    .map_err(|e| self.error("compile_constructor_call",
-                        format!("failed to store struct to heap: {}", e)))?;
-                
-                // Mark the heap pointer as heap-allocated for proper cleanup
-                // This will be done when the variable is declared
-                Ok(heap_ptr.into())
-            }
-            _ => return Err(self.error("compile_constructor_call",
-                "constructor did not return an object (should return struct or pointer)"))?,
-        }
+    fn compile_constructor_call(&mut self, class_name: &str, args: &[Expression]) -> Result<BasicValueEnum<'ctx>, String> {
+        self.compile_constructor_from_ast(class_name, args)
     }
 }
 

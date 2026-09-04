@@ -276,8 +276,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         }
     }
 
-    /// Compile function call
-    #[cfg(test)]
+    /// Compile function call from leftover source (test string compiler only).
     #[cfg(test)]
     pub(crate) fn compile_function_call(&mut self, expr: &str) -> Result<BasicValueEnum<'ctx>, String> {
         let paren_pos = expr.find('(')
