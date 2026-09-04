@@ -155,7 +155,7 @@ pub fn parse_for(input: &str) -> IResult<&str, ForLoop> {
                             if var_name.chars().all(|c| c.is_alphanumeric() || c == '_') && !var_name.is_empty() {
                                 // Validate that value_expr is not empty
                                 if !value_expr.is_empty() {
-                                    statements.push(crate::parser::Statement::Assignment(var_name.to_string(), value_expr.to_string()));
+                                    statements.push(crate::parser::Statement::Assignment(var_name.to_string(), crate::parser::expr::assignment_rhs(value_expr)));
                                     idx += 1;
                                     continue;
                                 }

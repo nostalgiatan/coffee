@@ -408,7 +408,8 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
     /// Compile assignment from AST (for parsed assignment statements)
     /// This is used when assignment statements are parsed from the AST
     /// Supports both simple variable assignment (x = value) and member access assignment (self.x = value)
-    pub fn compile_assignment_from_ast(&mut self, var_name: &str, value_expr: &str) -> Result<(), String> {
+    pub fn compile_assignment_from_ast(&mut self, var_name: &str, value_expr: &crate::parser::expr::Expression) -> Result<(), String> {
+        let value_expr = super::codegen::expr_to_legacy_str(value_expr);
         // Check if this is a member access assignment (e.g., self.x = value)
         if var_name.contains('.') {
             let parts: Vec<&str> = var_name.splitn(2, '.').collect();
@@ -422,7 +423,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                         format!("failed to get field pointer for '{}.{}': {}", object_str, field_name, e)))?;
                 
                 // Compile the value expression
-                let value = self.compile_expression_str(value_expr)
+                let value = self.compile_expression_str(&value_expr)
                     .map_err(|e| self.error("compile_assignment_from_ast",
                         format!("failed to compile value expression '{}' for field '{}.{}': {}", value_expr, object_str, field_name, e)))?;
                 
@@ -459,7 +460,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             }
         }
 
-        let value = self.compile_expression_str(value_expr)
+        let value = self.compile_expression_str(&value_expr)
             .map_err(|e| self.error("compile_assignment_from_ast",
                 format!("failed to compile value expression '{}' for variable '{}': {}", value_expr, var_name, e)))?;
 

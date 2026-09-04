@@ -151,7 +151,7 @@ pub struct CodeGenerator<'a, 'ctx> {
 }
 
 // BRIDGE: compile_expression_str helpers until Task 7
-fn expr_to_legacy_str(e: &crate::parser::expr::Expression) -> String {
+pub(crate) fn expr_to_legacy_str(e: &crate::parser::expr::Expression) -> String {
     e.to_string()
 }
 
@@ -1820,8 +1820,9 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             }
             FunctionBody::Expression(expr) => {
                 // Single expression - evaluate and return
-                if !expr.is_empty() {
-                    let value = self.compile_expression_str(expr)
+                let expr_s = expr_to_legacy_str(expr);
+                if !expr_s.is_empty() {
+                    let value = self.compile_expression_str(&expr_s)
                         .map_err(|e| self.error("compile_function",
                             format!("failed to compile function body expression: {}", e)))?;
                     functions::build_return(&self.backend.builder, &func.return_type, self.backend.context, Some(value))
