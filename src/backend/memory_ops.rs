@@ -354,6 +354,27 @@ impl<'ctx> MemoryContext<'ctx> {
         self.variable_scopes.get(var_name) == Some(&self.current_scope)
     }
 
+    /// True if the variable was born in a scope still on the stack (not a sibling branch).
+    pub fn is_in_live_scope(&self, var_name: &str) -> bool {
+        match self.variable_scopes.get(var_name) {
+            Some(scope) => self.scope_stack.contains(scope),
+            None => true,
+        }
+    }
+
+    /// True if the variable was born in a nested block still on the stack (not the function body).
+    pub fn is_in_nested_live_scope(&self, var_name: &str) -> bool {
+        let function_scope = self.scope_stack.get(1).copied();
+        match self.variable_scopes.get(var_name) {
+            Some(scope) => {
+                self.scope_stack.contains(scope)
+                    && Some(*scope) != function_scope
+                    && *scope != 0
+            }
+            None => false,
+        }
+    }
+
     /// Get all variables in the current scope
     /// 
     /// Returns a list of variable names that are in the current scope and have
@@ -945,6 +966,7 @@ pub fn compile_clone<'ctx>(
 /// 
 /// * `Ok(())` - If the copy operation was compiled successfully
 /// * `Err(String)` - If there was an error during compilation
+#[allow(dead_code)]
 pub fn compile_copy<'ctx>(
     _context: &'ctx inkwell::context::Context,
     builder: &inkwell::builder::Builder<'ctx>,
@@ -1086,10 +1108,14 @@ pub fn compile_remove<'ctx>(
     memory_ctx: &mut MemoryContext<'ctx>,
     functions: &std::collections::HashMap<String, inkwell::values::FunctionValue<'ctx>>,
     target: &str,
+    track_lifetime: bool,
 ) -> Result<(), String> {
-    // Check for double-free
+    // Path-local auto-drop must not poison sibling CFG branches.
     if memory_ctx.is_dropped(target) {
-        return Err(format!("memory remove: double-free detected - variable '{}' was already removed", target));
+        if track_lifetime {
+            return Err(format!("memory remove: double-free detected - variable '{}' was already removed", target));
+        }
+        return Ok(());
     }
 
     if let Some(&(ptr, var_type)) = variables.get(target) {
@@ -1168,11 +1194,10 @@ pub fn compile_remove<'ctx>(
             }
         }
 
-        // Mark as dropped to prevent double-free
-        memory_ctx.mark_dropped(target.to_string());
-        
-        // Remove from variables map
-        variables.remove(target);
+        if track_lifetime {
+            memory_ctx.mark_dropped(target.to_string());
+            variables.remove(target);
+        }
     }
     Ok(())
 }
@@ -1212,51 +1237,20 @@ pub fn compile_memory_op<'ctx>(
         MemoryOp::Clone { source, target } => {
             compile_clone(context, builder, variables, source, target)
         }
-        MemoryOp::Copy { source, target } => {
-            compile_copy(context, builder, variables, source, target)
+        MemoryOp::Copy { source: _, target: _ } => {
+            Err("memory copy: the copy keyword was removed; use clone or mv".to_string())
         }
         MemoryOp::Move { source, target } => {
             compile_move(context, builder, variables, memory_ctx, source, target)
         }
         MemoryOp::Remove { target } => {
-            compile_remove(context, builder, variables, memory_ctx, functions, target)
+            compile_remove(context, builder, variables, memory_ctx, functions, target, true)
         }
         MemoryOp::RemoveMultiple { targets } => {
             compile_remove_multiple(context, builder, variables, memory_ctx, functions, targets)
         }
-        MemoryOp::CleanOut { targets, except_mode } => {
-            // 记录clean操作
-            memory_ctx.record_clean();
-
-            // clean out 是作用域感知的批量rm
-            // 只清理当前作用域内的变量
-            let all_vars: Vec<String> = variables.keys().cloned().collect();
-
-            // 获取当前作用域的所有变量
-            let current_scope_vars = memory_ctx.get_current_scope_variables(&all_vars);
-
-            let to_remove: Vec<String> = if *except_mode {
-                // clean out except x, y: 清理当前作用域除x,y外的所有变量
-                if let Some(except_list) = targets {
-                    current_scope_vars.into_iter()
-                        .filter(|v| !except_list.contains(v))
-                        .collect()
-                } else {
-                    current_scope_vars
-                }
-            } else {
-                // clean out x, y, z: 只清理指定的变量（必须在当前作用域）
-                if let Some(target_list) = targets {
-                    current_scope_vars.into_iter()
-                        .filter(|v| target_list.contains(v))
-                        .collect()
-                } else {
-                    // clean out (无参数): 清理当前作用域所有变量
-                    current_scope_vars
-                }
-            };
-
-            compile_remove_multiple(context, builder, variables, memory_ctx, functions, &to_remove)
+        MemoryOp::CleanOut { .. } => {
+            Err("memory clean out: clean out was removed; values drop at scope end".to_string())
         }
     }
 }
@@ -1292,7 +1286,7 @@ pub fn compile_remove_multiple<'ctx>(
     targets: &[String],
 ) -> Result<(), String> {
     for target in targets {
-        compile_remove(context, builder, variables, memory_ctx, functions, target)?;
+        compile_remove(context, builder, variables, memory_ctx, functions, target, true)?;
     }
     Ok(())
 }

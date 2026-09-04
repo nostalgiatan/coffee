@@ -317,6 +317,14 @@ pub fn parse_expression(input: &str) -> Result<Expression, String> {
         });
     }
 
+    if let Some(rest) = input.strip_prefix("clone ") {
+        let operand = parse_expression(rest.trim())?;
+        return Ok(Expression::Unary {
+            op: "clone".to_string(),
+            operand: Box::new(operand),
+        });
+    }
+
     // Handle parentheses - could be tuple or just grouping
     if input.starts_with('(') && matching_close_paren(input, 0) == Some(input.len() - 1) {
         let inner = &input[1..input.len()-1].trim();
@@ -917,6 +925,17 @@ mod tests {
             assert_eq!(op, "+");
         } else {
             panic!("Expected Binary expression");
+        }
+    }
+
+    #[test]
+    fn test_parse_clone_expr() {
+        match parse_expression("clone a").expect("parse") {
+            Expression::Unary { op, operand } => {
+                assert_eq!(op, "clone");
+                assert_eq!(*operand, Expression::Variable("a".to_string()));
+            }
+            other => panic!("expected unary clone, got {:?}", other),
         }
     }
 

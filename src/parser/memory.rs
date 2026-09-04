@@ -226,6 +226,7 @@ mod tests {
 
     #[test]
     fn test_parse_copy() {
+        // Parsed so the type checker can emit "copy was removed".
         let result = parse_memory_op("copy x y");
         assert_eq!(result, Ok(("", MemoryOp::Copy {
             source: "x".to_string(),

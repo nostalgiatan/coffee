@@ -586,22 +586,27 @@ impl SemanticAnalyzer {
         None
     }
 
-    /// 检查符号是否是C库导入
-    fn is_c_import(&self, symbol_name: &str) -> bool {
-        // 首先检查c_imports列表
+    /// True only if the source listed `use <name> in … of c` (not a language primitive).
+    pub fn is_explicit_c_import(&self, symbol_name: &str) -> bool {
         if let Ok(c_imports) = self.c_imports.read() {
             for c_import in c_imports.iter() {
                 if c_import.contains(':') {
-                    // Format is "library:symbol"
                     let parts: Vec<&str> = c_import.split(':').collect();
                     if parts.len() == 2 && parts[1] == symbol_name {
                         return true;
                     }
                 } else if c_import == symbol_name {
-                    // Direct match
                     return true;
                 }
             }
+        }
+        false
+    }
+
+    /// 检查符号是否是C库导入
+    fn is_c_import(&self, symbol_name: &str) -> bool {
+        if self.is_explicit_c_import(symbol_name) {
+            return true;
         }
 
         // 然后检查是否是内置的C函数（libc/libm）
@@ -775,6 +780,7 @@ impl SemanticAnalyzer {
                 }
                 Ok(())
             }
+            crate::parser::Statement::MemoryOp(op) => self.analyze_memory_op(op),
             _ => Ok(())
         }
     }
@@ -826,6 +832,58 @@ impl SemanticAnalyzer {
             }
         }
         result
+    }
+
+    fn analyze_memory_op(&mut self, op: &crate::parser::MemoryOp) -> Result<(), TypeSystemError> {
+        use crate::parser::expr::Expression;
+        match op {
+            crate::parser::MemoryOp::Clone { source, target }
+            | crate::parser::MemoryOp::Move { source, target } => {
+                self.analyze_expression(&Expression::Variable(source.clone()))?;
+                let ty = self
+                    .infer_expression_type(&Expression::Variable(source.clone()))
+                    .unwrap_or_else(|_| Type::int());
+                self.bind_memory_target(target, ty)
+            }
+            crate::parser::MemoryOp::Remove { target } => {
+                self.analyze_expression(&Expression::Variable(target.clone()))
+            }
+            crate::parser::MemoryOp::RemoveMultiple { targets } => {
+                for name in targets {
+                    self.analyze_expression(&Expression::Variable(name.clone()))?;
+                }
+                Ok(())
+            }
+            crate::parser::MemoryOp::Copy { .. } | crate::parser::MemoryOp::CleanOut { .. } => {
+                Ok(())
+            }
+        }
+    }
+
+    fn bind_memory_target(&mut self, name: &str, ty: Type) -> Result<(), TypeSystemError> {
+        let span = Span::new(0, name.len());
+        let symbol_name = if let Some(ref func_name) = self.current_function_name {
+            format!("{}::{}", func_name, name)
+        } else {
+            name.to_string()
+        };
+        if let Ok(mut symbols) = self.symbol_space.write() {
+            if symbols.lookup(&symbol_name).is_some() || symbols.lookup(name).is_some() {
+                return Ok(());
+            }
+            let binding = Binding {
+                name: symbol_name.clone(),
+                entity: Entity::Variable {
+                    ty,
+                    initialized: true,
+                },
+                span,
+                mutable: true,
+                visibility: Visibility::Private,
+            };
+            symbols.declare(symbol_name, binding)?;
+        }
+        Ok(())
     }
 
     fn bind_ephemeral_var(&mut self, name: &str) -> Result<(), TypeSystemError> {

@@ -458,7 +458,7 @@ class Point:
 
 fn main() => int:
     let p1: Point = Point { x: 10, y: 20 }
-    let p2: Point = p1
+    let p2: Point = clone p1
     p2.x = 30
     rm p1, p2
     return 0

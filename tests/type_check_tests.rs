@@ -646,3 +646,205 @@ fn main() => int:
 "#;
     assert_compiles(source).unwrap();
 }
+
+#[test]
+fn test_guarded_ident_is_not_exhaustive() {
+    let source = r#"
+fn main() => int:
+    let x: int = 1
+    match x:
+        n if n > 0 => 1
+    rm x
+    return 0
+
+"#;
+    assert_compile_error(source, "exhaustive").unwrap();
+}
+
+#[test]
+fn test_type_name_is_not_a_value() {
+    let source = r#"
+class Box:
+    n: int
+
+fn main() => int:
+    let x: Box = Box
+    rm x
+    return 0
+
+"#;
+    assert_compile_error(source, "undefined").unwrap();
+}
+
+#[test]
+fn test_raise_non_error_class_is_error() {
+    let source = r#"
+class Point:
+    x: int
+    y: int
+
+fn main() => int:
+    raise Point { x: 1, y: 2 }
+
+"#;
+    assert_compile_error(source, "type mismatch").unwrap();
+}
+
+#[test]
+fn test_use_after_move_is_error() {
+    let source = r#"
+fn main() => int:
+    let a: int = 1
+    mv a b
+    let c: int = a
+    rm c
+    rm b
+    return 0
+
+"#;
+    assert_compile_error(source, "moved").unwrap();
+}
+
+#[test]
+fn test_int_without_rm_compiles() {
+    let source = r#"
+fn main() => int:
+    let x: int = 1
+    return x
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_resource_assign_copy_is_error() {
+    let source = r#"
+class Box:
+    n: int
+
+fn main() => int:
+    let a: Box = Box { n: 1 }
+    let b: Box = Box { n: 0 }
+    b = a
+    rm a
+    rm b
+    return 0
+
+"#;
+    assert_compile_error(source, "mv or clone").unwrap();
+}
+
+#[test]
+fn test_resource_let_copy_is_error() {
+    let source = r#"
+class Box:
+    n: int
+
+fn main() => int:
+    let a: Box = Box { n: 1 }
+    let b: Box = a
+    rm a
+    rm b
+    return 0
+
+"#;
+    assert_compile_error(source, "mv or clone").unwrap();
+}
+
+#[test]
+fn test_copy_keyword_is_error() {
+    let source = r#"
+fn main() => int:
+    let a: int = 1
+    copy a b
+    rm a
+    return 0
+
+"#;
+    assert_compile_error(source, "copy").unwrap();
+}
+
+#[test]
+fn test_clean_out_keyword_is_error() {
+    let source = r#"
+fn main() => int:
+    let a: int = 1
+    clean out
+    return 0
+
+"#;
+    assert_compile_error(source, "clean out").unwrap();
+}
+
+#[test]
+fn test_resource_let_clone_expr() {
+    let source = r#"
+class Box:
+    n: int
+
+fn main() => int:
+    let a: Box = Box { n: 1 }
+    let b: Box = clone a
+    rm a
+    rm b
+    return 0
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_statement_clone_binds_target() {
+    let source = r#"
+class Box:
+    n: int
+
+fn main() => int:
+    let a: Box = Box { n: 1 }
+    clone a b
+    rm a
+    rm b
+    return 0
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_if_block_int_without_rm() {
+    let source = r#"
+fn main() => int:
+    if true:
+        let x: int = 1
+    return 0
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_if_block_class_without_rm() {
+    let source = r#"
+class Point:
+    x: int
+    y: int
+
+fn main() => int:
+    if true:
+        let p: Point = Point { x: 1, y: 2 }
+    return 0
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_malloc_without_import_is_error() {
+    let source = r#"
+fn main() => int:
+    let p: int = malloc(8)
+    return 0
+
+"#;
+    assert_compile_error(source, "not a Coffee memory primitive").unwrap();
+}

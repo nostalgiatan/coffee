@@ -269,6 +269,13 @@ impl TypeChecker {
                     self.add_error(error.clone());
                     return Err(error);
                 }
+            } else {
+                let error = TypeSystemError::ParseError {
+                    type_str: "return".to_string(),
+                    reason: "return used outside of a function".to_string(),
+                };
+                self.add_error(error.clone());
+                return Err(error);
             }
         }
         Ok(())
@@ -340,6 +347,20 @@ impl TypeChecker {
             coffee_debug!("[DEBUG] check_variable_decl: creating TypeMismatch error: expected {:?}, found {:?}", ty, value_type);
             self.add_error(error.clone());
             return Err(error);
+        }
+
+        if ty.is_resource() {
+            if matches!(decl.value, crate::parser::expr::Expression::Variable(_)) {
+                let error = TypeSystemError::OwnershipError {
+                    reason: format!(
+                        "cannot copy resource '{}' with let; use mv or clone",
+                        decl.name
+                    ),
+                    span: location,
+                };
+                self.add_error(error.clone());
+                return Err(error);
+            }
         }
 
         if self.mode == CheckingMode::Comprehensive {
@@ -417,6 +438,20 @@ impl TypeChecker {
             let error = TypeSystemError::type_mismatch(target_type, value_type, Span::new(0, name.len()));
             self.add_error(error.clone());
             return Err(error);
+        }
+
+        if target_type.is_resource() {
+            if matches!(value, crate::parser::expr::Expression::Variable(_)) {
+                let error = TypeSystemError::OwnershipError {
+                    reason: format!(
+                        "cannot copy resource '{}' with '='; use mv or clone",
+                        name
+                    ),
+                    span: Span::new(0, name.len()),
+                };
+                self.add_error(error.clone());
+                return Err(error);
+            }
         }
         Ok(())
     }
@@ -665,6 +700,30 @@ impl TypeChecker {
         Ok(())
     }
 
+    fn lookup_live_variable(&self, name: &str) -> Result<Type, TypeSystemError> {
+        if let Some(info) = self.values.get(name) {
+            match &info.state {
+                ValueState::Moved => {
+                    return Err(TypeSystemError::OwnershipError {
+                        reason: format!("use of moved value '{}'", name),
+                        span: Span::new(0, name.len()),
+                    });
+                }
+                ValueState::Dropped { location } => {
+                    return Err(TypeSystemError::OwnershipError {
+                        reason: format!("use of dropped value '{}' (dropped at {})", name, location),
+                        span: Span::new(0, name.len()),
+                    });
+                }
+                ValueState::Alive | ValueState::Borrowed { .. } => return Ok(info.ty.clone()),
+            }
+        }
+        Err(TypeSystemError::undefined_variable(
+            name.to_string(),
+            Span::new(0, name.len()),
+        ))
+    }
+
     fn check_loop_control(&mut self, keyword: &str) -> Result<(), TypeSystemError> {
         if self.loop_depth == 0 {
             let error = TypeSystemError::ParseError {
@@ -679,7 +738,7 @@ impl TypeChecker {
 
     fn check_raise(&mut self, expr: &crate::parser::expr::Expression) -> Result<(), TypeSystemError> {
         match self.check_raise_expression(expr) {
-            Ok(Type::NamedType { .. }) => Ok(()),
+            Ok(Type::NamedType { name }) if Self::is_error_type_name(&name) => Ok(()),
             Ok(ty) => {
                 let error = TypeSystemError::type_mismatch(
                     Type::NamedType { name: "Error".to_string() },
@@ -700,7 +759,7 @@ impl TypeChecker {
         match expr {
             crate::parser::expr::Expression::Call { function, args } => {
                 if let crate::parser::expr::Expression::Variable(name) = function.as_ref() {
-                    if self.is_registered_type(name) {
+                    if Self::is_error_type_name(name) && self.is_registered_type(name) {
                         for arg in args {
                             self.check_expression(arg)?;
                         }
@@ -710,13 +769,17 @@ impl TypeChecker {
                 self.check_expression(expr)
             }
             crate::parser::expr::Expression::StructLiteral { struct_name, fields } => {
-                if self.is_registered_type(struct_name) {
+                if Self::is_error_type_name(struct_name) && self.is_registered_type(struct_name) {
                     return self.check_struct_literal(struct_name, fields);
                 }
                 self.check_expression(expr)
             }
             _ => self.check_expression(expr),
         }
+    }
+
+    fn is_error_type_name(name: &str) -> bool {
+        name.ends_with("Error")
     }
 
     fn is_registered_type(&self, name: &str) -> bool {
@@ -822,7 +885,7 @@ impl TypeChecker {
         arms: &[parser::r#match::MatchArm],
     ) -> Result<(), TypeSystemError> {
         if matches!(scrutinee_ty, Type::Int { .. } | Type::Float { .. } | Type::String) {
-            let catch_all = arms.iter().any(|arm| Self::pattern_is_catch_all(&arm.pattern));
+            let catch_all = arms.iter().any(Self::arm_is_irrefutable);
             if catch_all {
                 return Ok(());
             }
@@ -839,9 +902,12 @@ impl TypeChecker {
             let mut saw_false = false;
             let mut catch_all = false;
             for arm in arms {
-                if Self::pattern_is_catch_all(&arm.pattern) {
+                if Self::arm_is_irrefutable(arm) {
                     catch_all = true;
                     break;
+                }
+                if arm.guard.is_some() {
+                    continue;
                 }
                 if let crate::parser::Pattern::Literal(lit) = &arm.pattern {
                     match lit.as_str() {
@@ -863,7 +929,7 @@ impl TypeChecker {
             return Err(error);
         }
         if matches!(scrutinee_ty, Type::Tuple(_)) {
-            let catch_all = arms.iter().any(|arm| Self::pattern_is_catch_all(&arm.pattern));
+            let catch_all = arms.iter().any(Self::arm_is_irrefutable);
             if catch_all {
                 return Ok(());
             }
@@ -895,7 +961,7 @@ impl TypeChecker {
         let mut covered: HashSet<String> = HashSet::new();
         let mut catch_all = false;
         for arm in arms {
-            if Self::pattern_is_catch_all(&arm.pattern) {
+            if Self::arm_is_irrefutable(arm) {
                 catch_all = true;
                 break;
             }
@@ -918,6 +984,10 @@ impl TypeChecker {
         };
         self.add_error(error.clone());
         Err(error)
+    }
+
+    fn arm_is_irrefutable(arm: &parser::r#match::MatchArm) -> bool {
+        arm.guard.is_none() && Self::pattern_is_catch_all(&arm.pattern)
     }
 
     fn pattern_is_catch_all(pattern: &crate::parser::Pattern) -> bool {
@@ -1107,7 +1177,7 @@ impl TypeChecker {
                 self.infer_value_type(value)
             },
             crate::parser::expr::Expression::Variable(name) => {
-                self.infer_value_type(name)
+                self.lookup_live_variable(name)
             },
             crate::parser::expr::Expression::Binary { left, op, right } => {
                 let left_type = self.check_expression(left)?;
@@ -1236,8 +1306,10 @@ impl TypeChecker {
             crate::parser::expr::Expression::ArrayLiteral { elements } => {
                 // Check all elements have the same type
                 if elements.is_empty() {
-                    // Empty array - default to int array
-                    return Ok(Type::Array { elem: Box::new(Type::int()), size: 0 });
+                    return Err(TypeSystemError::ParseError {
+                        type_str: "[]".to_string(),
+                        reason: "cannot infer element type of empty array; annotate a slice such as [int]".to_string(),
+                    });
                 }
 
                 // Infer type from first element
@@ -1607,6 +1679,7 @@ impl TypeChecker {
                     Err(TypeSystemError::invalid_operation(op, operand_type.clone(), Type::unit(), location))
                 }
             }
+            "clone" => Ok(operand_type.clone()),
             _ => Err(TypeSystemError::invalid_operation(op, operand_type.clone(), Type::unit(), location)),
         }
     }
@@ -1657,6 +1730,23 @@ impl TypeChecker {
         args: &[crate::parser::expr::Expression],
     ) -> Result<Type, TypeSystemError> {
         let location = Span::new(0, name.len());
+
+        if matches!(name, "malloc" | "free" | "calloc" | "realloc") {
+            let imported = self.analyzer.as_ref().and_then(|a| a.read().ok())
+                .map(|a| a.is_explicit_c_import(name))
+                .unwrap_or(false);
+            if !imported {
+                let error = TypeSystemError::ParseError {
+                    type_str: name.to_string(),
+                    reason: format!(
+                        "{} is not a Coffee memory primitive; import it with 'use {} in libc of c'",
+                        name, name
+                    ),
+                };
+                self.add_error(error.clone());
+                return Err(error);
+            }
+        }
 
         // Check if this is an enum variant: Enum::Variant(args)
         if name.contains("::") {
@@ -2197,25 +2287,12 @@ impl TypeChecker {
             if let Some(info) = self.values.get(value) {
                 Ok(info.ty.clone())
             } else {
-                // Try to resolve as type from registry
-                match self.registry.read() {
-                    Ok(reg) => reg.resolve_type(value).map_err(|_| TypeSystemError::undefined_variable(value.to_string(), Span::new(0, value.len()))),
-                    Err(_) => Err(TypeSystemError::ParseError {
-                        type_str: value.to_string(),
-                        reason: "Failed to access registry".to_string(),
-                    }),
-                }
+                Err(TypeSystemError::undefined_variable(value.to_string(), Span::new(0, value.len())))
             }
         }
         // Try to resolve as type from registry
         else {
-            match self.registry.read() {
-                Ok(reg) => reg.resolve_type(value).map_err(|_| TypeSystemError::undefined_variable(value.to_string(), Span::new(0, value.len()))),
-                Err(_) => Err(TypeSystemError::ParseError {
-                    type_str: value.to_string(),
-                    reason: "Failed to access registry".to_string(),
-                }),
-            }
+            Err(TypeSystemError::undefined_variable(value.to_string(), Span::new(0, value.len())))
         }
     }
 
@@ -2713,59 +2790,72 @@ impl TypeChecker {
         self.errors.push(crate::types::TypeSystemError::from(error));
     }
 
-    /// Check memory operation (alias for check_memory_operation for compatibility)
-    pub fn check_memory_op(&mut self, op: &crate::parser::memory::MemoryOp) -> Result<(), crate::diagnostics::Diagnostic> {
-        let (operation, var_name) = match op {
-            crate::parser::memory::MemoryOp::Clone { source, target: _ } => ("clone", source.as_str()),
-            crate::parser::memory::MemoryOp::Copy { source, target: _ } => ("copy", source.as_str()),
-            crate::parser::memory::MemoryOp::Move { source, target: _ } => ("move", source.as_str()),
-            crate::parser::memory::MemoryOp::Remove { target } => ("remove", target.as_str()),
-            crate::parser::memory::MemoryOp::RemoveMultiple { targets } => {
-                if !targets.is_empty() {
-                    ("remove_multiple", targets[0].as_str())
-                } else {
-                    ("remove_multiple", "")
-                }
-            }
-            crate::parser::memory::MemoryOp::CleanOut { targets, except_mode } => {
-                return self.check_clean_out(targets.as_ref().map(|v| v.as_slice()), *except_mode);
-            }
-        };
-
-        self.check_memory_operation(var_name, operation)
-            .map_err(|e| e.into())
+    fn bind_memory_target(&mut self, target: &str, ty: Type) {
+        if self.mode != CheckingMode::Comprehensive {
+            return;
+        }
+        let location = Span::new(0, target.len());
+        self.values.insert(
+            target.to_string(),
+            ValueInfo {
+                name: target.to_string(),
+                ty,
+                state: ValueState::Alive,
+                scope: SpaceId::new(),
+                location,
+                lifetime: None,
+            },
+        );
     }
 
-    fn check_clean_out(
-        &mut self,
-        targets: Option<&[String]>,
-        except_mode: bool,
-    ) -> Result<(), crate::diagnostics::Diagnostic> {
-        let is_live = |state: &ValueState| {
-            matches!(state, ValueState::Alive | ValueState::Borrowed { .. })
-        };
-        let names: Vec<String> = if except_mode {
-            let except = targets.unwrap_or(&[]);
-            self.values
-                .iter()
-                .filter(|(name, info)| is_live(&info.state) && !except.iter().any(|e| e == *name))
-                .map(|(name, _)| name.clone())
-                .collect()
-        } else if let Some(list) = targets {
-            list.to_vec()
-        } else {
-            self.values
-                .iter()
-                .filter(|(_, info)| is_live(&info.state))
-                .map(|(name, _)| name.clone())
-                .collect()
-        };
-
-        for name in names {
-            self.check_memory_operation(&name, "remove")
-                .map_err(crate::diagnostics::Diagnostic::from)?;
+    /// Check memory operation (alias for check_memory_operation for compatibility)
+    pub fn check_memory_op(&mut self, op: &crate::parser::memory::MemoryOp) -> Result<(), crate::diagnostics::Diagnostic> {
+        match op {
+            crate::parser::memory::MemoryOp::Copy { .. } => {
+                let error = TypeSystemError::ParseError {
+                    type_str: "copy".to_string(),
+                    reason: "copy was removed; use clone for an independent value or mv to move".to_string(),
+                };
+                self.add_error(error.clone());
+                return Err(error.into());
+            }
+            crate::parser::memory::MemoryOp::CleanOut { .. } => {
+                let error = TypeSystemError::ParseError {
+                    type_str: "clean out".to_string(),
+                    reason: "clean out was removed; values drop at scope end, use rm only to drop early".to_string(),
+                };
+                self.add_error(error.clone());
+                return Err(error.into());
+            }
+            crate::parser::memory::MemoryOp::Clone { source, target } => {
+                self.check_memory_operation(source, "clone")
+                    .map_err(|e| -> crate::diagnostics::Diagnostic { e.into() })?;
+                if let Some(ty) = self.values.get(source).map(|v| v.ty.clone()) {
+                    self.bind_memory_target(target, ty);
+                }
+                Ok(())
+            }
+            crate::parser::memory::MemoryOp::Move { source, target } => {
+                let ty = self.values.get(source).map(|v| v.ty.clone());
+                self.check_memory_operation(source, "move")
+                    .map_err(|e| -> crate::diagnostics::Diagnostic { e.into() })?;
+                if let Some(ty) = ty {
+                    self.bind_memory_target(target, ty);
+                }
+                Ok(())
+            }
+            crate::parser::memory::MemoryOp::Remove { target } => {
+                self.check_memory_operation(target, "remove")
+                    .map_err(|e| -> crate::diagnostics::Diagnostic { e.into() })
+            }
+            crate::parser::memory::MemoryOp::RemoveMultiple { targets } => {
+                for name in targets {
+                    self.check_memory_operation(name, "remove")
+                        .map_err(|e| -> crate::diagnostics::Diagnostic { e.into() })?;
+                }
+                Ok(())
+            }
         }
-        Ok(())
     }
 }
 

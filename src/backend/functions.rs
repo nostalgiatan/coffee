@@ -826,6 +826,9 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             .map(|b| b.get_terminator().is_some())
             .unwrap_or(false);
         if !has_raise && !has_terminator {
+            self.emit_local_drops()
+                .map_err(|e| self.error("compile_function",
+                    format!("failed to auto-drop locals: {}", e)))?;
             build_return(&self.backend.builder, &func.return_type, self.backend.context, None)
                 .map_err(|e| self.error("compile_function",
                     format!("failed to build default return: {}", e)))?;

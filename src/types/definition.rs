@@ -179,6 +179,18 @@ impl Type {
         }
     }
 
+    /// Heap/resource types: assignment copies are forbidden (`mv` / `clone` required).
+    pub fn is_resource(&self) -> bool {
+        match self {
+            Type::String | Type::Slice(_) | Type::Variadic | Type::Ref { .. } | Type::NamedType { .. } => {
+                true
+            }
+            Type::Array { elem, .. } => elem.is_resource(),
+            Type::Tuple(elems) => elems.iter().any(Type::is_resource),
+            _ => false,
+        }
+    }
+
     /// 检查类型是否可以被隐式转换
     pub fn can_coerce_from(&self, from: &Type) -> bool {
         match (self, from) {

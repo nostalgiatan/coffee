@@ -196,8 +196,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         for stmt in &if_expr.body {
             self.compile_statement(stmt)?;
         }
-        // Exit scope for then branch
-        self.memory_ctx.exit_scope();
+        self.finish_scoped_block()?;
         // Check terminator of current block (builder may have moved during compilation)
         if let Some(current_block) = self.backend.builder.get_insert_block() {
             if current_block.get_terminator().is_none() {
@@ -238,8 +237,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 for stmt in &elif.body {
                     self.compile_statement(stmt)?;
                 }
-                // Exit scope for elif branch
-                self.memory_ctx.exit_scope();
+                self.finish_scoped_block()?;
                 // Check terminator of current block (builder may have moved)
                 if let Some(current_block) = self.backend.builder.get_insert_block() {
                     if current_block.get_terminator().is_none() {
@@ -263,8 +261,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                             self.compile_statement(stmt)?;
                         }
                     }
-                    // Exit scope for else branch
-                    self.memory_ctx.exit_scope();
+                    self.finish_scoped_block()?;
                     // Check terminator of current block (builder may have moved)
                     if let Some(current_block) = self.backend.builder.get_insert_block() {
                         if current_block.get_terminator().is_none() {
@@ -284,8 +281,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                     self.compile_statement(stmt)?;
                 }
             }
-            // Exit scope for else branch
-            self.memory_ctx.exit_scope();
+            self.finish_scoped_block()?;
             // Check terminator of current block (builder may have moved)
             if let Some(current_block) = self.backend.builder.get_insert_block() {
                 if current_block.get_terminator().is_none() {
@@ -459,9 +455,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         for stmt in &while_loop.body {
             self.compile_statement(stmt)?;
         }
-        
-        // Exit loop body scope after each iteration
-        self.memory_ctx.exit_scope();
+        self.finish_scoped_block()?;
         
         // Check current block for terminator (not loop_body_block!)
         // After compiling statements with arithmetic, builder may be in a different block
@@ -648,6 +642,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
 
         // Body (body is now Vec<Statement>)
         self.backend.builder.position_at_end(body_block);
+        self.memory_ctx.enter_scope();
         for stmt in &for_loop.body {
             // Check if this is a continue or break statement
             match stmt {
@@ -674,6 +669,8 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 }
             }
         }
+
+        self.finish_scoped_block()?;
 
         // Check current block for terminator (not body_block!)
         // After compiling statements with arithmetic, builder may be in a different block

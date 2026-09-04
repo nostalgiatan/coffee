@@ -250,20 +250,94 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                     }
 
                     let converted_value = self.convert_value_to_type(value, ret_type, "return_val")?;
+                    self.emit_local_drops()?;
                     self.backend.builder.build_return(Some(&converted_value))
                         .map_err(|e| e.to_string())?;
                 } else {
+                    self.emit_local_drops()?;
                     self.backend.builder.build_return(Some(&value))
                         .map_err(|e| e.to_string())?;
                 }
             } else {
+                self.emit_local_drops()?;
                 self.backend.builder.build_return(Some(&value))
                     .map_err(|e| e.to_string())?;
             }
         } else {
+            self.emit_local_drops()?;
             self.backend.builder.build_return(None)
                 .map_err(|e| e.to_string())?;
         }
+        Ok(())
+    }
+
+    /// Drop remaining locals at a terminator. Skips parameters and `self`.
+    pub(crate) fn emit_local_drops(&mut self) -> Result<(), String> {
+        let vars_to_clean: Vec<String> = self.variables.keys()
+            .filter(|name| {
+                *name != "self"
+                    && !self.current_function_params.contains(name)
+                    && self.memory_ctx.is_in_live_scope(name)
+            })
+            .cloned()
+            .collect();
+
+        for var_name in vars_to_clean {
+            if let Some(info) = self.memory_ctx.lifetimes.get(&var_name) {
+                if matches!(info.state, crate::backend::memory_ops::VariableState::Initialized) {
+                    super::memory_ops::compile_remove(
+                        self.backend.context,
+                        &self.backend.builder,
+                        &mut self.variables,
+                        &mut self.memory_ctx,
+                        &self.functions,
+                        &var_name,
+                        false,
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Drop locals born in the current scope. No-op if the block already terminated.
+    pub(crate) fn emit_current_scope_drops(&mut self) -> Result<(), String> {
+        if let Some(block) = self.backend.builder.get_insert_block() {
+            if block.get_terminator().is_some() {
+                return Ok(());
+            }
+        }
+        let vars_to_clean: Vec<String> = self.variables.keys()
+            .filter(|name| {
+                *name != "self"
+                    && !self.current_function_params.contains(name)
+                    && self.memory_ctx.is_in_current_scope(name)
+            })
+            .cloned()
+            .collect();
+
+        for var_name in vars_to_clean {
+            if let Some(info) = self.memory_ctx.lifetimes.get(&var_name) {
+                if matches!(info.state, crate::backend::memory_ops::VariableState::Initialized) {
+                    super::memory_ops::compile_remove(
+                        self.backend.context,
+                        &self.backend.builder,
+                        &mut self.variables,
+                        &mut self.memory_ctx,
+                        &self.functions,
+                        &var_name,
+                        false,
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Drop the current scope's locals, then pop the scope.
+    pub(crate) fn finish_scoped_block(&mut self) -> Result<(), String> {
+        self.emit_current_scope_drops()?;
+        self.memory_ctx.exit_scope();
         Ok(())
     }
 
@@ -369,26 +443,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         // CRITICAL: Auto-cleanup all variables before raising error
         // This prevents memory leaks on the error path
         // IMPORTANT: Do NOT clean up function parameters, only local variables
-        let vars_to_clean: Vec<String> = self.variables.keys()
-            .filter(|name| !self.current_function_params.contains(name))
-            .cloned()
-            .collect();
-
-        // Generate clean out for all local variables (not parameters)
-        for var_name in vars_to_clean {
-            // Only clean if variable exists and hasn't been moved/dropped
-            if let Some(info) = self.memory_ctx.lifetimes.get(&var_name) {
-                if matches!(info.state, crate::backend::memory_ops::VariableState::Initialized) {
-                    use crate::parser::MemoryOp;
-                    let clean_op = MemoryOp::Remove {
-                        target: var_name.clone(),
-                    };
-
-                    // Emit cleanup code
-                    self.compile_memory_op(&clean_op)?;
-                }
-            }
-        }
+        self.emit_local_drops()?;
 
         // Call exit(1) to terminate
         let exit_code = i32_type.const_int(1, false);
@@ -466,8 +521,43 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         )
     }
 
+    /// Drop locals born in nested blocks still on the stack (loop/if), not the function body.
+    pub(crate) fn emit_nested_scope_drops(&mut self) -> Result<(), String> {
+        if let Some(block) = self.backend.builder.get_insert_block() {
+            if block.get_terminator().is_some() {
+                return Ok(());
+            }
+        }
+        let vars_to_clean: Vec<String> = self.variables.keys()
+            .filter(|name| {
+                *name != "self"
+                    && !self.current_function_params.contains(name)
+                    && self.memory_ctx.is_in_nested_live_scope(name)
+            })
+            .cloned()
+            .collect();
+
+        for var_name in vars_to_clean {
+            if let Some(info) = self.memory_ctx.lifetimes.get(&var_name) {
+                if matches!(info.state, crate::backend::memory_ops::VariableState::Initialized) {
+                    super::memory_ops::compile_remove(
+                        self.backend.context,
+                        &self.backend.builder,
+                        &mut self.variables,
+                        &mut self.memory_ctx,
+                        &self.functions,
+                        &var_name,
+                        false,
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Compile break statement
     pub fn compile_break(&mut self) -> Result<(), String> {
+        self.emit_nested_scope_drops()?;
         use super::control_flow;
         control_flow::compile_break(&self.backend.builder, &self.loop_stack)
             .map_err(|e| self.error("compile_break", e))
@@ -475,6 +565,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
 
     /// Compile continue statement
     pub fn compile_continue(&mut self) -> Result<(), String> {
+        self.emit_nested_scope_drops()?;
         use super::control_flow;
         control_flow::compile_continue(&self.backend.builder, &self.loop_stack)
             .map_err(|e| self.error("compile_continue", e))

@@ -388,7 +388,9 @@ fn main() => int:
     let p1: Point = Point { x: 0, y: 0 }
     let p2: Point = Point { x: 10, y: 10 }
     let a: int = 100
-    clean out
+    rm p1
+    rm p2
+    rm a
     return 0
 
 "#;
@@ -406,7 +408,8 @@ fn main() => int:
     let p1: Point = Point { x: 0, y: 0 }
     let p2: Point = Point { x: 10, y: 10 }
     let a: int = 100
-    clean out except p1
+    rm p2
+    rm a
     rm p1
     return 0
 
@@ -425,7 +428,8 @@ fn main() => int:
     let p1: Point = Point { x: 0, y: 0 }
     let p2: Point = Point { x: 10, y: 10 }
     let a: int = 100
-    clean out p1, p2
+    rm p1
+    rm p2
     rm a
     return 0
 

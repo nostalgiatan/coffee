@@ -278,9 +278,11 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             }
 
             self.backend.builder.position_at_end(arm_block);
+            self.memory_ctx.enter_scope();
             for stmt in &arm.body {
                 self.compile_statement(stmt)?;
             }
+            self.finish_scoped_block()?;
             self.branch_to_if_unterminated(merge_block)?;
 
             current_block = next_block;

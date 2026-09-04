@@ -32,6 +32,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 }
                 _ => Err(self.error("compile_expression", "logical NOT not supported for this type")),
             },
+            "clone" => Ok(operand),
             _ => Err(self.error("compile_expression", format!("unknown unary operator: {}", op))),
         }
     }
