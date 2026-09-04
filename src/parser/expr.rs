@@ -646,129 +646,18 @@ pub fn parse_expression(input: &str) -> Result<Expression, String> {
                     if parts.len() == 2 {
                         let enum_name = parts[0].to_string();
                         let variant_name = parts[1].to_string();
-                        let mut args: Vec<String> = Vec::new();
-                        
-                        // Parse arguments
-                        if !args_str.is_empty() {
-                            let mut current_arg = String::new();
-                            let mut depth = 0;
-                            let mut in_string = false;
-                            let mut escape_next = false;
-    
-                            for ch in args_str.chars() {
-                                if escape_next {
-                                    current_arg.push(ch);
-                                    escape_next = false;
-                                    continue;
-                                }
-    
-                                match ch {
-                                    '\\' => {
-                                        escape_next = true;
-                                        current_arg.push(ch);
-                                    }
-                                    '"' if !in_string => {
-                                        in_string = true;
-                                        current_arg.push(ch);
-                                    }
-                                    '"' if in_string => {
-                                        in_string = false;
-                                        current_arg.push(ch);
-                                    }
-                                    '(' if !in_string => {
-                                        depth += 1;
-                                        current_arg.push(ch);
-                                    }
-                                    ')' if !in_string => {
-                                        depth -= 1;
-                                        current_arg.push(ch);
-                                    }
-                                    ',' if !in_string && depth == 0 => {
-                                        let arg = current_arg.trim().to_string();
-                                        if !arg.is_empty() {
-                                            args.push(arg);
-                                        }
-                                        current_arg.clear();
-                                    }
-                                    _ => {
-                                        current_arg.push(ch);
-                                    }
-                                }
-                            }
-                            if !current_arg.trim().is_empty() {
-                                args.push(current_arg.trim().to_string());
-                            }
-                        }
-                        
+                        let args = parse_arg_list(args_str)?;
                         // Return as a function call with enum name and variant name
                         // This will be handled by the backend as an enum variant
                         return Ok(Expression::Call {
                             function: Box::new(Expression::var(&format!("{}::{}", enum_name, variant_name))),
-                            args: args.iter().map(|arg| parse_expression(arg)).collect::<Result<Vec<_>, _>>()?,
+                            args,
                         });
                     }
                 }
-                
+
                 // Regular function call
-                let mut args: Vec<Expression> = Vec::new();
-                if !args_str.is_empty() {
-                    // Use the same logic as split_function_args to handle commas in strings
-                    let mut current_arg = String::new();
-                    let mut depth = 0;
-                    let mut in_string = false;
-                    let mut escape_next = false;
-    
-                    for ch in args_str.chars() {
-                        if escape_next {
-                            current_arg.push(ch);
-                            escape_next = false;
-                            continue;
-                        }
-    
-                        match ch {
-                            '\\' => {
-                                escape_next = true;
-                                current_arg.push(ch);
-                            }
-                            '"' if !in_string => {
-                                in_string = true;
-                                current_arg.push(ch);
-                            }
-                            '"' if in_string => {
-                                in_string = false;
-                                current_arg.push(ch);
-                            }
-                            '(' if !in_string => {
-                                depth += 1;
-                                current_arg.push(ch);
-                            }
-                            ')' if !in_string => {
-                                depth -= 1;
-                                current_arg.push(ch);
-                            }
-                            ',' if !in_string && depth == 0 => {
-                                // Top-level comma - this separates arguments
-                                let arg = current_arg.trim().to_string();
-                                if !arg.is_empty() {
-                                    let parsed_arg = parse_expression(&arg)?;
-                                    args.push(parsed_arg);
-                                }
-                                current_arg = String::new();
-                            }
-                            _ => {
-                                current_arg.push(ch);
-                            }
-                        }
-                    }
-    
-                    // Don't forget the last argument
-                    let arg = current_arg.trim().to_string();
-                    if !arg.is_empty() {
-                        let parsed_arg = parse_expression(&arg)?;
-                        args.push(parsed_arg);
-                    }
-                }
-    
+                let args = parse_arg_list(args_str)?;
                 return Ok(Expression::Call {
                     function: Box::new(Expression::var(func_name)),
                     args,
@@ -1110,6 +999,40 @@ mod tests {
                 assert_eq!(args.len(), 2);
                 assert!(matches!(args[0], Expression::Literal(_)));
                 assert!(matches!(args[1], Expression::Literal(_)));
+            }
+            other => panic!("{:?}", other),
+        }
+    }
+
+    #[test]
+    fn enum_variant_args_are_expressions() {
+        let result = parse_expression("Result::Ok(Option::Some(42), true)").unwrap();
+        match result {
+            Expression::Call { function, args } => {
+                assert_eq!(format!("{}", function), "Result::Ok");
+                assert_eq!(args.len(), 2);
+                match &args[0] {
+                    Expression::Call { function, args } => {
+                        assert_eq!(format!("{}", function), "Option::Some");
+                        assert_eq!(args.len(), 1);
+                        assert!(matches!(args[0], Expression::Literal(_)));
+                    }
+                    other => panic!("inner: {:?}", other),
+                }
+                assert!(matches!(args[1], Expression::Literal(_)));
+            }
+            other => panic!("outer: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn call_args_parse_nested_calls_immediately() {
+        let result = parse_expression("f(g(1, 2), h())").unwrap();
+        match result {
+            Expression::Call { args, .. } => {
+                assert_eq!(args.len(), 2);
+                assert!(matches!(args[0], Expression::Call { .. }));
+                assert!(matches!(args[1], Expression::Call { .. }));
             }
             other => panic!("{:?}", other),
         }
