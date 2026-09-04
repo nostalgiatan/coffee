@@ -613,8 +613,11 @@ fn get_builtin_c_function_signature<'ctx>(
         "memcpy" | "memmove" => (vec![i8_ptr.into(), i8_ptr.into(), i64.into()], ReturnType::Pointer(i8_ptr), false),
         "memcmp" => (vec![i8_ptr.into(), i8_ptr.into(), i64.into()], ReturnType::Int(i32), false),
         "memset" => (vec![i8_ptr.into(), i32.into(), i64.into()], ReturnType::Pointer(i8_ptr), false),
-        "strlen" | "strcmp" | "strcpy" | "strcat" => (vec![i8_ptr.into()], ReturnType::Int(i64), false),
-        "strncmp" | "strncmp" | "strncpy" | "strncat" => (vec![i8_ptr.into(), i8_ptr.into(), i64.into()], ReturnType::Int(i64), false),
+        "strlen" => (vec![i8_ptr.into()], ReturnType::Int(i64), false),
+        "strcmp" => (vec![i8_ptr.into(), i8_ptr.into()], ReturnType::Int(i32), false),
+        "strcpy" | "strcat" => (vec![i8_ptr.into(), i8_ptr.into()], ReturnType::Pointer(i8_ptr), false),
+        "strncmp" => (vec![i8_ptr.into(), i8_ptr.into(), i64.into()], ReturnType::Int(i32), false),
+        "strncpy" | "strncat" => (vec![i8_ptr.into(), i8_ptr.into(), i64.into()], ReturnType::Pointer(i8_ptr), false),
 
         // Process functions
         "exit" | "_exit" | "abort" => (vec![i32.into()], ReturnType::Void, false),

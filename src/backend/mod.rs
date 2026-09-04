@@ -23,6 +23,7 @@ pub mod types;
 // Modularized code generation components
 pub mod arithmetic;
 pub mod control_flow;
+pub mod match_gen;
 pub mod memory_ops;
 pub mod memory;
 pub mod functions;
