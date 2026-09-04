@@ -59,6 +59,53 @@ pub fn compile_coffee(source: &str, args: &[&str]) -> Result<TestResult, String>
     })
 }
 
+/// Compile `source` as a one-file Coffee *project* (`coffee.toml` + `src/main.cf`).
+/// Runs the compiler with cwd = the temp project dir so project mode is selected.
+pub fn compile_project_fixture(source: &str, extra_args: &[&str]) -> Result<TestResult, String> {
+    use std::process::Command;
+
+    let test_id = format!(
+        "{:?}_{:?}",
+        std::thread::current().id(),
+        std::time::SystemTime::now()
+    );
+    let dir = std::env::temp_dir().join(format!("coffee_proj_{}", test_id.replace(['(', ')', ':', ' '], "_")));
+    fs::create_dir_all(dir.join("src")).map_err(|e| e.to_string())?;
+
+    let toml = r#"[package]
+name = "parity_fixture"
+version = "0.0.0"
+
+[build]
+src_dir = "src"
+main = "src/main"
+"#;
+    fs::write(dir.join("coffee.toml"), toml).map_err(|e| e.to_string())?;
+    fs::write(dir.join("src/main.cf"), source).map_err(|e| e.to_string())?;
+
+    let compiler = std::env::current_dir()
+        .map_err(|e| e.to_string())?
+        .join("target/debug/coffee");
+
+    let mut cmd = Command::new(&compiler);
+    cmd.current_dir(&dir);
+    cmd.arg("--test-mode");
+    for a in extra_args {
+        cmd.arg(a);
+    }
+    // Relative to project cwd so EntryPointManager matches scanner paths (`src/main.cf`).
+    cmd.arg("src/main.cf");
+
+    let output = cmd.output().map_err(|e| e.to_string())?;
+    let _ = fs::remove_dir_all(&dir);
+
+    Ok(TestResult {
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        exit_code: output.status.code().unwrap_or(-1),
+    })
+}
+
 /// 编译并执行Coffee程序
 pub fn run_coffee(source: &str) -> Result<TestResult, String> {
     use std::fs;
