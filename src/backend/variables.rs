@@ -5,11 +5,13 @@
 use crate::coffee_debug;
 use super::codegen::CodeGenerator;
 use super::memory_ops::VariableState;
+use crate::parser::expr::Expression;
 use inkwell::values::{BasicValueEnum, PointerValue};
 use inkwell::types::{BasicTypeEnum, BasicType};
 
 impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
     /// Compile let statement
+    #[cfg(test)]
     pub fn compile_let_statement(&mut self, line: &str) -> Result<(), String> {
         // MEDIUM-7 FIX: Limit number of local variables to prevent DoS
         const MAX_LOCAL_VARS: usize = 1000;
@@ -36,115 +38,14 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             (decl_part, "int") // Default to int
         };
 
-        let value_expr = crate::parser::expr::parse_expression(value_part)
-            .unwrap_or_else(|_| crate::parser::expr::Expression::Literal(value_part.to_string()));
+        let value_expr = Expression::parse(value_part)
+            .unwrap_or_else(|_| Expression::Literal(value_part.to_string()));
 
-        // Check if this is an array type
-        if type_str.starts_with('[') && type_str.ends_with(']') {
-            return self.compile_array_declaration(name, type_str, &value_expr);
-        }
-
-        let llvm_type = self.coffee_type_to_llvm(type_str)
-            .map_err(|e| self.error("compile_let", format!("failed to resolve type '{}' for variable '{}': {}", type_str, name, e)))?;
-
-        // CRITICAL-5 FIX: Check stack size before allocation to prevent stack overflow
-        const MAX_STACK_SIZE: usize = 10 * 1024 * 1024; // 10 MB max stack per function
-        const MAX_VAR_SIZE: usize = 1024 * 1024; // 1 MB max per variable
-
-        let _type_size = llvm_type.size_of().ok_or_else(|| self.error("compile_let",
-            "cannot get type size - type is unsized or too large".to_string()))?;
-
-        // Check if this is a constant value (compile-time known size)
-        // For simplicity, use conservative estimates for each type
-        let alloc_size = match llvm_type {
-            BasicTypeEnum::IntType(t) => (t.get_bit_width() / 8) as usize,
-            BasicTypeEnum::FloatType(t) => {
-                if t.get_bit_width() == 64 { 8 } else { 4 }
-            }
-            BasicTypeEnum::PointerType(_) => 8, // Assume 64-bit pointers
-            BasicTypeEnum::ArrayType(_t) => {
-                // Arrays are handled separately in compile_array_declaration
-                return Err(self.error("compile_let",
-                    "arrays should use compile_array_declaration".to_string()));
-            }
-            BasicTypeEnum::StructType(t) => {
-                // For structs, be conservative - use reasonable limit
-                (t.count_fields() * 8) as usize
-            }
-            BasicTypeEnum::VectorType(t) => {
-                (t.get_size() * 8) as usize
-            }
-            BasicTypeEnum::ScalableVectorType(_) => {
-                // Scalable vectors - be conservative
-                1024 // 1 KB default
-            }
-        };
-
-        if alloc_size > MAX_VAR_SIZE {
-            return Err(self.error("compile_let",
-                format!("Variable size exceeds maximum\n  = note: variable size: {} bytes, maximum: {} bytes\n  = help: use smaller types or heap allocation",
-                    alloc_size, MAX_VAR_SIZE)));
-        }
-
-        if self.current_stack_size + alloc_size > MAX_STACK_SIZE {
-            return Err(self.error("compile_let",
-                format!("Stack allocation would exceed maximum stack size\n  = note: current stack usage: {} bytes, allocation: {} bytes, maximum: {} bytes\n  = help: reduce number or size of local variables to prevent stack overflow",
-                    self.current_stack_size, alloc_size, MAX_STACK_SIZE)));
-        }
-
-        let alloca = self.backend.builder.build_alloca(llvm_type, name)
-            .map_err(|e| self.error("compile_let", format!("failed to allocate variable '{}': {}", name, e)))?;
-
-        // HIGH-12 FIX: Zero-initialize immediately after allocation to prevent use of uninitialized memory
-        // This defense-in-depth approach ensures variables are never uninitialized, even if errors occur
-        match llvm_type {
-            BasicTypeEnum::IntType(t) => {
-                let zero = t.const_zero();
-                self.backend.builder.build_store(alloca, zero)
-                    .map_err(|e| self.error("compile_let", format!("failed to zero-initialize variable '{}': {}", name, e)))?;
-            }
-            BasicTypeEnum::FloatType(t) => {
-                let zero = t.const_zero();
-                self.backend.builder.build_store(alloca, zero)
-                    .map_err(|e| self.error("compile_let", format!("failed to zero-initialize variable '{}': {}", name, e)))?;
-            }
-            BasicTypeEnum::PointerType(t) => {
-                let zero = t.const_zero();
-                self.backend.builder.build_store(alloca, zero)
-                    .map_err(|e| self.error("compile_let", format!("failed to zero-initialize variable '{}': {}", name, e)))?;
-            }
-            _ => {
-                // For other types (arrays, structs), try to store a zero value
-                // Since we can't directly create zeros for all types, we'll use a simpler approach:
-                // Just initialize with the first value that will be stored
-                // The actual initialization will happen when the value is compiled and stored
-                // For arrays and structs, the existing initialization logic handles this
-            }
-        }
-
-        // Update stack size tracking
-        self.current_stack_size += alloc_size;
-
-        let value = self.compile_source_as_expr(value_part)
-            .map_err(|e| self.error("compile_let", format!("failed to compile initial value '{}' for variable '{}': {}", value_part, name, e)))?;
-
-        self.backend.builder.build_store(alloca, value)
-            .map_err(|e| self.error("compile_let", format!("failed to store initial value in variable '{}': {}", name, e)))?;
-
-        self.variables.insert(name.to_string(), (alloca, llvm_type));
-        
-        // Store the class name if this is a class type
-        // This is needed for method calls to find the correct method
-        coffee_debug!("DEBUG: compile_let_statement: name='{}', type_str='{}'", name, type_str);
-        if type_str.chars().all(|c| c.is_alphanumeric() || c == '_') {
-            // Check if this is a class type (not a primitive type like int, float, bool, string)
-            if !matches!(type_str, "int" | "float" | "bool" | "string" | "void" | "()") {
-                coffee_debug!("DEBUG: compile_let_statement: inserting class_name '{}' for variable '{}'", type_str, name);
-                self.variable_types.insert(name.to_string(), type_str.to_string());
-            }
-        }
-
-        Ok(())
+        self.compile_local_variable_decl(&crate::parser::var::VariableDecl {
+            name: name.to_string(),
+            var_type: type_str.to_string(),
+            value: value_expr,
+        })
     }
 
     /// Compile array declaration with initialization
@@ -343,6 +244,8 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
 
     /// Parse array literal: [1, 2, 3] or []
     /// Security: depth parameter prevents stack overflow from deeply nested arrays
+    #[cfg(test)]
+    #[allow(dead_code)]
     fn parse_array_literal(&mut self, literal: &str, depth: usize) -> Result<(Vec<BasicValueEnum<'ctx>>, usize), String> {
         const MAX_NESTING_DEPTH: usize = 64;
 
@@ -369,7 +272,9 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                     "Multi-dimensional arrays are not supported yet"));
             }
 
-            let elem_value = self.compile_source_as_expr(elem_str)
+            let elem_tree = Expression::parse(elem_str)
+                .unwrap_or_else(|_| Expression::Literal(elem_str.to_string()));
+            let elem_value = self.compile_expr(&elem_tree)
                 .map_err(|e| self.error("parse_array_literal",
                     format!("failed to compile element '{}': {}", elem_str, e)))?;
             elements.push(elem_value);
@@ -380,6 +285,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
     }
 
     /// Compile assignment
+    #[cfg(test)]
     pub fn compile_assignment(&mut self, line: &str) -> Result<(), String> {
         let parts: Vec<&str> = line.splitn(2, '=').collect();
         if parts.len() != 2 {
@@ -390,29 +296,9 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         let name = parts[0].trim();
         let value_str = parts[1].trim();
 
-        let value = self.compile_source_as_expr(value_str)
-            .map_err(|e| self.error("compile_assignment",
-                format!("failed to compile value expression '{}' for variable '{}': {}", value_str, name, e)))?;
-
-        // HIGH-10 FIX: Mark assigned variable as used (both read and write)
-        self.used_variables.insert(name.to_string());
-
-        if let Some(&(ptr, _)) = self.variables.get(name) {
-            self.backend.builder.build_store(ptr, value)
-                .map_err(|e| self.error("compile_assignment",
-                    format!("failed to store value in variable '{}': {}", name, e)))?;
-        } else {
-            let available = if self.variables.is_empty() {
-                String::from("(no variables in scope)")
-            } else {
-                format!("available variables: {}",
-                    self.variables.keys().map(|k| format!("'{}'", k)).collect::<Vec<_>>().join(", "))
-            };
-            return Err(self.error("compile_assignment",
-                format!("undefined variable '{}' - {}", name, available)));
-        }
-
-        Ok(())
+        let value_expr = Expression::parse(value_str)
+            .unwrap_or_else(|_| Expression::Literal(value_str.to_string()));
+        self.compile_assignment_from_ast(name, &value_expr)
     }
 
     /// Compile assignment from AST (for parsed assignment statements)
@@ -511,7 +397,9 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
     /// Generates safe array access: array[index]
     pub fn compile_array_index(&mut self, array_str: &str, index_str: &str) -> Result<BasicValueEnum<'ctx>, String> {
         // Compile the index expression
-        let index_value = self.compile_source_as_expr(index_str)
+        let index_tree = Expression::parse(index_str)
+            .unwrap_or_else(|_| Expression::Literal(index_str.to_string()));
+        let index_value = self.compile_expr(&index_tree)
             .map_err(|e| self.error("compile_array_index",
                 format!("failed to compile index expression '{}': {}", index_str, e)))?;
 

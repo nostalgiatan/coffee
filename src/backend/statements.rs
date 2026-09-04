@@ -77,7 +77,9 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         } else if line.starts_with("return ") {
             coffee_debug!("DEBUG: compile_body_line: return statement: {}", line);
             let expr_str = &line[7..];
-            let value = self.compile_source_as_expr(expr_str)
+            let tree = Expression::parse(expr_str)
+                .unwrap_or_else(|_| Expression::Literal(expr_str.to_string()));
+            let value = self.compile_expr(&tree)
                 .map_err(|e| self.error("return_statement", format!("failed to compile return expression '{}': {}", expr_str, e)))?;
             self.backend.builder.build_return(Some(&value))
                 .map_err(|e| self.error("return_statement", format!("failed to build return instruction: {}", e)))?;
@@ -92,7 +94,9 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             self.compile_assignment(line)?;
         } else if line.contains("(") {
             // Function call (discard result)
-            self.compile_source_as_expr(line)?;
+            let tree = Expression::parse(line)
+                .unwrap_or_else(|_| Expression::Literal(line.to_string()));
+            self.compile_expr(&tree)?;
         } else {
             // Note: This is not an error - it might be a comment or empty line after trimming
             // Control flow statements should be in the AST, not in string bodies
