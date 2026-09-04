@@ -283,8 +283,8 @@ impl CompilerFrontend {
             }
         }
 
-        // Check for multiple main functions
-        let main_count = Self::count_main_functions(&program);
+        // Check for multiple entry points (`fn main` and/or `main(...)`)
+        let main_count = Self::count_entry_points(&program);
         if main_count > 1 {
             self.emitter.emit(Diagnostic::new(
                 Severity::Error,
@@ -1559,12 +1559,19 @@ impl CompilerFrontend {
         Ok(())
     }
 
-    /// Count main entry statements in a program
-    /// Checks for main(entry_function()) syntax, not functions named "main"
+    /// Count program entry points: `main(...)` statements and functions named `main`.
+    /// Both in one file (or two `fn main`) is an error.
+    pub fn count_entry_points(program: &parser::Program) -> usize {
+        program.statements.iter().filter(|stmt| match stmt {
+            parser::Statement::Main(_) => true,
+            parser::Statement::Function(f) => f.name == "main",
+            _ => false,
+        }).count()
+    }
+
+    /// Deprecated alias; counts all entry points, not only `Statement::Main`.
     pub fn count_main_functions(program: &parser::Program) -> usize {
-        program.statements.iter()
-            .filter(|stmt| matches!(stmt, parser::Statement::Main(_)))
-            .count()
+        Self::count_entry_points(program)
     }
 }
 

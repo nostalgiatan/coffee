@@ -136,7 +136,7 @@ impl ProjectBuilder {
                 })?;
 
             // Check for multiple main() in single file (syntax rule - applies to all files)
-            let main_count = CompilerFrontend::count_main_functions(&parser::Program { statements: statements.clone() });
+            let main_count = CompilerFrontend::count_entry_points(&parser::Program { statements: statements.clone() });
             if main_count > 1 {
                 return Err(format!("file '{}' contains {} main() statements (only 1 allowed per file)",
                     source.display(), main_count));
@@ -197,7 +197,7 @@ impl ProjectBuilder {
                     if unit.source == *path {
                         if let Ok(source_code) = fs::read_to_string(&unit.source) {
                             if let Ok(statements) = self.frontend.parse_source(&source_code, Some(unit.source.to_str().unwrap_or(""))) {
-                                return CompilerFrontend::count_main_functions(&parser::Program { statements });
+                                return CompilerFrontend::count_entry_points(&parser::Program { statements });
                             }
                         }
                         break;
