@@ -12,6 +12,7 @@ pub mod scope;
 pub mod lifetime;
 pub mod symbols;
 pub mod analyzer;
+pub mod c_builtins;
 
 // Re-export main types for convenience
 
