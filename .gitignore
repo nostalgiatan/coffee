@@ -1,0 +1,19 @@
+# Rust
+/target/
+**/*.rs.backup
+
+# Compiler / test scratch
+.coffee_compiler.lock
+test_temp_*
+*.ll
+*.bc
+*.o
+*.so
+*.a
+
+# Agent scratch (plans live in docs/superpowers/)
+.superpowers/
+
+# Local tool caches
+.claude/
+.iflow/
