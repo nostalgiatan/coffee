@@ -306,7 +306,6 @@ impl ScopeSpace {
         if let Some(binding) = self.get(name) {
             match (binding.visibility, required_visibility) {
                 (Visibility::Public, _) => Ok(()),
-                (Visibility::Protected, Visibility::Protected) | (Visibility::Protected, Visibility::Private) => Ok(()),
                 (Visibility::Private, Visibility::Private) => Ok(()),
                 _ => Err(TypeSystemError::VisibilityError {
                     name: name.to_string(),

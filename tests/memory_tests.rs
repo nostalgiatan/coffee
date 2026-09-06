@@ -730,13 +730,12 @@ fn test_cleanup_with_exceptions() {
     let source = r#"
 use fprintf in libc of c
 
-class MyError:
-    code: int
+class MyError of Error:
     message: str
 
 fn might_fail(x: int) => int:
     if x < 0:
-        raise MyError { code: -1, message: "negative value" }
+        raise MyError { code: -1, message: "negative value", note: "n", e: 0 }
     return x
 
 fn main() => int:
@@ -786,4 +785,493 @@ fn main() => int:
         on.stderr
     );
     let _ = off;
+}
+
+//=============================================================================
+// Nested ClassName__drop and heap pointer rm
+//=============================================================================
+
+fn emit_llvm_ir(source: &str, ll_name: &str) -> String {
+    let result = compile_coffee(source, &["--emit-llvm", "-o", ll_name]).unwrap();
+    let ir = std::fs::read_to_string(ll_name).unwrap_or_default();
+    let _ = std::fs::remove_file(ll_name);
+    assert_eq!(result.exit_code, 0, "emit-llvm failed:\n{}", result.stderr);
+    ir
+}
+
+fn llvm_fn_body<'a>(ir: &'a str, name: &str) -> &'a str {
+    let marker = format!("@{}", name);
+    let start = ir.find(&format!("define void {}", marker))
+        .or_else(|| ir.find(&format!("define i64 {}", marker)))
+        .unwrap_or_else(|| panic!("missing define for {} in IR:\n{}", name, ir));
+    let after = &ir[start..];
+    after.split("\ndefine ").next().unwrap_or(after)
+}
+
+#[test]
+fn test_nested_class_drop_calls_inner_drop() {
+    let source = r#"
+class Inner:
+    n: int
+
+    fn new(n: int) => Inner:
+        Inner { n: n }
+
+class Outer:
+    a: Inner
+    b: int
+
+    fn new(a: Inner) => Outer:
+        Outer { a: a, b: 1 }
+
+fn main() => int:
+    return 0
+"#;
+    let pid = std::process::id();
+    let ll = format!("test_nested_drop_{}.ll", pid);
+    let ir = emit_llvm_ir(source, &ll);
+    let outer_drop = llvm_fn_body(&ir, "Outer__drop");
+    assert!(
+        outer_drop.contains("Inner__drop"),
+        "Outer__drop should call Inner__drop:\n{}",
+        outer_drop
+    );
+    assert!(
+        !outer_drop.contains("@free"),
+        "Outer__drop must not free(self):\n{}",
+        outer_drop
+    );
+}
+
+#[test]
+fn test_nested_class_drop_last_field_first() {
+    let source = r#"
+class First:
+    x: int
+
+    fn new(x: int) => First:
+        First { x: x }
+
+class Second:
+    y: int
+
+    fn new(y: int) => Second:
+        Second { y: y }
+
+class Pair:
+    first: First
+    second: Second
+
+    fn new(first: First, second: Second) => Pair:
+        Pair { first: first, second: second }
+
+fn main() => int:
+    return 0
+"#;
+    let pid = std::process::id();
+    let ll = format!("test_drop_order_{}.ll", pid);
+    let ir = emit_llvm_ir(source, &ll);
+    let pair_drop = llvm_fn_body(&ir, "Pair__drop");
+    let second_at = pair_drop.find("Second__drop").unwrap_or_else(|| {
+        panic!("Pair__drop should call Second__drop:\n{}", pair_drop)
+    });
+    let first_at = pair_drop.find("First__drop").unwrap_or_else(|| {
+        panic!("Pair__drop should call First__drop:\n{}", pair_drop)
+    });
+    assert!(
+        second_at < first_at,
+        "destructor order is reverse field order (Second then First):\n{}",
+        pair_drop
+    );
+}
+
+#[test]
+fn test_pointer_rm_calls_class_drop_before_free() {
+    let source = r#"
+class Point:
+    x: int
+    y: int
+
+    fn new(x: int, y: int) => Point:
+        Point { x: x, y: y }
+
+fn main() => int:
+    let p: Point = Point::new(10, 20)
+    rm p
+    return 0
+"#;
+    let pid = std::process::id();
+    let ll = format!("test_ptr_rm_drop_{}.ll", pid);
+    let ir = emit_llvm_ir(source, &ll);
+    let main_body = llvm_fn_body(&ir, "main");
+    let drop_at = main_body.find("Point__drop").unwrap_or_else(|| {
+        panic!("heap class rm should call Point__drop:\n{}", main_body)
+    });
+    if let Some(free_rel) = main_body[drop_at..].find("@free") {
+        assert!(
+            free_rel > 0,
+            "Point__drop must run before free:\n{}",
+            main_body
+        );
+    }
+}
+
+#[test]
+fn test_str_field_drop_loads_and_frees_pointer() {
+    let source = r#"
+class Holder:
+    s: str
+    n: int
+
+    fn new(s: str) => Holder:
+        Holder { s: s, n: 0 }
+
+fn main() => int:
+    return 0
+"#;
+    let pid = std::process::id();
+    let ll = format!("test_str_drop_{}.ll", pid);
+    let ir = emit_llvm_ir(source, &ll);
+    let holder_drop = llvm_fn_body(&ir, "Holder__drop");
+    assert!(
+        holder_drop.contains("getelementptr"),
+        "Holder__drop should GEP the str field:\n{}",
+        holder_drop
+    );
+    assert!(
+        holder_drop.contains("load "),
+        "Holder__drop should load the str pointer:\n{}",
+        holder_drop
+    );
+    assert!(
+        holder_drop.contains("@free"),
+        "Holder__drop should free the loaded str pointer:\n{}",
+        holder_drop
+    );
+    assert!(
+        !holder_drop.contains("call void @free(ptr %0)")
+            && !holder_drop.contains("call void @free(ptr noundef %0)"),
+        "Holder__drop must not free(self):\n{}",
+        holder_drop
+    );
+}
+
+fn count_free_calls(ir_fn: &str) -> usize {
+    ir_fn.matches("call void @free").count()
+}
+
+#[test]
+fn test_str_array_field_drop_frees_each_element() {
+    let source = r#"
+class Holder:
+    items: [str; 2]
+
+    fn new(a: str, b: str) => Holder:
+        Holder { items: [a, b] }
+
+fn main() => int:
+    return 0
+"#;
+    let pid = std::process::id();
+    let ll = format!("test_str_array_drop_{}.ll", pid);
+    let ir = emit_llvm_ir(source, &ll);
+    let holder_drop = llvm_fn_body(&ir, "Holder__drop");
+    assert!(
+        count_free_calls(holder_drop) >= 2,
+        "Holder__drop should free both [str; 2] elements:\n{}",
+        holder_drop
+    );
+    assert!(
+        !holder_drop.contains("call void @free(ptr %0)")
+            && !holder_drop.contains("call void @free(ptr noundef %0)"),
+        "Holder__drop must not free(self):\n{}",
+        holder_drop
+    );
+}
+
+#[test]
+fn test_tuple_class_field_drop_calls_both() {
+    let source = r#"
+class Point:
+    x: int
+
+    fn new(x: int) => Point:
+        Point { x: x }
+
+class Pair:
+    ab: (Point, Point)
+
+    fn new(a: Point, b: Point) => Pair:
+        Pair { ab: (a, b) }
+
+fn main() => int:
+    return 0
+"#;
+    let pid = std::process::id();
+    let ll = format!("test_tuple_drop_{}.ll", pid);
+    let ir = emit_llvm_ir(source, &ll);
+    let pair_drop = llvm_fn_body(&ir, "Pair__drop");
+    let count = pair_drop.matches("Point__drop").count();
+    assert!(
+        count >= 2,
+        "Pair__drop should call Point__drop for each tuple element:\n{}",
+        pair_drop
+    );
+}
+
+#[test]
+fn test_object_field_drop_does_not_free_pointee() {
+    let source = r#"
+class Box:
+    p: object
+    n: int
+
+    fn new(p: object) => Box:
+        Box { p: p, n: 0 }
+
+fn main() => int:
+    return 0
+"#;
+    let pid = std::process::id();
+    let ll = format!("test_object_drop_{}.ll", pid);
+    let ir = emit_llvm_ir(source, &ll);
+    let box_drop = llvm_fn_body(&ir, "Box__drop");
+    assert!(
+        !box_drop.contains("@free"),
+        "Box__drop must not free(object) pointee:\n{}",
+        box_drop
+    );
+}
+
+#[test]
+fn test_local_str_array_scope_drop_frees_elements() {
+    let source = r#"
+fn main() => int:
+    let a: [str; 2] = ["x", "y"]
+    return 0
+"#;
+    let pid = std::process::id();
+    let ll = format!("test_local_str_array_drop_{}.ll", pid);
+    let ir = emit_llvm_ir(source, &ll);
+    let main_body = llvm_fn_body(&ir, "main");
+    assert!(
+        count_free_calls(main_body) >= 2,
+        "scope drop of local [str; 2] should free both elements:\n{}",
+        main_body
+    );
+}
+
+//=============================================================================
+// clone: heap memcpy (not pointer alias)
+//=============================================================================
+
+#[test]
+fn test_unary_clone_class_malloc_memcpy() {
+    let source = r#"
+class Box:
+    n: int
+
+    fn new(n: int) => Box:
+        Box { n: n }
+
+fn main() => int:
+    let a: Box = Box::new(1)
+    let b: Box = clone a
+    rm a
+    rm b
+    return 0
+"#;
+    let ll = format!("test_clone_class_{}.ll", std::process::id());
+    let ir = emit_llvm_ir(source, &ll);
+    let main_body = llvm_fn_body(&ir, "main");
+    assert!(
+        main_body.contains("malloc"),
+        "unary clone of class should malloc:\n{}",
+        main_body
+    );
+    assert!(
+        main_body.contains("memcpy"),
+        "unary clone of class should memcpy object bytes:\n{}",
+        main_body
+    );
+}
+
+#[test]
+fn test_statement_clone_class_malloc_memcpy() {
+    let source = r#"
+class Box:
+    n: int
+
+    fn new(n: int) => Box:
+        Box { n: n }
+
+fn main() => int:
+    let a: Box = Box::new(1)
+    clone a b
+    rm a
+    rm b
+    return 0
+"#;
+    let ll = format!("test_clone_stmt_{}.ll", std::process::id());
+    let ir = emit_llvm_ir(source, &ll);
+    let main_body = llvm_fn_body(&ir, "main");
+    assert!(
+        main_body.contains("malloc"),
+        "statement clone of class should malloc:\n{}",
+        main_body
+    );
+    assert!(
+        main_body.contains("memcpy"),
+        "statement clone of class should memcpy object bytes:\n{}",
+        main_body
+    );
+}
+
+#[test]
+fn test_clone_str_strlen_malloc_memcpy() {
+    let source = r#"
+fn main() => int:
+    let a: str = "hello"
+    let b: str = clone a
+    rm a
+    rm b
+    return 0
+"#;
+    let ll = format!("test_clone_str_{}.ll", std::process::id());
+    let ir = emit_llvm_ir(source, &ll);
+    let main_body = llvm_fn_body(&ir, "main");
+    assert!(
+        main_body.contains("strlen"),
+        "clone of str should use strlen:\n{}",
+        main_body
+    );
+    assert!(
+        main_body.contains("malloc"),
+        "clone of str should malloc:\n{}",
+        main_body
+    );
+    assert!(
+        main_body.contains("memcpy"),
+        "clone of str should memcpy strlen+1 bytes:\n{}",
+        main_body
+    );
+}
+
+#[test]
+fn test_clone_class_str_field_extra_malloc_memcpy() {
+    let source = r#"
+class Holder:
+    s: str
+    n: int
+
+    fn new(s: str) => Holder:
+        Holder { s: s, n: 0 }
+
+fn main() => int:
+    let a: Holder = Holder::new("hi")
+    let b: Holder = clone a
+    rm a
+    rm b
+    return 0
+"#;
+    let ll = format!("test_clone_str_field_{}.ll", std::process::id());
+    let ir = emit_llvm_ir(source, &ll);
+    let main_body = llvm_fn_body(&ir, "main");
+    assert!(
+        main_body.contains("malloc") && main_body.contains("memcpy"),
+        "clone of class should malloc+memcpy the object:\n{}",
+        main_body
+    );
+    let clone_body = llvm_fn_body(&ir, "Holder__clone");
+    assert!(
+        clone_body.contains("strlen"),
+        "Holder__clone should strlen the str field:\n{}",
+        clone_body
+    );
+    assert!(
+        clone_body.contains("malloc"),
+        "Holder__clone should malloc a new str buffer (not only the object):\n{}",
+        clone_body
+    );
+    assert!(
+        clone_body.contains("memcpy"),
+        "Holder__clone should memcpy the str bytes:\n{}",
+        clone_body
+    );
+}
+
+#[test]
+fn test_clone_nested_class_field_calls_inner_clone() {
+    let source = r#"
+class Inner:
+    n: int
+
+    fn new(n: int) => Inner:
+        Inner { n: n }
+
+class Outer:
+    a: Inner
+    b: int
+
+    fn new(a: Inner) => Outer:
+        Outer { a: a, b: 1 }
+
+fn main() => int:
+    let i: Inner = Inner::new(1)
+    let a: Outer = Outer::new(i)
+    let b: Outer = clone a
+    rm a
+    rm b
+    return 0
+"#;
+    let ll = format!("test_clone_nested_{}.ll", std::process::id());
+    let ir = emit_llvm_ir(source, &ll);
+    let outer_clone = llvm_fn_body(&ir, "Outer__clone");
+    assert!(
+        outer_clone.contains("Inner__clone") || outer_clone.contains("malloc"),
+        "Outer__clone should call Inner__clone or malloc the nested object:\n{}",
+        outer_clone
+    );
+}
+
+#[test]
+fn test_clone_skips_object_pointee() {
+    let source = r#"
+class Wrap:
+    p: object
+    n: int
+
+    fn new(p: object) => Wrap:
+        Wrap { p: p, n: 0 }
+
+fn main() => int:
+    return 0
+"#;
+    let ll = format!("test_clone_skip_obj_{}.ll", std::process::id());
+    let ir = emit_llvm_ir(source, &ll);
+    let wrap_clone = llvm_fn_body(&ir, "Wrap__clone");
+    assert!(
+        !wrap_clone.contains("malloc") && !wrap_clone.contains("strlen"),
+        "object fields are memcpy-only; Wrap__clone must not clone the pointee:\n{}",
+        wrap_clone
+    );
+}
+
+#[test]
+fn test_copy_keyword_remains_type_error() {
+    let source = r#"
+fn main() => int:
+    let a: int = 1
+    copy a b
+    return 0
+"#;
+    assert_compile_error(source, "copy").unwrap();
+    let result = compile_coffee(source, &["--emit-llvm"]).unwrap();
+    assert_ne!(result.exit_code, 0, "copy must not compile:\n{}", result.stderr);
+    let hay = format!("{}{}", result.stdout, result.stderr);
+    assert!(
+        !hay.contains("llvm.memcpy") && !hay.contains("memcpy"),
+        "copy must not generate memcpy:\n{}",
+        hay
+    );
 }

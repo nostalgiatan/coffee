@@ -71,11 +71,17 @@ pub struct ElifBranch {
 /// 
 /// * `Ok((remaining, IfExpr))` - Successfully parsed if expression and remaining input
 /// * `Err(nom::Err)` - If the input does not match the if expression pattern
+#[cfg(test)]
 pub fn parse_if(input: &str) -> IResult<&str, IfExpr> {
+    parse_if_at(input, 0)
+}
+
+pub fn parse_if_at(input: &str, base: usize) -> IResult<&str, IfExpr> {
+    let src = input;
     let (input, _) = tag("if")(input)?;
     let (input, _) = space1(input)?;
-    let (input, condition_raw) = take_until_colon(input)?;
-    let condition = parse_expr_from_slice(condition_raw)?;
+    let (input, condition_raw) = super::take_until_header_colon(input)?;
+    let condition = super::multiline::parse_expr_at(src, base, condition_raw)?;
     let (input, _) = char(':')(input)?;
 
     // Check if there's a newline (multiline body) or just whitespace (single line)
@@ -93,13 +99,25 @@ pub fn parse_if(input: &str) -> IResult<&str, IfExpr> {
             let line = line.trim();
             if line.is_empty() {
                 (remaining, Vec::new())
-            } else if let Some(stmt) = super::parse_single_line_statement(line) {
+            } else if let Some(stmt) = super::line::parse_single_line_statement_at(
+                line,
+                super::multiline::slice_base(line, 0),
+            ) {
                 (remaining, vec![stmt])
             } else {
-                (remaining, Vec::new())
+                return Err(nom::Err::Error(nom::error::Error {
+                    input: line,
+                    code: nom::error::ErrorKind::Fail,
+                }));
             }
         }
     };
+    if body.is_empty() {
+        return Err(nom::Err::Error(nom::error::Error {
+            input,
+            code: nom::error::ErrorKind::Fail,
+        }));
+    }
 
     // 解析 elif 分支
     let (input, elifs) = many0(parse_elif).parse(input)?;
@@ -138,11 +156,12 @@ pub fn parse_if(input: &str) -> IResult<&str, IfExpr> {
 /// * `Ok((remaining, ElifBranch))` - Successfully parsed elif branch and remaining input
 /// * `Err(nom::Err)` - If the input does not match the elif branch pattern
 fn parse_elif(input: &str) -> IResult<&str, ElifBranch> {
+    let src = input;
     let (input, _) = multispace0(input)?;
     let (input, _) = tag("elif")(input)?;
     let (input, _) = space1(input)?;
-    let (input, condition_raw) = take_until_colon(input)?;
-    let condition = parse_expr_from_slice(condition_raw)?;
+    let (input, condition_raw) = super::take_until_header_colon(input)?;
+    let condition = super::multiline::parse_expr_at(src, super::multiline::slice_base(src, 0), condition_raw)?;
     let (input, _) = char(':')(input)?;
 
     // Check if there's a newline (multiline body)
@@ -158,10 +177,16 @@ fn parse_elif(input: &str) -> IResult<&str, ElifBranch> {
             let line = line.trim();
             if line.is_empty() {
                 (remaining, Vec::new())
-            } else if let Some(stmt) = super::parse_single_line_statement(line) {
+            } else if let Some(stmt) = super::line::parse_single_line_statement_at(
+                line,
+                super::multiline::slice_base(line, 0),
+            ) {
                 (remaining, vec![stmt])
             } else {
-                (remaining, Vec::new())
+                return Err(nom::Err::Error(nom::error::Error {
+                    input: line,
+                    code: nom::error::ErrorKind::Fail,
+                }));
             }
         }
     };
@@ -213,52 +238,20 @@ fn parse_else(input: &str) -> IResult<&str, Vec<Statement>> {
         let line = line.trim();
         if line.is_empty() {
             (remaining, Vec::new())
-        } else if let Some(stmt) = super::parse_single_line_statement(line) {
+        } else if let Some(stmt) = super::line::parse_single_line_statement_at(
+            line,
+            super::multiline::slice_base(line, 0),
+        ) {
             (remaining, vec![stmt])
         } else {
-            (remaining, Vec::new())
+            return Err(nom::Err::Error(nom::error::Error {
+                input: line,
+                code: nom::error::ErrorKind::Fail,
+            }));
         }
     };
 
     Ok((input, body))
-}
-
-/// Take characters from input until a colon is encountered
-/// 
-/// This utility function scans the input string until it finds a colon character,
-/// returning the text before the colon as the parsed content and the colon and
-/// everything after as the remaining input.
-/// 
-/// This function is used to parse the condition part of if, elif, and other
-/// control flow statements that have the format `keyword condition:`.
-/// 
-/// # Arguments
-/// 
-/// * `input` - The input string to scan for a colon
-/// 
-/// # Returns
-/// 
-/// * `Ok((remaining, content))` - The part after the colon and the part before the colon
-/// * `Err(nom::Err)` - If no colon is found in the input
-fn parse_expr_from_slice(raw: &str) -> Result<Expression, nom::Err<nom::error::Error<&str>>> {
-    crate::parser::expr::parse_expression(raw.trim()).map_err(|_| {
-        nom::Err::Error(nom::error::Error {
-            input: raw,
-            code: nom::error::ErrorKind::Fail,
-        })
-    })
-}
-
-fn take_until_colon(input: &str) -> IResult<&str, &str> {
-    for (i, c) in input.char_indices() {
-        if c == ':' {
-            return Ok((&input[i..], &input[..i]));
-        }
-    }
-    Err(nom::Err::Error(nom::error::Error {
-        input,
-        code: nom::error::ErrorKind::TakeUntil,
-    }))
 }
 
 /// Parse an indented block of statements
@@ -292,14 +285,22 @@ fn parse_statement_block(input: &str, is_last_branch: bool) -> IResult<&str, Vec
             return Ok((input, Vec::new()));
         }
         // Try multiline first (for nested if, while, etc.)
-        if let Some((stmt, _)) = super::parse_multiline_statement(&[line]) {
+        if let Some((stmt, _)) =
+            super::multiline::parse_multiline_statement_at(&[line], super::multiline::slice_base(line, 0))
+        {
             return Ok((input, vec![stmt]));
         }
         // Then try single line
-        if let Some(stmt) = super::parse_single_line_statement(line) {
+        if let Some(stmt) = super::line::parse_single_line_statement_at(
+            line,
+            super::multiline::slice_base(line, 0),
+        ) {
             return Ok((input, vec![stmt]));
         } else {
-            return Ok((input, Vec::new()));
+            return Err(nom::Err::Error(nom::error::Error {
+                input: line,
+                code: nom::error::ErrorKind::Fail,
+            }));
         }
     }
 
@@ -313,10 +314,16 @@ fn parse_statement_block(input: &str, is_last_branch: bool) -> IResult<&str, Vec
         if line.is_empty() {
             return Ok((input, Vec::new()));
         }
-        if let Some(stmt) = super::parse_single_line_statement(line) {
+        if let Some(stmt) = super::line::parse_single_line_statement_at(
+            line,
+            super::multiline::slice_base(line, 0),
+        ) {
             return Ok((input, vec![stmt]));
         } else {
-            return Ok((input, Vec::new()));
+            return Err(nom::Err::Error(nom::error::Error {
+                input: line,
+                code: nom::error::ErrorKind::Fail,
+            }));
         }
     }
 
@@ -378,14 +385,23 @@ fn parse_statement_block(input: &str, is_last_branch: bool) -> IResult<&str, Vec
         }
 
         // Try multiline statement first (for if, while, for, match)
-        if let Some((stmt, lines_consumed)) = super::parse_multiline_statement(&body_lines_vec[i..]) {
+        if let Some((stmt, lines_consumed)) = super::multiline::parse_multiline_statement_at(
+            &body_lines_vec[i..],
+            super::multiline::slice_base(body_lines_vec[i], 0),
+        ) {
             statements.push(stmt);
             i += lines_consumed;
-        } else if let Some(stmt) = super::parse_single_line_statement(line) {
+        } else if let Some(stmt) = super::line::parse_single_line_statement_at(
+            line,
+            super::multiline::slice_base(line, 0),
+        ) {
             statements.push(stmt);
             i += 1;
         } else {
-            i += 1;
+            return Err(nom::Err::Error(nom::error::Error {
+                input: line,
+                code: nom::error::ErrorKind::Fail,
+            }));
         }
     }
 
@@ -446,9 +462,52 @@ mod tests {
     fn if_condition_is_binary_expr() {
         let src = "if x > 0:\n    return 1\n";
         let (_, ife) = parse_if(src).expect("parse");
-        match ife.condition {
+        match ife.condition.kind() {
             crate::parser::expr::Expression::Binary { op, .. } => assert_eq!(op, ">"),
             other => panic!("{:?}", other),
         }
+    }
+
+    #[test]
+    fn if_without_indented_body_is_error() {
+        assert!(parse_if("if true:\n").is_err());
+        assert!(parse_if("if true:").is_err());
+    }
+
+    #[test]
+    fn if_condition_keeps_double_colon_path() {
+        let (rest, before) =
+            crate::parser::take_until_header_colon("Foo::bar > 0:").expect("header colon");
+        assert_eq!(before, "Foo::bar > 0");
+        assert_eq!(rest, ":");
+
+        let src = "if Foo::bar() > 0:\n    return 1\n";
+        let (_, ife) = parse_if(src).expect("parse");
+        match ife.condition.kind() {
+            crate::parser::expr::Expression::Binary { left, op, .. } => {
+                assert_eq!(op, ">");
+                let left_s = format!("{:?}", left);
+                assert!(left_s.contains("Foo") && left_s.contains("bar"), "{:?}", left);
+            }
+            other => {
+                let s = format!("{:?}", other);
+                assert!(s.contains("Foo") && s.contains("bar"), "{:?}", other);
+            }
+        }
+    }
+
+    #[test]
+    fn elif_raise_bodies_are_not_empty() {
+        let src = "if x < 0:\n    raise ValueError(\"n\")\nelif x > 10:\n    raise TypeError(\"l\")\n";
+        let (_, ife) = parse_if(src).expect("parse");
+        assert!(!ife.body.is_empty(), "if body empty: {:?}", ife.body);
+        assert_eq!(ife.elifs.len(), 1);
+        assert!(!ife.elifs[0].body.is_empty(), "elif body empty");
+    }
+
+    #[test]
+    fn invalid_if_body_line_is_error_not_empty() {
+        let src = "if x > 0:\n    @@@\n";
+        assert!(parse_if(src).is_err(), "garbage if body must not parse as empty");
     }
 }

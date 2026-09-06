@@ -26,24 +26,12 @@ pub enum BlockType {
     MatchExpr,
     /// Multiline expression (e.g., struct literal)
     Expression,
-    /// Generic block
-    Generic,
 }
 
 impl BlockType {
     /// Check if this block can contain nested blocks of the same type
     pub fn allows_self_nesting(&self) -> bool {
         matches!(self, BlockType::IfStatement | BlockType::WhileLoop | BlockType::ForLoop)
-    }
-
-    /// Check if this is a control flow structure
-    pub fn is_control_flow(&self) -> bool {
-        matches!(self,
-            BlockType::IfStatement |
-            BlockType::WhileLoop |
-            BlockType::ForLoop |
-            BlockType::MatchExpr
-        )
     }
 
     /// Independent top-level units (`fn` / `class` / `enum`) that do not nest in each other.
@@ -62,7 +50,6 @@ impl BlockType {
             BlockType::ForLoop => "for",
             BlockType::MatchExpr => "match",
             BlockType::Expression => "expr",
-            BlockType::Generic => "block",
         }
     }
 }
@@ -95,16 +82,6 @@ impl Block {
             start_line,
             expects_body,
         }
-    }
-
-    /// Check if this block is at the given indent level
-    pub fn is_at_indent(&self, indent: usize) -> bool {
-        self.indent_level == indent
-    }
-
-    /// Check if this block contains the given indent level
-    pub fn contains_indent(&self, indent: usize) -> bool {
-        indent > self.indent_level
     }
 }
 
@@ -166,8 +143,6 @@ pub struct BlockTracker {
     stack: Vec<Block>,
     /// Detected conflicts
     conflicts: Vec<Conflict>,
-    /// Current line number
-    current_line: usize,
 }
 
 impl BlockTracker {
@@ -176,11 +151,11 @@ impl BlockTracker {
         BlockTracker {
             stack: Vec::new(),
             conflicts: Vec::new(),
-            current_line: 0,
         }
     }
 
     /// Check if the tracker is empty (no open blocks)
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.stack.is_empty()
     }
@@ -205,14 +180,8 @@ impl BlockTracker {
         self.stack.iter().any(|b| b.block_type == block_type)
     }
 
-    /// Check if we're directly inside a specific block type
-    pub fn is_directly_inside(&self, block_type: BlockType) -> bool {
-        self.stack.last()
-            .map(|b| b.block_type == block_type)
-            .unwrap_or(false)
-    }
-
     /// Get the nesting depth of if statements
+    #[cfg(test)]
     pub fn if_nesting_depth(&self) -> usize {
         self.stack.iter()
             .filter(|b| b.block_type == BlockType::IfStatement)
@@ -264,13 +233,6 @@ impl BlockTracker {
         popped
     }
 
-    /// Pop all blocks (for end of file)
-    pub fn pop_all(&mut self) -> Vec<Block> {
-        let popped = self.stack.drain(..).collect();
-        self.stack.clear();
-        popped
-    }
-
     /// Validate that all blocks are properly closed
     pub fn validate_closure(&mut self) -> Result<(), Vec<Conflict>> {
         let unclosed: Vec<Conflict> = self.stack.iter()
@@ -288,26 +250,6 @@ impl BlockTracker {
         } else {
             Ok(())
         }
-    }
-
-    /// Get all detected conflicts
-    pub fn conflicts(&self) -> &[Conflict] {
-        &self.conflicts
-    }
-
-    /// Check if any conflicts were detected
-    pub fn has_conflicts(&self) -> bool {
-        !self.conflicts.is_empty()
-    }
-
-    /// Clear all conflicts
-    pub fn clear_conflicts(&mut self) {
-        self.conflicts.clear();
-    }
-
-    /// Set the current line number
-    pub fn set_line(&mut self, line: usize) {
-        self.current_line = line;
     }
 
     /// Detect if a line starts a new block
@@ -349,7 +291,6 @@ impl BlockTracker {
 
     /// Process a line and update the block stack
     pub fn process_line(&mut self, line: &str, line_num: usize) {
-        self.current_line = line_num;
         let indent_level = line.len() - line.trim_start().len();
         let trimmed = line.trim();
 

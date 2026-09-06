@@ -83,24 +83,6 @@ impl StorageType {
             StorageType::U64 => 64,
         }
     }
-
-    /// Get the number of bytes in the storage type
-    /// 
-    /// # Returns
-    /// 
-    /// The number of bytes required to store this storage type (1, 2, 4, or 8)
-    /// 
-    /// # Examples
-    /// 
-    /// ```
-    /// use coffee::backend::memory::bitfields::StorageType;
-    /// 
-    /// assert_eq!(StorageType::U16.bytes(), 2);
-    /// assert_eq!(StorageType::U64.bytes(), 8);
-    /// ```
-    pub fn bytes(&self) -> u8 {
-        self.bits() / 8
-    }
 }
 
 /// Bit field layout information
@@ -152,7 +134,7 @@ impl BitFieldLayout {
     /// ];
     /// 
     /// let layout = BitFieldLayout::calculate(&specs);
-    /// assert_eq!(layout.storage_type.bytes(), 1); // U8 is sufficient for 8 bits
+    /// assert_eq!(layout.storage_type.bits(), 8); // U8 is sufficient for 8 bits
     /// assert_eq!(layout.fields.len(), 3); // All 3 fields are included
     /// ```
     pub fn calculate(specs: &[BitFieldSpec]) -> Self {
@@ -186,61 +168,24 @@ impl BitFieldLayout {
         }
     }
 
-    /// Get total storage size in bytes
-    /// 
-    /// This function returns the total size in bytes of the storage unit
-    /// used for the bit fields. This is determined by the selected storage type.
-    /// 
-    /// # Returns
-    /// 
-    /// The storage size in bytes (1, 2, 4, or 8 depending on storage type)
-    /// 
-    /// # Examples
-    /// 
-    /// ```
-    /// use coffee::backend::memory::bitfields::{BitFieldLayout, BitFieldSpec, StorageType};
-    /// 
-    /// let specs = vec![BitFieldSpec { name: "field".to_string(), width: 5 }];
-    /// let layout = BitFieldLayout::calculate(&specs);
-    /// 
-    /// assert_eq!(layout.storage_size(), StorageType::U8.bytes());
-    /// ```
-    pub fn storage_size(&self) -> u8 {
-        self.storage_type.bytes()
-    }
-
-    /// Calculate storage efficiency (bits used / total bits)
-    /// 
-    /// This function computes the efficiency of the bit field layout by
-    /// comparing the number of bits actually used by fields to the total
-    /// number of bits available in the storage unit. This metric helps
-    /// determine how effectively the storage unit is being utilized.
-    /// 
-    /// # Returns
-    /// 
-    /// The efficiency percentage as a floating-point number between 0.0 and 100.0
-    /// 
-    /// # Examples
-    /// 
-    /// ```
-    /// use coffee::backend::memory::bitfields::{BitFieldLayout, BitFieldSpec};
-    /// 
-    /// // 5 bits in an 8-bit field = 62.5% efficiency
-    /// let specs = vec![BitFieldSpec { name: "field".to_string(), width: 5 }];
-    /// let layout = BitFieldLayout::calculate(&specs);
-    /// assert_eq!(layout.efficiency(), 62.5);
-    /// 
-    /// // 8 bits in an 8-bit field = 100% efficiency
-    /// let specs = vec![
-    ///     BitFieldSpec { name: "field1".to_string(), width: 3 },
-    ///     BitFieldSpec { name: "field2".to_string(), width: 5 }
-    /// ];
-    /// let layout = BitFieldLayout::calculate(&specs);
-    /// assert_eq!(layout.efficiency(), 100.0);
-    /// ```
-    pub fn efficiency(&self) -> f64 {
-        let used_bits: u8 = self.fields.iter().map(|f| f.width).sum();
-        let total_bits = self.storage_type.bits();
-        (used_bits as f64 / total_bits as f64) * 100.0
+    /// Pack specs into one or more storage units (max 64 bits each), in order.
+    pub fn calculate_units(specs: &[BitFieldSpec]) -> Vec<Self> {
+        let mut units = Vec::new();
+        let mut current: Vec<BitFieldSpec> = Vec::new();
+        let mut used = 0u16;
+        for spec in specs {
+            let width = spec.width as u16;
+            if !current.is_empty() && used + width > 64 {
+                units.push(Self::calculate(&current));
+                current.clear();
+                used = 0;
+            }
+            current.push(spec.clone());
+            used += width.min(64);
+        }
+        if !current.is_empty() {
+            units.push(Self::calculate(&current));
+        }
+        units
     }
 }

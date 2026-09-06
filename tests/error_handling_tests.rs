@@ -16,7 +16,7 @@ fn test_simple_raise() {
     let source = r#"
 use fprintf, exit in libc of c
 
-class TestError:
+class TestError of Error:
     message: str
 
 fn main() => int:
@@ -31,8 +31,7 @@ fn test_raise_with_string_literal() {
     let source = r#"
 use fprintf, exit in libc of c
 
-class TestError:
-    code: int
+class TestError of Error:
 
 fn main() => int:
     raise TestError(404)
@@ -46,7 +45,7 @@ fn test_raise_with_expression() {
     let source = r#"
 use fprintf, exit in libc of c
 
-class TestError:
+class TestError of Error:
     value: int
 
 fn main() => int:
@@ -62,7 +61,7 @@ fn test_raise_in_function() {
     let source = r#"
 use fprintf, exit in libc of c
 
-class TestError:
+class TestError of Error:
     message: str
 
 fn risky_operation() => int:
@@ -80,7 +79,7 @@ fn test_raise_in_conditional() {
     let source = r#"
 use fprintf, exit in libc of c
 
-class TestError:
+class TestError of Error:
     message: str
 
 fn main() => int:
@@ -97,7 +96,7 @@ fn test_raise_in_loop() {
     let source = r#"
 use fprintf, exit in libc of c
 
-class TestError:
+class TestError of Error:
     message: str
 
 fn main() => int:
@@ -120,8 +119,7 @@ fn test_error_class_with_single_field() {
     let source = r#"
 use fprintf, exit in libc of c
 
-class TestError:
-    code: int
+class TestError of Error:
 
 fn main() => int:
     raise TestError(500)
@@ -135,8 +133,7 @@ fn test_error_class_with_multiple_fields() {
     let source = r#"
 use fprintf, exit in libc of c
 
-class TestError:
-    code: int
+class TestError of Error:
     message: str
     details: str
 
@@ -156,7 +153,7 @@ class Location:
     file: str
     line: int
 
-class TestError:
+class TestError of Error:
     message: str
     location: Location
 
@@ -173,8 +170,7 @@ fn test_multiple_error_types() {
     let source = r#"
 use fprintf, exit in libc of c
 
-class NetworkError:
-    code: int
+class NetworkError of Error:
     message: str
 
 class FileError:
@@ -195,12 +191,13 @@ fn main() => int:
 #[test]
 fn test_error_handler_function() {
     let source = r#"
-use fprintf, exit in libc of c
-
-class TestError:
+class TestError of Error:
     message: str
 
-fn risky_operation() #error_handler => int:
+fn on_err(err: Error) => int:
+    return -1
+
+fn risky_operation() #on_err => int:
     raise TestError("Something went wrong")
 
 fn main() => int:
@@ -213,12 +210,12 @@ fn main() => int:
 #[test]
 fn test_error_handler_with_parameters() {
     let source = r#"
-use fprintf, exit in libc of c
+class TestError of Error:
 
-class TestError:
-    code: int
+fn on_err(err: Error) => int:
+    return -1
 
-fn divide(a: int, b: int) #error_handler => int:
+fn divide(a: int, b: int) #on_err => int:
     if b == 0:
         raise TestError(400)
 
@@ -234,12 +231,13 @@ fn main() => int:
 #[test]
 fn test_error_handler_in_recursive_function() {
     let source = r#"
-use fprintf, exit in libc of c
-
-class TestError:
+class TestError of Error:
     message: str
 
-fn factorial(n: int) #error_handler => int:
+fn on_err(err: Error) => int:
+    return -1
+
+fn factorial(n: int) #on_err => int:
     if n < 0:
         raise TestError("Negative factorial")
     if n <= 1:
@@ -255,6 +253,27 @@ fn main() => int:
     assert_compiles(source).unwrap();
 }
 
+#[test]
+fn test_listener_raise_in_handler_still_needs_fprintf() {
+    let source = r#"
+use fprintf, exit in libc of c
+
+class TestError of Error:
+    message: str
+
+fn on_err(err: Error) => int:
+    raise TestError("from listener")
+
+fn risky_operation() #on_err => int:
+    raise TestError("in marked function")
+
+fn main() => int:
+    risky_operation()
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
 //=============================================================================
 // 复杂错误处理场景测试
 //=============================================================================
@@ -264,7 +283,7 @@ fn test_raise_with_computation() {
     let source = r#"
 use fprintf, exit in libc of c
 
-class TestError:
+class TestError of Error:
     value: int
 
 fn main() => int:
@@ -281,7 +300,7 @@ fn test_raise_in_nested_function() {
     let source = r#"
 use fprintf, exit in libc of c
 
-class TestError:
+class TestError of Error:
     message: str
 
 fn inner_function() => int:
@@ -302,10 +321,10 @@ fn test_multiple_raises_in_function() {
     let source = r#"
 use fprintf, exit in libc of c
 
-class TestError:
+class TestError of Error:
     message: str
 
-fn check_value(x: int) #error_handler => int:
+fn check_value(x: int) => int:
     if x < 0:
         raise TestError("Negative value")
 
@@ -325,7 +344,7 @@ class Point:
     x: int
     y: int
 
-class TestError:
+class TestError of Error:
     location: Point
 
 fn main() => int:
@@ -341,13 +360,13 @@ fn test_raise_in_class_method() {
     let source = r#"
 use fprintf, exit in libc of c
 
-class TestError:
+class TestError of Error:
     message: str
 
 class Container:
     value: int
     
-    fn validate(self) #error_handler => int:
+    fn validate(self) => int:
         if self.value < 0:
             raise TestError("Invalid value")
         return 0
@@ -369,7 +388,7 @@ fn test_raise_empty_class() {
     let source = r#"
 use fprintf, exit in libc of c
 
-class TestError:
+class TestError of Error:
 
 fn main() => int:
     raise TestError()
@@ -383,7 +402,7 @@ fn test_raise_with_large_fields() {
     let source = r#"
 use fprintf, exit in libc of c
 
-class TestError:
+class TestError of Error:
     field1: int
     field2: int
     field3: int
@@ -402,7 +421,7 @@ fn test_raise_in_constructor() {
     let source = r#"
 use fprintf, exit in libc of c
 
-class TestError:
+class TestError of Error:
     message: str
 
 class Container:
@@ -425,7 +444,7 @@ fn test_raise_after_operations() {
     let source = r#"
 use fprintf, exit in libc of c
 
-class TestError:
+class TestError of Error:
     message: str
 
 fn main() => int:
@@ -443,7 +462,7 @@ fn test_raise_with_string_field() {
     let source = r#"
 use fprintf, exit in libc of c
 
-class TestError:
+class TestError of Error:
     message: str
 
 fn main() => int:
@@ -458,13 +477,13 @@ fn test_raise_in_multiple_functions() {
     let source = r#"
 use fprintf, exit in libc of c
 
-class TestError:
+class TestError of Error:
     message: str
 
-fn function1() #error_handler => int:
+fn function1() => int:
     raise TestError("Error in function1")
 
-fn function2() #error_handler => int:
+fn function2() => int:
     raise TestError("Error in function2")
 
 fn main() => int:
@@ -479,8 +498,7 @@ fn test_raise_with_error_code() {
     let source = r#"
 use fprintf, exit in libc of c
 
-class TestError:
-    code: int
+class TestError of Error:
     message: str
 
 fn main() => int:
@@ -495,7 +513,7 @@ fn test_raise_in_loop_with_break() {
     let source = r#"
 use fprintf, exit in libc of c
 
-class TestError:
+class TestError of Error:
     message: str
 
 fn main() => int:
@@ -514,7 +532,7 @@ fn test_raise_in_nested_conditionals() {
     let source = r#"
 use fprintf, exit in libc of c
 
-class TestError:
+class TestError of Error:
     message: str
 
 fn main() => int:
@@ -528,42 +546,42 @@ fn main() => int:
     assert_compiles(source).unwrap();
 }
 
-// TODO: Fix this test - compiler has bug with elif statements
-// #[test]
-// fn test_multiple_error_types_validation() {
-//     let source = r#"
-// use fprintf, exit in libc of c
-//
-// class ValueError:
-//     message: str
-//
-// class TypeError:
-//     message: str
-//
-// fn main() => int:
-//     let x: int = 5
-//     if x < 0:
-//         raise ValueError("Negative value")
-//     elif x > 10:
-//         raise TypeError("Value too large")
-//
-// "#;
-//     assert_compiles(source).unwrap();
-// }
+#[test]
+fn test_multiple_error_types_validation() {
+    let source = r#"
+use fprintf, exit in libc of c
+
+class ValueError of Error:
+    message: str
+
+class TypeError of Error:
+    message: str
+
+fn main() => int:
+    let x: int = 5
+    if x < 0:
+        raise ValueError("Negative value")
+    elif x > 10:
+        raise TypeError("Value too large")
+
+"#;
+    assert_compiles(source).unwrap();
+}
 
 #[test]
 fn test_error_with_fields() {
     let source = r#"
 use fprintf, exit in libc of c
 
-class CustomError:
-    code: int
+class CustomError of Error:
     message: str
     details: str
 
 fn main() => int:
     raise CustomError {
         code: 404,
+        note: "n",
+        e: 0,
         message: "Not found",
         details: "Resource does not exist"
     }
@@ -572,37 +590,36 @@ fn main() => int:
     assert_compiles(source).unwrap();
 }
 
-// TODO: Fix this test - compiler has bug with elif statements
-// #[test]
-// fn test_raise_in_function_with_validation() {
-//     let source = r#"
-// use fprintf, exit in libc of c
-//
-// class ValidationError:
-//     field: str
-//     message: str
-//
-// fn validate_age(age: int) #error_handler => int:
-//     if age < 0:
-//         raise ValidationError { field: "age", message: "Age cannot be negative" }
-//     if age > 150:
-//         raise ValidationError { field: "age", message: "Age cannot exceed 150" }
-//     return age
-//
-// fn main() => int:
-//     let age: int = validate_age(25)
-//     rm age
-//
-// "#;
-//     assert_compiles(source).unwrap();
-// }
+#[test]
+fn test_raise_in_function_with_validation() {
+    let source = r#"
+use fprintf, exit in libc of c
+
+class ValidationError of Error:
+    field: str
+    message: str
+
+fn validate_age(age: int) => int:
+    if age < 0:
+        raise ValidationError { field: "age", message: "Age cannot be negative", code: 1, note: "n", e: 0 }
+    if age > 150:
+        raise ValidationError { field: "age", message: "Age cannot exceed 150", code: 1, note: "n", e: 0 }
+    return age
+
+fn main() => int:
+    let age: int = validate_age(25)
+    rm age
+
+"#;
+    assert_compiles(source).unwrap();
+}
 
 #[test]
 fn test_error_in_loop() {
     let source = r#"
 use fprintf, exit in libc of c
 
-class ProcessError:
+class ProcessError of Error:
     step: int
     message: str
 
@@ -610,7 +627,7 @@ fn main() => int:
     let i: int = 0
     while i < 10:
         if i == 7:
-            raise ProcessError { step: i, message: "Failed at step 7" }
+            raise ProcessError { step: i, message: "Failed at step 7", code: 1, note: "n", e: 0 }
         i = i + 1
 
 "#;
@@ -625,7 +642,7 @@ use fprintf, exit in libc of c
 class InnerError:
     message: str
 
-class OuterError:
+class OuterError of Error:
     message: str
     inner: InnerError
 
@@ -633,7 +650,10 @@ fn main() => int:
     let inner: InnerError = InnerError { message: "Inner failure" }
     raise OuterError {
         message: "Outer failure",
-        inner: inner
+        inner: inner,
+        code: 1,
+        note: "n",
+        e: 0
     }
 
 "#;
@@ -669,7 +689,7 @@ class Point:
     x: int
     y: int
 
-class LocationError:
+class LocationError of Error:
     point: Point
     message: str
     timestamp: int
@@ -679,9 +699,97 @@ fn main() => int:
     raise LocationError {
         point: p,
         message: "Invalid location",
-        timestamp: 1234567890
+        timestamp: 1234567890,
+        code: 1,
+        note: "n",
+        e: 0
     }
 
 "#;
     assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_error_subclass_extra_field_and_method() {
+    let source = r#"
+use fprintf, exit in libc of c
+
+class AppError of Error:
+    kind: int
+
+    fn kind_code(self) => int:
+        return self.kind
+
+fn main() => int:
+    let err: AppError = AppError { kind: 7, code: 1, note: "n", e: 0 }
+    let k: int = err.kind
+    let c: int = err.kind_code()
+    rm err
+    raise AppError { kind: k, code: c, note: "n", e: 0 }
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_listen_app_error_extra_field_struct_literal() {
+    let source = r#"
+class AppError of Error:
+    kind: int
+
+fn on_err(err: Error) => int:
+    return -1
+
+fn risky() #on_err => int:
+    raise AppError { kind: 7, code: 1, note: "n", e: 0 }
+
+fn main() => int:
+    risky()
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_listen_raise_subclass_variable_llvm_passes_instance_ptr() {
+    let source = r#"
+class AppError of Error:
+    kind: int
+
+fn on_err(err: Error) => int:
+    return -1
+
+fn risky() #on_err => int:
+    let err: AppError = AppError { kind: 7, code: 1, note: "n", e: 0 }
+    raise err
+
+fn main() => int:
+    risky()
+
+"#;
+    let ll = format!("test_listen_app_error_var_{}.ll", unique_temp_id());
+    let result = compile_coffee(source, &["--emit-llvm", "-o", &ll]).unwrap();
+    let ir = std::fs::read_to_string(&ll).unwrap_or_default();
+    let _ = std::fs::remove_file(&ll);
+    assert_eq!(
+        result.exit_code, 0,
+        "emit-llvm failed:\n{}",
+        result.stderr
+    );
+    assert!(
+        ir.contains("%AppError"),
+        "listen raise of an AppError variable should keep the subclass type in IR:\n{}",
+        ir
+    );
+    assert!(
+        ir.contains("call") && ir.contains("on_err"),
+        "listen path should call on_err:\n{}",
+        ir
+    );
+    let packed_only = ir.contains("alloca %Error") && !ir.contains("alloca %AppError");
+    assert!(
+        !packed_only,
+        "must pass the AppError instance pointer, not a freshly packed 3-field %Error:\n{}",
+        ir
+    );
 }

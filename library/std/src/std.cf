@@ -1,0 +1,11 @@
+use write_fd in io
+use io_exit in io
+
+fn print(s: str) => void:
+    write_fd(1, s)
+
+fn eprint(s: str) => void:
+    write_fd(2, s)
+
+fn exit(code: int) => void:
+    io_exit(code)

@@ -1,6 +1,7 @@
 use nom::{
     bytes::complete::tag,
     character::complete::{char, space0, space1},
+    error::ErrorKind,
     multi::many1,
     IResult, Parser,
 };
@@ -27,11 +28,17 @@ pub struct MatchArm {
     pub body: Vec<Statement>,
 }
 
+#[cfg(test)]
 pub fn parse_match(input: &str) -> IResult<&str, MatchExpr> {
+    parse_match_at(input, 0)
+}
+
+pub fn parse_match_at(input: &str, base: usize) -> IResult<&str, MatchExpr> {
+    let src = input;
     let (input, _) = tag("match")(input)?;
     let (input, _) = space1(input)?;
-    let (input, value_raw) = take_until_colon(input)?;
-    let value = parse_expr_or_literal(value_raw.trim());
+    let (input, value_raw) = super::take_until_header_colon(input)?;
+    let value = super::multiline::parse_expr_at(src, base, value_raw.trim())?;
     let (input, _) = char(':')(input)?;
     let (input, _) = space0(input)?;
 
@@ -39,6 +46,13 @@ pub fn parse_match(input: &str) -> IResult<&str, MatchExpr> {
         let mut parser = many1(parse_match_arm);
         Parser::parse(&mut parser, input)?
     };
+
+    if remaining_has_non_trivia(input) {
+        return Err(nom::Err::Error(nom::error::Error {
+            input,
+            code: ErrorKind::Fail,
+        }));
+    }
 
     Ok((
         input,
@@ -50,6 +64,7 @@ pub fn parse_match(input: &str) -> IResult<&str, MatchExpr> {
 }
 
 fn parse_match_arm(input: &str) -> IResult<&str, MatchArm> {
+    let src = input;
     let (input, _) = space0(input)?;
     let (input, pattern_raw) = take_until_double_arrow(input)?;
     let (input, _) = tag("=>")(input)?;
@@ -60,20 +75,24 @@ fn parse_match_arm(input: &str) -> IResult<&str, MatchArm> {
     let (pattern, guard) = if let Some(pos) = pattern_raw.find(" if ") {
         let base = pattern_raw[..pos].trim();
         let guard_s = pattern_raw[pos + 4..].trim();
-        (parse_pattern(base), Some(parse_expr_or_literal(guard_s)))
+        (parse_pattern(src, base)?, Some(super::multiline::parse_expr_at(src, super::multiline::slice_base(src, 0), guard_s)?))
     } else {
-        (parse_pattern(pattern_raw), None)
+        (parse_pattern(src, pattern_raw)?, None)
     };
 
     let line = result.trim();
     let body = if line.is_empty() {
         Vec::new()
-    } else if let Some(stmt) = super::parse_single_line_statement(line) {
+    } else if let Some(stmt) = super::line::parse_single_line_statement_at(
+        line,
+        super::multiline::slice_base(line, 0),
+    ) {
         vec![stmt]
-    } else if let Ok(expr) = crate::parser::expr::parse_expression(line) {
-        vec![Statement::Expr(Box::new(expr))]
     } else {
-        Vec::new()
+        return Err(nom::Err::Error(nom::error::Error {
+            input: line,
+            code: ErrorKind::Fail,
+        }));
     };
 
     Ok((
@@ -86,44 +105,17 @@ fn parse_match_arm(input: &str) -> IResult<&str, MatchArm> {
     ))
 }
 
-fn parse_pattern(raw: &str) -> Pattern {
+fn parse_pattern<'a>(parent: &str, raw: &'a str) -> Result<Pattern, nom::Err<nom::error::Error<&'a str>>> {
     let raw = raw.trim();
-    crate::parser::expr::parse_expression(raw)
-        .map(Pattern::from_expr)
-        .unwrap_or_else(|_| {
-            if raw == "_" {
-                Pattern::Wildcard
-            } else if crate::parser::expr::is_valid_identifier(raw) {
-                Pattern::Ident(raw.to_string())
-            } else {
-                Pattern::Literal(raw.to_string())
-            }
-        })
-}
-
-fn parse_expr_or_literal(raw: &str) -> Expression {
-    crate::parser::expr::parse_expression(raw)
-        .unwrap_or_else(|_| Expression::Literal(raw.to_string()))
-}
-
-fn take_until_colon(input: &str) -> IResult<&str, &str> {
-    let chars: Vec<char> = input.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        if chars[i] == ':' {
-            if i + 1 < chars.len() && chars[i + 1] == ':' {
-                i += 2;
-                continue;
-            }
-            let byte_pos = input.char_indices().nth(i).unwrap().0;
-            return Ok((&input[byte_pos..], &input[..byte_pos]));
-        }
-        i += 1;
+    if raw == "_" {
+        return Ok(Pattern::Wildcard);
     }
-    Err(nom::Err::Error(nom::error::Error {
-        input,
-        code: nom::error::ErrorKind::TakeUntil,
-    }))
+    Pattern::from_expr(super::multiline::parse_expr_at(parent, super::multiline::slice_base(parent, 0), raw)?).map_err(|_| {
+        nom::Err::Error(nom::error::Error {
+            input: raw,
+            code: ErrorKind::Fail,
+        })
+    })
 }
 
 fn take_until_double_arrow(input: &str) -> IResult<&str, &str> {
@@ -135,6 +127,13 @@ fn take_until_double_arrow(input: &str) -> IResult<&str, &str> {
             code: nom::error::ErrorKind::TakeUntil,
         }))
     }
+}
+
+fn remaining_has_non_trivia(input: &str) -> bool {
+    input.lines().any(|line| {
+        let trimmed = line.trim();
+        !trimmed.is_empty() && !trimmed.starts_with("/#")
+    })
 }
 
 fn parse_single_line(input: &str) -> IResult<&str, &str> {
@@ -153,7 +152,7 @@ mod tests {
     fn match_literal_arm_body_is_stmt() {
         let src = "match x:\n    1 => 10\n    _ => 0\n";
         let (_, m) = parse_match(src).expect("parse");
-        match m.value {
+        match m.value.kind() {
             Expression::Variable(n) => assert_eq!(n, "x"),
             other => panic!("{:?}", other),
         }
@@ -171,7 +170,7 @@ mod tests {
             Pattern::Ident(n) => assert_eq!(n, "n"),
             other => panic!("{:?}", other),
         }
-        match m.arms[0].guard.as_ref() {
+        match m.arms[0].guard.as_ref().map(|e| e.kind()) {
             Some(Expression::Binary { op, .. }) => assert_eq!(op, ">"),
             other => panic!("{:?}", other),
         }
@@ -186,5 +185,82 @@ mod tests {
         assert!(matches!(m.arms[2].pattern, Pattern::EnumVariant { .. }));
         assert!(matches!(m.arms[3].pattern, Pattern::Or(_)));
         assert!(matches!(m.arms[4].pattern, Pattern::Wildcard));
+    }
+
+    #[test]
+    fn invalid_match_scrutinee_is_error_not_literal() {
+        match parse_match("match @@@:\n    _ => 0\n") {
+            Err(_) => {}
+            Ok((_, m)) => panic!(
+                "invalid match scrutinee must not parse; got {:?}",
+                m.value
+            ),
+        }
+    }
+
+    #[test]
+    fn invalid_match_pattern_is_error_not_literal() {
+        match parse_match("match x:\n    @@@ => 0\n") {
+            Err(_) => {}
+            Ok((_, m)) => panic!(
+                "invalid match pattern must not parse; got {:?}",
+                m.arms[0].pattern
+            ),
+        }
+    }
+
+    #[test]
+    fn binary_plus_pattern_is_error_not_literal() {
+        match parse_match("match x:\n    1 + 2 => 0\n") {
+            Err(_) => {}
+            Ok((_, m)) => panic!(
+                "binary + pattern must not stringify as Literal; got {:?}",
+                m.arms[0].pattern
+            ),
+        }
+    }
+
+    #[test]
+    fn unary_minus_of_non_literal_pattern_is_error() {
+        match parse_match("match x:\n    -n => 0\n") {
+            Err(_) => {}
+            Ok((_, m)) => panic!(
+                "unary minus of non-literal must not stringify as Literal; got {:?}",
+                m.arms[0].pattern
+            ),
+        }
+    }
+
+    #[test]
+    fn invalid_match_arm_body_is_error_not_empty() {
+        match parse_match("match x:\n    _ => @@@\n") {
+            Err(_) => {}
+            Ok((_, m)) => panic!(
+                "invalid match arm body must not parse; got {:?}",
+                m.arms[0].body
+            ),
+        }
+    }
+
+    #[test]
+    fn leftover_garbage_after_match_arms_is_error() {
+        match parse_match("match x:\n    _ => 0\n    @@@\n") {
+            Err(_) => {}
+            Ok((_, m)) => panic!(
+                "garbage after last match arm must not parse; got {:?}",
+                m.arms
+            ),
+        }
+    }
+
+    #[test]
+    fn broken_let_match_arm_body_is_error_not_expr() {
+        match parse_match("match x:\n    _ => let\n") {
+            Err(_) => {}
+            Ok((_, m)) => panic!(
+                "bare let in match arm must not parse as expr; got {:?}",
+                m.arms[0].body
+            ),
+        }
     }
 }

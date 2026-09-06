@@ -48,46 +48,16 @@ pub struct StructLayout {
     pub size: u64,
     /// Alignment requirement of the struct in bytes
     pub align: u32,
-    /// Total amount of padding in the struct (between fields and tail padding)
-    #[allow(dead_code)]
-    pub padding: u64,
 }
 
 impl StructLayout {
-    /// Calculate optimal layout for struct fields
-    /// 
-    /// This function calculates an optimized memory layout for the given field layouts.
-    /// It uses field reordering to minimize padding and maximize memory efficiency.
-    /// 
-    /// By default, this function enables field reordering (to minimize padding) and
-    /// disables packed mode (to maintain proper alignment).
-    /// 
-    /// # Arguments
-    /// 
-    /// * `field_layouts` - Slice of Layout instances representing each field
-    /// 
-    /// # Returns
-    /// 
-    /// A StructLayout instance with optimized field placement
-    /// 
-    /// # Examples
-    /// 
-    /// ```
-    /// use coffee::backend::memory::structs::StructLayout;
-    /// use coffee::backend::memory::types::Layout;
-    /// 
-    /// // Create layouts for fields of different sizes
-    /// let layouts = vec![
-    ///     Layout::new(1, 1),   // 1 byte field (char/bool)
-    ///     Layout::new(8, 8),   // 8 byte field (pointer/double)
-    ///     Layout::new(4, 4),   // 4 byte field (int/float)
-    /// ];
-    /// 
-    /// let layout = StructLayout::calculate(&layouts);
-    /// // The fields may be reordered to minimize padding
-    /// ```
-    pub fn calculate(field_layouts: &[Layout]) -> Self {
-        Self::calculate_with_options(field_layouts, true, false)
+    /// Layout in source/declaration order (no field permutation).
+    ///
+    /// LLVM struct bodies use this order so GEP indices match field names.
+    /// Padding for alignment is still inserted; only packing (`calculate_packed`)
+    /// removes it.
+    pub fn calculate_declaration_order(field_layouts: &[Layout]) -> Self {
+        Self::calculate_with_options(field_layouts, false, false)
     }
 
     /// Calculate layout with packed option (no padding)
@@ -168,7 +138,7 @@ impl StructLayout {
         }
 
         // Add tail padding to align struct size (skip if packed)
-        let (size, padding) = if packed {
+        let (size, _padding) = if packed {
             (offset, 0)
         } else {
             let size_obj = Size::new(offset);
@@ -181,7 +151,6 @@ impl StructLayout {
             fields,
             size,
             align: if packed { 1 } else { max_align },
-            padding,
         }
     }
 
@@ -213,7 +182,7 @@ impl StructLayout {
     ///     Layout::new(8, 8),   // 8 byte field requiring 7 bytes of padding after first field
     /// ];
     /// 
-    /// let layout = StructLayout::calculate(&layouts);
+    /// let layout = StructLayout::calculate_declaration_order(&layouts);
     /// let (data_bytes, padding_bytes, efficiency) = layout.efficiency_metrics();
     /// 
     /// println!("Data: {} bytes, Padding: {} bytes, Efficiency: {:.1}%", 
@@ -228,5 +197,23 @@ impl StructLayout {
             100.0
         };
         (data_bytes, padding_bytes, efficiency)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::memory::types::Layout;
+
+    #[test]
+    fn calculate_declaration_order_keeps_source_indices() {
+        let layouts = vec![
+            Layout::new(1, 1),
+            Layout::new(8, 8),
+            Layout::new(1, 1),
+        ];
+        let decl = StructLayout::calculate_declaration_order(&layouts);
+        let indices: Vec<usize> = decl.fields.iter().map(|f| f.original_index).collect();
+        assert_eq!(indices, vec![0, 1, 2]);
     }
 }

@@ -15,7 +15,6 @@
 //! The compilation unit system enables efficient incremental compilation by
 //! only recompiling units that have changed or whose dependencies have changed.
 
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::fs;
 
@@ -34,14 +33,8 @@ use std::fs;
 pub enum CompilationStatus {
     /// Not yet compiled - Initial state of a compilation unit
     NotCompiled,
-    /// Currently compiling - The unit is in the process of being compiled
-    #[allow(dead_code)]
-    Compiling,
     /// Successfully compiled (path to .o file) - The unit has been successfully compiled
     Compiled(PathBuf),
-    /// Compilation failed - The compilation failed with an error message
-    #[allow(dead_code)]
-    Failed(String),
 }
 
 /// A single compilation unit (one .cf file)
@@ -147,49 +140,17 @@ impl CompilationUnit {
         // Use SHA-256 for content hashing
         use sha2::{Sha256, Digest};
         let mut hasher = Sha256::new();
+        // Compiler upgrades must invalidate .o even when .cf is unchanged
+        // (`fn exit` stealing libc `exit` was kept alive by `main (cached)`).
+        hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
+        hasher.update([0u8]);
+        hasher.update(crate::compiler::compiler_fingerprint().as_bytes());
+        hasher.update([0u8]);
         hasher.update(&content);
         let hash = hasher.finalize();
 
         self.hash = format!("{:x}", hash);
         Ok(())
-    }
-
-    /// Check if this unit needs recompilation
-    /// 
-    /// Determines whether this compilation unit needs to be recompiled based on:
-    /// - Its current compilation status
-    /// - Whether the object file exists
-    /// - Whether the source file hash matches the cached hash
-    /// 
-    /// # Returns
-    /// 
-    /// * `true` - The unit needs recompilation
-    /// * `false` - The unit does not need recompilation
-    #[allow(dead_code)]
-    pub fn needs_recompilation(&self) -> bool {
-        match &self.status {
-            CompilationStatus::NotCompiled => true,
-            CompilationStatus::Compiling => false,
-            CompilationStatus::Failed(_) => true,
-            CompilationStatus::Compiled(obj_path) => {
-                // Check if object file exists
-                if !obj_path.exists() {
-                    return true;
-                }
-
-                // Check hash
-                if self.hash.is_empty() {
-                    return true;
-                }
-
-                // Compare with cached hash if available
-                if let Ok(cached_hash) = Self::load_cached_hash(&self.object) {
-                    cached_hash != self.hash
-                } else {
-                    true
-                }
-            }
-        }
     }
 
     /// Save hash to cache file
@@ -268,37 +229,6 @@ impl CompilationUnit {
             self.dependencies.push(dep);
         }
     }
-
-    /// Get all unique dependencies (including transitive)
-    /// 
-    /// Collects all direct and transitive dependencies of this compilation unit.
-    /// This is useful for determining the full set of modules that this unit
-    /// depends on, including dependencies of its dependencies.
-    /// 
-    /// # Arguments
-    /// 
-    /// * `all_units` - A reference to a HashMap containing all compilation units in the project
-    /// 
-    /// # Returns
-    /// 
-    /// A HashSet containing all unique module names this unit depends on
-    #[allow(dead_code)]
-    pub fn all_dependencies(&self, all_units: &std::collections::HashMap<String, CompilationUnit>) -> HashSet<String> {
-        let mut deps = HashSet::new();
-        self.collect_dependencies(all_units, &mut deps);
-        deps
-    }
-
-    /// Recursively collect all dependencies
-    fn collect_dependencies(&self, all_units: &std::collections::HashMap<String, CompilationUnit>, deps: &mut HashSet<String>) {
-        for dep in &self.dependencies {
-            if deps.insert(dep.clone()) {
-                if let Some(unit) = all_units.get(dep) {
-                    unit.collect_dependencies(all_units, deps);
-                }
-            }
-        }
-    }
 }
 
 /// Collection of compilation units
@@ -359,40 +289,6 @@ impl CompilationUnits {
         self.units.insert(name, unit);
     }
 
-    /// Get a compilation unit by name
-    /// 
-    /// Retrieves a reference to a compilation unit by its module name.
-    /// 
-    /// # Arguments
-    /// 
-    /// * `name` - The module name of the unit to retrieve
-    /// 
-    /// # Returns
-    /// 
-    /// * `Some(&CompilationUnit)` - Reference to the unit if found
-    /// * `None` - If no unit with the given name exists
-    #[allow(dead_code)]
-    pub fn get(&self, name: &str) -> Option<&CompilationUnit> {
-        self.units.get(name)
-    }
-
-    /// Get mutable reference to a compilation unit
-    /// 
-    /// Retrieves a mutable reference to a compilation unit by its module name.
-    /// 
-    /// # Arguments
-    /// 
-    /// * `name` - The module name of the unit to retrieve
-    /// 
-    /// # Returns
-    /// 
-    /// * `Some(&mut CompilationUnit)` - Mutable reference to the unit if found
-    /// * `None` - If no unit with the given name exists
-    #[allow(dead_code)]
-    pub fn get_mut(&mut self, name: &str) -> Option<&mut CompilationUnit> {
-        self.units.get_mut(name)
-    }
-
     /// Get all units
     /// 
     /// Provides access to all compilation units in the collection.
@@ -402,73 +298,6 @@ impl CompilationUnits {
     /// A reference to the internal HashMap containing all units
     pub fn all(&self) -> &std::collections::HashMap<String, CompilationUnit> {
         &self.units
-    }
-
-    /// Get all units as mutable
-    /// 
-    /// Provides mutable access to all compilation units in the collection.
-    /// 
-    /// # Returns
-    /// 
-    /// A mutable reference to the internal HashMap containing all units
-    #[allow(dead_code)]
-    pub fn all_mut(&mut self) -> &mut std::collections::HashMap<String, CompilationUnit> {
-        &mut self.units
-    }
-
-    /// Find units that need recompilation
-    /// 
-    /// Identifies all compilation units that require recompilation based on
-    /// their current status and hash comparison.
-    /// 
-    /// # Returns
-    /// 
-    /// A vector of module names that need to be recompiled
-    #[allow(dead_code)]
-    pub fn find_dirty(&self) -> Vec<String> {
-        self.units.iter()
-            .filter(|(_, unit)| unit.needs_recompilation())
-            .map(|(name, _)| name.clone())
-            .collect()
-    }
-
-    /// Get all object files (in dependency order)
-    /// 
-    /// Collects paths to all object files in the order they should be linked,
-    /// respecting dependency relationships between compilation units.
-    /// 
-    /// # Returns
-    /// 
-    /// A vector of paths to object files in the correct linking order
-    #[allow(dead_code)]
-    pub fn object_files(&self) -> Vec<PathBuf> {
-        let mut objects = Vec::new();
-        let mut visited = std::collections::HashSet::new();
-
-        for (_, unit) in &self.units {
-            self.collect_objects(&unit.name, &mut objects, &mut visited);
-        }
-
-        objects
-    }
-
-    /// Recursively collect object files in dependency order
-    fn collect_objects(&self, name: &str, objects: &mut Vec<PathBuf>, visited: &mut HashSet<String>) {
-        if let Some(unit) = self.units.get(name) {
-            // First collect dependencies
-            for dep in &unit.dependencies {
-                if visited.insert(dep.clone()) {
-                    self.collect_objects(dep, objects, visited);
-                }
-            }
-
-            // Then collect this unit's object
-            if let CompilationStatus::Compiled(obj_path) = &unit.status {
-                if visited.insert(name.to_string()) {
-                    objects.push(obj_path.clone());
-                }
-            }
-        }
     }
 }
 
@@ -480,5 +309,54 @@ impl Default for CompilationUnits {
     /// A new CompilationUnits instance with no units
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+    use std::fs;
+
+    fn unique_src() -> (PathBuf, PathBuf) {
+        let id = format!(
+            "cu_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let dir = std::env::temp_dir().join(&id);
+        fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("main.cf");
+        fs::write(&src, "fn main() => int:\n    return 0\n").unwrap();
+        (src, dir.join("main.o"))
+    }
+
+    #[test]
+    fn incremental_hash_changes_when_only_compiler_version_would_change() {
+        let (src, obj) = unique_src();
+        let mut unit = CompilationUnit::new("main", src.clone(), obj);
+        unit.calculate_hash().unwrap();
+        let bytes = fs::read(&src).unwrap();
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        let content_only = format!("{:x}", hasher.finalize());
+        let mut ver_and_src = Sha256::new();
+        ver_and_src.update(env!("CARGO_PKG_VERSION").as_bytes());
+        ver_and_src.update([0u8]);
+        ver_and_src.update(&bytes);
+        let version_and_source = format!("{:x}", ver_and_src.finalize());
+        let _ = fs::remove_file(&src);
+        assert_ne!(
+            unit.hash, content_only,
+            "source-only hash would keep stale .o after `cargo install` of a new compiler"
+        );
+        assert_ne!(
+            unit.hash, version_and_source,
+            "same Cargo.toml version must still rebuild when the coffee binary hash changes"
+        );
+        assert_eq!(unit.hash.len(), 64);
     }
 }

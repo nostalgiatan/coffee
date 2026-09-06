@@ -1,0 +1,4 @@
+[package]
+name = "std"
+version = "0.1.0"
+description = "Official Coffee standard library (ships with the compiler)"

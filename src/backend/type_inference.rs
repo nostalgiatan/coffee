@@ -81,20 +81,6 @@ impl<'ctx> TypeInferenceContext<'ctx> {
             allow_implicit_conversion: true,
         }
     }
-
-    /// Create a type inference context with an expected type
-    pub fn with_expected_type(expected_type: BasicTypeEnum<'ctx>) -> Self {
-        Self {
-            expected_type: Some(expected_type),
-            allow_implicit_conversion: true,
-        }
-    }
-
-    /// Disable implicit type conversions
-    pub fn disable_implicit_conversion(mut self) -> Self {
-        self.allow_implicit_conversion = false;
-        self
-    }
 }
 
 impl<'ctx> Default for TypeInferenceContext<'ctx> {

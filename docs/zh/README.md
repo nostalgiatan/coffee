@@ -5,10 +5,12 @@
 Coffee 是一个用 Rust 编写的现代编程语言编译器，使用 LLVM 作为后端。它是一个实验性的静态类型语言，具有类似 Python 的缩进语法，支持函数式和面向对象编程特性，以及与 C 语言的完美双向互操作性。
 
 - **项目名称**: Coffee
-- **版本**: 0.2.1
+- **版本**: 0.3.9（**不是 1.0**；每个中版本满 10 个 patch 再升。1.0 需要产品门槛，见仓库根 [README](../../README.md)。）
 - **开发环境**: Rust 2024 edition (Termux on Android)
 - **编译器后端**: LLVM (通过 inkwell crate)
 - **解析器**: 使用 nom 库的自定义解析器
+
+仓库根目录 [README](../../README.md) 写了构建依赖和当前管线（函数体必须走 MIR、`stmt_spans`、`NestedDecl`）。
 
 ## 文档结构
 
@@ -22,22 +24,25 @@ Coffee 是一个用 Rust 编写的现代编程语言编译器，使用 LLVM 作�
 4. **[后端模块](backend.md)** - LLVM 代码生成
 5. **[C 语言集成模块](c_integration.md)** - C 语言 FFI 支持
 6. **[编译器前端模块](compiler.md)** - 项目编译编排
-7. **[运行时模块](runtime.md)** - 标准运行时库
+7. **[运行时](runtime.md)** — 无 runtime crate；`raise` 走 libc / `#监听器`
 
 ## 主要特性
 
 ### 语言特性
-- 静态类型系统
+- 静态类型系统（`int(N)+` / `int(N)-` / `float(N)`：**N 是字节数**，如 `int(4)+` 对应 C `int`）
 - 类似 Python 的缩进语法
 - 函数式编程支持
 - 面向对象编程（类和继承）
 - 模式匹配
-- 先进的内存管理（mv/clone/copy/rm/alloc/free/load/store/clean 操作）
+- 先进的内存管理（值类型作用域结束自动清理；资源用 `mv`/`clone`/`rm`；简单变量的 **last-use** 视为隐式搬走）。过程内 `&`/`&mut`，地点含变量、字段 `p.x`、下标 `a[i]`。类 `clone` 对嵌套 `str` / class / 资源数组 / 元组是深拷贝；`object`、引用、切片字段仍浅拷贝。`[T; N]` 与元组资源字段随容器 drop；class 的 `[T]` 按胖指针长度 drop **元素**、不 `free` 缓冲区；`object` 不释放载荷。**`buf`** 是 Coffee 拥有的 `malloc` 指针（drop 会 `free`）；`clone buf` 是类型错误。
 - 完美的 C 语言双向互操作
-- 项目管理（coffee.toml）
-- 异常处理（raise 语句）
+- 项目管理（coffee.toml；包依赖是 `path` 与 `url`+`hash` 二选一，不是 semver 字符串）。官方 **std** 嵌在编译器里（`coffee std install`）；除非 toml 写了 `[dependencies.packages.std]`，编译会自动前置导入根。用户程序写 `use print in std`（或 `use * in std`）。`of c` 约定写在 `library/std/src/sys.cf`，不要写在普通用户代码里。可增长整数缓冲：`use mem` 后 `IntBuf::new` / `push` / `get` / `length`。
+- `coffee fetch` 拉取 url+hash 包到缓存（`$COFFEE_CACHE` / `~/.cache/coffee`）
+- 泛型 v1：`class List<T>:` / `List<int>` → `List__int`（无 `T: Trait`，无标准库泛型 `List`；std 提供 **`IntBuf`**）
+- `raise` 默认中止（fprintf + exit）；函数带 `#name` 时由监听器接收；没有 `try`/`catch`
 - 丰富的表达式支持
-- 数组索引访问
+- 数组索引访问（`[T; N]`）；Coffee 函数上的 `[T]` 是胖指针 `{ptr,len}`（`c fn` 仍拒绝切片）
+- `coffee run` / `coffee test`（也可用 `--bin` / `--jit`）
 
 ### 编译功能
 - LLVM IR 生成
@@ -97,6 +102,20 @@ coffee --jit input.cf
 # 初始化新项目
 coffee init
 
+# 用户程序：`use print in std`（`of c` 写在 library/std/src/sys.cf）
+
+# 安装随编译器捆绑的标准库
+coffee std install
+
+# 拉取 coffee.toml 里的 url+hash 包依赖到缓存
+coffee fetch
+
+# 下载 .tar.gz、打印树哈希并缓存
+coffee fetch https://example.com/foo.tar.gz
+
+# 同上，并写入 [dependencies.packages.<name>]
+coffee fetch https://example.com/foo.tar.gz --save foo
+
 # 从 C 头文件生成 .cfc 文件
 coffee --gen-cfc input.h
 
@@ -106,6 +125,18 @@ coffee --static input.cf
 # 指定目标三元组进行交叉编译
 coffee --target x86_64-unknown-linux-gnu input.cf
 ```
+
+典型程序（若查找不到 `library/std` 则先 `coffee std install`）：
+
+```coffee
+use print in std
+
+fn main() => int:
+    print("Hello, Coffee!\n")
+    return 0
+```
+
+`of c` 写在 `library/std/src/sys.cf`。用 `coffee run`（工程或单文件）或 `--bin` / `--jit`。
 
 ### 项目结构
 
@@ -143,12 +174,15 @@ authors = ["Author Name <email@example.com>"]
 description = "Project description"
 
 [dependencies]
-# 标准库依赖
-std = "0.2.0"
+# std 随编译器捆绑；缺失时运行 coffee std install。不要写本机 path= 指向 std。
 
-# Coffee包依赖
-[dependencies.packages]
-# coffee_package = "0.1.0"
+# Coffee 包依赖：path XOR url+hash（不能写成 foo = "1.0"）
+# hash 是解包后整棵树的 SHA-256
+# [dependencies.packages.foo]
+# url = "https://example.com/foo.tar.gz"
+# hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+# [dependencies.packages.local_bar]
+# path = "../bar"
 
 # C库依赖
 [dependencies.c_libraries.libm]

@@ -161,6 +161,27 @@ fn main() => int:
 }
 
 #[test]
+fn test_nested_field_assign() {
+    let source = r#"
+class Point:
+    x: int
+    y: int
+
+class Wrapper:
+    p: Point
+
+fn main() => int:
+    let w: Wrapper = Wrapper { p: Point { x: 1, y: 2 } }
+    w.p.x = 42
+    printf("%d\n", w.p.x)
+    rm w
+    return 0
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
 fn test_class_as_function_parameter() {
     let source = r#"
 class Point:
@@ -330,6 +351,22 @@ fn main() => int:
 }
 
 #[test]
+fn test_class_defined_inside_function_compiles() {
+    let source = r#"
+fn main() => int:
+    class Point:
+        x: int
+        y: int
+    let p: Point = Point { x: 1, y: 2 }
+    printf("Point: %d,%d\n", p.x, p.y)
+    rm p
+    return 0
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
 fn test_large_class() {
     let source = r#"
 class Large:
@@ -381,73 +418,70 @@ fn main() => int:
     assert_compiles(source).unwrap();
 }
 
-// TODO: Fix this test - compiler has bug parsing array literals in struct literals
-// #[test]
-// fn test_class_with_array_field() {
-//     let source = r#"
-// class Matrix:
-//     data: [int; 9]
-//     rows: int
-//     cols: int
-//
-// fn main() => int:
-//     let m: Matrix = Matrix {
-//         data: [1, 2, 3, 4, 5, 6, 7, 8, 9],
-//         rows: 3,
-//         cols: 3
-//     }
-//     rm m
-//     return 0
-//
-// "#;
-//     assert_compiles(source).unwrap();
-// }
+#[test]
+fn test_class_with_array_field() {
+    let source = r#"
+class Matrix:
+    data: [int; 9]
+    rows: int
+    cols: int
 
-// TODO: Fix this test - compiler has bug with tuple fields in struct literals
-// #[test]
-// fn test_class_with_tuple_field() {
-//     let source = r#"
-// class Pair:
-//     values: (int, int)
-//     sum: int
-//
-// fn main() => int:
-//     let p: Pair = Pair {
-//         values: (10, 20),
-//         sum: 30
-//     }
-//     rm p
-//     return 0
-//
-// "#;
-//     assert_compiles(source).unwrap();
-// }
+fn main() => int:
+    let m: Matrix = Matrix {
+        data: [1, 2, 3, 4, 5, 6, 7, 8, 9],
+        rows: 3,
+        cols: 3
+    }
+    rm m
+    return 0
 
-// TODO: Fix this test - compiler has bug parsing array literals in struct literals
-// #[test]
-// fn test_class_with_mixed_types() {
-//     let source = r#"
-// class Mixed:
-//     id: int
-//     name: str
-//     active: bool
-//     score: float
-//     tags: [int; 3]
-//
-// fn main() => int:
-//     let m: Mixed = Mixed {
-//         id: 1,
-//         name: "test",
-//         active: true,
-//         score: 95.5,
-//         tags: [1, 2, 3]
-//     }
-//     rm m
-//     return 0
-//
-// "#;
-//     assert_compiles(source).unwrap();
-// }
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_class_with_tuple_field() {
+    let source = r#"
+class Pair:
+    values: (int, int)
+    sum: int
+
+fn main() => int:
+    let p: Pair = Pair {
+        values: (10, 20),
+        sum: 30
+    }
+    rm p
+    return 0
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_class_with_mixed_types() {
+    let source = r#"
+class Mixed:
+    id: int
+    name: str
+    active: bool
+    score: float
+    tags: [int; 3]
+
+fn main() => int:
+    let m: Mixed = Mixed {
+        id: 1,
+        name: "test",
+        active: true,
+        score: 95.5,
+        tags: [1, 2, 3]
+    }
+    rm m
+    return 0
+
+"#;
+    assert_compiles(source).unwrap();
+}
 
 #[test]
 fn test_class_assignment() {
@@ -505,4 +539,150 @@ fn main() => int:
 
 "#;
     assert_compiles(source).unwrap();
+}
+
+/// Fields that packing would reorder (i8, i64, i8). GEP must still use
+/// declaration order so `value` is not read from a bool slot.
+#[test]
+fn test_field_access_keeps_declaration_order() {
+    let source = r#"
+class MixedPad:
+    flag_a: bool
+    value: int
+    flag_b: bool
+
+fn main() => int:
+    let m: MixedPad = MixedPad { flag_a: true, value: 42, flag_b: false }
+    let v: int = m.value
+    rm m
+    return v
+
+"#;
+    let result = compile_coffee(source, &["--jit"]).expect("compile+jit");
+    assert_eq!(
+        result.exit_code, 42,
+        "declaration-order GEP should read value=42; stdout={} stderr={}",
+        result.stdout, result.stderr
+    );
+}
+
+#[test]
+fn test_inherited_fields_are_indexed_after_parent() {
+    let source = r#"
+class Base:
+    x: int
+
+class Child of Base:
+    y: int
+
+fn main() => int:
+    let c: Child = Child { x: 7, y: 9 }
+    let a: int = c.x
+    let b: int = c.y
+    rm c
+    return a * 10 + b
+
+"#;
+    let result = compile_coffee(source, &["--jit"]).expect("compile+jit");
+    assert_eq!(
+        result.exit_code, 79,
+        "parent field x then child field y; stdout={} stderr={}",
+        result.stdout, result.stderr
+    );
+}
+
+fn packed_bitfield_source() -> &'static str {
+    r#"
+class PackBits:
+    lo: int:3
+    hi: int:5
+
+    fn poke(self) => int:
+        self.lo = 1
+        self.hi = 2
+        let a: int = self.lo
+        let b: int = self.hi
+        return a + b * 10
+
+fn main() => int:
+    return 0
+"#
+}
+
+/// Default ABI: one LLVM member per declared field, even with bit-width annotations.
+#[test]
+fn test_bitfields_flag_off_keeps_one_llvm_member_per_field() {
+    let pid = std::process::id();
+    let ll = format!("test_bitfields_off_{}.ll", pid);
+    let result = compile_coffee(packed_bitfield_source(), &["--emit-llvm", "-o", &ll]).unwrap();
+    let ir = std::fs::read_to_string(&ll).unwrap_or_default();
+    let _ = std::fs::remove_file(&ll);
+    assert_eq!(result.exit_code, 0, "emit-llvm failed:\n{}", result.stderr);
+    assert!(
+        ir.contains("%PackBits = type { i64, i64 }") || ir.contains("%PackBits = type { i64, i64,") ,
+        "flag off should keep two i64 members; ir=\n{}",
+        ir
+    );
+}
+
+/// `--enable-bitfields`: consecutive bitfields share a storage-unit integer; load/store compile.
+#[test]
+fn test_enable_bitfields_packs_consecutive_fields_and_compiles_access() {
+    let pid = std::process::id();
+    let ll = format!("test_bitfields_on_{}.ll", pid);
+    let result = compile_coffee(
+        packed_bitfield_source(),
+        &["--enable-bitfields", "--emit-llvm", "-o", &ll],
+    )
+    .unwrap();
+    let ir = std::fs::read_to_string(&ll).unwrap_or_default();
+    let _ = std::fs::remove_file(&ll);
+    assert_eq!(
+        result.exit_code, 0,
+        "enable-bitfields compile failed:\n{}",
+        result.stderr
+    );
+    assert!(
+        ir.contains("%PackBits = type { i8 }"),
+        "consecutive 3+5 bit fields should pack into one i8 storage unit; ir=\n{}",
+        ir
+    );
+    assert!(
+        ir.contains("lshr") || ir.contains("ashr") || ir.contains("shl"),
+        "bitfield load/store should use shift+mask; ir=\n{}",
+        ir
+    );
+}
+
+/// `packed class` with `:N` fields packs storage even without `--enable-bitfields`.
+#[test]
+fn test_packed_class_bitfields_pack_without_enable_flag() {
+    let source = r#"
+packed class PackedBits:
+    lo: int:3
+    hi: int:5
+
+    fn poke(self) => int:
+        self.lo = 1
+        self.hi = 2
+        let a: int = self.lo
+        let b: int = self.hi
+        return a + b * 10
+
+fn main() => int:
+    return 0
+"#;
+    let pid = std::process::id();
+    let ll = format!("test_packed_bits_no_flag_{}.ll", pid);
+    let result = compile_coffee(source, &["--emit-llvm", "-o", &ll]).unwrap();
+    let ir = std::fs::read_to_string(&ll).unwrap_or_default();
+    let _ = std::fs::remove_file(&ll);
+    assert_eq!(result.exit_code, 0, "emit-llvm failed:\n{}", result.stderr);
+    let packed_i8 = ir.contains("%PackedBits = type { i8 }")
+        || ir.contains("%PackedBits = type <{ i8 }>");
+    assert!(
+        packed_i8,
+        "packed class 3+5 bit fields should pack into one i8 without --enable-bitfields; ir=\n{}",
+        ir
+    );
 }

@@ -1,6 +1,8 @@
 # Coffee 绞杀式改造：架构契约
 
 日期：2026-09-04  
+**Status (2026-09-05):** 单文件与工程共用 `CompilationPipeline`（`CompilerFrontend` 为别名）；表达式走 AST `compile_expr`。内存契约与借用检查见后续 spec，不是本文件的非目标清单现状。
+
 选择：**A** — 在原仓库换骨架，不绿场、不同时改语法/内存。
 
 ## 目标

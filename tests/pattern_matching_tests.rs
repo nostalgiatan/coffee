@@ -152,6 +152,22 @@ fn main() => int:
     assert_compiles(source).unwrap();
 }
 
+#[test]
+fn test_match_str_equality_and_inequality() {
+    let source = r#"
+fn main() => int:
+    let s: str = "a"
+    match s:
+        "a" => 1
+        "b" => 2
+        _ => 0
+    rm s
+    return 0
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
 //=============================================================================
 // 枚举模式测试
 //=============================================================================

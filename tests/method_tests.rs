@@ -658,3 +658,148 @@ fn main() => int:
 "#;
     assert_compiles(source).unwrap();
 }
+
+#[test]
+fn test_method_increment_jit_returns_two() {
+    let source = r#"
+class Counter:
+    value: int
+
+    fn new() => Counter:
+        Counter { value: 0 }
+
+    fn increment(self) => Counter:
+        self.value = self.value + 1
+        return self
+
+    fn get_value(self) => int:
+        let result: int = self.value
+        return result
+
+fn main() => int:
+    let c: Counter = Counter::new()
+    c.increment()
+    c.increment()
+    let val: int = c.get_value()
+    rm c
+    return val
+"#;
+    let result = compile_coffee(source, &["--jit"]).expect("compile+jit");
+    assert_eq!(
+        result.exit_code, 2,
+        "increment twice then get_value; stdout={} stderr={}",
+        result.stdout, result.stderr
+    );
+}
+
+//=============================================================================
+// Inherited methods (static walk, no vtable)
+//=============================================================================
+
+#[test]
+fn test_child_calls_parent_method_when_child_has_no_foo() {
+    let source = r#"
+class Parent:
+    x: int
+
+    fn foo(self) => int:
+        return self.x
+
+class Child of Parent:
+    y: int
+
+fn main() => int:
+    let c: Child = Child { x: 41, y: 99 }
+    let n: int = c.foo()
+    rm c
+    return n
+"#;
+    let result = compile_coffee(source, &["--jit"]).expect("compile+jit");
+    assert_eq!(
+        result.exit_code, 41,
+        "Child.foo should be Parent_foo with child self*; parent-first layout reads x=41; stdout={} stderr={}",
+        result.stdout, result.stderr
+    );
+}
+
+#[test]
+fn test_child_same_name_method_wins_over_parent() {
+    let source = r#"
+class Parent:
+    x: int
+
+    fn foo(self) => int:
+        return 1
+
+class Child of Parent:
+    y: int
+
+    fn foo(self) => int:
+        return 2
+
+fn main() => int:
+    let c: Child = Child { x: 0, y: 0 }
+    let n: int = c.foo()
+    rm c
+    return n
+"#;
+    let result = compile_coffee(source, &["--jit"]).expect("compile+jit");
+    assert_eq!(
+        result.exit_code, 2,
+        "Child.foo should call Child_foo not Parent_foo; stdout={} stderr={}",
+        result.stdout, result.stderr
+    );
+}
+
+#[test]
+fn test_parent_typed_value_calls_parent_method_not_subclass() {
+    let source = r#"
+class Animal:
+    n: int
+
+    fn speak(self) => int:
+        return 1
+
+class Dog of Animal:
+    extra: int
+
+    fn speak(self) => int:
+        return 2
+
+fn main() => int:
+    let a: Animal = Animal { n: 0 }
+    let n: int = a.speak()
+    rm a
+    return n
+"#;
+    let result = compile_coffee(source, &["--jit"]).expect("compile+jit");
+    assert_eq!(
+        result.exit_code, 1,
+        "Animal-typed receiver must call Animal_speak (static, no vtable); stdout={} stderr={}",
+        result.stdout, result.stderr
+    );
+}
+
+#[test]
+fn test_grandchild_calls_grandparent_method() {
+    let source = r#"
+class A:
+    x: int
+
+    fn foo(self) => int:
+        return self.x
+
+class B of A:
+    y: int
+
+class C of B:
+    z: int
+
+fn main() => int:
+    let c: C = C { x: 7, y: 8, z: 9 }
+    let n: int = c.foo()
+    rm c
+    return n
+"#;
+    assert_compiles(source).unwrap();
+}

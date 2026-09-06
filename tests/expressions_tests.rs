@@ -679,3 +679,209 @@ fn main() => int:
 "#;
     assert_compiles(source).unwrap();
 }
+
+#[test]
+fn test_bitwise_not() {
+    let source = r#"
+fn main() => int:
+    let a: int = 15
+    let b: int = ~a
+    let c: int = a & b | ~b
+    rm a, b, c
+    return 0
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_bitwise_not_on_float_is_error() {
+    let source = r#"
+fn main() => int:
+    let a: float = 1.0
+    let b: int = ~a
+    return 0
+
+"#;
+    assert_compile_error(source, "invalid operation").unwrap();
+}
+
+#[test]
+fn test_bitwise_not_on_bool_is_error() {
+    let source = r#"
+fn main() => int:
+    let a: bool = true
+    let b: int = ~a
+    return 0
+
+"#;
+    assert_compile_error(source, "invalid operation").unwrap();
+}
+
+#[test]
+fn test_bitwise_not_on_pointer_is_error() {
+    let source = r#"
+fn main() => int:
+    let a: int = 1
+    let r: &int = &a
+    let b: int = ~r
+    return 0
+
+"#;
+    assert_compile_error(source, "invalid operation").unwrap();
+}
+
+#[test]
+fn test_bitwise_not_llvm_xor_all_ones() {
+    let source = r#"
+fn main() => int:
+    let a: int = 15
+    let b: int = ~a
+    rm a, b
+    return 0
+"#;
+    let ll = format!("test_bitnot_{}.ll", std::process::id());
+    let result = compile_coffee(source, &["--emit-llvm", "-o", &ll]).unwrap();
+    let ir = std::fs::read_to_string(&ll).unwrap_or_default();
+    let _ = std::fs::remove_file(&ll);
+    assert_eq!(result.exit_code, 0, "emit-llvm failed:\n{}", result.stderr);
+    assert!(
+        ir.contains("xor") && (ir.contains("-1") || ir.contains("18446744073709551615")),
+        "expected bitwise not as xor all-ones in IR:\n{}",
+        ir
+    );
+}
+
+//=============================================================================
+// f-string: snprintf failure/truncation is a hard trap, not empty string
+//=============================================================================
+
+#[test]
+fn test_fstring_compiles() {
+    let source = r#"
+fn main() => int:
+    let name: str = "world"
+    let s: str = f"Hello {name}"
+    rm s
+    rm name
+    return 0
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_fstring_snprintf_failure_is_unreachable() {
+    let source = r#"
+fn main() => int:
+    let name: str = "world"
+    let s: str = f"Hello {name}"
+    rm s
+    rm name
+    return 0
+"#;
+    let ll = format!("test_fstring_{}.ll", unique_temp_id());
+    let result = compile_coffee(source, &["--emit-llvm", "-o", &ll]).unwrap();
+    let ir = std::fs::read_to_string(&ll).unwrap_or_default();
+    let _ = std::fs::remove_file(&ll);
+    assert_eq!(result.exit_code, 0, "emit-llvm failed:\n{}", result.stderr);
+    let snprintf_calls = ir
+        .lines()
+        .filter(|l| l.contains("call ") && l.contains("@snprintf"))
+        .count();
+    assert_eq!(
+        snprintf_calls, 2,
+        "expected two-pass snprintf (size then write), got {}:\n{}",
+        snprintf_calls, ir
+    );
+    assert!(
+        ir.contains("call ptr @malloc"),
+        "expected heap buffer via malloc for f-string:\n{}",
+        ir
+    );
+    assert!(
+        ir.contains("unreachable"),
+        "expected unreachable trap on snprintf failure/truncation:\n{}",
+        ir
+    );
+    assert!(
+        !ir.contains("f-string buffer overflow"),
+        "must not printf-then-continue with empty string:\n{}",
+        ir
+    );
+}
+
+fn overflow_block_body(ir: &str, label: &str) -> String {
+    let needle = format!("{}:", label);
+    let start = ir
+        .find(&needle)
+        .unwrap_or_else(|| panic!("missing {label} in IR:\n{ir}"));
+    let mut body = String::new();
+    for line in ir[start..].lines().skip(1) {
+        if line.starts_with(' ') || line.starts_with('\t') || line.is_empty() {
+            body.push_str(line);
+            body.push('\n');
+        } else {
+            break;
+        }
+    }
+    body
+}
+
+#[test]
+fn test_sub_overflow_llvm_unreachable() {
+    let source = r#"
+fn main() => int:
+    let a: int = 1
+    let b: int = 2
+    let c: int = a - b
+    rm a, b, c
+    return 0
+"#;
+    let ll = format!("test_sub_ovf_{}.ll", std::process::id());
+    let result = compile_coffee(source, &["--emit-llvm", "-o", &ll]).unwrap();
+    let ir = std::fs::read_to_string(&ll).unwrap_or_default();
+    let _ = std::fs::remove_file(&ll);
+    assert_eq!(result.exit_code, 0, "emit-llvm failed:\n{}", result.stderr);
+    let body = overflow_block_body(&ir, "sub_overflow");
+    assert!(
+        body.contains("unreachable"),
+        "sub overflow must trap, got:\n{}\nfull:\n{}",
+        body,
+        ir
+    );
+    assert!(
+        !body.contains("store"),
+        "sub overflow must not store 0 and continue:\n{}",
+        body
+    );
+}
+
+#[test]
+fn test_mul_overflow_llvm_unreachable() {
+    let source = r#"
+fn main() => int:
+    let a: int = 2
+    let b: int = 3
+    let c: int = a * b
+    rm a, b, c
+    return 0
+"#;
+    let ll = format!("test_mul_ovf_{}.ll", std::process::id());
+    let result = compile_coffee(source, &["--emit-llvm", "-o", &ll]).unwrap();
+    let ir = std::fs::read_to_string(&ll).unwrap_or_default();
+    let _ = std::fs::remove_file(&ll);
+    assert_eq!(result.exit_code, 0, "emit-llvm failed:\n{}", result.stderr);
+    let body = overflow_block_body(&ir, "mul_overflow");
+    assert!(
+        body.contains("unreachable"),
+        "mul overflow must trap, got:\n{}\nfull:\n{}",
+        body,
+        ir
+    );
+    assert!(
+        !body.contains("store"),
+        "mul overflow must not store 0 and continue:\n{}",
+        body
+    );
+}

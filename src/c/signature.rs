@@ -17,6 +17,43 @@ use std::collections::HashMap;
 use crate::parser::Function;
 use crate::parser::function::Parameter;
 
+/// A type definition from a `.cfc` file (`type Name: object`, `c class`, …).
+#[derive(Debug, Clone, PartialEq)]
+pub enum CTypeDef {
+    /// Nominal newtype over a source type (this round: `source == "object"`).
+    Newtype { name: String, source: String },
+    /// Complete C struct by value (`c class`).
+    Class {
+        name: String,
+        fields: Vec<(String, String)>,
+        size: u64,
+        align: u64,
+    },
+    /// Complete C union (`c union`).
+    Union {
+        name: String,
+        fields: Vec<(String, String)>,
+        size: u64,
+        align: u64,
+    },
+    /// C enum constants (`c enum`).
+    Enum {
+        name: String,
+        variants: Vec<(String, i64)>,
+    },
+}
+
+impl CTypeDef {
+    pub fn name(&self) -> &str {
+        match self {
+            CTypeDef::Newtype { name, .. }
+            | CTypeDef::Class { name, .. }
+            | CTypeDef::Union { name, .. }
+            | CTypeDef::Enum { name, .. } => name,
+        }
+    }
+}
+
 /// A C function symbol declaration from a .cfc file
 /// 
 /// This structure represents a single C function declaration parsed from a .cfc file.
@@ -106,7 +143,7 @@ impl CSymbol {
     /// 
     /// assert_eq!(symbol.name, "sqrt");
     /// ```
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn new(
         name: String,
         parameters: Vec<Parameter>,
@@ -162,13 +199,32 @@ impl CSymbol {
     /// let symbol = CSymbol::from_function(&func);
     /// assert_eq!(symbol.name, "abs");
     /// ```
-    #[allow(dead_code)]
     pub fn from_function(func: &Function) -> Self {
-        let is_variadic = func.parameters.iter().any(|p| p.is_variadic);
+        let mut parameters = func.parameters.clone();
+        for p in &mut parameters {
+            if p.param_type != "..." {
+                p.is_variadic = false;
+            }
+        }
+        let is_variadic = match parameters.last() {
+            Some(p) if p.param_type == "..." => {
+                parameters.pop();
+                true
+            }
+            Some(p) if p.name == "args" && p.param_type == "object" => {
+                parameters.pop();
+                true
+            }
+            Some(p) if p.is_variadic => {
+                parameters.pop();
+                true
+            }
+            _ => false,
+        };
 
         Self {
             name: func.name.clone(),
-            parameters: func.parameters.clone(),
+            parameters,
             return_type: func.return_type.clone(),
             is_variadic,
         }
@@ -219,7 +275,7 @@ impl CSymbol {
     /// assert!(sig.contains("int"));
     /// assert!(sig.contains("->"));
     /// ```
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn signature(&self) -> String {
         let param_types: Vec<String> = self.parameters
             .iter()
@@ -272,9 +328,17 @@ pub struct CSymbolTable {
     /// Library/module name (e.g., "hello" from libhello.cfc)
     /// This helps organize symbols by their source library
     pub library: String,
+    /// Linker short name (`-l` flag). Defaults to `library` in `CSymbolTable::new`.
+    pub linker: String,
+    /// Headers owned by this module (from `// headers:` metadata).
+    pub owned_headers: Vec<String>,
+    /// Other Coffee C modules this table needs (from `// needs:` metadata).
+    pub needs: Vec<String>,
     /// Map of function name to symbol
     /// Provides O(1) lookup for C function declarations by name
     pub symbols: HashMap<String, CSymbol>,
+    /// Map of type name to type definition (`type FILE: object`, etc.)
+    pub type_defs: HashMap<String, CTypeDef>,
 }
 
 impl CSymbolTable {
@@ -302,8 +366,12 @@ impl CSymbolTable {
     /// ```
     pub fn new(library: String) -> Self {
         Self {
+            linker: library.clone(),
             library,
+            owned_headers: Vec::new(),
+            needs: Vec::new(),
             symbols: HashMap::new(),
+            type_defs: HashMap::new(),
         }
     }
 
@@ -413,53 +481,9 @@ impl CSymbolTable {
     /// assert!(table.contains("func"));
     /// assert!(!table.contains("other"));
     /// ```
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn contains(&self, name: &str) -> bool {
         self.symbols.contains_key(name)
-    }
-
-    /// Get all symbol names in the table
-    /// 
-    /// This method returns a vector containing the names of all symbols in the table.
-    /// This is useful for iterating over all functions in a library or for debugging.
-    /// 
-    /// # Returns
-    /// 
-    /// A vector of string slices representing all symbol names in the table
-    /// 
-    /// # Examples
-    /// 
-    /// ```
-    /// use coffee::c::{CSymbolTable, CSymbol};
-    /// use coffee::parser::function::Parameter;
-    /// 
-    /// let mut table = CSymbolTable::new("testlib".to_string());
-    /// 
-    /// let symbol1 = CSymbol::new(
-    ///     "func1".to_string(),
-    ///     vec![],
-    ///     "int".to_string(),
-    ///     false
-    /// );
-    /// 
-    /// let symbol2 = CSymbol::new(
-    ///     "func2".to_string(),
-    ///     vec![],
-    ///     "void".to_string(),
-    ///     false
-    /// );
-    /// 
-    /// table.add(symbol1);
-    /// table.add(symbol2);
-    /// 
-    /// let names = table.symbol_names();
-    /// assert_eq!(names.len(), 2);
-    /// assert!(names.contains(&"func1"));
-    /// assert!(names.contains(&"func2"));
-    /// ```
-    #[allow(dead_code)]
-    pub fn symbol_names(&self) -> Vec<&str> {
-        self.symbols.keys().map(|s| s.as_str()).collect()
     }
 
     /// Get the number of symbols in the table
@@ -489,7 +513,7 @@ impl CSymbolTable {
     /// table.add(symbol);
     /// assert_eq!(table.len(), 1);
     /// ```
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.symbols.len()
     }
@@ -513,7 +537,7 @@ impl CSymbolTable {
     /// // After adding symbols, it would return false
     /// ```
     pub fn is_empty(&self) -> bool {
-        self.symbols.is_empty()
+        self.symbols.is_empty() && self.type_defs.is_empty()
     }
 }
 
@@ -539,6 +563,9 @@ mod tests {
     fn test_symbol_table() {
         let mut table = CSymbolTable::new("testlib".to_string());
         assert_eq!(table.library, "testlib");
+        assert_eq!(table.linker, "testlib");
+        assert!(table.owned_headers.is_empty());
+        assert!(table.needs.is_empty());
         assert!(table.is_empty());
 
         let symbol = CSymbol::new(

@@ -1,0 +1,25 @@
+use * in sys
+
+class IntBuf:
+    p: buf
+    len: int
+    cap: int
+
+    fn new() => IntBuf:
+        IntBuf { p: sys_malloc(64), len: 0, cap: 8 }
+
+    fn push(self, x: int) => void:
+        self.p = sys_ensure_ints(self.p, self.len, self.cap)
+        self.cap = sys_next_cap(self.len, self.cap)
+        sys_put_int(self.p, self.len, x)
+        self.len = self.len + 1
+
+    fn get(self, i: int) => int:
+        if i < 0:
+            return 0
+        if i >= self.len:
+            return 0
+        return sys_get_int(self.p, i)
+
+    fn length(self) => int:
+        return self.len

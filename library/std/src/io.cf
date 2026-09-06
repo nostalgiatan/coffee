@@ -1,0 +1,10 @@
+use sys_write in sys
+use sys_strlen in sys
+use sys_exit in sys
+
+fn write_fd(fd: int, s: str) => void:
+    let n: int = sys_strlen(s)
+    sys_write(fd, s, n)
+
+fn io_exit(code: int) => void:
+    sys_exit(code)

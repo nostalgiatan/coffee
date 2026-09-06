@@ -314,6 +314,138 @@ fn main() => int:
     return 0
 
 "#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_for_in_array_literal() {
+    let source = r#"
+fn main() => int:
+    for x in [1, 2, 3]:
+        let n: int = x
+    return 0
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_for_in_array_variable() {
+    let source = r#"
+fn main() => int:
+    let xs: [int; 2] = [1, 2]
+    for x in xs:
+        let n: int = x
+    rm xs
+    return 0
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_for_in_array_call() {
+    let source = r#"
+fn make_arr() => [int; 2]:
+    return [1, 2]
+
+fn main() => int:
+    for x in make_arr():
+        let n: int = x
+    return 0
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_for_in_slice_variable() {
+    let source = r#"
+fn main() => int:
+    let xs: [int] = []
+    for x in xs:
+        let n: int = x
+    rm xs
+    return 0
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_for_in_slice_call() {
+    let source = r#"
+fn make_xs() => [int]:
+    let xs: [int] = []
+    return xs
+
+fn main() => int:
+    for x in make_xs():
+        let n: int = x
+    return 0
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_for_in_tuple_variable() {
+    let source = r#"
+fn main() => int:
+    let t: (int, int) = (1, 2)
+    for x in t:
+        let n: int = x
+    rm t
+    return 0
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_for_in_tuple_literal() {
+    let source = r#"
+fn main() => int:
+    for x in (1, 2):
+        let n: int = x
+    return 0
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_for_in_tuple_expr() {
+    let source = r#"
+fn main() => int:
+    let a: int = 1
+    let b: int = 2
+    for x in (a, b):
+        let n: int = x
+    return 0
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_for_in_body_let_field_access() {
+    let source = r#"
+class Point:
+    x: int
+
+fn main() => int:
+    let xs: [int; 1] = [1]
+    for x in xs:
+        let p: Point = Point { x: x }
+        if p.x > 0:
+            let n: int = p.x
+        rm p
+    rm xs
+    return 0
+
+"#;
+    assert_compiles(source).unwrap();
 }
 
 //=============================================================================
@@ -817,22 +949,79 @@ fn main() => int:
     assert_compiles(source).unwrap();
 }
 
-// TODO: Fix this test - compiler doesn't support array types as function parameters
-// #[test]
-// fn test_early_return_in_loop() {
-//     let source = r#"
-// fn find_value(arr: [int; 5], target: int) => int:
-//     for i in range(0, 5):
-//         if arr[i] == target:
-//             return i
-//     return -1
-//
-// fn main() => int:
-//     let arr: [int; 5] = [1, 2, 3, 4, 5]
-//     let index: int = find_value(arr, 3)
-//     rm arr, index
-//     return 0
-//
-// "#;
-//     assert_compiles(source).unwrap();
-// }
+#[test]
+fn test_early_return_in_loop() {
+    let source = r#"
+fn find_value(arr: [int; 5], target: int) => int:
+    for i in range(0, 5):
+        if arr[i] == target:
+            return i
+    return -1
+
+fn main() => int:
+    let arr: [int; 5] = [1, 2, 3, 4, 5]
+    let index: int = find_value(arr, 3)
+    rm arr, index
+    return 0
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+//=============================================================================
+// Short-circuit && / || (right-hand call must not run when skipped)
+//=============================================================================
+
+#[test]
+fn test_and_short_circuit_does_not_call_right() {
+    let source = r#"
+use exit in libc of c
+
+fn boom() => bool:
+    exit(99)
+    return true
+
+fn main() => int:
+    let x: bool = false && boom()
+    rm x
+    return 0
+
+"#;
+    assert_exit_code(source, 0).unwrap();
+}
+
+#[test]
+fn test_or_short_circuit_does_not_call_right() {
+    let source = r#"
+use exit in libc of c
+
+fn boom() => bool:
+    exit(99)
+    return false
+
+fn main() => int:
+    let x: bool = true || boom()
+    rm x
+    return 0
+
+"#;
+    assert_exit_code(source, 0).unwrap();
+}
+
+#[test]
+fn test_bitwise_and_still_evaluates_right() {
+    let source = r#"
+use exit in libc of c
+
+fn boom() => int:
+    exit(99)
+    return 1
+
+fn main() => int:
+    let x: int = 0 & boom()
+    rm x
+    return 0
+
+"#;
+    assert_exit_code(source, 99).unwrap();
+}

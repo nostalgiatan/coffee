@@ -22,8 +22,6 @@ pub enum Severity {
     Warning,
     /// Hint - suggestion for improvement
     Hint,
-    /// Note - additional information
-    Note,
 }
 
 impl Severity {
@@ -33,7 +31,6 @@ impl Severity {
             Severity::Error => "\x1b[31m",    // Red
             Severity::Warning => "\x1b[33m",  // Yellow
             Severity::Hint => "\x1b[36m",    // Cyan
-            Severity::Note => "\x1b[90m",    // Gray
         }
     }
 
@@ -43,7 +40,6 @@ impl Severity {
             Severity::Error => "\x1b[1;31m",  // Bold Red
             Severity::Warning => "\x1b[1;33m", // Bold Yellow
             Severity::Hint => "\x1b[1;36m",   // Bold Cyan
-            Severity::Note => "\x1b[1;90m",   // Bold Gray
         }
     }
 
@@ -59,7 +55,6 @@ impl fmt::Display for Severity {
             Severity::Error => write!(f, "error"),
             Severity::Warning => write!(f, "warning"),
             Severity::Hint => write!(f, "hint"),
-            Severity::Note => write!(f, "note"),
         }
     }
 }
@@ -131,20 +126,13 @@ impl SourceLocation {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ErrorKind {
     // Parse Errors (E001-E099)
-    #[allow(dead_code)]
     InvalidSyntax { context: String },
-    #[allow(dead_code)]
     UnexpectedToken { token: String, expected: Vec<String> },
-    #[allow(dead_code)]
     IncompleteInput { expected: String },
 
     // Type Errors (E100-E199)
-    #[allow(dead_code)]
     TypeMismatch { expected: String, found: String },
-    #[allow(dead_code)]
     UnknownType { name: String },
-    #[allow(dead_code)]
-    IncompatibleTypes { ty1: String, ty2: String },
     /// Wrong number of call/constructor arguments
     ArityMismatch { expected: usize, found: usize },
     /// Operator not defined for these operand types
@@ -167,51 +155,39 @@ pub enum ErrorKind {
     NonExhaustiveMatch { ty: String },
 
     // Symbol Errors (E200-E299)
-    #[allow(dead_code)]
     UndefinedSymbol { name: String, symbol_type: SymbolType },
-    #[allow(dead_code)]
     DuplicateDefinition { name: String, previous: SourceLocation },
-    #[allow(dead_code)]
     InvalidSymbolAccess { name: String, reason: String },
 
     // Memory Errors (E300-E399)
-    #[allow(dead_code)]
     UseAfterMove { name: String },
-    #[allow(dead_code)]
     UseAfterDrop { name: String },
-    #[allow(dead_code)]
     InvalidMemoryOperation { operation: String, reason: String },
-    #[allow(dead_code)]
     BorrowViolation { variable: String, reason: String },
 
     // Lifetime Errors (E400-E499)
-    #[allow(dead_code)]
     LifetimeError { variable: String, reason: String },
-    #[allow(dead_code)]
     BorrowConflict { variable: String },
 
     // Import Errors (E500-E599)
-    #[allow(dead_code)]
     ModuleNotFound { module: String },
-    #[allow(dead_code)]
     CircularImport { path: Vec<String> },
-    #[allow(dead_code)]
     InvalidImport { import: String, reason: String },
+    CfcNotFound { library: String },
+    CHeaderNotFound { header: String, searched: String },
+    CLibraryNotInstalled { name: String, searched: String },
+    CDepCycle { path: Vec<String> },
 
     // Constraint Errors (E600-E699)
-    #[allow(dead_code)]
     ConstraintViolation { constraint: String, reason: String },
 
     // Code Generation Errors (E700-E799)
-    #[allow(dead_code)]
     CodeGeneration { stage: String, details: String },
 
     // Verification Errors (E800-E899)
-    #[allow(dead_code)]
     Verification { phase: String, details: String },
 
     // Link Errors (E900-E999)
-    #[allow(dead_code)]
     LinkError { details: String },
 }
 
@@ -220,12 +196,7 @@ pub enum ErrorKind {
 pub enum SymbolType {
     Variable,
     Function,
-    Type,
     Module,
-    Lifetime,
-    Constant,
-    Method,
-    Field,
 }
 
 impl fmt::Display for SymbolType {
@@ -233,12 +204,7 @@ impl fmt::Display for SymbolType {
         match self {
             SymbolType::Variable => write!(f, "variable"),
             SymbolType::Function => write!(f, "function"),
-            SymbolType::Type => write!(f, "type"),
             SymbolType::Module => write!(f, "module"),
-            SymbolType::Lifetime => write!(f, "lifetime"),
-            SymbolType::Constant => write!(f, "constant"),
-            SymbolType::Method => write!(f, "method"),
-            SymbolType::Field => write!(f, "field"),
         }
     }
 }
@@ -252,7 +218,6 @@ impl ErrorKind {
             ErrorKind::IncompleteInput { .. } => "E003",
             ErrorKind::TypeMismatch { .. } => "E100",
             ErrorKind::UnknownType { .. } => "E101",
-            ErrorKind::IncompatibleTypes { .. } => "E102",
             ErrorKind::ArityMismatch { .. } => "E103",
             ErrorKind::InvalidOperation { .. } => "E104",
             ErrorKind::NotCallable { .. } => "E105",
@@ -275,6 +240,10 @@ impl ErrorKind {
             ErrorKind::ModuleNotFound { .. } => "E500",
             ErrorKind::CircularImport { .. } => "E501",
             ErrorKind::InvalidImport { .. } => "E502",
+            ErrorKind::CfcNotFound { .. } => "E503",
+            ErrorKind::CHeaderNotFound { .. } => "E504",
+            ErrorKind::CLibraryNotInstalled { .. } => "E505",
+            ErrorKind::CDepCycle { .. } => "E506",
             ErrorKind::ConstraintViolation { .. } => "E600",
             ErrorKind::CodeGeneration { .. } => "E700",
             ErrorKind::Verification { .. } => "E800",
@@ -291,7 +260,6 @@ impl ErrorKind {
 
             ErrorKind::TypeMismatch { .. } |
             ErrorKind::UnknownType { .. } |
-            ErrorKind::IncompatibleTypes { .. } |
             ErrorKind::ArityMismatch { .. } |
             ErrorKind::InvalidOperation { .. } |
             ErrorKind::NotCallable { .. } |
@@ -317,7 +285,12 @@ impl ErrorKind {
 
             ErrorKind::ModuleNotFound { .. } |
             ErrorKind::CircularImport { .. } |
-            ErrorKind::InvalidImport { .. } => "import",
+            ErrorKind::InvalidImport { .. } |
+            ErrorKind::CfcNotFound { .. } |
+            ErrorKind::CHeaderNotFound { .. } |
+            ErrorKind::CDepCycle { .. } => "import",
+
+            ErrorKind::CLibraryNotInstalled { .. } => "link",
 
             ErrorKind::ConstraintViolation { .. } => "constraint",
 
@@ -350,9 +323,6 @@ impl ErrorKind {
             }
             ErrorKind::UnknownType { name } => {
                 format!("Unknown type '{}'", name)
-            }
-            ErrorKind::IncompatibleTypes { ty1, ty2 } => {
-                format!("Incompatible types '{}' and '{}'", ty1, ty2)
             }
             ErrorKind::ArityMismatch { expected, found } => {
                 format!("Wrong number of arguments: expected {}, found {}", expected, found)
@@ -392,6 +362,28 @@ impl ErrorKind {
             }
             ErrorKind::LinkError { details } => {
                 format!("Link error: {}", details)
+            }
+            ErrorKind::CfcNotFound { library } => {
+                format!(
+                    ".cfc not found for library '{library}'. Searched `.`, `lib/`, and `target/cfc`. \
+                     Hint: generate one with `coffee -c <header.h> -o lib{library}.cfc`, \
+                     or declare `[dependencies.c_libraries.{library}]` with `headers = [...]`."
+                )
+            }
+            ErrorKind::CHeaderNotFound { header, searched } => {
+                format!(
+                    "cannot open header '{header}'; searched: {searched}. \
+                     Hint: pass `-I` / set include_paths, or install the C library that provides this header."
+                )
+            }
+            ErrorKind::CLibraryNotInstalled { name, searched } => {
+                format!(
+                    "cannot find lib{name}.so or lib{name}.a; searched: {searched}. \
+                     Hint: install the package that provides lib{name}, or set PREFIX so the linker can find it."
+                )
+            }
+            ErrorKind::CDepCycle { path } => {
+                format!("C library dependency cycle: {}", path.join(" -> "))
             }
             _ => format!("{:?}", self)
         }
@@ -724,7 +716,6 @@ impl Suggestion {
 #[derive(Debug, Clone)]
 pub struct RelatedDiagnostic {
     /// Relation type
-    #[allow(dead_code)]
     pub relation: RelationType,
     /// Location
     pub location: SourceLocation,
@@ -746,8 +737,7 @@ impl RelatedDiagnostic {
     fn format(&self) -> String {
         let gray = "\x1b[90m";
         let reset = "\x1b[0m";
-        let prefix = "caused by";
-        format!("{}{}{} {}: {}\n", gray, prefix, reset, self.location.format(), self.message)
+        format!("{}{}{} {}: {}\n", gray, self.relation, reset, self.location.format(), self.message)
     }
 }
 
@@ -755,6 +745,14 @@ impl RelatedDiagnostic {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelationType {
     CausedBy,
+}
+
+impl fmt::Display for RelationType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RelationType::CausedBy => write!(f, "caused by"),
+        }
+    }
 }
 
 //=============================================================================
@@ -766,25 +764,6 @@ pub enum RelationType {
 pub struct DiagnosticEmitter {
     /// Collected diagnostics
     diagnostics: Arc<RwLock<Vec<Diagnostic>>>,
-    /// Configuration
-    #[allow(dead_code)]
-    config: EmitterConfig,
-}
-
-/// Configuration for diagnostic emitter
-#[derive(Debug, Clone)]
-pub struct EmitterConfig {
-    /// Show colors in output
-    #[allow(dead_code)]
-    pub show_colors: bool,
-}
-
-impl Default for EmitterConfig {
-    fn default() -> Self {
-        EmitterConfig {
-            show_colors: true,
-        }
-    }
 }
 
 impl DiagnosticEmitter {
@@ -792,7 +771,6 @@ impl DiagnosticEmitter {
     pub fn new() -> Self {
         DiagnosticEmitter {
             diagnostics: Arc::new(RwLock::new(Vec::new())),
-            config: EmitterConfig::default(),
         }
     }
 
@@ -832,7 +810,10 @@ impl Default for DiagnosticEmitter {
 
 impl From<types::TypeSystemError> for Diagnostic {
     fn from(error: types::TypeSystemError) -> Self {
-        match error {
+        let message = error.to_string();
+        let similar_names = error.similar_names();
+        let extra_suggestions = error.diagnostic_suggestions();
+        let mut diagnostic = match error {
             types::TypeSystemError::TypeMismatch { expected, found, .. } => {
                 Diagnostic::new(Severity::Error, ErrorKind::TypeMismatch {
                     expected: format!("{:?}", expected),
@@ -998,6 +979,13 @@ impl From<types::TypeSystemError> for Diagnostic {
                 }, format!("field access error: '{}' is not visible", name))
             }
 
+            types::TypeSystemError::Internal { reason } => {
+                Diagnostic::new(Severity::Error, ErrorKind::CodeGeneration {
+                    stage: "type system".to_string(),
+                    details: reason.clone(),
+                }, format!("internal type-system error: {}", reason))
+            }
+
             types::TypeSystemError::ParseError { type_str, reason } => {
                 if type_str == "break" || type_str == "continue" {
                     Diagnostic::new(
@@ -1055,7 +1043,26 @@ impl From<types::TypeSystemError> for Diagnostic {
                 };
                 Diagnostic::new(Severity::Error, kind, format!("ownership error: {}", reason))
             }
+
+            types::TypeSystemError::BorrowViolation { variable, reason, .. } => {
+                Diagnostic::new(Severity::Error, ErrorKind::BorrowViolation {
+                    variable: variable.clone(),
+                    reason: reason.clone(),
+                }, reason.clone())
+            }
+
+            types::TypeSystemError::BorrowConflict { variable, reason, .. } => {
+                Diagnostic::new(Severity::Error, ErrorKind::BorrowConflict {
+                    variable: variable.clone(),
+                }, reason.clone())
+            }
+        };
+        diagnostic.message = message;
+        diagnostic.similar_names = similar_names;
+        for suggestion in extra_suggestions {
+            diagnostic = diagnostic.with_suggestion(Suggestion::new(suggestion));
         }
+        diagnostic
     }
 }
 
@@ -1125,9 +1132,6 @@ impl From<crate::parser::ParseError> for Diagnostic {
                     context: format!("{} (expected {})", context.trim(), expected),
                 }
             }
-            ParseError::InvalidTypeSyntax { type_str, reason, .. } => ErrorKind::InvalidSyntax {
-                context: format!("type '{}': {}", type_str, reason),
-            },
         };
 
         let mut diagnostic = Diagnostic::new(Severity::Error, kind, error.to_message());
@@ -1209,6 +1213,7 @@ mod type_error_kind_tests {
             type_name: "Point".into(),
             method_name: "nope".into(),
             span: Span::new(0, 1),
+            similar: Vec::new(),
         };
         assert_eq!(code(err), "E107");
     }
@@ -1219,6 +1224,7 @@ mod type_error_kind_tests {
             enum_name: "Color".into(),
             variant_name: "Purple".into(),
             span: Span::new(0, 1),
+            similar: Vec::new(),
         };
         assert_eq!(code(err), "E108");
     }
@@ -1226,10 +1232,44 @@ mod type_error_kind_tests {
     #[test]
     fn invalid_type_parse_is_e110() {
         let err = TypeSystemError::ParseError {
-            type_str: "member access".into(),
-            reason: "not a class".into(),
+            type_str: "int[".into(),
+            reason: "unclosed bracket".into(),
         };
-        assert_eq!(code(err), "E110");
+        assert_eq!(code(err.clone()), "E110");
+        let text = err.to_string();
+        assert!(text.contains("failed to parse type"));
+        assert!(text.contains("type syntax is invalid"));
+    }
+
+    #[test]
+    fn internal_is_e700_not_type_syntax() {
+        let err = TypeSystemError::internal("type registry lock poisoned");
+        assert_eq!(code(err.clone()), "E700");
+        let text = err.to_string();
+        assert!(text.contains("internal type-system error"));
+        assert!(!text.contains("failed to parse type"));
+        assert!(!text.contains("type syntax is invalid"));
+    }
+
+    #[test]
+    fn not_a_class_is_e104() {
+        let err = TypeSystemError::invalid_operation(
+            "member access",
+            Type::NamedType { name: "Color".into() },
+            Type::unit(),
+            Span::new(0, 1),
+        );
+        assert_eq!(code(err), "E104");
+    }
+
+    #[test]
+    fn borrow_non_place_is_e303() {
+        let err = TypeSystemError::BorrowViolation {
+            variable: String::new(),
+            reason: "can only borrow a local variable".into(),
+            span: Span::new(0, 1),
+        };
+        assert_eq!(code(err), "E303");
     }
 
     #[test]
@@ -1258,5 +1298,98 @@ mod type_error_kind_tests {
             span: Span::new(0, 1),
         };
         assert_eq!(code(err), "E112");
+    }
+}
+
+#[cfg(test)]
+mod parse_error_diagnostic_tests {
+    use super::*;
+    use crate::parser::ParseError;
+
+    #[test]
+    fn parse_error_suggestions_appear_on_diagnostic() {
+        let err = ParseError::detect_error(1, "import math");
+        let hints = err.suggestions();
+        assert!(!hints.is_empty());
+        let diag = Diagnostic::from(err);
+        assert_eq!(diag.suggestions.len(), hints.len());
+        let rendered = diag.format_plain();
+        assert!(rendered.contains("use"), "{rendered}");
+        assert!(hints.iter().any(|h| rendered.contains(h)), "{rendered}");
+    }
+
+    #[test]
+    fn try_keyword_diagnostic_mentions_raise() {
+        let err = ParseError::detect_error(1, "try:");
+        let rendered = Diagnostic::from(err).format_plain();
+        assert!(rendered.contains("raise"), "{rendered}");
+    }
+}
+
+#[cfg(test)]
+mod c_error_kind_tests {
+    use super::*;
+
+    fn diag(kind: ErrorKind) -> Diagnostic {
+        let message = kind.description();
+        Diagnostic::new(Severity::Error, kind, message)
+    }
+
+    #[test]
+    fn cfc_not_found_is_e503_import_with_hint() {
+        let kind = ErrorKind::CfcNotFound {
+            library: "ssl".into(),
+        };
+        assert_eq!(kind.error_code(), "E503");
+        assert_eq!(kind.category(), "import");
+        let rendered = diag(kind).format_plain();
+        assert!(
+            rendered.contains("hint")
+                || rendered.contains("help")
+                || rendered.contains("coffee -c"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("coffee -c"), "{rendered}");
+        assert!(rendered.contains("ssl"), "{rendered}");
+    }
+
+    #[test]
+    fn c_header_not_found_is_e504_and_lists_searched() {
+        let searched = "., /usr/include, /usr/local/include";
+        let kind = ErrorKind::CHeaderNotFound {
+            header: "openssl/ssl.h".into(),
+            searched: searched.into(),
+        };
+        assert_eq!(kind.error_code(), "E504");
+        assert_eq!(kind.category(), "import");
+        let rendered = diag(kind).format_plain();
+        assert!(rendered.contains(searched), "{rendered}");
+        assert!(rendered.contains("openssl/ssl.h"), "{rendered}");
+    }
+
+    #[test]
+    fn c_library_not_installed_is_e505_link_and_lists_searched() {
+        let searched = "., ./lib, /usr/lib";
+        let kind = ErrorKind::CLibraryNotInstalled {
+            name: "ssl".into(),
+            searched: searched.into(),
+        };
+        assert_eq!(kind.error_code(), "E505");
+        assert_eq!(kind.category(), "link");
+        let rendered = diag(kind).format_plain();
+        assert!(rendered.contains(searched), "{rendered}");
+        assert!(rendered.contains("libssl.so") || rendered.contains("libssl"), "{rendered}");
+    }
+
+    #[test]
+    fn c_dep_cycle_is_e506_import() {
+        let kind = ErrorKind::CDepCycle {
+            path: vec!["a".into(), "b".into(), "a".into()],
+        };
+        assert_eq!(kind.error_code(), "E506");
+        assert_eq!(kind.category(), "import");
+        let desc = kind.description();
+        assert!(desc.contains("a -> b -> a"), "{desc}");
+        assert!(!desc.contains("CDepCycle"), "{desc}");
     }
 }

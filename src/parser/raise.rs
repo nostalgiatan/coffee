@@ -19,12 +19,16 @@ pub struct RaiseStmt {
 /// Parse raise statement
 /// `raise Error(...)` or `raise Error { field: value, ... }` (possibly multiline).
 pub fn parse_raise(input: &str) -> IResult<&str, RaiseStmt> {
+    parse_raise_at(input, 0)
+}
+
+pub fn parse_raise_at(input: &str, base: usize) -> IResult<&str, RaiseStmt> {
+    let src = input;
     let (input, _) = tag("raise")(input)?;
     let (input, _) = space1(input)?;
 
     let error_expr_src = input.trim();
-    let error_expr = crate::parser::expr::parse_expression(error_expr_src)
-        .unwrap_or_else(|_| Expression::Literal(error_expr_src.to_string()));
+    let error_expr = crate::parser::multiline::parse_expr_at(src, base, error_expr_src)?;
 
     Ok((
         "",
@@ -60,5 +64,17 @@ mod tests {
         let (remaining, stmt) = parse_raise(input).unwrap();
         assert_eq!(stmt.error_expr.to_string(), "DivErr(0)");
         assert_eq!(remaining, "");
+    }
+
+    #[test]
+    fn test_parse_raise_invalid_expr_is_error_not_literal() {
+        let input = "raise @@@\n";
+        match parse_raise(input) {
+            Err(_) => {}
+            Ok((_, stmt)) => panic!(
+                "invalid raise remainder must not parse; got {:?}",
+                stmt.error_expr
+            ),
+        }
     }
 }

@@ -5,10 +5,12 @@
 Coffee is a modern programming language compiler written in Rust, using LLVM as its backend. It is an experimental statically-typed language with Python-like indentation syntax, supporting both functional and object-oriented programming paradigms, along with perfect bidirectional interoperability with C.
 
 - **Project Name**: Coffee
-- **Version**: 0.2.1
+- **Version**: 0.3.9 (**not 1.0**; ten patches per minor. 1.0 needs an honest product bar — see the root [README](../../README.md).)
 - **Development Environment**: Rust 2024 edition (Termux on Android)
 - **Compiler Backend**: LLVM (via inkwell crate)
 - **Parser**: Custom parser using nom library
+
+See the repository [README](../../README.md) for build prerequisites and the live pipeline (MIR-required bodies, `stmt_spans`, `NestedDecl`).
 
 ## Documentation Structure
 
@@ -22,22 +24,24 @@ This documentation provides comprehensive information about the Coffee compiler 
 4. **[Backend Module](backend.md)** - LLVM code generation
 5. **[C Integration Module](c_integration.md)** - C language FFI support
 6. **[Compiler Frontend Module](compiler.md)** - Project compilation orchestration
-7. **[Runtime Module](runtime.md)** - Standard runtime library
+7. **[Runtime](runtime.md)** — no runtime crate; `raise` is libc / `#listener`
 
 ## Key Features
 
 ### Language Features
-- Static type system
+- Static type system (`int(N)+` / `int(N)-` / `float(N)`: **N is bytes**, e.g. `int(4)+` is C `int`)
 - Python-like indentation syntax
 - Functional programming support
 - Object-oriented programming (classes and inheritance)
 - Pattern matching
-- Advanced memory management (mv/clone/copy/rm/alloc/free/load/store/clean operations)
+- Advanced memory management (value types auto-end at scope; resources use `mv`/`clone`/`rm`; last-use of a simple variable is an implicit move). Intra-procedural `&`/`&mut` on variables, fields `p.x`, and indexes `a[i]`. Class `clone` is deep for nested `str` / class / resource array / tuple fields; `object`, refs, and slice fields stay shallow. `[T; N]` resource arrays and tuple resource fields drop with the container; class `[T]` slice fields drop **elements** (fat `{ptr,len}`) and do not `free` the buffer; `object` fields do not free the pointee. **`buf`** is an owned malloc pointer (`free` on drop); `clone buf` is a type error.
+- Generics v1: `class List<T>:` / `fn id<T>(x: T) => T`; uses become `List<int>` → `List__int` (methods `List__int_push`). No trait bounds (`T: Trait`) and no generic std `List` (std ships **`IntBuf`**).
 - Perfect bidirectional C interoperability
-- Project management (coffee.toml)
-- Exception handling (raise statements)
+- Project management (`coffee.toml`) plus Zig-style packages (`path` XOR `url`+`hash`, `coffee fetch`; no registry). Official **std** is embedded in the CLI (`coffee std install`); compile prepends it unless `[dependencies.packages.std]` is set. Typical programs `use print in std` (or `use * in std`). Keep `of c` inside `library/std/src/sys.cf`, not in user files. `IntBuf` lives in `mem` (`new` / `push` / `get` / `length`).
+- `raise` aborts (fprintf + exit) unless the function has `#name`; no `try`/`catch`
 - Rich expression support
-- Array indexing
+- Array indexing (`[T; N]`); Coffee `[T]` fat pointer on `fn` params/returns (`c fn` still rejects slices)
+- `coffee run` / `coffee test` (also `--bin` / `--jit`)
 
 ### Compilation Features
 - LLVM IR generation
@@ -97,6 +101,17 @@ coffee --jit input.cf
 # Initialize new project
 coffee init
 
+# Typical user program: `use print in std` (C FFI stays in library/std/src/sys.cf)
+
+# Install the bundled standard library (needed once per machine if lookup cannot find library/std)
+coffee std install
+
+# Fetch url+hash package deps into the cache
+coffee fetch
+
+# Download a .tar.gz, print tree hash, optionally write coffee.toml
+coffee fetch <url> --save
+
 # Generate .cfc file from C header
 coffee --gen-cfc input.h
 
@@ -106,6 +121,18 @@ coffee --static input.cf
 # Specify target triple for cross-compilation
 coffee --target x86_64-unknown-linux-gnu input.cf
 ```
+
+Typical program (after `coffee std install` if needed):
+
+```coffee
+use print in std
+
+fn main() => int:
+    print("Hello, Coffee!\n")
+    return 0
+```
+
+`of c` stays in `library/std/src/sys.cf`. Run with `coffee run` (project or file) or compile with `--bin` / `--jit`.
 
 ### Project Structure
 
@@ -143,12 +170,13 @@ authors = ["Author Name <email@example.com>"]
 description = "Project description"
 
 [dependencies]
-# Standard library dependency
-std = "0.2.0"
-
-# Coffee package dependencies
-[dependencies.packages]
-# coffee_package = "0.1.0"
+# std is bundled; `coffee std install` if missing. Do not put a machine-local path= to std.
+# Coffee packages: path XOR (url + SHA-256 of unpacked tree). Not foo = "1.0".
+# [dependencies.packages.foo]
+# url = "https://example.com/foo.tar.gz"
+# hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+# [dependencies.packages.local_bar]
+# path = "../bar"
 
 # C library dependencies
 [dependencies.c_libraries.libm]

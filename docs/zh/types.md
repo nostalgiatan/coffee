@@ -8,52 +8,66 @@
 
 ```
 src/types/
-├── mod.rs         # 主类型系统模块
-├── definition.rs  # 类型定义
-├── registry.rs    # 类型注册表和管理
-├── checker.rs     # 类型检查器
-├── inference.rs   # 类型推断引擎
-└── errors.rs      # 类型系统错误
+├── mod.rs           # 类型系统模块
+├── definition/      # 类型定义（不是 definition.rs）
+│   ├── mod.rs
+│   └── tests.rs
+├── registry.rs      # 类型注册表
+├── checker/         # TypeChecker（不是 checker.rs）
+│   ├── mod.rs
+│   ├── values.rs
+│   ├── stmt.rs
+│   ├── expr/        # 表达式检查（不是单独的 expr.rs）
+│   ├── call.rs
+│   ├── match_check.rs
+│   ├── memory.rs
+│   ├── import_main.rs
+│   ├── compat.rs
+│   └── tests.rs
+├── borrow.rs        # 过程内借用检查
+├── last_use.rs      # last-use 隐式搬走
+├── mono.rs          # 泛型单态化（`List<int>` → `List__int`）
+└── errors.rs        # 类型系统错误
 ```
 
 ## 核心组件
 
-### 1. 类型定义（`definition.rs`）
+### 1. 类型定义（`definition/`）
 
 定义 Coffee 语言中的所有类型。
+
+表面语法 `int(N)+` / `int(N)-` / `float(N)` 的 **N 是字节数**（`int(4)+` 对应 C `int`）。枚举存的是 **位数**：`bits = 8 * N`。
 
 **内置类型：**
 ```rust
 pub enum Type {
-    // 基本类型
-    Int { signed: bool, bytes: usize },
-    Float { bytes: usize },
+    Int { bits: u8, signed: bool },
+    Float { bits: u8 },
     Bool,
     String,
     Void,
-
-    // 复合类型
-    Array(Box<Type>, Option<usize>),      // [T; N] 或 [T]
-    Slice(Box<Type>),                      // [T]
-    Tuple(Vec<Type>),                      // (T1, T2, ...)
-    Function(Vec<Type>, Box<Type>),        // fn(params) -> return
-    Reference(Box<Type>, bool),            // &T 或 &mut T
-
-    // 用户定义类型
-    Struct(String, Vec<(String, Type)>),
-    Enum(String, Vec<EnumVariant>),
-    Class(String),
-
-    // 类型变量（用于泛型）
-    TypeVar(String),
+    Unit,
+    Array { elem: Box<Type>, size: usize },
+    Slice(Box<Type>),
+    Tuple(Vec<Type>),
+    Function { params: Vec<Type>, return_type: Box<Type> },
+    Ref { elem: Box<Type>, mutable: bool },
+    NamedType { name: String },
+    App { name: String, args: Vec<Type> }, // `List<int>`；单态化为 `List__int`
+    Variadic,
 }
 ```
 
 **类型属性：**
 - 大小和对齐信息
-- 方法分发能力
-- 特质实现
+- 在单态化后的具体名字上做方法分发
 - 子类型关系
+
+**泛型 v1（`mono.rs`）：** `Type::App` 做 token 替换。`List<int>` 变成具体类 `List__int`；方法是 `List__int_push`。语法：`class List<T>:` / `fn id<T>(x: T) => T`。嵌套 `List<List<int>>` 是一个类型。没有泛型 std `List`（std 提供 `IntBuf`），也没有 `T: Trait`。
+
+**`buf`：** 内建资源类型（`NamedType "buf"`）：拥有的 malloc 指针；drop 会 `free`；`clone buf` 是类型错误。`object` 是不释放的 C 句柄。
+
+**切片：** Coffee 函数上的 `[T]` 是胖指针。`c fn` 仍拒绝切片。Last-use 隐式搬走：`src/types/last_use.rs`。
 
 ### 2. 类型注册表（`registry.rs`）
 
@@ -79,21 +93,23 @@ impl TypeRegistry {
 ```
 
 **内置类型：**
-- `int(8)+` (i64), `int(4)+` (i32), `int(2)+` (i16), `int(1)+` (i8)
+- `int(8)+` (i64，8 字节), `int(4)+` (i32，4 字节), `int(2)+` (i16), `int(1)+` (i8)
 - `int(8)-` (u64), `int(4)-` (u32), `int(2)-` (u16), `int(1)-` (u8)
 - `float(8)` (f64), `float(4)` (f32)
 - `bool`, `string`, `void`
+- 内建类 `Error` `{ code: int, note: str, e: object }`（源码不能再声明 `class Error`）
 
-### 3. 类型检查器（`checker.rs`）
+**异常（`raise`）：** 仅当类型是 `Error`，或继承链到达 `Error` 的类（`class C of Error`，及其后代）时允许。异常类可以有额外字段和方法（不要重声明 `code` / `note` / `e`）。名为 `*Error` 但没有 `of Error` 的类是普通类，不能 `raise`。`#name` 监听器参数仍是 `err: Error`，只依赖该前缀。
+
+### 3. 类型检查器（`checker/`）
 
 验证整个程序的类型正确性。
 
 **检查模式：**
 ```rust
 pub enum CheckingMode {
-    Strict,        // 需要显式类型注解
-    Inference,     // 尽可能推断类型
-    Comprehensive, // 带推断的完整类型检查
+    Simple,
+    Comprehensive, // 所有权、内存操作、借用检查
 }
 ```
 
@@ -118,35 +134,21 @@ impl TypeChecker {
 
 **类型兼容性规则：**
 - 大多数类型需要精确匹配
-- 数值类型提升（int 到 float，小 int 到大 int）
-- 引用兼容性
-- 子类型多态
+- 整数/浮点**字面量**可在范围内落入更窄的注解宽度
+- `object` C 句柄与指针宽度整数的规则见类型检查器
+- `&T` / `&mut T` 由借用检查器约束（共享 XOR 可变）
 
-### 4. 类型推断（`inference.rs`）
+### 3b. 借用检查（`borrow.rs`）
 
-为没有显式注解的表达式推断类型。
+过程内 loan，地点为**变量、字段 `p.x`、下标 `a[i]`**。由 `TypeChecker` 接入（`&x`、`&mut x`、`*r`、move/赋值/`rm`、返回 `&local`）。若被调函数返回 `&T`，实参 `&`/`&mut` 的 loan 可以活过该语句（同模块；无 `'a`）。见 `docs/superpowers/specs/2026-09-05-borrow-checker.md`。
 
-**推断算法（Hindley-Milner 变体）：**
-1. 为未注解的表达式生成类型变量
-2. 从表达式结构生成约束
-3. 统一约束以求解类型变量
-4. 用具体类型替换类型变量
+表达式类型在 `checker/` 中检查，没有单独的 `inference.rs`。
 
-**推断示例：**
-```rust
-// 推断: int
-let x = 42;
+### 3c. 泛型 v1（`mono.rs` + `Type::App`）
 
-// 推断: float
-let y = 3.14;
+检查器把 `List<int>` 当成 `Type::App { name: "List", args: [int] }`，按 token 替换实例化成具体类型名 `List__int`（`Type::mono_name`）。方法变成 `List__int_push` 这类 LLVM/符号名。`class List<T>:` / `fn id<T>(x: T) => T` 携带 `type_params`。
 
-// 推断: int（从函数签名）
-fn add(a: int, b: int) => int:
-    return a + b  // a + b 推断为 int
-
-// 推断: [int]
-let arr = [1, 2, 3];
-```
+这不是带约束的完整泛型：没有 `T: Trait`，也没有随编译器发布的标准库 `List`。
 
 ### 5. 类型系统错误（`errors.rs`）
 
@@ -232,7 +234,7 @@ let mut checker = TypeChecker::new(type_registry.clone(), CheckingMode::Comprehe
 // 检查变量声明
 let decl = VariableDecl {
     name: "x".to_string(),
-    type_: Type::Int { signed: true, bytes: 4 },
+    type_: Type::Int { bits: 32, signed: true },
     init: Some(Box::new(Expr::Literal(Literal::Int(42)))),
 };
 checker.check_variable_decl(&decl)?;
@@ -260,13 +262,12 @@ let result_type = checker.check_expression(&expr)?;
 
 ### 3. 可扩展性
 - 易于添加新类型
+- 泛型 v1：`Type::App` 单态化（无 trait bound）
 - 特质系统支持（未来）
-- 泛型类型参数（未来）
 
 ## 未来增强
 
-- 泛型类型和类型参数
-- 特质系统
+- 特质系统与 `T: Trait`；泛型 std `List`（std 现有 `IntBuf`，不是 `List<T>`）
 - 关联类型
 - 类型级编程
 - 依赖类型

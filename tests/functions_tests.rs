@@ -32,6 +32,40 @@ fn main() => int:
 }
 
 #[test]
+fn test_nested_function_in_body_compiles() {
+    let source = r#"
+fn main() => int:
+    fn helper() => int:
+        return 1
+    let result: int = helper()
+    rm result
+    return 0
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_same_nested_helper_name_in_two_functions_compiles() {
+    let source = r#"
+fn a() => int:
+    fn helper() => int:
+        return 1
+    return helper()
+
+fn b() => int:
+    fn helper() => int:
+        return 2
+    return helper()
+
+fn main() => int:
+    return a() + b()
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
 fn test_function_with_parameters() {
     let source = r#"
 fn add(a: int, b: int) => int:
@@ -405,7 +439,10 @@ fn main() => int:
 #[test]
 fn test_error_handler_function() {
     let source = r#"
-fn risky_operation() #error_handler => int:
+fn on_err(err: Error) => int:
+    return -1
+
+fn risky_operation() #on_err => int:
     return 42
 
 fn main() => int:
@@ -420,7 +457,10 @@ fn main() => int:
 #[test]
 fn test_error_handler_with_params() {
     let source = r#"
-fn divide(a: int, b: int) #error_handler => int:
+fn on_err(err: Error) => int:
+    return -1
+
+fn divide(a: int, b: int) #on_err => int:
     return 0
 
 fn main() => int:
@@ -729,4 +769,92 @@ fn main() => int:
 
 "#;
     assert_compiles(source).unwrap();
+}
+
+//=============================================================================
+// Anonymous functions (no capture)
+//=============================================================================
+
+#[test]
+fn test_anonymous_fn_assigned_and_called() {
+    let source = r#"
+fn main() => int:
+    let callback: fn(int) => int = fn(x: int) => int:
+        return x * 2
+    return callback(21)
+
+"#;
+    assert_exit_code(source, 42).unwrap();
+}
+
+#[test]
+fn test_anonymous_fn_may_call_toplevel_function() {
+    let source = r#"
+fn double(x: int) => int:
+    return x * 2
+
+fn main() => int:
+    let callback: fn(int) => int = fn(x: int) => int:
+        return double(x)
+    return callback(21)
+
+"#;
+    assert_exit_code(source, 42).unwrap();
+}
+
+#[test]
+fn test_anonymous_fn_cannot_capture_enclosing_local() {
+    let source = r#"
+fn main() => int:
+    let n: int = 1
+    let callback: fn(int) => int = fn(x: int) => int:
+        return x + n
+    return callback(1)
+
+"#;
+    assert_compile_error(source, "capture").unwrap();
+}
+
+#[test]
+fn test_anonymous_fn_cannot_capture_enclosing_param() {
+    let source = r#"
+fn apply(n: int) => int:
+    let callback: fn(int) => int = fn(x: int) => int:
+        return x + n
+    return callback(1)
+
+fn main() => int:
+    return apply(1)
+
+"#;
+    assert_compile_error(source, "capture").unwrap();
+}
+
+#[test]
+fn test_anonymous_fn_may_use_global() {
+    let source = r#"
+let n: int = 21
+
+fn main() => int:
+    let callback: fn(int) => int = fn(x: int) => int:
+        return x * n
+    return callback(2)
+
+"#;
+    assert_exit_code(source, 42).unwrap();
+}
+
+#[test]
+fn test_anonymous_fn_may_call_c() {
+    let source = r#"
+use printf in libc of c
+
+fn main() => int:
+    let callback: fn(int) => int = fn(x: int) => int:
+        printf("%d\n", x)
+        return x
+    return callback(42)
+
+"#;
+    assert_exit_code(source, 42).unwrap();
 }

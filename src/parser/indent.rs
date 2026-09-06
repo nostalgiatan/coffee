@@ -8,11 +8,10 @@ use std::collections::HashMap;
 /// Cached indent information for a line
 #[derive(Debug, Clone, Copy)]
 pub struct IndentInfo {
-    /// The line number (1-based)
+    #[allow(dead_code)] // stored in the cache; tests read these fields
     pub line_number: usize,
-    /// Leading whitespace count
     pub indent_level: usize,
-    /// Whether line uses tabs (false = uses spaces)
+    #[allow(dead_code)] // stored in the cache; tests read this field
     pub uses_tabs: bool,
 }
 
@@ -24,11 +23,6 @@ impl IndentInfo {
             indent_level,
             uses_tabs,
         }
-    }
-
-    /// Check if this indent matches another
-    pub fn matches(&self, other: &IndentInfo) -> bool {
-        self.indent_level == other.indent_level
     }
 }
 
@@ -100,44 +94,19 @@ impl IndentCache {
         info
     }
 
-    /// Get cached indent info without computing
+    #[cfg(test)]
     pub fn get_cached(&self, line_number: usize) -> Option<IndentInfo> {
         self.cache.get(&line_number).copied()
     }
 
-    /// Check if indentation has been inconsistent
+    #[cfg(test)]
     pub fn has_inconsistent_indent(&self) -> bool {
         self.has_inconsistent
     }
 
-    /// Get detected indent style (true = spaces, false = tabs)
+    #[cfg(test)]
     pub fn indent_style(&self) -> Option<bool> {
         self.indent_style
-    }
-
-    /// Get detected indent size
-    pub fn indent_size(&self) -> Option<usize> {
-        self.indent_size
-    }
-
-    /// Clear the cache
-    pub fn clear(&mut self) {
-        self.cache.clear();
-    }
-
-    /// Pre-compute indent info for all lines
-    pub fn precompute_lines<'a>(&mut self, lines: impl Iterator<Item = (usize, &'a str)>) {
-        for (line_num, line) in lines {
-            if !line.trim().is_empty() {
-                self.get_line_indent(line_num, line);
-            }
-        }
-    }
-
-    /// Batch get indent info for multiple lines
-    pub fn get_line_indents<'a>(&mut self, lines: impl Iterator<Item = (usize, &'a str)>) -> Vec<IndentInfo> {
-        lines.map(|(line_num, line)| self.get_line_indent(line_num, line))
-            .collect()
     }
 
     /// Exclusive end index of the indented block starting at `start`.
@@ -163,21 +132,6 @@ impl IndentCache {
             break;
         }
         j
-    }
-
-    /// Validate indent consistency across all cached lines
-    pub fn validate_consistency(&self) -> Result<(), Vec<String>> {
-        let mut errors = Vec::new();
-
-        if self.has_inconsistent {
-            errors.push("Mixed tabs and spaces in indentation".to_string());
-        }
-
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors)
-        }
     }
 }
 

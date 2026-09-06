@@ -8,16 +8,23 @@
 
 ```
 src/semantic/
-├── mod.rs       # 主语义分析模块
-├── analyzer.rs  # 主语义分析器
-├── scope.rs     # 作用域管理
-├── symbols.rs   # 符号表管理
-└── lifetime.rs  # 生命周期跟踪和引用验证
+├── mod.rs           # 语义分析模块
+├── analyzer/        # SemanticAnalyzer（不是 analyzer.rs）
+│   ├── mod.rs
+│   ├── decls.rs
+│   ├── expr.rs
+│   ├── memory.rs
+│   ├── const_eval.rs
+│   └── report.rs
+├── scope.rs         # 作用域管理
+├── symbols.rs       # 符号表管理
+├── lifetime.rs      # 命名生命周期参数（LifetimeSpace）
+└── c_builtins.rs    # 内置 libc/libm CFC 表
 ```
 
 ## 核心组件
 
-### 1. 语义分析器（`analyzer.rs`）
+### 1. 语义分析器（`analyzer/`）
 
 `SemanticAnalyzer` 是协调整个语义分析过程的主要组件。
 
@@ -25,7 +32,7 @@ src/semantic/
 - 管理作用域和符号表
 - 分析声明（变量、函数、类、枚举）
 - 验证符号使用
-- 检查生命周期和借用规则
+**分析职责：** 作用域、符号、导入、C 符号。借用规则在 `types::borrow` / `TypeChecker`，不在 analyzer。
 - 收集语义错误
 
 **主要方法：**
@@ -122,13 +129,12 @@ pub struct FunctionSymbol {
 
 ### 4. 生命周期分析（`lifetime.rs`）
 
-跟踪变量生命周期并验证借用规则。
+跟踪函数上的命名生命周期参数。**借用/借贷规则在 `src/types/borrow.rs`。** `LifetimeSpace` 不是证明检查器。
 
-**生命周期特性：**
-- 变量生命周期跟踪
-- 借用检查器（借用/借贷规则）
-- 移动语义验证
-- 引用安全检查
+**借用规则（类型检查器）：**
+- 不能返回指向局部变量的引用
+- 可变引用互斥
+- 允许多个不可变引用
 
 **生命周期规则：**
 - 变量存活到其作用域结束

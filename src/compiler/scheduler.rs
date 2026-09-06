@@ -111,18 +111,6 @@ impl CompilationScheduler {
         self.graph.schedule_parallel()
     }
 
-    /// Get all compilation units
-    /// 
-    /// Provides access to all compilation units managed by this scheduler.
-    /// 
-    /// # Returns
-    /// 
-    /// A reference to the HashMap containing all compilation units
-    #[allow(dead_code)]
-    pub fn units(&self) -> &HashMap<String, CompilationUnit> {
-        &self.units
-    }
-
     /// Get mutable reference to a compilation unit
     /// 
     /// Retrieves a mutable reference to a specific compilation unit by its name.
@@ -160,27 +148,8 @@ impl CompilationScheduler {
             .collect()
     }
 
-    /// Get the number of units
-    /// 
-    /// Returns the total count of compilation units managed by this scheduler.
-    /// 
-    /// # Returns
-    /// 
-    /// The number of compilation units
-    #[allow(dead_code)]
-    pub fn len(&self) -> usize {
-        self.units.len()
-    }
-
     /// Check if there are no units
-    /// 
-    /// Determines whether this scheduler manages any compilation units.
-    /// 
-    /// # Returns
-    /// 
-    /// * `true` - If there are no units
-    /// * `false` - If there are units
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.units.is_empty()
     }

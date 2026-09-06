@@ -5,10 +5,9 @@
 
 use crate::coffee_debug;
 use super::codegen::CodeGenerator;
-use crate::parser::expr::Expression;
 use crate::parser::{Statement, MemoryOp};
-use inkwell::AddressSpace;
-use inkwell::types::BasicTypeEnum;
+#[cfg(test)]
+use crate::parser::expr::Expression;
 
 impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
     /// Compile a statement
@@ -20,264 +19,131 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
 
         match stmt {
             Statement::Function(func) => {
-                self.compile_function(func)
+                if self.current_function.is_some() {
+                    self.compile_nested_function(func)
+                } else {
+                    self.ensure_coffee_function_declared(func)?;
+                    self.compile_function(func)
+                }
             }
             Statement::Main(main_entry) => self.compile_main_entry(main_entry),
             Statement::VariableDecl(var) => {
-                // Check if we're inside a function
                 if self.current_function.is_some() {
-                    // Local variable - use alloca
-                    self.compile_local_variable_decl(var)
-                } else {
-                    // Global variable
-                    self.compile_variable_decl(var)
+                    return Err(self.error(
+                        "compile_statement",
+                        "let must come from MIR, not the parser AST",
+                    ));
                 }
+                self.compile_variable_decl(var)
             }
-            Statement::Assignment(var_name, value_expr) => {
-                self.compile_dotted_or_simple_assignment(var_name, value_expr)
+            Statement::Assignment(_, _) => {
+                self.require_current_function("assignment")?;
+                Err(self.error(
+                    "compile_statement",
+                    "assignment must come from MIR, not the parser AST",
+                ))
             }
             Statement::Class(class) => {
-                // Skip class compilation here - classes are already compiled in the first pass
-                // in compile_program_with_imports to ensure struct types are available
-                Ok(())
+                // Top-level classes are compiled in the first pass of
+                // `compile_program_with_imports`. Nested classes in a function
+                // body are not in that list; compile them when already inside a fn.
+                if self.current_function.is_some() {
+                    self.compile_class(class)
+                } else {
+                    Ok(())
+                }
             }
             Statement::Enum(enum_def) => self.compile_enum(enum_def),
-            Statement::Return(ret) => self.compile_return(ret.value.as_ref()),
+            Statement::Return(_) => {
+                self.require_current_function("return")?;
+                Err(self.error(
+                    "compile_statement",
+                    "return must come from MIR, not the parser AST",
+                ))
+            }
             Statement::Import(_) => Ok(()), // Handled at frontend
+            Statement::TypeDecl(_) => Ok(()), // Registered at frontend (Task 4)
             Statement::SingleLineComment(_) | Statement::MultiLineComment(_) => Ok(()),
-            Statement::If(if_expr) => self.compile_if(if_expr),
-            Statement::While(while_loop) => self.compile_while(while_loop),
-            Statement::For(for_loop) => self.compile_for(for_loop),
-            Statement::Match(match_expr) => self.compile_match(match_expr),
-            Statement::Break(_) => self.compile_break(),
-            Statement::Continue(_) => self.compile_continue(),
-            Statement::MemoryOp(op) => self.compile_memory_op(op),
-            Statement::Raise(raise_stmt) => self.compile_raise(raise_stmt),
-            Statement::Expr(expr) => {
-                self.compile_expr(expr)?;
-                Ok(())
+            Statement::If(_) => Err(self.error(
+                "compile_statement",
+                "if must come from MIR, not the parser AST",
+            )),
+            Statement::While(_) => Err(self.error(
+                "compile_statement",
+                "while must come from MIR, not the parser AST",
+            )),
+            Statement::For(_) => Err(self.error(
+                "compile_statement",
+                "for must come from MIR, not the parser AST",
+            )),
+            Statement::Match(_) => Err(self.error(
+                "compile_statement",
+                "match must come from MIR, not the parser AST",
+            )),
+            Statement::Break(_) => {
+                self.require_current_function("break")?;
+                Err(self.error(
+                    "compile_statement",
+                    "break must come from MIR, not the parser AST",
+                ))
+            }
+            Statement::Continue(_) => {
+                self.require_current_function("continue")?;
+                Err(self.error(
+                    "compile_statement",
+                    "continue must come from MIR, not the parser AST",
+                ))
+            }
+            Statement::MemoryOp(_) => {
+                self.require_current_function("memory operation")?;
+                Err(self.error(
+                    "compile_statement",
+                    "memory operation must come from MIR, not the parser AST",
+                ))
+            }
+            Statement::Raise(_) => Err(self.error(
+                "compile_statement",
+                "raise must come from MIR, not the parser AST",
+            )),
+            Statement::Expr(_) => {
+                self.require_current_function("expression statement")?;
+                Err(self.error(
+                    "compile_statement",
+                    "expression statement must come from MIR, not the parser AST",
+                ))
             }
         }
     }
 
-    /// Assign through a dotted path. One-level `obj.field` uses the existing
-    /// `compile_assignment_from_ast` split; nested `a.b.c` walks each field.
-    fn compile_dotted_or_simple_assignment(
-        &mut self,
-        var_name: &str,
-        value_expr: &Expression,
-    ) -> Result<(), String> {
-        let parts: Vec<&str> = var_name.split('.').collect();
-        if parts.len() <= 2 || parts.iter().any(|p| p.is_empty()) {
-            return self.compile_assignment_from_ast(var_name, value_expr);
+    fn require_current_function(&self, what: &str) -> Result<(), String> {
+        if self.current_function.is_none() {
+            return Err(self.error(
+                "compile_statement",
+                format!(
+                    "{what} is not allowed at module level; executable statements belong in a function"
+                ),
+            ));
         }
-
-        let root = parts[0];
-        self.used_variables.insert(root.to_string());
-
-        let mut class_name = self.variable_types.get(root).cloned().ok_or_else(|| {
-            self.error(
-                "compile_assignment_from_ast",
-                format!("cannot get class name for variable '{}'", root),
-            )
-        })?;
-
-        let mut field_ptr = self.compile_field_access_ptr(root, parts[1]).map_err(|e| {
-            self.error(
-                "compile_assignment_from_ast",
-                format!("failed to get field pointer for '{}.{}': {}", root, parts[1], e),
-            )
-        })?;
-
-        let first_field_ty = self
-            .classes
-            .get(&class_name)
-            .and_then(|c| c.fields.iter().find(|f| f.name == parts[1]))
-            .map(|f| f.field_type.clone())
-            .ok_or_else(|| {
-                self.error(
-                    "compile_assignment_from_ast",
-                    format!("field '{}' not found on '{}'", parts[1], class_name),
-                )
-            })?;
-        class_name = first_field_ty;
-
-        for field_name in &parts[2..] {
-            let llvm_ty = self.coffee_type_to_llvm(&class_name).map_err(|e| {
-                self.error("compile_assignment_from_ast", e)
-            })?;
-            let object_ptr = if matches!(llvm_ty, BasicTypeEnum::PointerType(_)) {
-                let ptr_ty = self.backend.context.ptr_type(AddressSpace::default());
-                self.backend
-                    .builder
-                    .build_load(ptr_ty, field_ptr, "nested_obj")
-                    .map_err(|e| {
-                        self.error(
-                            "compile_assignment_from_ast",
-                            format!("failed to load nested object '{}': {}", class_name, e),
-                        )
-                    })?
-                    .into_pointer_value()
-            } else {
-                field_ptr
-            };
-
-            let struct_type = *self
-                .type_mapper
-                .struct_types
-                .get(&class_name)
-                .ok_or_else(|| {
-                    self.error(
-                        "compile_assignment_from_ast",
-                        format!("class '{}' not found in struct_types cache", class_name),
-                    )
-                })?;
-            let field_index = self.get_field_index(&struct_type, field_name)?;
-            let zero = self.backend.context.i64_type().const_int(0, false);
-            let field_index_val = self.backend.context.i32_type().const_int(field_index as u64, false);
-            field_ptr = unsafe {
-                self.backend.builder.build_in_bounds_gep(
-                    struct_type,
-                    object_ptr,
-                    &[zero, field_index_val],
-                    &format!("{}_{}_ptr", class_name, field_name),
-                )
-            }
-            .map_err(|e| {
-                self.error(
-                    "compile_assignment_from_ast",
-                    format!("failed to build field GEP for '{}.{}': {}", class_name, field_name, e),
-                )
-            })?;
-
-            class_name = self
-                .classes
-                .get(&class_name)
-                .and_then(|c| c.fields.iter().find(|f| f.name == *field_name))
-                .map(|f| f.field_type.clone())
-                .unwrap_or(class_name);
-        }
-
-        let value = self.compile_expr(value_expr).map_err(|e| {
-            self.error(
-                "compile_assignment_from_ast",
-                format!("failed to compile value expression for field '{}': {}", var_name, e),
-            )
-        })?;
-        self.backend.builder.build_store(field_ptr, value).map_err(|e| {
-            self.error(
-                "compile_assignment_from_ast",
-                format!("failed to store value to field '{}': {}", var_name, e),
-            )
-        })?;
         Ok(())
     }
 
-    /// Compile a line of function body
+    /// AST `return` is forbidden; function bodies use [`Self::compile_mir_return`].
     #[cfg(test)]
-    pub fn compile_body_line(&mut self, line: &str) -> Result<(), String> {
-        // Strip inline comments first
-        let line = self.strip_inline_comments(line);
-        let line = line.trim();
-
-        if line.is_empty() || line.starts_with("/#") {
-            return Ok(());
-        }
-
-        // Handle different statement types
-        if line == "break" {
-            self.compile_break()?;
-        } else if line == "continue" {
-            self.compile_continue()?;
-        } else if line.starts_with("return ") {
-            coffee_debug!("DEBUG: compile_body_line: return statement: {}", line);
-            let expr_str = &line[7..];
-            let tree = Expression::parse(expr_str)
-                .unwrap_or_else(|_| Expression::Literal(expr_str.to_string()));
-            let value = self.compile_expr(&tree)
-                .map_err(|e| self.error("return_statement", format!("failed to compile return expression '{}': {}", expr_str, e)))?;
-            self.backend.builder.build_return(Some(&value))
-                .map_err(|e| self.error("return_statement", format!("failed to build return instruction: {}", e)))?;
-        } else if line == "return" {
-            coffee_debug!("DEBUG: compile_body_line: return statement (void)");
-            self.backend.builder.build_return(None)
-                .map_err(|e| self.error("return_statement", format!("failed to build void return: {}", e)))?;
-        } else if line.starts_with("let ") {
-            coffee_debug!("DEBUG: compile_body_line: let statement: {}", line);
-            self.compile_let_statement(line)?;
-        } else if line.contains(" = ") && !line.starts_with("if ") && !line.starts_with("for ") && !line.starts_with("while ") {
-            self.compile_assignment(line)?;
-        } else if line.contains("(") {
-            // Function call (discard result)
-            let tree = Expression::parse(line)
-                .unwrap_or_else(|_| Expression::Literal(line.to_string()));
-            self.compile_expr(&tree)?;
-        } else {
-            // Note: This is not an error - it might be a comment or empty line after trimming
-            // Control flow statements should be in the AST, not in string bodies
-        }
-
-        Ok(())
-    }
-
-    /// Compile return statement
-    fn compile_return(&mut self, expr: Option<&Expression>) -> Result<(), String> {
-        if let Some(expr) = expr {
-            if let Expression::Variable(var_name) = expr {
-                self.memory_ctx.record_use(var_name);
-                if let Some(info) = self.memory_ctx.lifetimes.get_mut(var_name) {
-                    info.properly_cleaned = true;
-                }
-            }
-
-            let value = self.compile_expr(expr)?;
-
-            // Convert return value to match function return type
-            if let Some(current_fn) = self.current_function {
-                let return_type = current_fn.get_type().get_return_type();
-                if let Some(ret_type) = return_type {
-                    let value_type = value.get_type();
-
-                    // Check if types are compatible before conversion
-                    if !self.are_types_compatible(value_type, ret_type) {
-                        let value_type_str = self.type_to_string(value_type);
-                        let ret_type_str = self.type_to_string(ret_type);
-                        let fn_name = current_fn.get_name().to_str().unwrap_or("unknown");
-
-                        return Err(self.error("return_statement",
-                            format!("type mismatch in return statement of function '{}'\n  = note: expected return type '{}', found type '{}'\n  = note: these types are incompatible and cannot be implicitly converted\n  = help: ensure the return expression matches the function's declared return type",
-                                fn_name, ret_type_str, value_type_str)));
-                    }
-
-                    let converted_value = self.convert_value_to_type(value, ret_type, "return_val")?;
-                    self.emit_local_drops()?;
-                    self.backend.builder.build_return(Some(&converted_value))
-                        .map_err(|e| e.to_string())?;
-                } else {
-                    self.emit_local_drops()?;
-                    self.backend.builder.build_return(Some(&value))
-                        .map_err(|e| e.to_string())?;
-                }
-            } else {
-                self.emit_local_drops()?;
-                self.backend.builder.build_return(Some(&value))
-                    .map_err(|e| e.to_string())?;
-            }
-        } else {
-            self.emit_local_drops()?;
-            self.backend.builder.build_return(None)
-                .map_err(|e| e.to_string())?;
-        }
-        Ok(())
+    pub(crate) fn compile_return(&mut self, _expr: Option<&Expression>) -> Result<(), String> {
+        Err(self.error(
+            "compile_return",
+            "return must come from MIR, not the parser AST",
+        ))
     }
 
     /// Drop remaining locals at a terminator. Skips parameters and `self`.
     pub(crate) fn emit_local_drops(&mut self) -> Result<(), String> {
         let vars_to_clean: Vec<String> = self.variables.keys()
             .filter(|name| {
-                *name != "self"
-                    && !self.current_function_params.contains(name)
-                    && self.memory_ctx.is_in_live_scope(name)
+                let n = name.as_str();
+                n != "self"
+                    && !self.current_function_params.iter().any(|p| p == n)
+                    && self.memory_ctx.is_in_live_scope(n)
             })
             .cloned()
             .collect();
@@ -297,338 +163,487 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 }
             }
         }
-        Ok(())
-    }
 
-    /// Drop locals born in the current scope. No-op if the block already terminated.
-    pub(crate) fn emit_current_scope_drops(&mut self) -> Result<(), String> {
-        if let Some(block) = self.backend.builder.get_insert_block() {
-            if block.get_terminator().is_some() {
-                return Ok(());
-            }
-        }
-        let vars_to_clean: Vec<String> = self.variables.keys()
+        let arrays: Vec<String> = self
+            .array_allocas
+            .keys()
             .filter(|name| {
-                *name != "self"
-                    && !self.current_function_params.contains(name)
-                    && self.memory_ctx.is_in_current_scope(name)
+                let n = name.as_str();
+                n != "self"
+                    && !self.current_function_params.iter().any(|p| p == n)
+                    && self.memory_ctx.is_in_live_scope(n)
+                    && !self.memory_ctx.is_dropped(n)
+                    && !self.memory_ctx.is_moved(n)
             })
             .cloned()
             .collect();
-
-        for var_name in vars_to_clean {
+        for var_name in arrays {
             if let Some(info) = self.memory_ctx.lifetimes.get(&var_name) {
                 if matches!(info.state, crate::backend::memory_ops::VariableState::Initialized) {
-                    super::memory_ops::compile_remove(
+                    self.drop_array_local(&var_name)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn drop_array_local(&mut self, name: &str) -> Result<(), String> {
+        if self.memory_ctx.is_dropped(name) || self.memory_ctx.is_moved(name) {
+            return Ok(());
+        }
+        let Some(&ptr) = self.array_allocas.get(name) else {
+            return Ok(());
+        };
+        let Some(type_str) = self.memory_ctx.get_variable_type(name).cloned() else {
+            return Ok(());
+        };
+        let ty = crate::types::type_from_str(&type_str).unwrap_or(crate::types::Type::NamedType {
+            name: type_str.clone(),
+        });
+        let drop_ty = match &ty {
+            crate::types::Type::Array { .. } => ty.clone(),
+            crate::types::Type::Slice(_) => {
+                if let Some(&(fat_ptr, fat_llvm)) = self.variables.get(name) {
+                    super::memory_ops::drop_coffee_place(
                         self.backend.context,
                         &self.backend.builder,
-                        &mut self.variables,
-                        &mut self.memory_ctx,
                         &self.functions,
-                        &var_name,
-                        false,
+                        &ty,
+                        fat_ptr,
+                        fat_llvm,
                     )?;
+                    if self
+                        .memory_ctx
+                        .lifetimes
+                        .get(name)
+                        .map(|info| info.is_heap_allocated)
+                        .unwrap_or(false)
+                    {
+                        if let (Some(&free_fn), Some(&data)) =
+                            (self.functions.get("free"), self.array_allocas.get(name))
+                        {
+                            let i8_ptr = self.backend.context.ptr_type(inkwell::AddressSpace::default());
+                            let casted = self
+                                .backend
+                                .builder
+                                .build_bit_cast(data, i8_ptr, "slice_buf_cast")
+                                .map_err(|e| format!("drop slice: cast buffer: {e}"))?;
+                            self.backend
+                                .builder
+                                .build_call(free_fn, &[casted.into()], "slice_buf_free")
+                                .map_err(|e| format!("drop slice: free buffer: {e}"))?;
+                        }
+                    }
+                    self.memory_ctx.mark_dropped(name.to_string());
+                    return Ok(());
                 }
+                ty.clone()
             }
-        }
-        Ok(())
-    }
-
-    /// Drop the current scope's locals, then pop the scope.
-    pub(crate) fn finish_scoped_block(&mut self) -> Result<(), String> {
-        self.emit_current_scope_drops()?;
-        self.memory_ctx.exit_scope();
-        Ok(())
-    }
-
-    /// Compile raise statement - expands directly to C library calls
-    /// `raise Error(...)` is compiled at compile-time, NOT using runtime functions
-    /// CRITICAL: raise behaves like return - it's a terminating statement
-    /// All variables MUST be cleaned up before panic to prevent memory leaks
-    pub fn compile_raise(&mut self, raise_stmt: &crate::parser::RaiseStmt) -> Result<(), String> {
-        // Mark that Error class is needed
-        // This will trigger automatic generation of Error class definition
-        self.needs_error_class = true;
-
-        let parsed = raise_stmt.error_expr.clone();
-
-        let (error_type, args) = Self::raise_ctor_parts(parsed);
-        for arg in &args {
-            let _ = self.compile_expr(arg)?;
-        }
-
-        // Format: "[E{code}]: e \n note:..." — literals for the static fprintf string;
-        // non-literals still compile above, then panic via fprintf+exit (no try/catch).
-        let error_msg = if args.is_empty() {
-            format!("[E-1]: {}", error_type)
-        } else {
-            let mut error_code: i64 = -1;
-            let mut error_extra = String::new();
-            let mut error_note = String::new();
-
-            if let Some(code) = Self::raise_int_literal(&args[0]) {
-                error_code = code;
-            }
-            if args.len() >= 2 {
-                error_note = Self::raise_display_text(&args[1]);
-            }
-            if args.len() >= 3 {
-                error_extra = Self::raise_display_text(&args[2]);
-            }
-
-            if error_extra.is_empty() && error_note.is_empty() {
-                format!("[E{}]: {}", error_code, error_type)
-            } else if error_note.is_empty() {
-                format!("[E{}]: {}", error_code, error_extra)
-            } else if error_extra.is_empty() {
-                format!("[E{}]: {}\nnote: {}", error_code, error_type, error_note)
-            } else {
-                format!("[E{}]: {}\nnote: {}", error_code, error_extra, error_note)
-            }
+            _ => return Ok(()),
         };
-
-        // Get LLVM types
-        let i8_ptr_type = self.backend.context.ptr_type(inkwell::AddressSpace::default());
-        let i32_type = self.backend.context.i32_type();
-
-        // Get fprintf and exit functions (using built-in libc signatures)
-        let fprintf_func = *self.functions.get("fprintf")
-            .ok_or("fprintf function not declared - use 'fprintf in libc of c'")?;
-
-        let exit_func = *self.functions.get("exit")
-            .ok_or("exit function not declared - use 'exit in libc of c'")?;
-
-        // Create error message string constant
-        let message_ptr = self.backend.builder.build_global_string_ptr(
-            &error_msg,
-            "error_msg"
-        ).map_err(|e| self.error("compile_raise", format!("failed to build error message string: {}", e)))?
-        .as_pointer_value();
-
-        // Create format string constant
-        let format_ptr = self.backend.builder.build_global_string_ptr(
-            "%s\n",
-            "format_str"
-        ).map_err(|e| self.error("compile_raise", format!("failed to build format string: {}", e)))?
-        .as_pointer_value();
-
-        // Get or declare stderr global variable (FILE* stderr from libc)
-        // stderr is a ptr to FILE*, so we need to load it first
-        let stderr_global = match self.backend.module.get_global("stderr") {
-            Some(g) => g.as_pointer_value(),
-            None => {
-                // Declare stderr as external global variable (ptr to FILE*)
-                let stderr_type = i8_ptr_type;
-                let stderr_global = self.backend.module.add_global(stderr_type, None, "stderr");
-                stderr_global.set_linkage(inkwell::module::Linkage::External);
-                stderr_global.as_pointer_value()
-            }
+        let Some(&elem_llvm) = self.array_element_types.get(name) else {
+            return Ok(());
         };
-
-        // Load the actual FILE* pointer from stderr
-        let stderr_file_ptr = self.backend.builder.build_load(
-            i8_ptr_type,
-            stderr_global,
-            "stderr_file_ptr"
-        ).map_err(|e| self.error("compile_raise", format!("failed to load stderr: {}", e)))?
-        .into_pointer_value();
-
-        // Call fprintf(stderr, "%s\n", msg) to output error message to stderr
-        let _ = self.backend.builder.build_call(
-            fprintf_func,
-            &[stderr_file_ptr.into(), format_ptr.into(), message_ptr.into()],
-            "fprintf_call"
-        );
-
-        // CRITICAL: Auto-cleanup all variables before raising error
-        // This prevents memory leaks on the error path
-        // IMPORTANT: Do NOT clean up function parameters, only local variables
-        self.emit_local_drops()?;
-
-        // Call exit(1) to terminate
-        let exit_code = i32_type.const_int(1, false);
-        let _ = self.backend.builder.build_call(
-            exit_func,
-            &[exit_code.into()],
-            "exit_call"
-        );
-
-        // Build unreachable to indicate code after raise is unreachable
-        let _ = self.backend.builder.build_unreachable();
-
+        let n = match &drop_ty {
+            crate::types::Type::Array { size, .. } => *size as u32,
+            _ => return Ok(()),
+        };
+        let arr_ty: inkwell::types::BasicTypeEnum = match elem_llvm {
+            inkwell::types::BasicTypeEnum::IntType(t) => t.array_type(n).into(),
+            inkwell::types::BasicTypeEnum::FloatType(t) => t.array_type(n).into(),
+            inkwell::types::BasicTypeEnum::PointerType(t) => t.array_type(n).into(),
+            inkwell::types::BasicTypeEnum::StructType(t) => t.array_type(n).into(),
+            inkwell::types::BasicTypeEnum::ArrayType(t) => t.array_type(n).into(),
+            inkwell::types::BasicTypeEnum::VectorType(t) => t.array_type(n).into(),
+            inkwell::types::BasicTypeEnum::ScalableVectorType(t) => t.array_type(n).into(),
+        };
+        super::memory_ops::drop_coffee_place(
+            self.backend.context,
+            &self.backend.builder,
+            &self.functions,
+            &drop_ty,
+            ptr,
+            arr_ty,
+        )?;
+        self.memory_ctx.mark_dropped(name.to_string());
         Ok(())
-    }
-
-    fn raise_ctor_parts(expr: Expression) -> (String, Vec<Expression>) {
-        match expr {
-            Expression::Call { function, args } => {
-                let name = match function.as_ref() {
-                    Expression::Variable(n) | Expression::Literal(n) => n.clone(),
-                    _ => "Error".to_string(),
-                };
-                (name, args)
-            }
-            Expression::ConstructorCall { class_name, args } => (class_name, args),
-            Expression::TypeCast { target_type, value } => (target_type, vec![*value]),
-            Expression::Variable(n) | Expression::Literal(n) => {
-                (if n.is_empty() { "Error".to_string() } else { n }, Vec::new())
-            }
-            _ => ("Error".to_string(), Vec::new()),
-        }
-    }
-
-    fn raise_int_literal(expr: &Expression) -> Option<i64> {
-        match expr {
-            Expression::Literal(s) => {
-                let t = s.trim();
-                t.parse::<i64>().ok().or_else(|| t.parse::<i32>().ok().map(|n| n as i64))
-            }
-            Expression::Unary { op, operand } if op == "-" => {
-                Self::raise_int_literal(operand).map(|n| -n)
-            }
-            _ => None,
-        }
-    }
-
-    fn raise_display_text(expr: &Expression) -> String {
-        match expr {
-            Expression::Literal(s) => {
-                let t = s.trim();
-                if t.len() >= 2
-                    && ((t.starts_with('"') && t.ends_with('"'))
-                        || (t.starts_with('\'') && t.ends_with('\'')))
-                {
-                    t[1..t.len() - 1].to_string()
-                } else {
-                    t.to_string()
-                }
-            }
-            Expression::Variable(n) => n.clone(),
-            _ => String::new(),
-        }
     }
 
     /// Compile memory operation
     pub fn compile_memory_op(&mut self, op: &MemoryOp) -> Result<(), String> {
         use super::memory_ops;
-        memory_ops::compile_memory_op(
-            op,
-            self.backend.context,
-            &self.backend.builder,
-            &mut self.variables,
-            &mut self.memory_ctx,
-            &self.functions,
+        match op {
+            MemoryOp::Remove { target } if self.array_allocas.contains_key(target) => {
+                self.drop_array_local(target)
+            }
+            MemoryOp::RemoveMultiple { targets } => {
+                for t in targets {
+                    if self.array_allocas.contains_key(t) {
+                        self.drop_array_local(t)?;
+                    } else {
+                        memory_ops::compile_remove(
+                            self.backend.context,
+                            &self.backend.builder,
+                            &mut self.variables,
+                            &mut self.memory_ctx,
+                            &self.functions,
+                            t,
+                            true,
+                        )?;
+                    }
+                }
+                Ok(())
+            }
+            _ => memory_ops::compile_memory_op(
+                op,
+                self.backend.context,
+                &self.backend.builder,
+                &mut self.variables,
+                &mut self.memory_ctx,
+                &self.functions,
+            ),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::Backend;
+    use crate::parser::function::{Function, FunctionBody};
+    use crate::parser::r#match::{MatchArm, MatchExpr};
+    use crate::parser::pattern::Pattern;
+    use crate::parser::{ForIterator, ForLoop, IfExpr, RaiseStmt, WhileLoop};
+    use inkwell::context::Context;
+
+    fn cg_in_fn<'a, 'ctx>(backend: &'a Backend<'ctx>) -> CodeGenerator<'a, 'ctx> {
+        let mut cg = CodeGenerator::new(backend);
+        let func = Function {
+            type_params: vec![],
+            name: "main".into(),
+            parameters: vec![],
+            return_type: "int".into(),
+            error_handler: None,
+            body: FunctionBody::Block(vec![]),
+            is_c: false,
+        };
+        cg.declare_function(&func).unwrap();
+        let f = *cg.functions.get("main").unwrap();
+        cg.current_function = Some(f);
+        let entry = backend.context.append_basic_block(f, "entry");
+        backend.builder.position_at_end(entry);
+        cg
+    }
+
+    fn from_mir_err(err: &str) -> bool {
+        err.contains("MIR") || err.contains("must come from")
+    }
+
+    #[test]
+    fn compile_statement_match_must_come_from_mir() {
+        let context = Context::create();
+        let backend = Backend::new(&context, "stmt_match");
+        let mut cg = cg_in_fn(&backend);
+        let stmt = Statement::Match(MatchExpr {
+            value: Expression::literal("1"),
+            arms: vec![MatchArm {
+                pattern: Pattern::Wildcard,
+                guard: None,
+                body: vec![],
+            }],
+        });
+        let err = cg.compile_statement(&stmt).expect_err("AST match forbidden");
+        assert!(from_mir_err(&err), "got: {}", err);
+    }
+
+    #[test]
+    fn compile_statement_for_must_come_from_mir() {
+        let context = Context::create();
+        let backend = Backend::new(&context, "stmt_for");
+        let mut cg = cg_in_fn(&backend);
+        let stmt = Statement::For(ForLoop {
+            variable: "i".into(),
+            iterator: ForIterator::Range {
+                start: Expression::literal("0"),
+                end: Expression::literal("1"),
+            },
+            body: vec![],
+        });
+        let err = cg.compile_statement(&stmt).expect_err("AST for forbidden");
+        assert!(from_mir_err(&err), "got: {}", err);
+    }
+
+    #[test]
+    fn compile_statement_if_must_come_from_mir() {
+        let context = Context::create();
+        let backend = Backend::new(&context, "stmt_if");
+        let mut cg = cg_in_fn(&backend);
+        let stmt = Statement::If(IfExpr {
+            condition: Expression::literal("true"),
+            body: vec![],
+            elifs: vec![],
+            else_body: None,
+        });
+        let err = cg.compile_statement(&stmt).expect_err("AST if forbidden");
+        assert!(from_mir_err(&err), "got: {}", err);
+    }
+
+    #[test]
+    fn compile_statement_while_must_come_from_mir() {
+        let context = Context::create();
+        let backend = Backend::new(&context, "stmt_while");
+        let mut cg = cg_in_fn(&backend);
+        let stmt = Statement::While(WhileLoop {
+            condition: Expression::literal("true"),
+            body: vec![],
+        });
+        let err = cg.compile_statement(&stmt).expect_err("AST while forbidden");
+        assert!(from_mir_err(&err), "got: {}", err);
+    }
+
+    #[test]
+    fn compile_statement_raise_must_come_from_mir() {
+        let context = Context::create();
+        let backend = Backend::new(&context, "stmt_raise");
+        let mut cg = cg_in_fn(&backend);
+        let stmt = Statement::Raise(RaiseStmt {
+            error_expr: Expression::literal("1"),
+        });
+        let err = cg.compile_statement(&stmt).expect_err("AST raise forbidden");
+        assert!(from_mir_err(&err), "got: {}", err);
+    }
+
+    #[test]
+    fn compile_statement_executable_ast_must_come_from_mir() {
+        let context = Context::create();
+        let backend = Backend::new(&context, "stmt_exec");
+        let mut cg = cg_in_fn(&backend);
+        let stmts = [
+            Statement::Assignment("x".into(), Expression::literal("1")),
+            Statement::Return(crate::parser::var::ReturnStmt {
+                value: Some(Expression::literal("0")),
+            }),
+            Statement::Expr(Box::new(Expression::literal("1"))),
+            Statement::VariableDecl(crate::parser::VariableDecl {
+                name: "x".into(),
+                var_type: "int".into(),
+                value: Expression::literal("1"),
+            }),
+            Statement::MemoryOp(MemoryOp::Remove {
+                target: "x".into(),
+            }),
+            Statement::Break(crate::parser::var::BreakStmt),
+            Statement::Continue(crate::parser::var::ContinueStmt),
+        ];
+        for stmt in &stmts {
+            let err = cg
+                .compile_statement(stmt)
+                .expect_err(&format!("AST {stmt:?} forbidden"));
+            assert!(
+                from_mir_err(&err),
+                "expected MIR error for {:?}, got: {}",
+                stmt,
+                err
+            );
+        }
+    }
+
+    #[test]
+    fn mir_gen_and_function_compile_must_not_call_compile_expr() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/backend");
+        for rel in ["mir_gen.rs", "functions/compile.rs"] {
+            let text = std::fs::read_to_string(root.join(rel)).unwrap();
+            let mut offenders = Vec::new();
+            for (i, line) in text.lines().enumerate() {
+                let code = line.split("//").next().unwrap_or("");
+                if code.contains("compile_expr") {
+                    offenders.push(format!("{}:{}: {}", rel, i + 1, line.trim()));
+                }
+            }
+            assert!(
+                offenders.is_empty(),
+                "{} must not call compile_expr:\n{}",
+                rel,
+                offenders.join("\n")
+            );
+        }
+    }
+
+    fn top_level_cg<'a, 'ctx>(backend: &'a Backend<'ctx>) -> CodeGenerator<'a, 'ctx> {
+        CodeGenerator::new(backend)
+    }
+
+    fn executable_outside_fn_err(err: &str) -> bool {
+        err.contains("module level")
+    }
+
+    #[test]
+    fn compile_statement_assignment_outside_function_is_error() {
+        let context = Context::create();
+        let backend = Backend::new(&context, "tl_assign");
+        let mut cg = top_level_cg(&backend);
+        let err = cg
+            .compile_statement(&Statement::Assignment(
+                "x".into(),
+                Expression::literal("1"),
+            ))
+            .expect_err("module-level assignment is not a fake body");
+        assert!(executable_outside_fn_err(&err), "got: {}", err);
+    }
+
+    #[test]
+    fn compile_return_must_come_from_mir_without_compile_expr() {
+        let context = Context::create();
+        let backend = Backend::new(&context, "ast_compile_return");
+        let mut cg = cg_in_fn(&backend);
+        let err = cg
+            .compile_return(Some(&Expression::literal("1")))
+            .expect_err("AST compile_return forbidden");
+        assert!(from_mir_err(&err), "got: {}", err);
+
+        let text = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/backend/statements.rs"),
         )
+        .unwrap();
+        let start = text
+            .find("fn compile_return")
+            .expect("compile_return");
+        let rest = &text[start..];
+        let end = rest.find("\n    pub(crate) fn emit_local_drops").unwrap_or(rest.len());
+        let body = &rest[..end];
+        let code = body
+            .lines()
+            .map(|l| l.split("//").next().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !code.contains("compile_expr"),
+            "compile_return must not call compile_expr"
+        );
     }
 
-    /// Drop locals born in nested blocks still on the stack (loop/if), not the function body.
-    pub(crate) fn emit_nested_scope_drops(&mut self) -> Result<(), String> {
-        if let Some(block) = self.backend.builder.get_insert_block() {
-            if block.get_terminator().is_some() {
-                return Ok(());
-            }
-        }
-        let vars_to_clean: Vec<String> = self.variables.keys()
-            .filter(|name| {
-                *name != "self"
-                    && !self.current_function_params.contains(name)
-                    && self.memory_ctx.is_in_nested_live_scope(name)
-            })
-            .cloned()
-            .collect();
-
-        for var_name in vars_to_clean {
-            if let Some(info) = self.memory_ctx.lifetimes.get(&var_name) {
-                if matches!(info.state, crate::backend::memory_ops::VariableState::Initialized) {
-                    super::memory_ops::compile_remove(
-                        self.backend.context,
-                        &self.backend.builder,
-                        &mut self.variables,
-                        &mut self.memory_ctx,
-                        &self.functions,
-                        &var_name,
-                        false,
-                    )?;
-                }
-            }
-        }
-        Ok(())
+    #[test]
+    fn compile_statement_return_outside_function_is_error() {
+        let context = Context::create();
+        let backend = Backend::new(&context, "tl_return");
+        let mut cg = top_level_cg(&backend);
+        let err = cg
+            .compile_statement(&Statement::Return(crate::parser::var::ReturnStmt {
+                value: Some(Expression::literal("0")),
+            }))
+            .expect_err("module-level return is not a fake body");
+        assert!(executable_outside_fn_err(&err), "got: {}", err);
     }
 
-    /// Compile break statement
-    pub fn compile_break(&mut self) -> Result<(), String> {
-        self.emit_nested_scope_drops()?;
-        use super::control_flow;
-        control_flow::compile_break(&self.backend.builder, &self.loop_stack)
-            .map_err(|e| self.error("compile_break", e))
+    #[test]
+    fn compile_statement_break_outside_function_is_error() {
+        let context = Context::create();
+        let backend = Backend::new(&context, "tl_break");
+        let mut cg = top_level_cg(&backend);
+        let err = cg
+            .compile_statement(&Statement::Break(crate::parser::var::BreakStmt))
+            .expect_err("module-level break is not a fake body");
+        assert!(executable_outside_fn_err(&err), "got: {}", err);
     }
 
-    /// Compile continue statement
-    pub fn compile_continue(&mut self) -> Result<(), String> {
-        self.emit_nested_scope_drops()?;
-        use super::control_flow;
-        control_flow::compile_continue(&self.backend.builder, &self.loop_stack)
-            .map_err(|e| self.error("compile_continue", e))
+    #[test]
+    fn compile_statement_continue_outside_function_is_error() {
+        let context = Context::create();
+        let backend = Backend::new(&context, "tl_continue");
+        let mut cg = top_level_cg(&backend);
+        let err = cg
+            .compile_statement(&Statement::Continue(crate::parser::var::ContinueStmt))
+            .expect_err("module-level continue is not a fake body");
+        assert!(executable_outside_fn_err(&err), "got: {}", err);
     }
 
-    /// Strip inline comments from a string
-    /// Coffee comments: /#/ ... /#/ (with closing) or /#/ ... (to end of line)
-    pub fn strip_inline_comments(&self, s: &str) -> String {
-        coffee_debug!("DEBUG: strip_inline_comments: s='{}', len={}", s, s.len());
-        
-        // Find comment start: /#/
-        if let Some(start_pos) = s.find("/#/") {
-            // Check if it's inside a string literal
-            let before = &s[..start_pos];
-            let quote_count = before.matches('"').count() + before.matches('\'').count();
-            // Odd number of quotes means we're inside a string
-            if quote_count % 2 == 0 {
-                // Not inside a string - this is a real comment
-                // Look for closing /#/ after the opening
-                let after_open = &s[start_pos + 3..];
-                if let Some(end_pos) = after_open.find("/#/") {
-                    // Found closing marker - remove comment and keep rest of line
-                    let after_close = &after_open[end_pos + 3..];
-                    let result = format!("{}{}", before, after_close).trim().to_string();
-                    coffee_debug!("DEBUG: strip_inline_comments: found comment, result='{}', len={}", result, result.len());
-                    return result;
-                } else {
-                    // No closing marker - comment extends to end of line
-                    let result = before.trim().to_string();
-                    coffee_debug!("DEBUG: strip_inline_comments: found unclosed comment, result='{}', len={}", result, result.len());
-                    return result;
-                }
-            }
-        }
-        let result = s.trim().to_string();
-        coffee_debug!("DEBUG: strip_inline_comments: no comment, result='{}', len={}", result, result.len());
-        result
+    #[test]
+    fn compile_statement_memory_op_outside_function_is_error() {
+        let context = Context::create();
+        let backend = Backend::new(&context, "tl_mem");
+        let mut cg = top_level_cg(&backend);
+        let err = cg
+            .compile_statement(&Statement::MemoryOp(MemoryOp::Remove {
+                target: "x".into(),
+            }))
+            .expect_err("module-level memory op is not a fake body");
+        assert!(executable_outside_fn_err(&err), "got: {}", err);
     }
 
-    /// Calculate edit distance between two strings (for suggestion)
-    pub fn edit_distance(a: &str, b: &str) -> usize {
-        let a_chars: Vec<char> = a.chars().collect();
-        let b_chars: Vec<char> = b.chars().collect();
-        let a_len = a_chars.len();
-        let b_len = b_chars.len();
+    #[test]
+    fn compile_statement_expr_outside_function_is_error() {
+        let context = Context::create();
+        let backend = Backend::new(&context, "tl_expr");
+        let mut cg = top_level_cg(&backend);
+        let err = cg
+            .compile_statement(&Statement::Expr(Box::new(Expression::literal("1"))))
+            .expect_err("module-level expr is not a fake body");
+        assert!(executable_outside_fn_err(&err), "got: {}", err);
+    }
 
-        if a_len == 0 { return b_len; }
-        if b_len == 0 { return a_len; }
+    #[test]
+    fn compile_statement_top_level_function_is_missing_mir_not_module_junk() {
+        let context = Context::create();
+        let backend = Backend::new(&context, "tl_fn");
+        let mut cg = top_level_cg(&backend);
+        let func = Function {
+            type_params: vec![],
+            name: "main".into(),
+            parameters: vec![],
+            return_type: "int".into(),
+            error_handler: None,
+            body: FunctionBody::Block(vec![]),
+            is_c: false,
+        };
+        let err = cg
+            .compile_statement(&Statement::Function(func))
+            .expect_err("function bodies still need MIR");
+        assert!(
+            err.contains("missing MIR"),
+            "top-level Function must still compile via compile_function; got: {}",
+            err
+        );
+        assert!(
+            !executable_outside_fn_err(&err),
+            "Function is a declaration, not executable junk; got: {}",
+            err
+        );
+    }
 
-        let mut prev_row: Vec<usize> = (0..=b_len).collect();
-        let mut curr_row = vec![0; b_len + 1];
-
-        for i in 1..=a_len {
-            curr_row[0] = i;
-            for j in 1..=b_len {
-                let cost = if a_chars[i - 1] == b_chars[j - 1] { 0 } else { 1 };
-                curr_row[j] = (prev_row[j] + 1)
-                    .min(curr_row[j - 1] + 1)
-                    .min(prev_row[j - 1] + cost);
-            }
-            std::mem::swap(&mut prev_row, &mut curr_row);
-        }
-
-        prev_row[b_len]
+    #[test]
+    fn compile_statement_top_level_import_main_class_enum_ok() {
+        let context = Context::create();
+        let backend = Backend::new(&context, "tl_decls");
+        let mut cg = top_level_cg(&backend);
+        cg.compile_statement(&Statement::Import(crate::parser::Import::Simple {
+            path: "m".into(),
+        }))
+        .expect("Import");
+        cg.compile_statement(&Statement::Main(crate::parser::MainEntry::new(
+            "entry".into(),
+            vec![],
+        )))
+        .expect("Main");
+        cg.compile_statement(&Statement::Class(crate::parser::class::ClassDef {
+            type_params: vec![],
+            name: "C".into(),
+            parent: None,
+            fields: vec![],
+            methods: vec![],
+            packed: false,
+            has_constructor: false,
+        }))
+        .expect("Class");
+        cg.compile_statement(&Statement::Enum(crate::parser::class::EnumDef {
+            name: "E".into(),
+            variants: vec![],
+        }))
+        .expect("Enum");
+        cg.compile_statement(&Statement::VariableDecl(crate::parser::VariableDecl {
+            name: "g".into(),
+            var_type: "int".into(),
+            value: Expression::literal("1"),
+        }))
+        .expect("global VariableDecl");
     }
 }

@@ -8,16 +8,23 @@ The Semantic Analysis module (`src/semantic/`) is responsible for analyzing the 
 
 ```
 src/semantic/
-├── mod.rs       # Main semantic analysis module
-├── analyzer.rs  # Main semantic analyzer
-├── scope.rs     # Scope management
-├── symbols.rs   # Symbol table management
-└── lifetime.rs  # Lifetime tracking and reference validation
+├── mod.rs           # Semantic analysis module
+├── analyzer/        # SemanticAnalyzer (not analyzer.rs)
+│   ├── mod.rs
+│   ├── decls.rs
+│   ├── expr.rs
+│   ├── memory.rs
+│   ├── const_eval.rs
+│   └── report.rs
+├── scope.rs         # Scope management
+├── symbols.rs       # Symbol table management
+├── lifetime.rs      # Named lifetime params (LifetimeSpace)
+└── c_builtins.rs    # Built-in libc/libm CFC tables
 ```
 
 ## Core Components
 
-### 1. Semantic Analyzer (`analyzer.rs`)
+### 1. Semantic Analyzer (`analyzer/`)
 
 The `SemanticAnalyzer` is the main component that orchestrates semantic analysis.
 
@@ -25,7 +32,7 @@ The `SemanticAnalyzer` is the main component that orchestrates semantic analysis
 - Manage scopes and symbol tables
 - Analyze declarations (variables, functions, classes, enums)
 - Validate symbol usage
-- Check lifetime and borrowing rules
+- Collect semantic errors. Borrow checking is `types::borrow` / `TypeChecker`, not the analyzer.
 - Collect semantic errors
 
 **Main Methods:**
@@ -122,17 +129,12 @@ pub struct FunctionSymbol {
 
 ### 4. Lifetime Analysis (`lifetime.rs`)
 
-Tracks variable lifetimes and validates borrowing rules.
+Tracks named lifetime parameters for functions. **Borrow/loan rules are enforced in `src/types/borrow.rs`.** `LifetimeSpace` is not a proof checker.
 
-**Lifetime Features:**
-- Variable lifetime tracking
-- Borrow checker (borrow/loan rules)
-- Move semantics validation
-- Reference safety checks
+**Lifetime Features (analyzer):** named function lifetime params in `LifetimeSpace` only.
 
-**Lifetime Rules:**
-- Variables live until their scope ends
-- References cannot outlive their referent
+**Borrow rules (`types::borrow`):**
+- References cannot outlive their referent (no `&local` in return)
 - Mutable references are exclusive
 - Multiple immutable references allowed
 

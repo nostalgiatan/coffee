@@ -6,7 +6,7 @@
 //! array access. These checks are inserted into the generated code to provide
 //! runtime protection while maintaining good performance.
 
-use inkwell::{values::PointerValue, builder::Builder};
+use inkwell::{builder::Builder};
 
 /// Safety context for runtime checks
 /// 
@@ -19,9 +19,7 @@ use inkwell::{values::PointerValue, builder::Builder};
 /// branches and error handling code at appropriate locations in the
 /// generated IR to catch memory safety violations at runtime.
 pub struct SafetyContext<'ctx> {
-    /// Optional panic function for reporting errors
-    /// When None, safety checks might use alternative error reporting
-    panic_func: Option<inkwell::values::FunctionValue<'ctx>>,
+    _ctx: std::marker::PhantomData<&'ctx ()>,
 }
 
 impl<'ctx> SafetyContext<'ctx> {
@@ -45,120 +43,8 @@ impl<'ctx> SafetyContext<'ctx> {
     /// ```
     pub fn new() -> Self {
         Self {
-            panic_func: None,
+            _ctx: std::marker::PhantomData,
         }
-    }
-
-    /// Set the panic function for error reporting
-    /// 
-    /// Configures the safety context to use the specified panic function
-    /// when safety violations are detected at runtime. The panic function
-    /// is called with appropriate parameters to indicate the error.
-    /// 
-    /// # Arguments
-    /// 
-    /// * `panic_func` - The LLVM function value to call when errors are detected
-    /// 
-    /// # Examples
-    /// 
-    /// ```
-    /// // This example shows how the function would be used in a broader context
-    /// use coffee::backend::memory::safety::SafetyContext;
-    /// // In practice, you'd need an LLVM FunctionValue here
-    /// // safety_context.set_panic_func(panic_function);
-    /// ```
-    #[allow(dead_code)]
-    pub fn set_panic_func(&mut self, panic_func: inkwell::values::FunctionValue<'ctx>) {
-        self.panic_func = Some(panic_func);
-    }
-
-    /// Generate null pointer check
-    /// 
-    /// This function generates LLVM IR code that checks if a pointer is null
-    /// at runtime. If the pointer is null, the check will trigger the panic
-    /// function (if set) or use an alternative error reporting mechanism.
-    /// 
-    /// The generated code follows a pattern of comparing the pointer to null,
-    /// conditionally branching to an error handler if the pointer is null,
-    /// and continuing with a merge block if the pointer is valid.
-    /// 
-    /// # Arguments
-    /// 
-    /// * `builder` - The LLVM builder to use for generating the check code
-    /// * `ptr` - The pointer value to check for null
-    /// * `_location` - Source location information (currently unused)
-    /// 
-    /// # Returns
-    /// 
-    /// Ok(()) if the check was generated successfully, or an error string if generation failed
-    /// 
-    /// # Examples
-    /// 
-    /// ```
-    /// // This example shows how the function would be used in a broader context
-    /// use coffee::backend::memory::safety::SafetyContext;
-    /// // In practice, you'd need LLVM builder and pointer value
-    /// // safety_context.check_null_ptr(&builder, ptr_value, "example.coffee:10:5");
-    /// ```
-    #[allow(dead_code)]
-    pub fn check_null_ptr(
-        &self,
-        builder: &Builder<'ctx>,
-        ptr: PointerValue<'ctx>,
-        _location: &str,
-    ) -> Result<(), String> {
-        // Get current function
-        let function = builder.get_insert_block()
-            .and_then(|b| b.get_parent())
-            .ok_or("check_null_ptr: not in a function")?;
-
-        let context = builder.get_insert_block()
-            .and_then(|b| b.get_parent())
-            .ok_or("check_null_ptr: no function")?
-            .get_first_basic_block()
-            .unwrap()
-            .get_context();
-
-        let i64_type = context.i64_type();
-
-        // Convert pointer to int for comparison
-        let ptr_int = builder.build_ptr_to_int(ptr, i64_type, "ptr_int")
-            .map_err(|e| e.to_string())?;
-
-        let null_ptr_int = builder.build_ptr_to_int(ptr.get_type().const_null(), i64_type, "null_int")
-            .map_err(|e| e.to_string())?;
-
-        // Check if ptr == null
-        let is_null = builder.build_int_compare(
-            inkwell::IntPredicate::EQ,
-            ptr_int,
-            null_ptr_int,
-            "is_null"
-        ).map_err(|e| e.to_string())?;
-
-        // Create blocks
-        let then_block = context.append_basic_block(function, "null_ptr_panic");
-        let merge_block = context.append_basic_block(function, "null_ptr_merge");
-
-        // Conditional branch
-        builder.build_conditional_branch(is_null, then_block, merge_block)
-            .map_err(|e| e.to_string())?;
-
-        // Panic block
-        builder.position_at_end(then_block);
-        if let Some(panic_fn) = self.panic_func {
-            // Build simple panic call
-            let i32_type = context.i32_type();
-            let zero = i32_type.const_int(0, false);
-            builder.build_call(panic_fn, &[zero.into()], "panic")
-                .map_err(|e| e.to_string())?;
-        }
-        builder.build_unreachable().map_err(|e| e.to_string())?;
-
-        // Merge block
-        builder.position_at_end(merge_block);
-
-        Ok(())
     }
 
     /// Generate array bounds check
@@ -238,12 +124,6 @@ impl<'ctx> SafetyContext<'ctx> {
 
         // Panic block
         builder.position_at_end(then_block);
-        if let Some(panic_fn) = self.panic_func {
-            let i32_type = context.i32_type();
-            let zero = i32_type.const_int(0, false);
-            builder.build_call(panic_fn, &[zero.into()], "panic")
-                .map_err(|e| e.to_string())?;
-        }
         builder.build_unreachable().map_err(|e| e.to_string())?;
 
         // Merge block

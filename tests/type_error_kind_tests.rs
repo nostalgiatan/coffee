@@ -85,3 +85,42 @@ fn main() => int:
 "#;
     assert_compile_error(source, "E112").unwrap();
 }
+
+#[test]
+fn undefined_variable_suggests_similar_name() {
+    let source = r#"
+fn main() => int:
+    let count: int = 1
+    let x: int = coutn
+    return 0
+
+"#;
+    assert_compile_error(source, "E200").unwrap();
+    assert_compile_error(source, "did you mean").unwrap();
+    assert_compile_error(source, "count").unwrap();
+}
+
+#[test]
+fn int_float_mismatch_suggests_cast() {
+    let source = r#"
+fn main() => int:
+    let x: int = 1.5
+    return 0
+
+"#;
+    assert_compile_error(source, "E100").unwrap();
+    assert_compile_error(source, "int(").unwrap();
+}
+
+#[test]
+fn unknown_print_suggests_libc_printf() {
+    let source = r#"
+fn main() => int:
+    print("hi")
+    return 0
+
+"#;
+    assert_compile_error(source, "printf").unwrap();
+    assert_compile_error(source, "libc").unwrap();
+    assert_compile_error(source, "use print in std").unwrap();
+}

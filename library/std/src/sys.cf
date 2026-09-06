@@ -1,0 +1,45 @@
+use malloc, free, memcpy, write, exit, strlen in libc of c
+
+fn sys_malloc(n: int) => buf:
+    let p: buf = malloc(n)
+    return p
+
+fn sys_free(p: buf) => void:
+    rm p
+
+fn sys_memcpy(dst: buf, src: buf, n: int) => int:
+    memcpy(dst, src, n)
+    return n
+
+fn sys_put_int(p: object, i: int, x: int) => void:
+    memcpy(p + i * 8, &x, 8)
+
+fn sys_get_int(p: object, i: int) => int:
+    let tmp: int = 0
+    memcpy(&mut tmp, p + i * 8, 8)
+    return tmp
+
+fn sys_write(fd: int, p: str, n: int) => int:
+    return write(fd, p, n)
+
+fn sys_exit(code: int) => void:
+    exit(code)
+
+fn sys_strlen(s: str) => int:
+    return strlen(s)
+
+fn sys_grow_buf(old: buf, old_n: int, new_n: int) => buf:
+    let np: buf = sys_malloc(new_n)
+    memcpy(np, old, old_n)
+    sys_free(old)
+    return np
+
+fn sys_ensure_ints(p: buf, len: int, cap: int) => buf:
+    if len == cap:
+        return sys_grow_buf(p, len * 8, cap * 16)
+    return p
+
+fn sys_next_cap(len: int, cap: int) => int:
+    if len == cap:
+        return cap * 2
+    return cap

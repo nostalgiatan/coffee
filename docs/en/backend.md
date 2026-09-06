@@ -8,27 +8,28 @@ The Backend module (`src/backend/`) is responsible for generating native code fr
 
 ```
 src/backend/
-├── mod.rs            # Main backend module and Backend struct
-├── codegen.rs        # Main code generator
+├── mod.rs            # Backend, LLVM I/O, JIT (`compile_and_run` takes hir_fns)
+├── codegen/          # CodeGenerator coordinator (`program`, types, layout)
 ├── context.rs        # LLVM context management
 ├── types.rs          # LLVM type mapping
-├── arithmetic.rs     # Arithmetic operation code generation
-├── control_flow.rs   # Control flow code generation
-├── memory_ops.rs     # Memory operation code generation
+├── class_layout.rs   # Inherited field flatten / LLVM member order
+├── mir_gen.rs        # Complete statement-MIR → LLVM
+├── mir_raise.rs      # abort vs `#name` listener
+├── mir_expr.rs / mir_return.rs / mir_nested.rs
+├── match_gen/        # unused AST match helpers (Coffee functions must compile from MIR)
+├── opt_passes.rs     # clang-aligned LLVM opt levels
+├── arithmetic/       # int/float arithmetic
+├── control_flow/     # if / while / for AST helpers
+├── memory_ops/       # Memory operation code generation
 ├── memory/           # Memory layout and management
-│   ├── mod.rs        # Memory module coordinator
-│   ├── types.rs      # Basic memory types (Layout, Size, Align)
-│   ├── structs.rs    # Struct layout optimization
-│   ├── collector.rs  # Layout collection and reporting
-│   ├── bitfields.rs  # Bit field support
-│   └── safety.rs     # Memory safety checks
-├── functions.rs      # Function code generation
+├── functions/        # Function code generation
 ├── expressions.rs    # Expression code generation
+├── expr/             # typed / value helpers used by MIR (`compile_hir_expr_typed`)
 ├── variables.rs      # Variable code generation
 ├── statements.rs     # Statement code generation
 ├── classes.rs        # Class and enum code generation
 ├── type_inference.rs # Type inference for code generation
-└── error.rs          # Backend error handling
+└── error.rs          # LLVM Error {code, note, e} layout for listeners
 ```
 
 ## Core Components
@@ -61,7 +62,7 @@ pub struct Backend<'ctx> {
 - Platform-specific triple cleaning (e.g., Android API level removal)
 - Default target detection
 
-### 2. Code Generator (`codegen.rs`)
+### 2. Code Generator (`codegen/`)
 
 The `CodeGenerator` translates Coffee AST to LLVM IR.
 
@@ -75,7 +76,8 @@ pub struct CodeGenerator<'ctx> {
 ```
 
 **Generation Methods:**
-- `compile_program(program, c_imports, cfc_symbols)` - Compile entire program
+- `compile_program_with_hir(program, c_imports, cfc_symbols, hir_fns)` — driver entry; complete MIR in `mir_gen.rs`; omitted `hir_fns` is a compile error (`missing MIR for function`), not an AST body
+- `compile_program(...)` — dead trap API: returns `Err` telling drivers to use `compile_program_with_hir` (must not compile function bodies from empty MIR)
 - `compile_statement(stmt)` - Compile individual statements
 - `compile_expression(expr)` - Compile expressions
 - `compile_function(func)` - Compile function definitions
@@ -103,7 +105,7 @@ pub fn coffee_type_to_llvm<'ctx>(context: &'ctx Context, type_: &Type) -> BasicT
 }
 ```
 
-### 4. Arithmetic Operations (`arithmetic.rs`)
+### 4. Arithmetic Operations (`arithmetic/`)
 
 Generates LLVM IR for arithmetic and logical operations.
 
@@ -132,7 +134,7 @@ fn compile_binary_op(&mut self, left: &Expr, op: &BinaryOperator, right: &Expr)
 }
 ```
 
-### 5. Control Flow (`control_flow.rs`)
+### 5. Control Flow (`control_flow/`)
 
 Generates LLVM IR for control flow constructs.
 
@@ -170,10 +172,10 @@ Generates LLVM IR for Coffee's memory management operations.
 
 **Operations:**
 - `mv` - Move ownership (memcpy + invalidate source)
-- `clone` - Deep copy (clone entire structure)
-- `copy` - Share reference (increment reference count)
-- `rm` - Deallocate (free memory)
-- `clean` - Scope cleanup (deallocate all variables)
+- `clone` - Deep copy of nested `str` / class / resource array / tuple fields (`memory_ops/clone.rs`). `object`, refs, and slice fields stay memcpy-only (no pointee clone).
+- `rm` - Early drop. `[T; N]` and Coffee `[T]` (fat `{ptr,len}`) drop resource **elements** with the container; class slice fields do **not** `free` the buffer pointer. `object` fields do not `free` the pointee. `buf` drop does `free` the pointer.
+
+`copy` and `clean out` are type errors (not codegen features).
 
 **Implementation:**
 ```rust
@@ -194,7 +196,7 @@ fn compile_mv(&mut self, source: &str, target: &str) -> Result<(), BackendError>
 }
 ```
 
-### 7. Functions (`functions.rs`)
+### 7. Functions (`functions/`)
 
 Generates LLVM IR for function definitions and calls.
 
@@ -274,6 +276,7 @@ pub fn compile_and_run(
     source: &Program,
     c_imports: &[String],
     cfc_symbols: HashMap<String, CSymbolTable>,
+    hir_fns: Vec<crate::hir::MirFn>,
     user_args: &[String],
 ) -> Result<i32, String>
 {
@@ -281,9 +284,9 @@ pub fn compile_and_run(
     let context = Context::create();
     let backend = Backend::new(&context, "coffee_jit");
 
-    // Generate code
+    // Same codegen path as AOT
     let mut codegen = CodeGenerator::new(&backend);
-    codegen.compile_program(source, c_imports, cfc_symbols)?;
+    codegen.compile_program_with_hir(source, c_imports, cfc_symbols, hir_fns)?;
 
     // Verify module
     backend.verify()?;
@@ -400,7 +403,7 @@ let context = Context::create();
 let backend = Backend::new(&context, "my_module");
 
 let mut codegen = CodeGenerator::new(&backend);
-codegen.compile_program(&program, &c_imports, &cfc_symbols)?;
+codegen.compile_program_with_hir(&program, &c_imports, cfc_symbols, hir_fns)?;
 
 // Verify
 backend.verify()?;
@@ -408,8 +411,8 @@ backend.verify()?;
 // Write object file
 backend.write_object_file(std::path::Path::new("output.o"))?;
 
-// Or execute with JIT
-let result = coffee::backend::compile_and_run(&program, &c_imports, &cfc_symbols, &[])?;
+// Or execute with JIT (same hir_fns handoff)
+let result = coffee::backend::compile_and_run(&program, &c_imports, cfc_symbols, hir_fns, &[])?;
 println!("Program exited with code: {}", result);
 ```
 

@@ -525,116 +525,83 @@ fn main() => int:
     assert_compiles(source).unwrap();
 }
 
-// TODO: Fix this test - compiler doesn't support non-::new constructor methods
-// #[test]
-// fn test_constructor_with_default_values() {
-//     let source = r#"
-// class Config:
-//     timeout: int
-//     retries: int
-//     
-//     fn new() => Config:
-//         Config {
-//             timeout: 30,
-//             retries: 3
-//         }
-//     
-//     fn custom(timeout: int, retries: int) => Config:
-//         Config {
-//             timeout: timeout,
-//             retries: retries
-//         }
-//
-// fn main() => int:
-//     let c1: Config = Config::new()
-//     let c2: Config = Config::custom(60, 5)
-//     rm c1, c2
-//     return 0
-//
-// "#;
-//     assert_compiles(source).unwrap();
-// }
+#[test]
+fn test_constructor_with_default_values() {
+    let source = r#"
+class Config:
+    timeout: int
+    retries: int
+    
+    fn new() => Config:
+        Config {
+            timeout: 30,
+            retries: 3
+        }
+    
+    fn custom(timeout: int, retries: int) => Config:
+        Config {
+            timeout: timeout,
+            retries: retries
+        }
 
-// TODO: Fix this test - compiler doesn't support non-::new constructor methods
-// #[test]
-// fn test_constructor_with_default_values() {
-//     let source = r#"
-// class Config:
-//     timeout: int
-//     retries: int
-//     
-//     fn new() => Config:
-//         Config {
-//             timeout: 30,
-//             retries: 3
-//         }
-//     
-//     fn custom(timeout: int, retries: int) => Config:
-//         Config {
-//             timeout: timeout,
-//             retries: retries
-//         }
-//
-// fn main() => int:
-//     let c1: Config = Config::new()
-//     let c2: Config = Config::custom(60, 5)
-//     rm c1, c2
-//     return 0
-//
-// "#;
-//     assert_compiles(source).unwrap();
-// }
+fn main() => int:
+    let c1: Config = Config::new()
+    let c2: Config = Config::custom(60, 5)
+    rm c1, c2
+    return 0
 
-// TODO: Fix this test - compiler doesn't support non-::new constructor methods
-// #[test]
-// fn test_constructor_chaining() {
-//     let source = r#"
-// class Point:
-//     x: int
-//     y: int
-//     
-//     fn origin() => Point:
-//         Point::new(0, 0)
-//     
-//     fn new(x: int, y: int) => Point:
-//         Point { x: x, y: y }
-//
-// fn main() => int:
-//     let p1: Point = Point::origin()
-//     let p2: Point = Point::new(10, 20)
-//     rm p1, p2
-//     return 0
-//
-// "#;
-//     assert_compiles(source).unwrap();
-// }
+"#;
+    assert_compiles(source).unwrap();
+}
 
-// TODO: Fix this test - compiler has bug parsing array literals in struct literals
-// #[test]
-// fn test_constructor_with_array() {
-//     let source = r#"
-// class Buffer:
-//     data: [int; 5]
-//     size: int
-//     
-//     fn new() => Buffer:
-//         Buffer {
-//             data: [0, 0, 0, 0, 0],
-//             size: 5
-//         }
-//     
-//     fn from_array(arr: [int; 5]) => Buffer:
-//         Buffer {
-//             data: arr,
-//             size: 5
-//         }
-//
-// fn main() => int:
-//     let b1: Buffer = Buffer::new()
-//     let b2: Buffer = Buffer::from_array([1, 2, 3, 4, 5])
-//     rm b1, b2
-//     return 0
-//
-// "#;
-//     assert_compiles(source).unwrap();
-// }
+#[test]
+fn test_constructor_chaining() {
+    let source = r#"
+class Point:
+    x: int
+    y: int
+    
+    fn origin() => Point:
+        Point::new(0, 0)
+    
+    fn new(x: int, y: int) => Point:
+        Point { x: x, y: y }
+
+fn main() => int:
+    let p1: Point = Point::origin()
+    let p2: Point = Point::new(10, 20)
+    rm p1, p2
+    return 0
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_constructor_with_array() {
+    let source = r#"
+class Buffer:
+    data: [int; 5]
+    size: int
+    
+    fn new() => Buffer:
+        Buffer {
+            data: [0, 0, 0, 0, 0],
+            size: 5
+        }
+    
+    fn from_array(arr: [int; 5]) => Buffer:
+        Buffer {
+            data: arr,
+            size: 5
+        }
+
+fn main() => int:
+    let b1: Buffer = Buffer::new()
+    let b2: Buffer = Buffer::from_array([1, 2, 3, 4, 5])
+    rm b1, b2
+    return 0
+
+"#;
+    assert_compiles(source).unwrap();
+}

@@ -4,381 +4,120 @@
 
 use crate::coffee_debug;
 use super::codegen::CodeGenerator;
-use inkwell::types::BasicTypeEnum;
 
 impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
     /// Compile class definition
     pub fn compile_class(&mut self, class: &crate::parser::class::ClassDef) -> Result<(), String> {
+        if self.c_value_names.contains(&class.name) {
+            self.classes.insert(class.name.clone(), class.clone());
+            return Ok(());
+        }
         coffee_debug!("DEBUG: compile_class: compiling class '{}', methods={:?}", class.name, class.methods.iter().map(|m| &m.name).collect::<Vec<_>>());
         // Store class definition for C header generation
         self.classes.insert(class.name.clone(), class.clone());
 
         use crate::backend::memory::{Layout, StructLayout};
 
-        // Check if this class has bit fields and bit fields are enabled
-        let has_bit_fields = self.enable_bitfields && class.fields.iter().any(|f| f.bit_width.is_some());
+        let flattened = super::class_layout::flatten_class_fields(class, &self.classes);
+        let td = self.llvm_target_data();
+        let pack_bits = (self.enable_bitfields || class.packed)
+            && flattened.iter().any(|f| f.bit_width.is_some());
+        let packed_members = if pack_bits {
+            super::class_layout::packed_llvm_members(&flattened)
+        } else {
+            Vec::new()
+        };
 
-        // Calculate layout for each field
         let mut field_layouts: Vec<Layout> = Vec::new();
-        let mut field_types: Vec<BasicTypeEnum> = Vec::new();
-
-        // Handle inheritance: add parent fields first
-        if let Some(ref parent_name) = class.parent {
-            if let Some(parent_class) = self.classes.get(parent_name) {
-                for field in &parent_class.fields {
-                    let field_type = self.coffee_type_to_llvm(&field.field_type)?;
-                    let layout = Layout::from_llvm_type(&field_type);
-                    field_layouts.push(layout);
-                    field_types.push(field_type);
+        let mut field_names: Vec<String> = Vec::new();
+        if pack_bits {
+            let info = super::class_layout::packed_field_info_map(&flattened);
+            let mut bit_field_map = std::collections::HashMap::new();
+            for (name, p) in &info {
+                if p.bit_width > 0 {
+                    bit_field_map.insert(name.clone(), (p.bit_offset, p.bit_width, p.storage_bits));
                 }
             }
-        }
+            if !bit_field_map.is_empty() {
+                self.bit_field_layouts.insert(class.name.clone(), bit_field_map);
+            }
+            self.packed_field_info.insert(class.name.clone(), info);
 
-        // Process bit fields if enabled
-        if has_bit_fields {
-            use crate::backend::memory::bitfields::{BitFieldSpec, BitFieldLayout};
-            
-            let mut bit_field_specs: Vec<BitFieldSpec> = Vec::new();
-            let mut current_bit_offset = 0u8;
-            let mut storage_unit_size = 8u8; // Start with i8 (8 bits)
-
-            for field in &class.fields {
-                if let Some(bit_width) = field.bit_width {
-                    bit_field_specs.push(BitFieldSpec {
-                        name: field.name.clone(),
-                        width: bit_width,
-                    });
-
-                    current_bit_offset += bit_width;
-
-                    // Check if we need a larger storage unit
-                    if current_bit_offset > storage_unit_size {
-                        storage_unit_size = if current_bit_offset <= 8 {
-                            8
-                        } else if current_bit_offset <= 16 {
-                            16
-                        } else if current_bit_offset <= 32 {
-                            32
-                        } else {
-                            64
-                        };
+            for member in &packed_members {
+                match member {
+                    super::class_layout::LlvmStructMember::Regular(field) => {
+                        let field_type = self.coffee_type_to_llvm(&field.field_type)?;
+                        field_layouts.push(Layout::from_target_data(&field_type, &td));
+                        field_names.push(field.name.clone());
+                    }
+                    super::class_layout::LlvmStructMember::BitStorage { bits, fields } => {
+                        let ty: inkwell::types::BasicTypeEnum =
+                            self.bitfield_storage_int_type(*bits).into();
+                        field_layouts.push(Layout::from_target_data(&ty, &td));
+                        field_names.push(
+                            fields
+                                .iter()
+                                .map(|(n, _, _)| n.as_str())
+                                .collect::<Vec<_>>()
+                                .join("+"),
+                        );
                     }
                 }
             }
-
-            // Calculate bit field layout
-            if !bit_field_specs.is_empty() {
-                let bit_field_layout = BitFieldLayout::calculate(&bit_field_specs);
-
-                // Print bit field layout report
-                if self.enable_bitfields {
-                    eprintln!("  = note: class '{}' uses bit fields ({} bytes storage, {:.1}% efficiency)",
-                        class.name, bit_field_layout.storage_size(), bit_field_layout.efficiency());
-                }
-
-                // Store bit field layout information
-                let mut bit_field_map = std::collections::HashMap::new();
-                for bf in &bit_field_layout.fields {
-                    bit_field_map.insert(bf.name.clone(), (bf.offset, bf.width, bit_field_layout.storage_type.bits()));
-                }
-                self.bit_field_layouts.insert(class.name.clone(), bit_field_map);
+        } else {
+            for field in &flattened {
+                let field_type = self.coffee_type_to_llvm(&field.field_type)?;
+                field_layouts.push(Layout::from_target_data(&field_type, &td));
             }
+            field_names = flattened.iter().map(|f| f.name.clone()).collect();
         }
 
-        for field in &class.fields {
-            // For bit fields, use the storage unit type instead of the declared type
-            if has_bit_fields && field.bit_width.is_some() {
-                // Bit fields will share storage units, skip individual field type processing
-                // The storage unit will be added separately
-                continue;
-            }
-
-            let field_type = self.coffee_type_to_llvm(&field.field_type)?;
-            let layout = Layout::from_llvm_type(&field_type);
-            field_layouts.push(layout);
-            field_types.push(field_type);
-        }
-
-        // Add storage unit for bit fields if present
-        if has_bit_fields {
-            // Determine the storage unit size based on total bit width
-            let total_bits: u8 = class.fields.iter()
-                .filter_map(|f| f.bit_width)
-                .sum();
-
-            let storage_type = if total_bits <= 8 {
-                self.backend.context.i8_type()
-            } else if total_bits <= 16 {
-                self.backend.context.i16_type()
-            } else if total_bits <= 32 {
-                self.backend.context.i32_type()
-            } else {
-                self.backend.context.i64_type()
-            };
-
-            let storage_enum = BasicTypeEnum::IntType(storage_type);
-            let layout = Layout::from_llvm_type(&storage_enum);
-            field_layouts.push(layout);
-            field_types.push(storage_enum);
-        }
-
-        // Calculate optimal struct layout with field reordering
-        // Use packed layout if class is marked as packed
         let struct_layout = if class.packed {
             StructLayout::calculate_packed(&field_layouts)
         } else {
-            StructLayout::calculate(&field_layouts)
+            StructLayout::calculate_declaration_order(&field_layouts)
         };
 
-        // Collect layout information for reporting
-        let field_names: Vec<String> = class.fields.iter()
-            .map(|f| f.name.clone())
-            .collect();
         self.layout_collector.add_struct(class.name.clone(), struct_layout.clone(), field_names);
 
-        // Check memory efficiency and warn if low
         let (data_bytes, padding_bytes, efficiency) = struct_layout.efficiency_metrics();
         if !class.packed && efficiency < 75.0 {
             eprintln!("  = warning: struct '{}' has low memory efficiency ({:.1}%)\n    = note: {} bytes data, {} bytes padding\n    = help: consider using 'packed class' or reordering fields to reduce padding",
                 class.name, efficiency, data_bytes, padding_bytes);
         }
 
-        // Reorder field types to match optimized layout
-        let mut reordered_field_types: Vec<BasicTypeEnum> = Vec::new();
-        for field_layout in &struct_layout.fields {
-            reordered_field_types.push(field_types[field_layout.original_index].clone());
+        // Opaque struct + body is created once here, in declaration order.
+        self.type_mapper
+            .get_or_create_struct_type_from_class(&class.name, class, &self.classes)
+            .map_err(|e| self.error("compile_class", e))?;
+
+        if pack_bits {
+            if let Some(&struct_type) = self.type_mapper.struct_types.get(&class.name) {
+                let mut llvm_fields: Vec<inkwell::types::BasicTypeEnum> = Vec::new();
+                for member in &packed_members {
+                    match member {
+                        super::class_layout::LlvmStructMember::Regular(field) => {
+                            llvm_fields.push(self.coffee_type_to_llvm(&field.field_type)?);
+                        }
+                        super::class_layout::LlvmStructMember::BitStorage { bits, .. } => {
+                            llvm_fields.push(self.bitfield_storage_int_type(*bits).into());
+                        }
+                    }
+                }
+                struct_type.set_body(&llvm_fields, class.packed);
+            }
         }
 
-        // Store layout information for final report (collected during compilation)
-        // This will be used to generate a complete memory layout diagram after compilation
-        // Store in a module-level cache or return as part of compilation result
-
-        // Get or create struct type from cache
-        let struct_type = match self.type_mapper.get_or_create_struct_type_from_class(&class.name, class, &self.classes) {
-            Some(st) => st,
-            None => {
-                return Err(self.error("compile_class",
-                    format!("duplicate definition of class '{}'\n  = note: class is already defined", class.name)));
-            }
-        };
-
-        // Set struct body with optimized field order
-        // Use packed for LLVM if class is marked as packed
-        struct_type.set_body(&reordered_field_types, class.packed);
-
-        // Compile class methods (including constructor)
-        for method in &class.methods {
-            let method_name = format!("{}_{}", class.name, method.name);
-            
-            // Convert method to Function
-            // Add self parameter as the first parameter (except for constructors)
-            let method_parameters = if method.name == "new" {
-                // Constructor - don't add self parameter
-                method.parameters.iter().map(|p| {
-                    crate::parser::function::Parameter {
-                        name: p.name.clone(),
-                        param_type: p.param_type.clone(),
-                        is_variadic: false,
-                    }
-                }).collect()
-            } else {
-                // Regular method - add self parameter as the first parameter
-                let mut params = vec![
-                    crate::parser::function::Parameter {
-                        name: "self".to_string(),
-                        param_type: class.name.clone(),
-                        is_variadic: false,
-                    }
-                ];
-                params.extend(method.parameters.iter().map(|p| {
-                    crate::parser::function::Parameter {
-                        name: p.name.clone(),
-                        param_type: p.param_type.clone(),
-                        is_variadic: false,
-                    }
-                }));
-                params
-            };
-            
-            let func = crate::parser::Function {
-                name: method_name.clone(),
-                parameters: method_parameters,
-                return_type: method.return_type.clone(),
-                error_handler: None,
-                is_c: false,
-                body: crate::parser::function::FunctionBody::Block(method.body.clone()),
-            };
-
-            // Declare and compile the function
-            crate::backend::functions::declare_function(
-                &func,
-                &self.backend.module,
-                self.backend.context,
-                &self.type_mapper,
-                &mut self.functions,
-            )?;
-
-                                // Compile function body
-                                match &func.body {
-                                    crate::parser::function::FunctionBody::Expression(expr_str) => {
-                                        // Get the function value
-                                        let fn_value = self.functions.get(&func.name).copied()
-                                            .ok_or_else(|| self.error("compile_class",
-                                                format!("function '{}' not found after declaration", func.name)))?;
-            
-                                        // Create entry block
-                                        let entry_block = self.backend.context.append_basic_block(fn_value, "entry");
-                                        self.backend.builder.position_at_end(entry_block);
-            
-                                        // Set current function
-                                        let old_current_function = self.current_function;
-                                        self.current_function = Some(fn_value);
-            
-                                        // Set up function parameters
-                                        for (i, param) in fn_value.get_params().into_iter().enumerate() {
-                                            if let Some(param_name) = func.parameters.get(i).map(|p| p.name.clone()) {
-                                                // Create alloca for parameter
-                                                let param_type: inkwell::types::BasicTypeEnum = param.get_type().into();
-                                                let alloca = self.backend.builder.build_alloca(param_type, &format!("{}_param", param_name))
-                                                    .map_err(|e| self.error("compile_class", format!("failed to build alloca: {}", e)))?;                            
-                            // Store parameter value
-                            self.backend.builder.build_store(alloca, param)
-                                .map_err(|e| self.error("compile_class", format!("failed to build store: {}", e)))?;
-                            
-                            // Store parameter in memory context
-                            use crate::backend::memory_ops::LifetimeInfo;
-                            self.memory_ctx.lifetimes.insert(
-                                param_name.clone(),
-                                LifetimeInfo::new(param_name.clone(), 0)
-                            );
-                            
-                            // Store parameter in variables map for access
-                            self.variables.insert(param_name.clone(), (alloca.into(), param_type));
-                            
-                            // Store class name in variable_types for method calls
-                            if param_name == "self" {
-                                self.variable_types.insert(param_name.clone(), class.name.clone());
-                            }
-                        }
-                    }
-
-                    // Parse and compile the expression
-                    let result = self.compile_expr(expr_str)?;
-
-                    // Build return instruction
-                    let ret_type = fn_value.get_type().get_return_type();
-                    if ret_type.is_none() {
-                        // Void return type
-                        self.backend.builder.build_return(None)
-                            .map_err(|e| self.error("compile_class", format!("failed to build return: {}", e)))?;
-                    } else if let Some(ret_type) = ret_type {
-                        // Convert value to target type
-                        let converted = self.convert_value_to_type(result, ret_type, "method_return")?;
-                        self.backend.builder.build_return(Some(&converted))
-                            .map_err(|e| self.error("compile_class", format!("failed to build return: {}", e)))?;
-                    }
-
-                    // Restore current function
-                    self.current_function = old_current_function;
-                }
-                crate::parser::function::FunctionBody::Block(statements) => {
-                    // Compile function body with statements
-                    let fn_value = self.functions.get(&func.name).copied()
-                        .ok_or_else(|| self.error("compile_class",
-                            format!("function '{}' not found after declaration", func.name)))?;
-
-                    // Create entry block
-                    let entry_block = self.backend.context.append_basic_block(fn_value, "entry");
-                    self.backend.builder.position_at_end(entry_block);
-
-                    // Set current function
-                    let old_current_function = self.current_function;
-                    self.current_function = Some(fn_value);
-
-                    // Set up function parameters
-                    for (i, param) in fn_value.get_params().into_iter().enumerate() {
-                        if let Some(param_name) = func.parameters.get(i).map(|p| p.name.clone()) {
-                            // Create alloca for parameter
-                            let param_type: inkwell::types::BasicTypeEnum = param.get_type().into();
-                            let alloca = self.backend.builder.build_alloca(param_type, &format!("{}_param", param_name))
-                                .map_err(|e| self.error("compile_class", format!("failed to build alloca: {}", e)))?;
-                            
-                            // Store parameter value
-                            self.backend.builder.build_store(alloca, param)
-                                .map_err(|e| self.error("compile_class", format!("failed to build store: {}", e)))?;
-                            
-                            // Store parameter in memory context
-                            use crate::backend::memory_ops::LifetimeInfo;
-                            self.memory_ctx.lifetimes.insert(
-                                param_name.clone(),
-                                LifetimeInfo::new(param_name.clone(), 0)
-                            );
-                            
-                            // Store parameter in variables map for access
-                            self.variables.insert(param_name.clone(), (alloca, param_type));
-                            
-                            // Store class name in variable_types for method calls
-                            // Check if the parameter type is a class type
-                            let param_type_str = &func.parameters[i].param_type;
-                            if param_type_str == &class.name {
-                                // This is the self parameter
-                                self.variable_types.insert(param_name.clone(), class.name.clone());
-                            } else {
-                                // Check if this parameter is a class type by looking it up in the classes map
-                                if self.classes.contains_key(param_type_str) {
-                                    // This is a class type parameter
-                                    self.variable_types.insert(param_name.clone(), param_type_str.clone());
-                                }
-                            }
-                        }
-                    }
-
-                    // Compile each statement
-                    for stmt in statements {
-                        self.compile_statement(stmt)?;
-                    }
-
-                    // Add default return if needed (but not if function has raise statement)
-                    let has_terminator = self.backend.builder.get_insert_block()
-                        .map(|b| b.get_terminator().is_some())
-                        .unwrap_or(false);
-                    if !has_terminator {
-                        // Check if return type is void
-                        let ret_type = fn_value.get_type().get_return_type();
-                        if ret_type.is_none() {
-                            // Void return type
-                            self.backend.builder.build_return(None)
-                                .map_err(|e| self.error("compile_class", format!("failed to build return: {}", e)))?;
-                        } else if let Some(ret_type) = ret_type {
-                            // Non-void return type - use default value
-                            let default_value: inkwell::values::BasicValueEnum = match ret_type {
-                                inkwell::types::BasicTypeEnum::IntType(int_type) => {
-                                    int_type.const_int(0, false).into()
-                                }
-                                inkwell::types::BasicTypeEnum::FloatType(float_type) => {
-                                    float_type.const_float(0.0).into()
-                                }
-                                inkwell::types::BasicTypeEnum::PointerType(ptr_type) => {
-                                    // For pointer types, use a null pointer
-                                    ptr_type.const_null().into()
-                                }
-                                _ => {
-                                    // For other types, use undef
-                                    self.backend.context.i64_type().const_int(0, false).into()
-                                }
-                            };
-                            self.backend.builder.build_return(Some(&default_value))
-                                .map_err(|e| self.error("compile_class", format!("failed to build return: {}", e)))?;
-                        }
-                    }
-
-                    // Restore current function
-                    self.current_function = old_current_function;
-                }
-                crate::parser::function::FunctionBody::External => {
-                    // External function, no body to compile
-                }
-            }
+        // Declare every method before compiling so later methods (e.g. `new`)
+        // are visible to earlier associated functions (`origin` calling `Point::new`).
+        let method_fns: Vec<_> = class.methods.iter()
+            .map(|method| method.to_standalone_function(&class.name))
+            .collect();
+        for func in &method_fns {
+            self.declare_function(func)?;
+        }
+        for func in &method_fns {
+            self.compile_function(func)?;
         }
 
         // Generate drop function for classes with constructor (full classes)
@@ -387,6 +126,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             
             // Create drop function signature: void ClassName__drop(struct ClassName* self)
             let drop_func = crate::parser::Function {
+                type_params: vec![],
                 name: drop_func_name.clone(),
                 parameters: vec![
                     crate::parser::function::Parameter {
@@ -410,7 +150,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 &mut self.functions,
             )?;
 
-            // Compile drop function body (empty for now)
+            // Compile drop function body: reverse-order nested class `__drop` calls.
             let fn_value = self.functions.get(&drop_func_name).copied()
                 .ok_or_else(|| self.error("compile_class",
                     format!("drop function '{}' not found after declaration", drop_func_name)))?;
@@ -419,9 +159,168 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             let entry_block = self.backend.context.append_basic_block(fn_value, "entry");
             self.backend.builder.position_at_end(entry_block);
 
-            // Just return void (drop function is a no-op for now)
+            let self_ptr = fn_value
+                .get_nth_param(0)
+                .ok_or_else(|| {
+                    self.error(
+                        "compile_class",
+                        format!("drop function '{}' is missing the self parameter", drop_func_name),
+                    )
+                })?
+                .into_pointer_value();
+
+            let struct_type = *self.type_mapper.struct_types.get(&class.name).ok_or_else(|| {
+                self.error(
+                    "compile_class",
+                    format!("struct type for '{}' not found when compiling drop", class.name),
+                )
+            })?;
+            let packed_info = self.packed_field_info.get(&class.name).cloned();
+
+            for (idx, field) in flattened.iter().enumerate().rev() {
+                if field.bit_width.is_some() {
+                    continue;
+                }
+                let Ok(field_ty) = crate::types::type_from_str(&field.field_type) else {
+                    continue;
+                };
+                let gep_index = packed_info
+                    .as_ref()
+                    .and_then(|m| m.get(&field.name).map(|p| p.gep_index))
+                    .unwrap_or(idx);
+                let zero = self.backend.context.i32_type().const_int(0, false);
+                let field_index_val = self
+                    .backend
+                    .context
+                    .i32_type()
+                    .const_int(gep_index as u64, false);
+                let field_ptr = unsafe {
+                    self.backend.builder.build_in_bounds_gep(
+                        struct_type,
+                        self_ptr,
+                        &[zero, field_index_val],
+                        &format!("{}_{}_drop_ptr", class.name, field.name),
+                    )
+                }
+                .map_err(|e| {
+                    self.error(
+                        "compile_class",
+                        format!("failed to GEP drop field '{}': {}", field.name, e),
+                    )
+                })?;
+
+                let field_llvm = struct_type
+                    .get_field_type_at_index(gep_index as u32)
+                    .ok_or_else(|| {
+                        self.error(
+                            "compile_class",
+                            format!("drop: missing LLVM field '{}'", field.name),
+                        )
+                    })?;
+
+                crate::backend::memory_ops::drop_coffee_place(
+                    self.backend.context,
+                    &self.backend.builder,
+                    &self.functions,
+                    &field_ty,
+                    field_ptr,
+                    field_llvm,
+                )
+                .map_err(|e| self.error("compile_class", e))?;
+            }
+
             self.backend.builder.build_return(None)
                 .map_err(|e| self.error("compile_class", format!("failed to build return in drop function: {}", e)))?;
+
+            // Class__clone: construct-order field walk (drop order reversed).
+            let clone_func_name = format!("{}__clone", class.name);
+            let clone_func = crate::parser::Function {
+                type_params: vec![],
+                name: clone_func_name.clone(),
+                parameters: vec![
+                    crate::parser::function::Parameter {
+                        name: "self".to_string(),
+                        param_type: class.name.clone(),
+                        is_variadic: false,
+                    }
+                ],
+                return_type: "void".to_string(),
+                error_handler: None,
+                is_c: false,
+                body: crate::parser::function::FunctionBody::Expression(crate::parser::expr::Expression::Literal(String::new())),
+            };
+            crate::backend::functions::declare_function(
+                &clone_func,
+                &self.backend.module,
+                self.backend.context,
+                &self.type_mapper,
+                &mut self.functions,
+            )?;
+            let clone_fn_value = self.functions.get(&clone_func_name).copied()
+                .ok_or_else(|| self.error("compile_class",
+                    format!("clone function '{}' not found after declaration", clone_func_name)))?;
+            let clone_entry = self.backend.context.append_basic_block(clone_fn_value, "entry");
+            self.backend.builder.position_at_end(clone_entry);
+            let clone_self = clone_fn_value
+                .get_nth_param(0)
+                .ok_or_else(|| {
+                    self.error(
+                        "compile_class",
+                        format!("clone function '{}' is missing the self parameter", clone_func_name),
+                    )
+                })?
+                .into_pointer_value();
+            for (idx, field) in flattened.iter().enumerate() {
+                if field.bit_width.is_some() {
+                    continue;
+                }
+                let Ok(field_ty) = crate::types::type_from_str(&field.field_type) else {
+                    continue;
+                };
+                let gep_index = packed_info
+                    .as_ref()
+                    .and_then(|m| m.get(&field.name).map(|p| p.gep_index))
+                    .unwrap_or(idx);
+                let zero = self.backend.context.i32_type().const_int(0, false);
+                let field_index_val = self
+                    .backend
+                    .context
+                    .i32_type()
+                    .const_int(gep_index as u64, false);
+                let field_ptr = unsafe {
+                    self.backend.builder.build_in_bounds_gep(
+                        struct_type,
+                        clone_self,
+                        &[zero, field_index_val],
+                        &format!("{}_{}_clone_ptr", class.name, field.name),
+                    )
+                }
+                .map_err(|e| {
+                    self.error(
+                        "compile_class",
+                        format!("failed to GEP clone field '{}': {}", field.name, e),
+                    )
+                })?;
+                let field_llvm = struct_type
+                    .get_field_type_at_index(gep_index as u32)
+                    .ok_or_else(|| {
+                        self.error(
+                            "compile_class",
+                            format!("clone: missing LLVM field '{}'", field.name),
+                        )
+                    })?;
+                crate::backend::memory_ops::clone_coffee_place(
+                    self.backend.context,
+                    &self.backend.builder,
+                    &self.functions,
+                    &field_ty,
+                    field_ptr,
+                    field_llvm,
+                )
+                .map_err(|e| self.error("compile_class", e))?;
+            }
+            self.backend.builder.build_return(None)
+                .map_err(|e| self.error("compile_class", format!("failed to build return in clone function: {}", e)))?;
         }
 
         // Note: We no longer generate automatic constructors

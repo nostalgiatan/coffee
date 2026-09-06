@@ -7,21 +7,24 @@
 ## 模块结构
 
 ```
+src/compiler.rs              # 前端模块：CompilationResult、CompilerFrontend
 src/compiler/
-├── mod.rs          # 主编译器前端模块
-├── unit.rs         # 编译单元管理
-├── graph.rs        # 依赖图构建
-├── project.rs      # 项目配置管理
-├── entry_point.rs  # 主入口点检测
-├── scheduler.rs    # 编译调度
-├── scanner.rs      # 源文件扫描
-├── linker.rs       # 链接器编排
-├── builder.rs      # 项目构建器
-├── import_resolver.rs  # 导入解析
-├── module_loader.rs    # 模块加载
-├── pipeline.rs     # 编译流水线
-├── session.rs      # 编译会话管理
-└── statistics.rs   # 编译统计
+├── pipeline/                # CompilationPipeline（parse → imports → 语义 → 类型 → MIR）
+│   ├── mod.rs
+│   ├── parse.rs
+│   ├── imports.rs
+│   └── collect.rs
+├── pkg/                     # 包依赖：PackageDep、fetch、resolve
+├── unit.rs                  # 编译单元管理
+├── graph.rs                 # 依赖图构建
+├── project.rs               # 项目配置管理
+├── entry_point.rs           # 主入口点检测
+├── scheduler.rs             # 编译调度
+├── scanner.rs               # 源文件扫描
+├── linker.rs                # 链接器编排
+├── builder.rs               # 项目构建器
+├── import_resolver.rs       # 导入解析
+└── session.rs               # 编译会话管理
 ```
 
 ## 核心组件
@@ -73,14 +76,14 @@ pub struct CompilationResult {
     pub report: AnalysisReport,
     /// 编译统计
     pub stats: CompilationStatistics,
-    /// 标准库导出
-    pub std_exports: Vec<String>,
     /// 导入的模块路径
     pub imported_modules: Vec<String>,
     /// C 库导入
     pub c_imports: Vec<String>,
     /// C 函数符号表
     pub cfc_symbols: HashMap<String, c::CSymbolTable>,
+    /// 完整 MIR 在 mir_gen.rs 编译；不进 hir_fns 是编译错误（缺 MIR），不是 AST 回退
+    pub hir_fns: Vec<hir::MirFn>,
 }
 ```
 
@@ -118,24 +121,9 @@ pub struct CompilationStatistics {
 主编译器前端编排整个编译过程：
 
 ```rust
-pub struct CompilerFrontend {
-    /// 语义分析器
-    analyzer: Arc<RwLock<SemanticAnalyzer>>,
-    /// 类型检查器
-    type_checker: Arc<RwLock<TypeChecker>>,
-    /// 诊断发射器
-    emitter: DiagnosticEmitter,
-    /// 编译器配置
-    config: CompilerConfig,
-    /// 模块缓存
-    module_cache: Arc<RwLock<HashMap<String, ParsedModule>>>,
-    /// 当前导入的模块（用于循环检测）
-    import_stack: Arc<RwLock<Vec<String>>>,
-    /// C 库导入
-    c_imports: Arc<RwLock<Vec<String>>>,
-    /// CFC 符号表
-    cfc_symbols: Arc<RwLock<HashMap<String, c::CSymbolTable>>>,
-}
+pub type CompilerFrontend = CompilationPipeline;
+// CompilationPipeline { session: Arc<Session> }
+// new() / with_session() / compile(&self, source, file_name)
 ```
 
 ## 编译流水线
@@ -290,10 +278,15 @@ authors = ["Author Name <email@example.com>"]
 description = "Project description"
 
 [dependencies]
-std = "0.2.0"
+# std 随编译器捆绑（`coffee std install`）。不要写本机 path= 指向 std，
+# 除非要用 [dependencies.packages.std] 覆盖。
 
-[dependencies.packages]
-# coffee_package = "0.1.0"
+# path XOR url+hash（hash = 解包树 SHA-256；不能写成 foo = "1.0"）
+# [dependencies.packages.foo]
+# url = "https://example.com/foo.tar.gz"
+# hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+# [dependencies.packages.local_bar]
+# path = "../bar"
 
 [dependencies.c_libraries.libm]
 name = "m"
@@ -313,6 +306,24 @@ have_c = true
 opt_level = 2
 triple = "x86_64-unknown-linux-gnu"
 ```
+
+### 包依赖（Zig 风格，无注册表）
+
+`[dependencies.packages.<key>]` 是 `PackageDep`：`path = "..."` **XOR** `url` + `hash`。`hash` 是解包后整棵树的 SHA-256。不能写 semver 字符串 `foo = "1.0"`。没有中央注册表。
+
+```rust
+pub struct PackageDep {
+    pub path: Option<String>,
+    pub url: Option<String>,
+    pub hash: Option<String>,
+}
+```
+
+- **`coffee fetch`**：按最近的 `coffee.toml` 把 url+hash 依赖拉进缓存。
+- **`coffee fetch <url>`**：下载 `.tar.gz`，打印树哈希，写入缓存。
+- **`coffee fetch <url> --save [name]`**：同上，并写入 `[dependencies.packages.<name>]`（名字默认取被拉包的 `[package].name`）；`--force` 覆盖已有键。
+
+缓存目录：`$COFFEE_CACHE`，否则 `$XDG_CACHE_HOME/coffee`，否则 `~/.cache/coffee`。实现在 `src/compiler/pkg/`（`fetch.rs`、`resolve.rs`）。项目编译（`ProjectBuilder`）解析依赖图，并把各包导入根（有 `src/` 则用 `src/`，否则用包根）**前置**到 `CompilerConfig.import_paths`。官方 **std** 嵌在 CLI 里（`coffee std install`）；除非 toml 已有 `[dependencies.packages.std]`，编译会自动前置 std 导入根。用户写 `use print in std`；`of c` 在 `library/std/src/sys.cf`。
 
 ### 项目构建器
 
@@ -436,37 +447,19 @@ impl ImportResolver {
 }
 ```
 
-### 模块加载器（`module_loader.rs`）
+### 流水线（`pipeline/`）
 
-加载和解析模块：
-
-```rust
-pub struct ModuleLoader {
-    cache: Arc<RwLock<HashMap<String, ParsedModule>>>,
-    import_stack: Arc<RwLock<Vec<String>>>,
-}
-
-impl ModuleLoader {
-    pub fn new() -> Self;
-    pub fn load(&self, path: &Path) -> Result<ParsedModule, String>;
-    pub fn is_loaded(&self, path: &str) -> bool;
-}
-```
-
-### 流水线（`pipeline.rs`）
-
-管理编译流水线：
+管理编译流水线（`mod.rs`、`parse.rs`、`imports.rs`、`collect.rs`；没有 `pipeline.rs`）。类型检查之后绑定函数局部变量再降到 `MirFn`。完整 MIR 在 `mir_gen.rs` 中编译：`if`/`while`、范围与集合 `for`（`ForRange`）、`match`（降为 `If`）、`raise` 走 MIR 原生路径。到达 codegen 的 `MirFn` 为 `complete: true` 且不含残留 `Match`/`ForIn`；codegen 不报 `internal leftover`。无法降的 `match`/`for` 由 `lower_function` `Err`（Error 诊断），该函数不进 `hir_fns`；缺 MIR 是硬错误（`missing MIR for function`），`compile_statement` 的 Match/For/Raise 若被走到会报错。类型检查通过的 `p.x` 再 `rm` 仍产出完整 MIR。函数体里的嵌套 `class`/`fn` 是 `MirStmt::Nested(NestedDecl)` 且仍 complete。
 
 ```rust
 pub struct CompilationPipeline {
-    config: CompilerConfig,
-    stages: Vec<Box<dyn PipelineStage>>,
+    session: Arc<Session>,
 }
 
 impl CompilationPipeline {
-    pub fn new(config: CompilerConfig) -> Self;
-    pub fn add_stage(&mut self, stage: Box<dyn PipelineStage>);
-    pub fn execute(&mut self, source: &str) -> Result<CompilationResult, String>;
+    pub fn new() -> Self;
+    pub fn with_session(session: Arc<Session>) -> Self;
+    pub fn compile(&self, source: &str, file_name: Option<&str>) -> CompilationResult;
 }
 ```
 
@@ -489,20 +482,9 @@ impl CompilationSession {
 }
 ```
 
-### 统计（`statistics.rs`）
+### 统计
 
-提供编译统计：
-
-```rust
-pub struct CompilationStatistics {
-    // 详见上方结构
-}
-
-impl CompilationStatistics {
-    pub fn format(&self) -> String;
-    pub fn merge(&mut self, other: &CompilationStatistics);
-}
-```
+`CompilationStatistics` 在 `src/compiler.rs` 的 `CompilationResult` 上（没有 `statistics.rs`）。
 
 ## 使用示例
 
@@ -607,7 +589,12 @@ let cfc_symbols = frontend.get_cfc_symbols();
 
 ```rust
 let result = frontend.compile(source, Some("file.cf"));
-backend::compile_program(&result.program, &result.c_imports, result.cfc_symbols)?;
+codegen.compile_program_with_hir(
+    &result.program,
+    &result.c_imports,
+    result.cfc_symbols,
+    result.hir_fns,
+)?;
 ```
 
 ## 设计模式

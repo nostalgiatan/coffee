@@ -10,7 +10,7 @@ The Parser module (`src/parser/`) is responsible for parsing Coffee source code 
 src/parser/
 ├── mod.rs           # Main parser module and coordination
 ├── import.rs        # Import statement parsing
-├── function.rs      # Function definition parsing
+├── function.rs      # Function definition parsing (`type_params`)
 ├── main.rs          # Main entry point parsing
 ├── if.rs            # If expression parsing
 ├── while.rs         # While loop parsing
@@ -18,9 +18,12 @@ src/parser/
 ├── for.rs           # For loop parsing
 ├── var.rs           # Variable declaration and control flow parsing
 ├── comment.rs       # Comment parsing
-├── class.rs         # Class and enum definition parsing
+├── class/           # Class and enum definition parsing (`type_params`)
 ├── memory.rs        # Memory operation parsing
-├── expr.rs          # Expression parsing
+├── ty.rs            # Unified type strings (`List<List<int>>`, `parse_type_params`)
+├── expr/            # Expression AST + parse (not expr.rs)
+├── program.rs       # `Program { statements, stmt_spans }` and `parse_program`
+├── stmt.rs          # `Statement` enum
 ├── error.rs         # Error types and handling
 ├── tracker.rs       # Block tracking for indentation
 ├── indent.rs        # Indentation handling
@@ -37,7 +40,7 @@ The main parser orchestrates the entire parsing process through the `parse_progr
 
 **`parse_program(input: &str) -> Result<Program, Vec<ParseError>>`**
 
-Parses an entire Coffee source file into an AST. The function processes input line by line, identifying appropriate parsing strategies for each statement based on structure and content.
+Parses an entire Coffee source file into a `Program`: `statements` plus `stmt_spans` (half-open byte ranges in **this** source). Dummy `(0,0)` spans are only for `Program::new` / synthesized tests. The function processes input line by line, identifying appropriate parsing strategies for each statement based on structure and content.
 
 **Parsing Strategy:**
 1. Skip empty lines and whole-line comments
@@ -141,7 +144,7 @@ Parses function definitions with support for:
 **Function Types:**
 - Regular Coffee functions: `fn name(params) => return_type:`
 - C ABI functions: `c fn name(params) => return_type:`
-- Functions with error handlers: `fn name(params) #error_handler => return_type:`
+- Functions with an error listener: `fn f(params) #name => R:` (`#name` names an existing `fn name(err: Error) => R`; no call-stack penetration; `raise` inside `name` still aborts)
 
 **Components:**
 - Function name
@@ -218,15 +221,19 @@ Parses Coffee's unique memory management operations:
 
 **Operations:**
 - `mv source target` - Move ownership
-- `clone source target` - Create a copy
-- `copy source target` - Share reference
-- `rm variable` - Delete variable
-- `rm var1, var2, var3` - Batch delete
-- `clean out` - Clean all variables
-- `clean out except var1, var2` - Clean except specified
-- `clean out var1, var2` - Clean specified variables
+- `clone source target` - Deep clone (nested `str` / class / resource array / tuple; `object` / refs / slices stay shallow)
+- `copy source target` - Parsed; type checker rejects
+- `rm variable` - Early drop
+- `rm var1, var2, var3` - Batch early drop
+- `clean out` / `clean out except …` — parsed; type checker rejects
 
-### 9. Expression Parsing (`expr.rs`)
+Last-use implicit move is **not** a parse form; it is `src/types/last_use.rs` treating `let b = a` / call / return as a move.
+
+### 8b. Types (`ty.rs`)
+
+`parse_type` is the single type-string scanner (params, returns, `let`, fields, methods). Nested applications are one type (`List<List<int>>`). `class List<T>:` and `fn id<T>(x: T) => T` use `parse_type_params` → AST `type_params`.
+
+### 9. Expression Parsing (`expr/`)
 
 Parses various expression types:
 
@@ -268,10 +275,13 @@ Supports both comment styles:
 
 ### 12. Raise Statements (`raise.rs`)
 
-Parses exception raising:
+Parses exception raising (syntax only; typecheck decides what may be raised):
 ```coffee
-raise ErrorType(arguments)
+raise DivisionByZero(...)
+raise DivisionByZero { code: 1, note: "...", e: (), extra: 0 }
 ```
+
+Raiseable types are builtin `Error` and classes `of Error` (and descendants). Extra fields and methods on those classes are allowed. A name ending in `Error` is not enough. `#name` listener rules are unchanged (`fn name(err: Error) => R`).
 
 ## Parsing Algorithm
 

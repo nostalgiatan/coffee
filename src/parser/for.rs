@@ -65,14 +65,20 @@ pub enum ForIterator {
 /// 
 /// * `Ok((remaining, ForLoop))` - Successfully parsed for loop and remaining input
 /// * `Err(nom::Err)` - If the input does not match the for loop pattern
+#[cfg(test)]
 pub fn parse_for(input: &str) -> IResult<&str, ForLoop> {
+    parse_for_at(input, 0)
+}
+
+pub fn parse_for_at(input: &str, base: usize) -> IResult<&str, ForLoop> {
+    let src = input;
     let (input, _) = tag("for")(input)?;
     let (input, _) = space1(input)?;
     let (input, variable) = take_until_space(input)?;
     let (input, _) = space1(input)?;
     let (input, _) = tag("in")(input)?;
     let (input, _) = space1(input)?;
-    let (input, iterator) = take_until_colon(input)?;
+    let (input, iterator) = crate::parser::take_until_header_colon(input)?;
     let (input, _) = char(':')(input)?;
     let (input, _) = space0(input)?;
 
@@ -87,35 +93,38 @@ pub fn parse_for(input: &str) -> IResult<&str, ForLoop> {
     };
 
     // Parse iterator: supports range(start, end), start..end, or collection name
-    let iterator = if let Some(range_start) = iterator.strip_prefix("range(") {
-        // range(start, end) syntax
-        if let Some(range_end) = range_start.find(')') {
-            let range_content = &range_start[..range_end];
-            let parts: Vec<&str> = range_content.split(',').collect();
-            if parts.len() == 2 {
-                ForIterator::Range {
-                    start: parse_range_bound(parts[0].trim())?,
-                    end: parse_range_bound(parts[1].trim())?,
+    let iterator = if let Some(after_range) = iterator.strip_prefix("range") {
+        if after_range.starts_with('(') {
+            if let Some(close) = crate::parser::index_of_matching_close_paren(after_range) {
+                let range_content = &after_range[1..close];
+                let parts = crate::parser::split_top_level_commas(range_content);
+                if parts.len() == 2 {
+                    ForIterator::Range {
+                        start: parse_range_bound(src, base, parts[0])?,
+                        end: parse_range_bound(src, base, parts[1])?,
+                    }
+                } else {
+                    ForIterator::Collection(parse_range_bound(src, base, iterator.trim())?)
                 }
             } else {
-                ForIterator::Collection(parse_range_bound(iterator.trim())?)
+                ForIterator::Collection(parse_range_bound(src, base, iterator.trim())?)
             }
         } else {
-            ForIterator::Collection(parse_range_bound(iterator.trim())?)
+            ForIterator::Collection(parse_range_bound(src, base, iterator.trim())?)
         }
     } else if iterator.contains("..") {
         // start..end syntax (Rust-style range)
         let parts: Vec<&str> = iterator.split("..").collect();
         if parts.len() == 2 {
             ForIterator::Range {
-                start: parse_range_bound(parts[0].trim())?,
-                end: parse_range_bound(parts[1].trim())?,
+                start: parse_range_bound(src, base, parts[0].trim())?,
+                end: parse_range_bound(src, base, parts[1].trim())?,
             }
         } else {
-            ForIterator::Collection(parse_range_bound(iterator.trim())?)
+            ForIterator::Collection(parse_range_bound(src, base, iterator.trim())?)
         }
     } else {
-        ForIterator::Collection(parse_range_bound(iterator.trim())?)
+        ForIterator::Collection(parse_range_bound(src, base, iterator.trim())?)
     };
 
     // 递归解析 body 中的语句
@@ -129,45 +138,54 @@ pub fn parse_for(input: &str) -> IResult<&str, ForLoop> {
 
         while idx < body_lines.len() {
             let remaining_lines = &body_lines[idx..];
-            if let Some((stmt, consumed)) = crate::parser::parse_multiline_statement(remaining_lines) {
+            if let Some((stmt, consumed)) = crate::parser::multiline::parse_multiline_statement_at(
+                remaining_lines,
+                crate::parser::multiline::slice_base(remaining_lines[0], 0),
+            ) {
                 statements.push(stmt);
                 idx += consumed;
             } else {
-                // 如果无法解析，尝试作为单行语句、赋值语句或表达式解析
                 let line = body_lines[idx].trim();
-                if !line.is_empty() {
-                    // Try to parse as single-line statement first (including memory ops)
-                    if let Some(stmt) = crate::parser::parse_single_line_statement(line) {
-                        statements.push(stmt);
-                        idx += 1;
-                        continue;
-                    }
-                    
-                    // Try to parse as assignment statement
-                    if line.contains(" = ") && !line.starts_with("if ") && !line.starts_with("for ") && !line.starts_with("while ") {
-                        let parts: Vec<&str> = line.splitn(2, " = ").collect();
-                        if parts.len() == 2 {
-                            let var_name = parts[0].trim();
-                            let value_expr = parts[1].trim();
-                            
-                            // Validate that var_name is a valid identifier
-                            if var_name.chars().all(|c| c.is_alphanumeric() || c == '_') && !var_name.is_empty() {
-                                // Validate that value_expr is not empty
-                                if !value_expr.is_empty() {
-                                    statements.push(crate::parser::Statement::Assignment(var_name.to_string(), crate::parser::expr::assignment_rhs(value_expr)));
-                                    idx += 1;
-                                    continue;
-                                }
+                if line.is_empty() {
+                    idx += 1;
+                    continue;
+                }
+                if let Some(stmt) = crate::parser::line::parse_single_line_statement_at(
+                    line,
+                    crate::parser::multiline::slice_base(line, 0),
+                ) {
+                    statements.push(stmt);
+                    idx += 1;
+                    continue;
+                }
+                if line.contains(" = ") && !line.starts_with("if ") && !line.starts_with("for ") && !line.starts_with("while ") {
+                    let parts: Vec<&str> = line.splitn(2, " = ").collect();
+                    if parts.len() == 2 {
+                        let var_name = parts[0].trim();
+                        let value_expr = parts[1].trim();
+                        if var_name.chars().all(|c| c.is_alphanumeric() || c == '_') && !var_name.is_empty()
+                            && !value_expr.is_empty()
+                        {
+                            if let Ok(rhs) = crate::parser::expr::assignment_rhs(value_expr) {
+                                statements.push(crate::parser::Statement::Assignment(var_name.to_string(), rhs));
+                                idx += 1;
+                                continue;
                             }
                         }
                     }
-                    
-                    // Try to parse as expression
-                    if let Ok(expr) = crate::parser::expr::parse_expression(line) {
-                        statements.push(crate::parser::Statement::Expr(Box::new(expr)));
-                    }
                 }
-                idx += 1;
+                if let Ok(expr) = crate::parser::expr::parse_expression_at(
+                    line,
+                    crate::parser::multiline::slice_base(line, 0),
+                ) {
+                    statements.push(crate::parser::Statement::Expr(Box::new(expr)));
+                    idx += 1;
+                    continue;
+                }
+                return Err(nom::Err::Error(nom::error::Error {
+                    input,
+                    code: nom::error::ErrorKind::Fail,
+                }));
             }
         }
 
@@ -184,13 +202,12 @@ pub fn parse_for(input: &str) -> IResult<&str, ForLoop> {
     ))
 }
 
-fn parse_range_bound(raw: &str) -> Result<crate::parser::expr::Expression, nom::Err<nom::error::Error<&str>>> {
-    crate::parser::expr::parse_expression(raw.trim()).map_err(|_| {
-        nom::Err::Error(nom::error::Error {
-            input: raw,
-            code: nom::error::ErrorKind::Fail,
-        })
-    })
+fn parse_range_bound<'a>(
+    parent: &str,
+    parent_base: usize,
+    raw: &'a str,
+) -> Result<crate::parser::expr::Expression, nom::Err<nom::error::Error<&'a str>>> {
+    crate::parser::multiline::parse_expr_at(parent, parent_base, raw)
 }
 
 /// Take characters from input until a space is encountered
@@ -219,35 +236,6 @@ fn take_until_space(input: &str) -> IResult<&str, &str> {
             code: nom::error::ErrorKind::TakeUntil,
         }))
     }
-}
-
-/// Take characters from input until a colon is encountered
-/// 
-/// This utility function scans the input string until it finds a colon character,
-/// returning the text before the colon as the parsed content and the colon and
-/// everything after as the remaining input.
-/// 
-/// This function is used to parse the iterator part of for loops and other
-/// control flow statements that have the format `keyword ... :`.
-/// 
-/// # Arguments
-/// 
-/// * `input` - The input string to scan for a colon
-/// 
-/// # Returns
-/// 
-/// * `Ok((remaining, content))` - The part after the colon and the part before the colon
-/// * `Err(nom::Err)` - If no colon is found in the input
-fn take_until_colon(input: &str) -> IResult<&str, &str> {
-    for (i, c) in input.char_indices() {
-        if c == ':' {
-            return Ok((&input[i..], &input[..i]));
-        }
-    }
-    Err(nom::Err::Error(nom::error::Error {
-        input,
-        code: nom::error::ErrorKind::TakeUntil,
-    }))
 }
 
 /// Take characters from input until a newline is encountered
@@ -352,4 +340,59 @@ fn take_while_indent(input: &str) -> &str {
         .map(|c| c.len_utf8())
         .sum();
     &input[..len]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::expr::Expression;
+
+    #[test]
+    fn for_iterator_keeps_double_colon_path() {
+        let (rest, before) =
+            crate::parser::take_until_header_colon("x in Foo::items:").expect("header colon");
+        assert_eq!(before, "x in Foo::items");
+        assert_eq!(rest, ":");
+
+        let src = "for x in Foo::items():\n    return 0\n";
+        let (_, loop_) = parse_for(src).expect("parse");
+        match loop_.iterator {
+            ForIterator::Collection(expr) => {
+                let s = format!("{:?}", expr);
+                assert!(
+                    s.contains("Foo") && s.contains("items"),
+                    "iterator truncated: {:?}",
+                    expr
+                );
+            }
+            other => panic!("expected collection iterator, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn range_keeps_commas_inside_nested_call() {
+        let src = "for i in range(min(1, 2), 10):\n    return 0\n";
+        let (_, loop_) = parse_for(src).expect("parse");
+        match loop_.iterator {
+            ForIterator::Range { start, end } => {
+                assert!(
+                    matches!(start.kind(), Expression::Call { function: _, args: _ }),
+                    "{:?}",
+                    start.kind()
+                );
+                assert!(
+                    matches!(end.kind(), Expression::Literal(_)),
+                    "{:?}",
+                    end.kind()
+                );
+            }
+            other => panic!("expected range, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn invalid_for_body_line_is_error_not_skipped() {
+        let src = "for i in 0..3:\n    @@@\n";
+        assert!(parse_for(src).is_err());
+    }
 }

@@ -53,6 +53,9 @@ pub struct ProjectConfig {
     /// Target configuration including optimization level and target triple
     #[serde(default)]
     pub target: TargetConfig,
+    /// Directory that contains `coffee.toml` (set by [`ProjectConfig::from_file`]).
+    #[serde(skip)]
+    pub root: PathBuf,
 }
 
 /// Package metadata
@@ -102,18 +105,19 @@ fn default_version() -> String {
 /// a comprehensive dependency management system that supports both Coffee packages
 /// and C libraries with detailed configuration options.
 /// 
-/// The dependencies system allows projects to specify version requirements for
-/// Coffee packages and detailed linking information for C libraries.
-/// 
+/// Package entries are `path` XOR (`url` + `hash`). `[dependencies.std]` is
+/// deserialized and unread. C libraries use `[dependencies.c_libraries]`.
+///
 /// # Examples
-/// 
+///
 /// ```toml
-/// [dependencies]
-/// std = "0.2.0"
-/// 
-/// [dependencies.packages]
-/// coffee-utils = "1.0.0"
-/// 
+/// [dependencies.packages.foo]
+/// url = "https://example.com/foo.tar.gz"
+/// hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+///
+/// [dependencies.packages.local_bar]
+/// path = "../bar"
+///
 /// [dependencies.c_libraries.libm]
 /// name = "m"
 /// headers = ["math.h"]
@@ -121,18 +125,84 @@ fn default_version() -> String {
 /// ```
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Dependencies {
-    /// Standard library dependency version
-    /// This specifies the version of Coffee's standard library to use
+    /// Standard library field (deserialized, unused by package fetch)
     #[serde(default)]
     pub std: Option<String>,
-    /// Coffee package dependencies
-    /// Maps package names to their version requirements
+    /// Coffee package dependencies (import prefix → path or url+hash)
     #[serde(default)]
-    pub packages: HashMap<String, String>,
+    pub packages: HashMap<String, PackageDep>,
     /// C library dependencies
     /// Maps library identifiers to their detailed configuration
     #[serde(default)]
     pub c_libraries: HashMap<String, CLibrary>,
+}
+
+/// One `[dependencies.packages.<key>]` entry: `path` XOR (`url` and `hash`).
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct PackageDep {
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub hash: Option<String>,
+}
+
+fn opt_nonempty(s: &Option<String>) -> bool {
+    s.as_ref().map(|v| !v.is_empty()).unwrap_or(false)
+}
+
+impl PackageDep {
+    /// XOR + hash charset checks. Lowercases `hash` when present.
+    pub fn validate(&mut self, key: &str) -> Result<(), String> {
+        let has_path = opt_nonempty(&self.path);
+        let has_url = opt_nonempty(&self.url);
+        let has_hash = opt_nonempty(&self.hash);
+
+        if has_path && (has_url || has_hash) {
+            return Err(format!(
+                "package '{key}': use either `path` or `url`+`hash`, not both"
+            ));
+        }
+        if !has_path && !has_url && !has_hash {
+            return Err(format!(
+                "package '{key}': need `path` or `url`+`hash`"
+            ));
+        }
+        if has_url != has_hash {
+            return Err(format!(
+                "package '{key}': `url` and `hash` must be used together"
+            ));
+        }
+
+        if has_url {
+            let url = self.url.as_deref().unwrap();
+            let ok_scheme = url.starts_with("https://")
+                || url.starts_with("http://")
+                || url.starts_with("file://");
+            if !ok_scheme {
+                return Err(format!(
+                    "package '{key}': url must start with https://, http://, or file://"
+                ));
+            }
+        }
+
+        if has_hash {
+            let h = self.hash.as_deref().unwrap();
+            if h.len() != 64 || !h.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err(format!(
+                    "package '{key}': hash must be 64 hexadecimal characters (SHA-256)"
+                ));
+            }
+            self.hash = Some(h.to_ascii_lowercase());
+        }
+
+        Ok(())
+    }
+
+    pub fn is_path(&self) -> bool {
+        opt_nonempty(&self.path)
+    }
 }
 
 /// C library configuration
@@ -162,8 +232,8 @@ pub struct Dependencies {
 /// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CLibrary {
-    /// Library name (e.g., "m" for libm, "curl" for libcurl)
-    /// This is used to generate linker flags like -lm or -lcurl
+    /// Linker short name (`-lz`). Omitted in toml defaults to the table key.
+    #[serde(default)]
     pub name: String,
     /// C header files to search for functions
     /// These are used when generating .cfc files from headers
@@ -325,38 +395,7 @@ impl Default for TargetConfig {
     }
 }
 
-impl TargetConfig {
-    /// Get the target triple to use (None means system default)
-    /// 
-    /// Returns an Option containing the target triple string if specified,
-    /// or None if using the system default target.
-    /// 
-    /// # Returns
-    /// 
-    /// * `Some(&str)` - The target triple string if specified in the configuration
-    /// * `None` - If no target triple is specified (use system default)
-    pub fn get_target_triple(&self) -> Option<&str> {
-        if self.triple.is_empty() {
-            None
-        } else {
-            Some(&self.triple)
-        }
-    }
-}
-
 impl ProjectConfig {
-    /// Get the target triple to use (None means system default)
-    /// 
-    /// Delegates to the target configuration to retrieve the target triple.
-    /// 
-    /// # Returns
-    /// 
-    /// * `Some(&str)` - The target triple string if specified in the configuration
-    /// * `None` - If no target triple is specified (use system default)
-    pub fn get_target_triple(&self) -> Option<&str> {
-        self.target.get_target_triple()
-    }
-
     /// Load coffee.toml from path
     /// 
     /// Reads and parses a coffee.toml configuration file from the specified path.
@@ -386,11 +425,42 @@ impl ProjectConfig {
         let content = fs::read_to_string(path)
             .map_err(|e| format!("failed to read config: {}", e))?;
 
-        let config: ProjectConfig = toml::from_str(&content)
-            .map_err(|e| format!("failed to parse config: {}", e))?;
+        Self::parse_and_load(path, &content, true)
+    }
 
-        // Validate configuration
-        config.validate()?;
+    /// Load a dependency package `coffee.toml` (no required `fn main`).
+    pub fn from_package_file(path: &Path) -> Result<Self, String> {
+        let content = fs::read_to_string(path)
+            .map_err(|e| format!("failed to read config: {}", e))?;
+        Self::parse_and_load(path, &content, false)
+    }
+
+    fn parse_and_load(path: &Path, content: &str, require_main: bool) -> Result<Self, String> {
+        let mut config: ProjectConfig = toml::from_str(content).map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("invalid type: string") {
+                format!(
+                    "failed to parse config: old `[dependencies.packages]` string versions are not supported; use `path` or `url`+`hash` tables ({e})"
+                )
+            } else {
+                format!("failed to parse config: {}", e)
+            }
+        })?;
+
+        config.validate(require_main)?;
+
+        let abs = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(path)
+        };
+        config.root = abs
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
 
         Ok(config)
     }
@@ -401,14 +471,15 @@ impl ProjectConfig {
     /// requirements for successful compilation. Checks include:
     /// 
     /// - Package name is not empty and contains only valid characters
-    /// - Main entry point is specified
+    /// - Main entry point is specified (root projects only)
+    /// - Package deps are path XOR url+hash
     /// - Optimization level is within valid range (0-3)
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// * `Ok(())` - Configuration is valid
     /// * `Err(String)` - Error message describing validation failure
-    fn validate(&self) -> Result<(), String> {
+    fn validate(&mut self, require_main: bool) -> Result<(), String> {
         // Check package name
         if self.package.name.is_empty() {
             return Err("package name cannot be empty".to_string());
@@ -419,8 +490,7 @@ impl ProjectConfig {
             return Err(format!("invalid package name: '{}'", self.package.name));
         }
 
-        // Check main entry point
-        if self.build.main.is_empty() {
+        if require_main && self.build.main.is_empty() {
             return Err("main entry point cannot be empty".to_string());
         }
 
@@ -429,7 +499,35 @@ impl ProjectConfig {
             return Err(format!("invalid opt-level: {} (must be 0-3)", self.target.opt_level));
         }
 
+        let keys: Vec<String> = self.dependencies.packages.keys().cloned().collect();
+        for key in keys {
+            if let Some(dep) = self.dependencies.packages.get_mut(&key) {
+                dep.validate(&key)?;
+            }
+        }
+
+        for (key, lib) in self.dependencies.c_libraries.iter_mut() {
+            if lib.name.is_empty() {
+                lib.name = key.clone();
+            }
+        }
+
         Ok(())
+    }
+
+    pub fn src_dir_path(&self) -> PathBuf {
+        self.resolve_from_root(&self.build.src_dir)
+    }
+
+    pub(crate) fn resolve_from_root(&self, p: impl AsRef<Path>) -> PathBuf {
+        let p = p.as_ref();
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else if self.root.as_os_str().is_empty() {
+            p.to_path_buf()
+        } else {
+            self.root.join(p)
+        }
     }
 
     /// Get the full path to the main entry file
@@ -450,7 +548,7 @@ impl ProjectConfig {
     /// ```
     pub fn main_file_path(&self) -> PathBuf {
         let main_path = format!("{}.cf", self.build.main.replace('.', "/"));
-        PathBuf::from(&main_path)
+        self.resolve_from_root(&main_path)
     }
 
     /// Get the output directory path
@@ -482,7 +580,7 @@ impl ProjectConfig {
             "opt2"
         };
 
-        PathBuf::from(&self.build.target_dir)
+        self.resolve_from_root(&self.build.target_dir)
             .join(profile_dir)
     }
 
@@ -596,7 +694,134 @@ version = "0.1.0"
 main = "src/main"
 "#;
 
-        let config: ProjectConfig = toml::from_str(config_str).unwrap();
-        assert!(config.validate().is_err());
+        let mut config: ProjectConfig = toml::from_str(config_str).unwrap();
+        assert!(config.validate(true).is_err());
+    }
+
+    const SAMPLE_HASH: &str =
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn package_dep_path_only_parses() {
+        let config_str = r#"
+[package]
+name = "test"
+
+[dependencies.packages.helper]
+path = "../helper"
+"#;
+        let mut config: ProjectConfig = toml::from_str(config_str).unwrap();
+        config.validate(true).unwrap();
+        let dep = config.dependencies.packages.get("helper").unwrap();
+        assert_eq!(dep.path.as_deref(), Some("../helper"));
+        assert!(dep.url.is_none() || dep.url.as_ref().map(|s| s.is_empty()).unwrap_or(true));
+    }
+
+    #[test]
+    fn package_dep_url_hash_parses_and_lowercases_hash() {
+        let config_str = format!(
+            r#"
+[package]
+name = "test"
+
+[dependencies.packages.foo]
+url = "https://example.com/foo.tar.gz"
+hash = "{}"
+"#,
+            SAMPLE_HASH.to_ascii_uppercase()
+        );
+        let mut config: ProjectConfig = toml::from_str(&config_str).unwrap();
+        config.validate(true).unwrap();
+        let dep = config.dependencies.packages.get("foo").unwrap();
+        assert_eq!(dep.hash.as_deref(), Some(SAMPLE_HASH));
+    }
+
+    #[test]
+    fn package_dep_path_and_url_is_err() {
+        let config_str = format!(
+            r#"
+[package]
+name = "test"
+
+[dependencies.packages.foo]
+path = "../foo"
+url = "https://example.com/foo.tar.gz"
+hash = "{SAMPLE_HASH}"
+"#
+        );
+        let mut config: ProjectConfig = toml::from_str(&config_str).unwrap();
+        assert!(config.validate(true).is_err());
+    }
+
+    #[test]
+    fn package_dep_url_without_hash_is_err() {
+        let config_str = r#"
+[package]
+name = "test"
+
+[dependencies.packages.foo]
+url = "https://example.com/foo.tar.gz"
+"#;
+        let mut config: ProjectConfig = toml::from_str(config_str).unwrap();
+        assert!(config.validate(true).is_err());
+    }
+
+    #[test]
+    fn old_package_string_version_fails_parse() {
+        let config_str = r#"
+[package]
+name = "test"
+
+[dependencies.packages]
+foo = "1.0.0"
+"#;
+        let err = toml::from_str::<ProjectConfig>(config_str).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("invalid type") || msg.contains("string"),
+            "expected table-not-string parse error, got {msg}"
+        );
+    }
+
+    #[test]
+    fn c_library_name_defaults_to_toml_key() {
+        let config_str = r#"
+[package]
+name = "test"
+
+[dependencies.c_libraries.z]
+headers = ["zlib.h"]
+"#;
+        let mut config: ProjectConfig = toml::from_str(config_str).unwrap();
+        config.validate(true).unwrap();
+        let lib = config.dependencies.c_libraries.get("z").unwrap();
+        assert_eq!(lib.name, "z");
+        assert_eq!(lib.headers, vec!["zlib.h".to_string()]);
+    }
+
+    #[test]
+    fn library_toml_loads_without_main() {
+        let dir = std::env::temp_dir().join(format!(
+            "coffee_pkg_lib_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let toml_path = dir.join("coffee.toml");
+        fs::write(
+            &toml_path,
+            r#"
+[package]
+name = "libpkg"
+version = "0.0.1"
+"#,
+        )
+        .unwrap();
+        let cfg = ProjectConfig::from_package_file(&toml_path).unwrap();
+        assert_eq!(cfg.package.name, "libpkg");
+        let _ = fs::remove_dir_all(&dir);
     }
 }

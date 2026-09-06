@@ -10,22 +10,27 @@
 // - Complete error reporting and diagnostics
 
 pub mod unit;
+pub mod version;
 pub mod graph;
 pub mod project;
+pub mod pkg;
 pub mod entry_point;
 pub mod scheduler;
 pub mod scanner;
 pub mod linker;
 pub mod builder;
 pub mod import_resolver;
-pub mod module_loader;
 pub mod session;
 pub mod pipeline;
 
-pub use unit::{CompilationUnit, CompilationStatus};
+pub use unit::CompilationUnit;
+pub use version::{compiler_display_version, compiler_fingerprint};
 pub use project::ProjectConfig;
 pub use builder::ProjectBuilder;
 pub use pipeline::CompilationPipeline;
+
+/// Public name used by the driver and project builder; same type as `CompilationPipeline`.
+pub type CompilerFrontend = CompilationPipeline;
 
 /// Output artifact requested by the driver (`coffee.toml` and single-file share this).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -40,9 +45,9 @@ pub enum EmitKind {
 
 use crate::parser;
 use crate::semantic::AnalysisReport;
-use crate::diagnostics::{Diagnostic, DiagnosticEmitter};
+use crate::diagnostics::Diagnostic;
 use crate::c;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 //=============================================================================
 // Compilation Configuration
@@ -50,18 +55,23 @@ use std::path::{Path, PathBuf};
 
 /// Compiler configuration
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CompilerConfig {
     /// Enable import resolution
     pub enable_imports: bool,
     /// Import search paths
     pub import_paths: Vec<PathBuf>,
-    /// Maximum recursion depth for imports
-    pub max_import_depth: usize,
     /// Cache parsed modules
     pub cache_modules: bool,
     /// Target triple for cross-compilation
     pub target_triple: Option<String>,
+    /// `-O0`..`-O3` forwarded to LLVM TargetMachine
+    pub opt_level: u8,
+    /// Packed bitfield class layout (`--enable-bitfields`)
+    pub enable_bitfields: bool,
+    /// Runtime bounds/null checks (`--enable-safety`)
+    pub enable_safety: bool,
+    /// Print struct/class layout after codegen (`--show-memory`)
+    pub show_memory: bool,
 }
 
 impl Default for CompilerConfig {
@@ -83,10 +93,21 @@ impl Default for CompilerConfig {
         CompilerConfig {
             enable_imports: true,
             import_paths,
-            max_import_depth: 100,
             cache_modules: true,
             target_triple: None,
+            opt_level: 0,
+            enable_bitfields: false,
+            enable_safety: false,
+            show_memory: false,
         }
+    }
+}
+
+impl CompilerConfig {
+    /// Prepend the official std package import root (`src/` when present).
+    pub fn prepend_official_std(&mut self) -> Result<(), String> {
+        self.import_paths.insert(0, pkg::std_import_root()?);
+        Ok(())
     }
 }
 
@@ -99,24 +120,14 @@ impl Default for CompilerConfig {
 pub struct ParsedModule {
     /// Module statements
     statements: Vec<parser::Statement>,
+    /// Byte ranges from `parse_program` of this module's source (same length as `statements`).
+    /// `Span::new(0, 0)` only when the module has no parse spans (e.g. `Program::new` / std stub).
+    stmt_spans: Vec<crate::types::definition::Span>,
     /// Exported symbols
     pub exports: Vec<String>,
-    /// File path
-    #[allow(dead_code)]
-    pub file_path: PathBuf,
 }
 
 impl ParsedModule {
-    /// Get the module name from file path
-    #[allow(dead_code)]
-    pub fn module_name(&self) -> String {
-        self.file_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("unknown")
-            .to_string()
-    }
-
     /// Check if a symbol is exported from this module
     pub fn has_export(&self, symbol: &str) -> bool {
         self.exports.iter().any(|e| e == symbol)
@@ -145,14 +156,15 @@ pub struct CompilationResult {
     pub report: AnalysisReport,
     /// Compilation statistics
     pub stats: CompilationStatistics,
-    /// Standard library exports (for backend)
-    pub std_exports: Vec<String>,
     /// Imported module paths (for tracking dependencies)
     pub imported_modules: Vec<String>,
     /// C library imports (for linking)
     pub c_imports: Vec<String>,
     /// C function symbol tables from .cfc files
     pub cfc_symbols: std::collections::HashMap<String, c::CSymbolTable>,
+    /// Lowered function MIR. Codegen compiles Coffee bodies from MIR only;
+    /// `lower_function` Err is a frontend Error (no AST body fallback).
+    pub hir_fns: Vec<crate::hir::MirFn>,
 }
 
 /// Compilation statistics
@@ -200,89 +212,6 @@ pub struct CompilationStatistics {
     pub expression_statements: usize,
 }
 
-//=============================================================================
-// Compiler Frontend
-//=============================================================================
-
-/// Thin driver: holds a `Session` and forwards compile to `CompilationPipeline`.
-pub struct CompilerFrontend {
-    session: std::sync::Arc<session::Session>,
-    pipeline: CompilationPipeline,
-}
-
-impl CompilerFrontend {
-    pub fn new() -> Self {
-        let session = std::sync::Arc::new(session::Session::new());
-        let pipeline = CompilationPipeline::new(session.clone());
-        CompilerFrontend { session, pipeline }
-    }
-
-    #[allow(dead_code)]
-    pub fn with_config(config: CompilerConfig) -> Self {
-        let session = std::sync::Arc::new(session::Session::with_config(config));
-        let pipeline = CompilationPipeline::new(session.clone());
-        CompilerFrontend { session, pipeline }
-    }
-
-    pub fn compile(&mut self, source: &str, file_name: Option<&str>) -> CompilationResult {
-        self.pipeline.compile(source, file_name)
-    }
-
-    pub fn parse_source(&self, source: &str, file_name: Option<&str>) -> Result<Vec<parser::Statement>, Vec<Diagnostic>> {
-        self.pipeline.parse_source(source, file_name)
-    }
-
-    pub fn compile_module_to_object(&mut self, unit: &mut CompilationUnit, is_entry: bool) -> Result<(), String> {
-        self.pipeline.compile_module_to_object(unit, is_entry)
-    }
-
-    pub fn emit_module(
-        &mut self,
-        unit: &mut CompilationUnit,
-        is_entry: bool,
-        emit: EmitKind,
-        output_file: Option<&Path>,
-    ) -> Result<(), String> {
-        self.pipeline.emit_module(unit, is_entry, emit, output_file)
-    }
-
-    pub fn count_entry_points(program: &parser::Program) -> usize {
-        CompilationPipeline::count_entry_points(program)
-    }
-
-    pub fn count_main_functions(program: &parser::Program) -> usize {
-        CompilationPipeline::count_entry_points(program)
-    }
-
-    pub fn format_result(&self, result: &CompilationResult) -> String {
-        self.pipeline.format_result(result)
-    }
-
-    pub fn get_c_imports(&self) -> Vec<String> {
-        self.session.get_c_imports()
-    }
-
-    pub fn get_cfc_symbols(&self) -> std::collections::HashMap<String, c::CSymbolTable> {
-        self.session.get_cfc_symbols()
-    }
-
-    #[allow(dead_code)]
-    pub fn emitter(&self) -> &DiagnosticEmitter {
-        &self.session.emitter
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn create_std_module(&self) -> ParsedModule {
-        self.pipeline.create_std_module()
-    }
-}
-
-impl Default for CompilerFrontend {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Import specification for selective imports
 #[derive(Debug, Clone)]
 pub(crate) struct ImportSpec {
@@ -314,7 +243,7 @@ mod tests {
 
     #[test]
     fn test_simple_compilation() {
-        let mut compiler = CompilerFrontend::new();
+        let compiler = CompilerFrontend::new();
         let source = r#"
 fn main() => int:
     return 0
@@ -322,14 +251,263 @@ fn main() => int:
 
         let result = compiler.compile(source, None);
         assert!(result.stats.statements_parsed > 0);
+        assert!(result.success);
+        assert_eq!(result.hir_fns.len(), 1);
+        assert_eq!(result.hir_fns[0].name, "main");
+    }
+
+    /// `p.x` then `rm p` is valid; ownership already ran in `check_function`.
+    /// Post-bind lowering must revive Dropped locals so HIR infer of `p.x`
+    /// succeeds and `main` is complete MIR (no MIR-lower warning).
+    #[test]
+    fn test_member_then_rm_emits_complete_main_hir_without_lower_warning() {
+        let compiler = CompilerFrontend::new();
+        let source = r#"
+class Point:
+    x: int
+
+fn main() => int:
+    let p: Point = Point { x: 1 }
+    let n: int = p.x
+    rm p
+    return n
+"#;
+        let result = compiler.compile(source, None);
+        assert!(
+            result.success,
+            "valid field-access then rm must still succeed the frontend: {:?}",
+            result.errors.iter().map(|e| e.format()).collect::<Vec<_>>()
+        );
+        assert!(
+            result.errors.is_empty(),
+            "lowering must not be a hard error: {:?}",
+            result.errors.iter().map(|e| e.format()).collect::<Vec<_>>()
+        );
+        let main = result
+            .hir_fns
+            .iter()
+            .find(|f| f.name == "main")
+            .expect("main must be in hir_fns");
+        assert!(main.complete, "main MIR must be complete");
+        assert!(
+            !result.warnings.iter().any(|w| {
+                let t = w.format();
+                t.contains("main") && (t.contains("MIR") || t.contains("lower") || t.contains("AST"))
+            }),
+            "must not emit MIR-lower warning, got: {:?}",
+            result.warnings.iter().map(|w| w.format()).collect::<Vec<_>>()
+        );
+    }
+
+    fn assert_complete_main_hir(source: &str, file: &str) {
+        let compiler = CompilerFrontend::new();
+        let result = compiler.compile(source, Some(file));
+        assert!(
+            result.success,
+            "frontend must succeed: {:?}",
+            result.errors.iter().map(|e| e.format()).collect::<Vec<_>>()
+        );
+        let main = result
+            .hir_fns
+            .iter()
+            .find(|f| f.name == "main")
+            .expect("main must be in hir_fns so codegen compiles from MIR");
+        assert!(main.complete, "main MIR must be complete");
+        assert!(
+            !result.warnings.iter().any(|w| {
+                let t = w.format();
+                t.contains("compiling from AST") || t.contains("failed to lower")
+            }),
+            "must not omit main from MIR: {:?}",
+            result.warnings.iter().map(|w| w.format()).collect::<Vec<_>>()
+        );
     }
 
     #[test]
-    fn test_std_library_exports() {
+    fn test_match_main_emits_complete_hir() {
+        assert_complete_main_hir(
+            r#"
+fn main() => int:
+    let x: int = 1
+    match x:
+        1 => 10
+        _ => 0
+    rm x
+    return 0
+"#,
+            "match_main.cf",
+        );
+    }
+
+    #[test]
+    fn test_for_main_emits_complete_hir() {
+        assert_complete_main_hir(
+            r#"
+fn main() => int:
+    for i in 0..3:
+        let x: int = i
+        rm x
+    return 0
+"#,
+            "for_main.cf",
+        );
+    }
+
+    #[test]
+    fn test_mir_lower_failure_is_hard_error_not_ast_warning() {
         let compiler = CompilerFrontend::new();
-        let std_module = compiler.create_std_module();
-        assert!(std_module.exports.contains(&"print".to_string()));
-        assert!(std_module.exports.contains(&"println".to_string()));
-        assert!(std_module.exports.contains(&"sqrt".to_string()));
+        // Typecheck rejects enum patterns on int; lowering also Errs (not simple).
+        // The MIR diagnostic must be Error, not Warning "compiling from AST".
+        let source = r#"
+enum Color:
+    Red
+    Blue
+
+fn main() => int:
+    let x: int = 1
+    match x:
+        1 => 0
+        Color.Red => 0
+        _ => 0
+    rm x
+    return 0
+"#;
+        let result = compiler.compile(source, Some("mixed_match.cf"));
+        assert!(
+            !result.success,
+            "lower_function Err must fail the frontend (success=false)"
+        );
+        assert!(
+            result.errors.iter().any(|e| {
+                let t = e.format();
+                t.contains("failed to lower") || t.contains("cannot lower match")
+            }),
+            "lower_function Err must be a hard Error, got errors={:?} warnings={:?}",
+            result.errors.iter().map(|e| e.format()).collect::<Vec<_>>(),
+            result.warnings.iter().map(|w| w.format()).collect::<Vec<_>>()
+        );
+        assert!(
+            !result.warnings.iter().any(|w| w.format().contains("compiling from AST")),
+            "must not warn-and-AST-compile, got: {:?}",
+            result.warnings.iter().map(|w| w.format()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_missing_coffee_module_import_is_frontend_error() {
+        let compiler = CompilerFrontend::new();
+        let source = r#"
+use nosuch_coffee_mod
+
+fn main() => int:
+    return 0
+"#;
+        let result = compiler.compile(source, None);
+        assert!(
+            !result.success,
+            "failed Coffee-module load must fail the frontend, not skip into codegen\n{:?}",
+            result.errors
+        );
+        assert!(
+            result.errors.iter().any(|e| {
+                let t = e.format();
+                t.contains("nosuch_coffee_mod") || t.contains("import") || t.contains("module")
+            }),
+            "expected an import/module diagnostic:\n{:?}",
+            result.errors.iter().map(|e| e.format()).collect::<Vec<_>>()
+        );
+    }
+
+    fn write_import_fixture(dir: &std::path::Path, stem: &str, source: &str) {
+        std::fs::create_dir_all(dir).expect("fixture dir");
+        std::fs::write(dir.join(format!("{stem}.cf")), source).expect("write module");
+    }
+
+    /// `load_module` must keep `parse_program` byte ranges from the module file.
+    #[test]
+    fn load_module_keeps_parse_program_stmt_spans() {
+        let dir = std::env::temp_dir().join(format!(
+            "coffee_import_spans_load_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let module_src = "fn helper() => int:\n    return 1\n\nfn extra() => int:\n    return 2\n";
+        write_import_fixture(&dir, "spanmod", module_src);
+
+        let mut config = CompilerConfig::default();
+        config.import_paths = vec![dir.clone()];
+        let compiler = CompilerFrontend::with_config(config);
+        let loaded = compiler.load_module("spanmod").expect("load spanmod");
+        let parsed = crate::parser::parse_program(module_src).expect("parse module");
+
+        assert_eq!(loaded.statements.len(), parsed.statements.len());
+        assert_eq!(loaded.stmt_spans.len(), loaded.statements.len());
+        assert_eq!(loaded.stmt_spans, parsed.stmt_spans);
+        assert!(
+            loaded.stmt_spans.iter().all(|s| s.end > s.start),
+            "module spans must be real parse ranges, got {:?}",
+            loaded.stmt_spans
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Imported prefix uses the module's own spans (zipped with prepended stmts);
+    /// main-file suffix stays `program.stmt_spans`. Lengths stay equal.
+    #[test]
+    fn expand_imports_copy_module_spans_main_suffix_unchanged() {
+        let dir = std::env::temp_dir().join(format!(
+            "coffee_import_spans_expand_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let module_src = "fn helper() => int:\n    return 1\n\nfn extra() => int:\n    return 2\n";
+        write_import_fixture(&dir, "spanmod", module_src);
+
+        let main_src = "use helper in spanmod\n\nfn main() => int:\n    return 0\n";
+
+        let mut config = CompilerConfig::default();
+        config.import_paths = vec![dir.clone()];
+        let compiler = CompilerFrontend::with_config(config);
+        let result = compiler.compile(main_src, Some("main.cf"));
+        let module_parsed = crate::parser::parse_program(module_src).expect("parse module");
+        let main_parsed = crate::parser::parse_program(main_src).expect("parse main");
+
+        assert_eq!(
+            result.program.statements.len(),
+            result.program.stmt_spans.len(),
+            "statements and stmt_spans must stay equal length"
+        );
+
+        let imported_len = result.program.statements.len() - main_parsed.statements.len();
+        assert_eq!(imported_len, 1, "selective import prepends one function");
+
+        let helper_idx = module_parsed
+            .statements
+            .iter()
+            .position(|s| matches!(s, crate::parser::Statement::Function(f) if f.name == "helper"))
+            .expect("helper in module");
+        assert_eq!(
+            result.program.stmt_spans[0],
+            module_parsed.stmt_spans[helper_idx],
+            "imported stmt must keep that function's module span, not 0,0 or extra's span"
+        );
+        assert_ne!(
+            result.program.stmt_spans[0],
+            crate::types::definition::Span::new(0, 0)
+        );
+        assert_eq!(
+            &result.program.stmt_spans[imported_len..],
+            &main_parsed.stmt_spans[..],
+            "main-file suffix must keep parse_program ranges from the main source"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

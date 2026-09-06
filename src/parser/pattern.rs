@@ -7,6 +7,15 @@
 
 use super::expr::Expression;
 
+fn unwrap_spanned(mut expr: Expression) -> Expression {
+    loop {
+        match expr {
+            Expression::Spanned { inner, .. } => expr = *inner,
+            other => return other,
+        }
+    }
+}
+
 /// A pattern on the left of `=>` in a `match` arm (not including `if` guards).
 #[derive(Debug, PartialEq, Clone)]
 pub enum Pattern {
@@ -28,62 +37,78 @@ pub enum Pattern {
 
 impl Pattern {
     /// Lower a parsed expression used as a match pattern.
-    pub fn from_expr(expr: Expression) -> Self {
+    pub fn from_expr(expr: Expression) -> Result<Self, ()> {
         match expr {
-            Expression::Variable(name) if name == "_" => Pattern::Wildcard,
-            Expression::Variable(name) => Pattern::Ident(name),
-            Expression::Literal(value) => Pattern::Literal(value),
-            Expression::Unary { op, operand } if op == "-" => match *operand {
+            Expression::Spanned { inner, .. } => Pattern::from_expr(*inner),
+            Expression::Variable(name) if name == "_" => Ok(Pattern::Wildcard),
+            Expression::Variable(name) => Ok(Pattern::Ident(name)),
+            Expression::Literal(value) => Ok(Pattern::Literal(value)),
+            Expression::Unary { op, operand } if op == "-" => match unwrap_spanned(*operand) {
                 Expression::Literal(value) => {
                     if value.starts_with('-') {
-                        Pattern::Literal(value)
+                        Ok(Pattern::Literal(value))
                     } else {
-                        Pattern::Literal(format!("-{}", value))
+                        Ok(Pattern::Literal(format!("-{}", value)))
                     }
                 }
-                other => Pattern::Literal(format!("-{}", other)),
+                _ => Err(()),
             },
-            Expression::TupleLiteral { elements } => {
-                Pattern::Tuple(elements.into_iter().map(Pattern::from_expr).collect())
-            }
-            Expression::StructLiteral { struct_name, fields } => Pattern::Struct {
+            Expression::TupleLiteral { elements } => Ok(Pattern::Tuple(
+                elements
+                    .into_iter()
+                    .map(Pattern::from_expr)
+                    .collect::<Result<_, _>>()?,
+            )),
+            Expression::StructLiteral { struct_name, fields } => Ok(Pattern::Struct {
                 name: struct_name,
                 fields: fields
                     .into_iter()
-                    .map(|(name, value)| (name, Pattern::from_expr(value)))
-                    .collect(),
-            },
+                    .map(|(name, value)| Ok((name, Pattern::from_expr(value)?)))
+                    .collect::<Result<_, _>>()?,
+            }),
             Expression::Member { object, field, args } => {
-                let enum_name = match *object {
+                let enum_name = match unwrap_spanned(*object) {
                     Expression::Variable(n) => n,
-                    other => other.to_string(),
+                    _ => return Err(()),
                 };
-                Pattern::EnumVariant {
+                Ok(Pattern::EnumVariant {
                     enum_name,
                     variant: field,
-                    args: args.into_iter().map(Pattern::from_expr).collect(),
-                }
+                    args: args
+                        .into_iter()
+                        .map(Pattern::from_expr)
+                        .collect::<Result<_, _>>()?,
+                })
             }
-            Expression::Call { function, args } => match *function {
+            Expression::Call { function, args } => match unwrap_spanned(*function) {
                 Expression::Variable(name) => {
                     if let Some((enum_name, variant)) = name.split_once("::") {
-                        Pattern::EnumVariant {
+                        Ok(Pattern::EnumVariant {
                             enum_name: enum_name.to_string(),
                             variant: variant.to_string(),
-                            args: args.into_iter().map(Pattern::from_expr).collect(),
-                        }
+                            args: args
+                                .into_iter()
+                                .map(Pattern::from_expr)
+                                .collect::<Result<_, _>>()?,
+                        })
                     } else if let Some((enum_name, variant)) = name.split_once('.') {
-                        Pattern::EnumVariant {
+                        Ok(Pattern::EnumVariant {
                             enum_name: enum_name.to_string(),
                             variant: variant.to_string(),
-                            args: args.into_iter().map(Pattern::from_expr).collect(),
-                        }
+                            args: args
+                                .into_iter()
+                                .map(Pattern::from_expr)
+                                .collect::<Result<_, _>>()?,
+                        })
                     } else {
-                        Pattern::EnumVariant {
+                        Ok(Pattern::EnumVariant {
                             enum_name: String::new(),
                             variant: name,
-                            args: args.into_iter().map(Pattern::from_expr).collect(),
-                        }
+                            args: args
+                                .into_iter()
+                                .map(Pattern::from_expr)
+                                .collect::<Result<_, _>>()?,
+                        })
                     }
                 }
                 Expression::Member {
@@ -91,47 +116,28 @@ impl Pattern {
                     field,
                     args: member_args,
                 } if member_args.is_empty() => {
-                    let enum_name = match *object {
+                    let enum_name = match unwrap_spanned(*object) {
                         Expression::Variable(n) => n,
-                        other => other.to_string(),
+                        _ => return Err(()),
                     };
-                    Pattern::EnumVariant {
+                    Ok(Pattern::EnumVariant {
                         enum_name,
                         variant: field,
-                        args: args.into_iter().map(Pattern::from_expr).collect(),
-                    }
+                        args: args
+                            .into_iter()
+                            .map(Pattern::from_expr)
+                            .collect::<Result<_, _>>()?,
+                    })
                 }
                 other => Pattern::from_expr(other),
             },
             Expression::Binary { left, op, right } if op == "|" => {
                 let mut alts = Vec::new();
-                flatten_or(Pattern::from_expr(*left), &mut alts);
-                flatten_or(Pattern::from_expr(*right), &mut alts);
-                Pattern::Or(alts)
+                flatten_or(Pattern::from_expr(*left)?, &mut alts);
+                flatten_or(Pattern::from_expr(*right)?, &mut alts);
+                Ok(Pattern::Or(alts))
             }
-            other => Pattern::Literal(other.to_string()),
-        }
-    }
-
-    /// Reconstruct an expression for value comparison (literals and enum tags).
-    pub fn to_compare_expr(&self) -> Option<Expression> {
-        match self {
-            Pattern::Literal(value) => Some(Expression::Literal(value.clone())),
-            Pattern::Ident(name) => Some(Expression::Variable(name.clone())),
-            Pattern::EnumVariant {
-                enum_name,
-                variant,
-                args,
-            } => {
-                let arg_exprs: Option<Vec<Expression>> =
-                    args.iter().map(|a| a.to_compare_expr()).collect();
-                Some(Expression::Member {
-                    object: Box::new(Expression::Variable(enum_name.clone())),
-                    field: variant.clone(),
-                    args: arg_exprs?,
-                })
-            }
-            _ => None,
+            _ => Err(()),
         }
     }
 }
@@ -213,7 +219,7 @@ mod tests {
     use super::*;
 
     fn pat(src: &str) -> Pattern {
-        Pattern::from_expr(crate::parser::expr::parse_expression(src).unwrap())
+        Pattern::from_expr(crate::parser::expr::parse_expression(src).unwrap()).unwrap()
     }
 
     #[test]
@@ -253,5 +259,27 @@ mod tests {
             Pattern::Or(alts) => assert_eq!(alts.len(), 3),
             other => panic!("{:?}", other),
         }
+    }
+
+    #[test]
+    fn from_expr_rejects_binary_plus() {
+        let expr = crate::parser::expr::parse_expression("1 + 2").unwrap();
+        assert!(
+            Pattern::from_expr(expr).is_err(),
+            "binary + must not become a pattern"
+        );
+    }
+
+    #[test]
+    fn from_expr_member_literal_object_is_err() {
+        let expr = crate::parser::expr::Expression::Member {
+            object: Box::new(crate::parser::expr::Expression::Literal("1".into())),
+            field: "Red".into(),
+            args: vec![],
+        };
+        assert!(
+            Pattern::from_expr(expr).is_err(),
+            "Member with Literal object must be Err, not EnumVariant from to_string()"
+        );
     }
 }

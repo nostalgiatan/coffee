@@ -19,14 +19,19 @@
 pub mod codegen;
 pub mod context;
 pub mod types;
+pub mod class_layout;
 
 // Modularized code generation components
 pub mod arithmetic;
 pub mod control_flow;
-pub mod match_gen;
 pub mod memory_ops;
 pub mod memory;
 pub mod functions;
+pub mod mir_gen;
+pub mod mir_expr;
+pub mod mir_raise;
+pub mod mir_return;
+pub mod mir_nested;
 
 // Additional modularized components
 pub mod expressions;
@@ -35,9 +40,10 @@ pub mod variables;
 pub mod statements;
 pub mod classes;
 pub mod type_inference;
+pub mod opt_passes;
 
 // Re-export memory types for convenience
-// Note: These are used by codegen.rs but flagged as unused here
+// Note: These are used by codegen/ but flagged as unused here
 #[allow(unused_imports)]
 pub use memory::{Layout, LayoutCollector, StructLayout};
 
@@ -79,6 +85,10 @@ pub struct Backend<'ctx> {
     pub builder: Builder<'ctx>,
     /// Target triple for cross-compilation
     target_triple: Option<String>,
+    /// Codegen opt level passed to `Target::create_target_machine`
+    opt_level: OptimizationLevel,
+    /// CPU name for the target machine (LLVM default `"generic"`)
+    cpu: String,
 }
 
 impl<'ctx> Backend<'ctx> {
@@ -127,7 +137,24 @@ impl<'ctx> Backend<'ctx> {
             module,
             builder,
             target_triple,
+            opt_level: OptimizationLevel::None,
+            cpu: "generic".to_string(),
         }
+    }
+
+    /// Map Coffee `-O0`..`-O3` to LLVM `OptimizationLevel`.
+    pub fn optimization_level(level: u8) -> OptimizationLevel {
+        match level {
+            0 => OptimizationLevel::None,
+            1 => OptimizationLevel::Less,
+            2 => OptimizationLevel::Default,
+            _ => OptimizationLevel::Aggressive,
+        }
+    }
+
+    /// Set the TargetMachine optimization level used when writing object/asm.
+    pub fn set_opt_level(&mut self, level: OptimizationLevel) {
+        self.opt_level = level;
     }
 
     /// Get the target triple being used
@@ -202,25 +229,17 @@ impl<'ctx> Backend<'ctx> {
             .map_err(|e| e.to_string())
     }
 
-    /// Optimize the module
-    /// 
-    /// Applies optimizations to the LLVM module. This implementation is a placeholder
-    /// as in inkwell 0.7+, the pass manager API has changed and optimization is
-    /// typically handled by the target machine during code generation.
-    /// 
-    /// # Arguments
-    /// 
-    /// * `_level` - The optimization level to apply (currently unused)
-    /// 
-    /// Note: inkwell 0.7+ uses new pass manager API.
-    /// Optimization is handled by the target machine during code generation.
-    pub fn optimize(&self, _level: OptimizationLevel) {
-        // In inkwell 0.7+, the pass manager API has changed to use LLVM's new pass manager.
-        // Manual pass configuration requires different setup than older versions.
-        // The target machine applies optimizations based on the level when writing output files.
-
-        // The new pass manager in LLVM 17+ requires different setup.
-        // Basic compilation relies on the target machine's optimization level.
+    /// Optimize the module with LLVM's new pass manager (`default<On>`).
+    ///
+    /// `OptimizationLevel::None` is a no-op. Target-machine or pass errors
+    /// fail compilation so `-O1`/`-O2`/`-O3` never silently skip LLVM.
+    pub fn optimize(&self, level: OptimizationLevel) -> Result<(), String> {
+        let machine = self.create_target_machine().map_err(|err| {
+            format!("optimize: failed to create target machine: {}", err)
+        })?;
+        opt_passes::apply(&self.module, &machine, level).map_err(|err| {
+            format!("optimize: pass pipeline failed: {}", err)
+        })
     }
 
     /// Write object file
@@ -236,35 +255,69 @@ impl<'ctx> Backend<'ctx> {
     /// 
     /// * `Ok(())` if the file was written successfully
     /// * `Err(String)` if there was an error writing the file
-    pub fn write_object_file(&self, path: &Path) -> Result<(), String> {
+    fn create_target_machine(&self) -> Result<TargetMachine, String> {
         Target::initialize_native(&InitializationConfig::default())
             .map_err(|e| e.to_string())?;
 
-        // Use configured target triple or default
         let triple_str = self.get_target_triple();
-
-        // Clean up the triple string for Android platforms
-        // Android triples may have API level appended (e.g., "aarch64-linux-android24")
-        // We need to remove the API level to get valid target triple
         let cleaned_triple = Self::clean_target_triple(&triple_str);
+        let native_cleaned = Self::clean_target_triple(
+            &TargetMachine::get_default_triple()
+                .as_str()
+                .to_string_lossy(),
+        );
+        // Explicit `--target` is cross-compile: never use host CPU/features.
+        let is_native = self.target_triple.is_none() && cleaned_triple == native_cleaned;
+
+        let host_cpu;
+        let host_features;
+        let (cpu, features): (&str, &str) = if self.cpu != "generic" {
+            (self.cpu.as_str(), "")
+        } else if is_native {
+            host_cpu = TargetMachine::get_host_cpu_name().to_string();
+            host_features = TargetMachine::get_host_cpu_features().to_string();
+            (&host_cpu, &host_features)
+        } else {
+            ("generic", "")
+        };
+
+        let reloc = if is_native && cleaned_triple.contains("-android") {
+            RelocMode::PIC
+        } else {
+            RelocMode::Default
+        };
 
         let triple = TargetTriple::create(&cleaned_triple);
         let target = Target::from_triple(&triple)
             .map_err(|e| format!("Invalid target triple '{}': {}", cleaned_triple, e))?;
-        let target_machine = target
+        target
             .create_target_machine(
                 &triple,
-                "generic",
-                "",
-                OptimizationLevel::Default,
-                RelocMode::Default,
+                cpu,
+                features,
+                self.opt_level,
+                reloc,
                 CodeModel::Default,
             )
-            .ok_or("Failed to create target machine")?;
+            .ok_or_else(|| format!(
+                "failed to create LLVM target machine for '{}'\n  = help: check --target <triple> is a triple LLVM knows",
+                cleaned_triple
+            ))
+    }
 
-        target_machine
+    fn llvm_write_err(kind: &str, path: &Path, detail: impl std::fmt::Display) -> String {
+        format!(
+            "failed to write {} '{}': {}\n  = help: check the output path is writable and the disk is not full",
+            kind,
+            path.display(),
+            detail
+        )
+    }
+
+    pub fn write_object_file(&self, path: &Path) -> Result<(), String> {
+        self.create_target_machine()?
             .write_to_file(&self.module, FileType::Object, path)
-            .map_err(|e| e.to_string())
+            .map_err(|e| Self::llvm_write_err("object file", path, e))
     }
 
     /// Write assembly file
@@ -281,46 +334,18 @@ impl<'ctx> Backend<'ctx> {
     /// * `Ok(())` if the file was written successfully
     /// * `Err(String)` if there was an error writing the file
     pub fn write_assembly_file(&self, path: &Path) -> Result<(), String> {
-        Target::initialize_native(&InitializationConfig::default())
-            .map_err(|e| e.to_string())?;
-
-        // Use configured target triple or default
-        let triple_str = self.get_target_triple();
-        let cleaned_triple = Self::clean_target_triple(&triple_str);
-        let triple = TargetTriple::create(&cleaned_triple);
-        let target = Target::from_triple(&triple)
-            .map_err(|e| format!("Invalid target triple '{}': {}", cleaned_triple, e))?;
-
-        let target_machine = target
-            .create_target_machine(
-                &triple,
-                "generic",
-                "",
-                OptimizationLevel::Default,
-                RelocMode::Default,
-                CodeModel::Default,
-            )
-            .ok_or("Failed to create target machine")?;
-
-        target_machine
+        self.create_target_machine()?
             .write_to_file(&self.module, FileType::Assembly, path)
-            .map_err(|e| e.to_string())
+            .map_err(|e| Self::llvm_write_err("assembly", path, e))
     }
 
-    /// Write LLVM bitcode
-    /// 
-    /// Generates and writes an LLVM bitcode file (.bc) containing the compiled code.
-    /// 
-    /// # Arguments
-    /// 
-    /// * `path` - The path where the bitcode file should be written
-    /// 
-    /// # Returns
-    /// 
-    /// * `true` if the file was written successfully
-    /// * `false` if there was an error writing the file
-    pub fn write_bitcode(&self, path: &Path) -> bool {
-        self.module.write_bitcode_to_path(path)
+    /// Write LLVM bitcode (.bc).
+    pub fn write_bitcode(&self, path: &Path) -> Result<(), String> {
+        if self.module.write_bitcode_to_path(path) {
+            Ok(())
+        } else {
+            Err(Self::llvm_write_err("LLVM bitcode", path, "LLVM write_bitcode_to_path returned false"))
+        }
     }
 
     /// Write LLVM IR to file
@@ -337,8 +362,8 @@ impl<'ctx> Backend<'ctx> {
     /// * `Ok(())` if the file was written successfully
     /// * `Err(String)` if there was an error writing the file
     pub fn write_ir(&self, path: &Path) -> Result<(), String> {
-        self.module.print_to_file(path)
-            .map_err(|e| e.to_string())
+        std::fs::write(path, self.get_ir())
+            .map_err(|e| Self::llvm_write_err("LLVM IR", path, e))
     }
 }
 
@@ -355,7 +380,9 @@ impl<'ctx> Backend<'ctx> {
 /// * `source` - The parsed Coffee program to compile and execute
 /// * `c_imports` - List of C functions that are imported by the Coffee program
 /// * `cfc_symbols` - HashMap of C function signature tables from .cfc files
+/// * `hir_fns` - Frontend MIR functions (same handoff as AOT `compile_program_with_hir`)
 /// * `user_args` - Command-line arguments to pass to the executed program
+/// * `opt_level` - Same LLVM level AOT uses: IR `Backend::optimize` then the JIT engine
 /// 
 /// # Returns
 /// 
@@ -367,7 +394,9 @@ pub fn compile_and_run(
     source: &crate::parser::Program,
     c_imports: &[String],
     cfc_symbols: std::collections::HashMap<String, crate::c::CSymbolTable>,
+    hir_fns: Vec<crate::hir::MirFn>,
     user_args: &[String],
+    opt_level: OptimizationLevel,
 ) -> Result<i32, String> {
     use inkwell::targets::{InitializationConfig, Target};
 
@@ -376,20 +405,21 @@ pub fn compile_and_run(
         .map_err(|e| format!("Failed to initialize native target: {}", e))?;
 
     let context = Context::create();
-    let backend = Backend::new(&context, "coffee_jit");
+    let mut backend = Backend::new(&context, "coffee_jit");
+    backend.set_opt_level(opt_level);
 
-    // Generate code with C imports
+    // Generate code with C imports and frontend MIR (same path as AOT)
     let mut codegen = codegen::CodeGenerator::new(&backend);
-    codegen.compile_program(source, c_imports, cfc_symbols)?;
+    codegen.compile_program_with_hir(source, c_imports, cfc_symbols, hir_fns)?;
 
     // Verify
     backend.verify()?;
 
-    // Get IR for debugging (available for debugging purposes)
-    let _ir = backend.get_ir();
+    // Same IR pass pipeline as AOT (`OptimizationLevel::None` is a no-op).
+    backend.optimize(opt_level)?;
 
-    // Create JIT execution engine
-    let mut execution_engine = backend.module.create_jit_execution_engine(inkwell::OptimizationLevel::None)
+    // Create JIT execution engine at the same opt level as AOT TargetMachine.
+    let mut execution_engine = backend.module.create_jit_execution_engine(opt_level)
         .map_err(|e| format!("Failed to create JIT execution engine: {:?}", e))?;
 
     // Map external C functions to their actual addresses
@@ -424,8 +454,15 @@ pub fn compile_and_run(
         // Convert args to C-style strings
         let c_args: Vec<std::ffi::CString> = filtered_args
             .iter()
-            .map(|s| std::ffi::CString::new(s.as_bytes()).unwrap())
-            .collect();
+            .map(|s| {
+                std::ffi::CString::new(s.as_bytes()).map_err(|e| {
+                    format!(
+                        "invalid NUL byte in JIT argv\n  = note: {}\n  = help: command-line arguments cannot contain interior NUL bytes",
+                        e
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
 
         // Create array of pointers
         let arg_ptrs: Vec<*const i8> = c_args
@@ -457,8 +494,8 @@ pub fn compile_and_run(
 /// 
 /// # Returns
 /// 
-/// * `Ok(())` - Successfully mapped all available functions
-/// * `Err(String)` - Error if a symbol name is invalid
+/// * `Ok(())` - Successfully mapped all functions
+/// * `Err(String)` - Invalid symbol name or `dlsym` miss
 /// 
 /// This allows JIT-compiled Coffee code to call C functions
 fn map_c_library_functions<'ctx>(
@@ -466,32 +503,78 @@ fn map_c_library_functions<'ctx>(
     module: &inkwell::module::Module<'ctx>,
     c_imports: &[String],
 ) -> Result<(), String> {
-    for function_name in c_imports {
-        let function = module.get_function(function_name);
+    for c_import in c_imports {
+        // Imports are `"library:symbol"` (or a bare symbol). LLVM decls use the symbol.
+        let (library, symbol) = match c_import.split_once(':') {
+            Some((lib, name)) => (lib, name),
+            None => ("libc", c_import.as_str()),
+        };
+        let Some(llvm_func) = module.get_function(symbol) else {
+            continue;
+        };
 
-        if let Some(llvm_func) = function {
-            // Try to get the function address from the process
-            // This works for functions in standard libraries like libc, libm, etc.
-            let func_name_cstr = std::ffi::CString::new(function_name.as_bytes())
-                .map_err(|e| format!("Failed to create CString: {}", e))?;
+        let func_name_cstr = std::ffi::CString::new(symbol.as_bytes())
+            .map_err(|e| format!("Failed to create CString for C symbol '{}': {}", symbol, e))?;
 
-            unsafe {
-                // Get function address using dlsym with RTLD_DEFAULT
-                // This searches in all loaded libraries including libc, libm, etc.
-                let addr = libc::dlsym(libc::RTLD_DEFAULT, func_name_cstr.as_ptr());
+        unsafe {
+            // Get function address using dlsym with RTLD_DEFAULT
+            // This searches in all loaded libraries including libc, libm, etc.
+            let addr = libc::dlsym(libc::RTLD_DEFAULT, func_name_cstr.as_ptr());
 
-                if !addr.is_null() {
-                    // Successfully found the function, add mapping to JIT
-                    let func_addr = addr as usize;
-                    execution_engine.add_global_mapping(&llvm_func, func_addr);
-                } else {
-                    // Function not found - this will cause a runtime error if called
-                    // Return a warning but don't fail compilation
-                    eprintln!("Warning: C function '{}' not found in loaded libraries. This may cause runtime errors if called.", function_name);
-                }
+            if addr.is_null() {
+                return Err(format!(
+                    "C function '{}' not found in loaded libraries\n  = note: JIT resolves C symbols with dlsym(RTLD_DEFAULT); library '{}' must already be loaded in this process\n  = help: import it with `use {} in {} of c`\n  = help: libc and libm are loaded by default; other libraries must be loaded before `--jit` (JIT does not link `-l` like `--bin`)",
+                    symbol, library, symbol, library
+                ));
             }
+
+            execution_engine.add_global_mapping(&llvm_func, addr as usize);
         }
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use inkwell::context::Context;
+
+    fn tiny_module(context: &Context) -> Backend<'_> {
+        let backend = Backend::new(context, "get_ir_smoke");
+        let i32_ty = context.i32_type();
+        let fn_ty = i32_ty.fn_type(&[], false);
+        let function = backend.module.add_function("answer", fn_ty, None);
+        let entry = context.append_basic_block(function, "entry");
+        backend.builder.position_at_end(entry);
+        backend
+            .builder
+            .build_return(Some(&i32_ty.const_int(42, false)))
+            .unwrap();
+        backend
+    }
+
+    #[test]
+    fn get_ir_returns_nonempty_llvm_ir() {
+        let context = Context::create();
+        let backend = tiny_module(&context);
+        let ir = backend.get_ir();
+        assert!(!ir.is_empty(), "LLVM IR string should not be empty");
+        assert!(
+            ir.contains("answer"),
+            "IR should include the compiled function: {ir}"
+        );
+    }
+
+    #[test]
+    fn write_ir_persists_get_ir_text() {
+        let context = Context::create();
+        let backend = tiny_module(&context);
+        let dir = std::env::temp_dir();
+        let path = dir.join("coffee_backend_get_ir_smoke.ll");
+        backend.write_ir(&path).expect("write_ir");
+        let on_disk = std::fs::read_to_string(&path).expect("read .ll");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(on_disk, backend.get_ir());
+    }
 }

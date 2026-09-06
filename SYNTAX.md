@@ -12,11 +12,13 @@
 8. [类和对象](#类和对象)
 9. [枚举](#枚举)
 10. [模块导入](#模块导入)
-11. [内存管理](#内存管理)
-12. [异常处理](#异常处理)
-13. [C 语言互操作性](#c-语言互操作性)
-14. [运算符优先级](#运算符优先级)
-15. [示例](#示例)
+11. [包依赖](#包依赖)
+12. [泛型](#泛型)
+13. [内存管理](#内存管理)
+14. [异常处理](#异常处理)
+15. [C 语言互操作性](#c-语言互操作性)
+16. [运算符优先级](#运算符优先级)
+17. [示例](#示例)
 
 ---
 
@@ -32,7 +34,7 @@ Coffee 是一个静态类型、编译型的编程语言，具有以下特点：
 
 **文件扩展名**: `.cf`
 
-**入口函数**: 使用 `main()` 声明主函数
+**入口函数**: 声明 `fn main() => int:`（或 `=> void`）即可作为程序入口。`main(fn())` 是可选的显式入口声明，不是必需的。
 
 ---
 
@@ -53,13 +55,15 @@ foo, _bar, my_var_123, ClassName, my_function
 
 **关键字** (不能用作标识符):
 ```
-fn, c fn, class, packed, enum, of
+fn, c fn, class, type, packed, enum, of
 if, elif, else, while, for, in, match
-let, mv, clone, copy, rm, clean, raise, return
-use, in, of
+let, mv, clone, copy, rm, clean, raise, return, break, continue
+use, in, of, as
 true, false
 int, float, bool, string, str, void
 ```
+
+`copy` 与 `clean` 仍可被解析，但类型检查为错误，不是受支持的操作。
 
 ### 注释
 
@@ -74,9 +78,9 @@ int, float, bool, string, str, void
 ### 字符串字面量
 
 ```coffee
-"Hello, World!"      # 普通字符串
-"Line 1\nLine 2"     # 支持转义字符
-f"Hello {name}"      # 格式化字符串（f-string）
+"Hello, World!"      /#/ 普通字符串
+"Line 1\nLine 2"     /#/ 支持转义字符
+f"Hello {name}"      /#/ 格式化字符串（f-string）
 ```
 
 ---
@@ -85,21 +89,23 @@ f"Hello {name}"      # 格式化字符串（f-string）
 
 ### 基础类型
 
-| 类型 | 描述 | 大小 | 对应 C 类型 |
+`int(N)+` / `int(N)-` / `float(N)` 中的 **N 是字节数**，不是位数。`int(4)+` 对应 C `int`。编译器内部 `Type::Int { bits, signed }` / `Type::Float { bits }` 的 `bits = 8 × N`。
+
+| 类型 | 描述 | 宽度 | 对应 C 类型 |
 |------|------|------|-------------|
-| `int` | 默认整数类型 | 64 位 | `long long` |
-| `int(1)+` | 8 位有符号整数 | 8 位 | `int8_t` / `char` |
-| `int(2)+` | 16 位有符号整数 | 16 位 | `int16_t` / `short` |
-| `int(4)+` | 32 位有符号整数 | 32 位 | `int32_t` / `int` |
-| `int(8)+` | 64 位有符号整数 | 64 位 | `int64_t` / `long long` |
-| `int(1)-` | 8 位无符号整数 | 8 位 | `uint8_t` / `unsigned char` |
-| `int(2)-` | 16 位无符号整数 | 16 位 | `uint16_t` / `unsigned short` |
-| `int(4)-` | 32 位无符号整数 | 32 位 | `uint32_t` / `unsigned int` |
-| `int(8)-` | 64 位无符号整数 | 64 位 | `uint64_t` / `unsigned long long` |
-| `float` | 默认浮点类型 | 64 位 | `double` |
-| `float(4)` | 32 位浮点数 | 32 位 | `float` |
-| `float(8)` | 64 位浮点数 | 64 位 | `double` |
-| `bool` | 布尔类型 | 8 位 | `_Bool` / `bool` |
+| `int` | 默认整数类型 | 8 字节（64 位） | `long long` |
+| `int(1)+` | 1 字节有符号整数 | 8 位 | `int8_t` / `char` |
+| `int(2)+` | 2 字节有符号整数 | 16 位 | `int16_t` / `short` |
+| `int(4)+` | 4 字节有符号整数 | 32 位 | `int32_t` / `int` |
+| `int(8)+` | 8 字节有符号整数 | 64 位 | `int64_t` / `long long` |
+| `int(1)-` | 1 字节无符号整数 | 8 位 | `uint8_t` / `unsigned char` |
+| `int(2)-` | 2 字节无符号整数 | 16 位 | `uint16_t` / `unsigned short` |
+| `int(4)-` | 4 字节无符号整数 | 32 位 | `uint32_t` / `unsigned int` |
+| `int(8)-` | 8 字节无符号整数 | 64 位 | `uint64_t` / `unsigned long long` |
+| `float` | 默认浮点类型 | 8 字节（64 位） | `double` |
+| `float(4)` | 4 字节浮点数 | 32 位 | `float` |
+| `float(8)` | 8 字节浮点数 | 64 位 | `double` |
+| `bool` | 布尔类型 | 1 字节 | `_Bool` / `bool` |
 | `str` / `string` | 字符串类型 | 指针 | `const char*` |
 | `void` | 空类型 | - | `void` |
 
@@ -108,8 +114,8 @@ f"Hello {name}"      # 格式化字符串（f-string）
 #### 数组
 
 ```coffee
-[T; N]      # 固定大小数组，N 为编译时常量
-[T]         # 切片类型（动态大小，仅用于声明）
+[T; N]      /#/ 固定大小数组，N 为编译时常量
+[T]         /#/ 切片类型（动态大小）
 ```
 
 **示例**:
@@ -117,14 +123,15 @@ f"Hello {name}"      # 格式化字符串（f-string）
 let arr: [int; 5] = [1, 2, 3, 4, 5]
 ```
 
-**注意**: 
-- 切片类型 `[T]` 目前不能用于函数参数，函数参数必须使用固定大小数组 `[T; N]`
+**注意**:
+- 切片 `[T]` 是胖指针 `{ ptr, i64 len }`，可用于 Coffee `fn` 的参数和返回值；`c fn` 仍不能使用 `[T]`
 - 数组索引访问使用 `array[index]` 语法
+- 数组、切片、元组可用 `for x in …`（已绑定的名字、字面量、或 `foo()` 等表达式）。集合只求值一次；其它类型无法降到 MIR
 
 #### 元组
 
 ```coffee
-(T1, T2, T3, ...)      # 任意数量的类型
+(T1, T2, T3, ...)      /#/ 任意数量的类型
 ```
 
 **示例**:
@@ -136,7 +143,7 @@ let triple: (int, float, bool) = (1, 3.14, true)
 #### 函数类型
 
 ```coffee
-fn(T1, T2, ...) => R     # 函数类型，参数列表和返回类型
+fn(T1, T2, ...) => R     /#/ 函数类型，参数列表和返回类型
 ```
 
 **示例**:
@@ -147,9 +154,19 @@ let callback: fn(int, float) => bool
 #### 引用类型
 
 ```coffee
-&T        # 不可变引用
-&mut T    # 可变引用
+&T        /#/ 不可变引用
+&mut T    /#/ 可变引用
 ```
+
+#### 泛型应用
+
+```coffee
+List<T>              /#/ 类型参数（类/函数头上的名字）
+List<int>            /#/ 具体化；检查器实例化为 `List__int`
+List<List<int>>      /#/ 嵌套尖括号是一个完整类型字符串
+```
+
+没有 `T: Trait` 约束，也没有随编译器附带的标准库 `List`。见 [泛型](#泛型)。
 
 ---
 
@@ -185,7 +202,7 @@ name = "Updated"
 
 ```coffee
 return value
-return          # 对于 void 函数
+return          /#/ 对于 void 函数
 ```
 
 **示例**:
@@ -201,8 +218,8 @@ fn say_hello() => void:
 ### break 和 continue
 
 ```coffee
-break       # 跳出循环
-continue    # 继续下一次迭代
+break       /#/ 跳出循环
+continue    /#/ 继续下一次迭代
 ```
 
 ---
@@ -212,11 +229,11 @@ continue    # 继续下一次迭代
 ### 字面量
 
 ```coffee
-42          # 整数字面量
-3.14        # 浮点数字面量
-true        # 布尔值 true
-false       # 布尔值 false
-"hello"     # 字符串字面量
+42          /#/ 整数字面量
+3.14        /#/ 浮点数字面量
+true        /#/ 布尔值 true
+false       /#/ 布尔值 false
+"hello"     /#/ 字符串字面量
 ```
 
 ### 变量引用
@@ -245,9 +262,12 @@ variable_name
 ### 一元运算符
 
 ```coffee
--x           # 负号
-!x           # 逻辑非
-~x           # 位非（按位取反）
+-x           /#/ 负号
+!x           /#/ 逻辑非
+~x           /#/ 位非（按位取反）
+&x           /#/ 不可变借用（变量、字段 p.x、下标 a[i]）
+&mut x       /#/ 可变借用
+*r           /#/ 解引用
 ```
 
 ### 函数调用
@@ -275,9 +295,9 @@ array[expression]
 ### 类型转换
 
 ```coffee
-int(value)       # 转换为整数
-float(value)     # 转换为浮点数
-bool(value)      # 转换为布尔值
+int(value)       /#/ 转换为整数
+float(value)     /#/ 转换为浮点数
+bool(value)      /#/ 转换为布尔值
 ```
 
 ### 元组字面量
@@ -377,6 +397,8 @@ for item in items:
     printf("item = %s\n", item)
 ```
 
+`for` 支持范围（`0..10` / `range`）以及数组、切片、元组上的 for-in（变量、字面量、或 `foo()`；集合只求值一次）。其它集合类型无法降低。
+
 ### match 表达式
 
 ```coffee
@@ -404,6 +426,9 @@ fn describe(x: int) => str:
 ```coffee
 fn function_name(param1: type1, param2: type2) => return_type:
     body
+
+fn id<T>(x: T) => T:
+    return x
 ```
 
 **示例**:
@@ -430,10 +455,15 @@ c fn coffee_add(a: int, b: int) => int:
     return a + b
 ```
 
-### 带错误处理的函数
+### 错误监听器（`#name`）
+
+`#name` 命名一个已有函数，不是关键字。`fn f(...) #name => R` 时，只有写在 `f` 函数体里的 `raise` 会调用 `name`，不会沿调用栈穿透。`name` 的签名是 `fn name(err: Error) => R`，返回值就是 `f` 的返回值。`name` 里的 `raise` 一律中止进程（打印后 `exit`），即使监听器自己也带 `#…`。`f` 与 `name` 必须是不同名字。内建 `Error` 为 `{ code: int, note: str, e: object }`；可 `raise` 的还有 `of Error` 的子类（见「异常处理」）。监听器参数仍是 `err: Error`，只依赖该前缀字段。没有 `try` / `catch`。
 
 ```coffee
-fn function_name(param: type) #error_handler => return_type:
+fn name(err: Error) => return_type:
+    return dummy
+
+fn function_name(param: type) #name => return_type:
     body
 ```
 
@@ -446,14 +476,17 @@ let callback: fn(int) => int = fn(x: int) => int:
 
 ### 主函数入口
 
+名为 `main` 的函数即可作为入口。`main(fn())` 是可选的显式入口。
+
 ```coffee
-main(function_name())
-main(function_name(arg1, arg2))
+fn main() => int:
+    return 0
 ```
 
-**示例**:
+显式入口示例：
+
 ```coffee
-fn my_main(argc: int, argv: ...) => int:
+fn my_main() => int:
     printf("Hello, World!\n")
     return 0
 
@@ -473,6 +506,9 @@ class ClassName:
     
     fn method(self, param: type) => return_type:
         body
+
+class List<T>:
+    len: int
 ```
 
 **示例**:
@@ -517,8 +553,8 @@ class Dog of Animal:
 
 ```coffee
 packed class DataStruct:
-    field1: type1:1    # 1 位字段
-    field2: type2:7    # 7 位字段
+    field1: type1:1    /#/ 1 位字段
+    field2: type2:7    /#/ 7 位字段
 ```
 
 ### 构造函数
@@ -558,10 +594,17 @@ enum Color:
     Rgb(r: int, g: int, b: int)
 ```
 
-### 枚举值使用
+### 枚举值与模式
+
+规范写法使用点号：`Color.Red`。`Color::Red` 仍可能作为路径解析，但不作为规范语法。
 
 ```coffee
-let color: Color = Color::Red
+let color: Color = Color.Red
+
+match color:
+    Color.Red => ...
+    Color.Rgb(r, g, b) => ...
+    _ => ...
 ```
 
 ### 枚举变体字段
@@ -569,17 +612,15 @@ let color: Color = Color::Red
 枚举变体可以包含字段：
 
 ```coffee
-# 无字段变体（单元变体）
+/#/ 无字段变体（单元变体）
 Red
 
-# 单字段变体（元组风格）
+/#/ 单字段变体（元组风格）
 Green(int)
 
-# 多字段变体（命名风格）
+/#/ 多字段变体（命名风格）
 Rgb(r: int, g: int, b: int)
 ```
-
-**注意**: 目前枚举变体带参数（如 `Color::Rgb(255, 128, 0)`）在代码生成阶段存在类型转换问题，暂时不支持。建议使用无字段的枚举变体。
 
 ---
 
@@ -597,7 +638,13 @@ use module_name as alias
 ```coffee
 use function_name in module_name
 use function_name in module_name as alias
+use fn_a, fn_b in module_name
+use * in module_name
 ```
+
+逗号列表把多个**函数**拉进当前文件（等价于多行 `use a in m`）。`use * in m` 导入该模块全部导出函数，仍**不含**类；类要用整模块 `use mem`。`use *` 不能和其它名字写在同一行。C 的多符号仍写 `use a, b in libc of c`。
+
+`object` / `buf` 可以写 `p + n`（按字节偏移，LLVM GEP），给 `memcpy` 这类 C 调用用；不要把指针先转成 `int` 再加（Android 上会打坏指针标签）。
 
 ### 导入 C 函数
 
@@ -613,11 +660,86 @@ use sin, cos, sqrt in libm of c
 use my_function in mylib of c
 ```
 
-**注意**: import 语句必须放在所有函数定义之前（全局作用域），不能放在函数内部。
+项目模式在 `coffee.toml` 里**声明** C 库后，编译会从系统头生成 `target/cfc/lib<键>.cfc`（已安装的传递依赖也会跟着生成）：
+
+```toml
+[dependencies.c_libraries.z]
+headers = ["zlib.h"]
+```
+
+然后 `use zlibVersion in z of c`。没有声明、磁盘上也没有 `.cfc` 时不会猜头文件，需要 `coffee -c header.h` 或补上 `c_libraries`。`libc` / `libm` 仍用捆绑表，不必声明。
+
+**注意**: `use` 必须写在所有函数定义之前（全局作用域），不能写在函数内部。
+
+---
+
+## 包依赖
+
+没有中央包注册表，也没有 `foo = "1.0"` 这种 semver 字符串依赖。在 `coffee.toml` 里用 `[dependencies.packages.<名字>]`，**二选一**：
+
+- `path = "..."`（本地树），或
+- `url` + `hash`（解包后整棵树的 SHA-256，不是 tarball 字节的哈希）
+
+```toml
+[dependencies.packages.foo]
+url = "https://example.com/foo.tar.gz"
+hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+[dependencies.packages.local_bar]
+path = "../bar"
+```
+
+`coffee fetch` 把 url+hash 依赖拉进缓存（`$COFFEE_CACHE`，否则 `~/.cache/coffee`）。`coffee fetch <url>` 下载 `.tar.gz` 并打印树哈希；`--save [name]` 写入 `coffee.toml`。项目编译会解析依赖并把各包的导入根（有 `src/` 则用 `src/`，否则用包根）**前置**到导入搜索路径。细节见 [编译器文档](docs/zh/compiler.md)。
+
+### 标准库 `std`
+
+编译器把仓库里的 `library/std` **嵌入** `coffee` 二进制。`coffee std install [dir]` 解包到 `$COFFEE_STD`，否则 `$XDG_DATA_HOME/coffee/std`，否则 `~/.local/share/coffee/std`。编译时若 `coffee.toml` 没有 `[dependencies.packages.std]`，会自动前置该包的导入根（单文件模式同样）。查找顺序：`COFFEE_STD`（内含 `coffee.toml`）→ 上述安装目录 → 从 cwd / 可执行文件向上找 `library/std`（给仓库内 `cargo test` 用）→ 否则报错 `standard library not installed; run coffee std install`。不要在 toml 里写本机 `path=` 指向 std。
+
+```coffee
+use print in std
+
+fn main() => int:
+    print("Hello, Coffee!\n")
+    return 0
+```
+
+用户代码里不要写 `of c`；C 边界只在 std 的 `sys` 模块。可增长整数缓冲：`use mem` 后 `IntBuf::new` / `push` / `get` / `length`（堆上 `buf`，`get` 越界返回 0；move-only，不能 `clone`）。
+
+---
+
+## 泛型
+
+v1 是**单态化**（token 替换），不是带约束的完整泛型系统。
+
+```coffee
+class List<T>:
+    len: int
+
+    fn push(self, x: T) => void:
+        return
+
+fn id<T>(x: T) => T:
+    return x
+
+fn main() => int:
+    let xs: List<int> = List { len: 0 }
+    return 0
+```
+
+- `class List<T>:` / `fn id<T>(x: T) => T` 解析 `type_params`。
+- 类型 `List<int>` 在检查器里是 `Type::App`，实例化后的具体名字是 `List__int`；方法变成 `List__int_push` 这类名字。
+- 嵌套 `List<List<int>>` 是一个类型字符串（解析在统一的 `src/parser/ty.rs`）。
+- 不支持 `T: Trait`。语言不附带标准库 `List` 实现；上面的 `List` 只是语法示例。
 
 ---
 
 ## 内存管理
+
+值类型（`int` / `float` / `bool`，以及只含值类型的元组和定长数组）在作用域结束时由编译器清理，不必写 `rm`。资源类型（`class` 实例、`str`、切片、`object`、`buf`）不能用 `=` 或 `let b = a` **复制**；若该语句是简单变量 `a` 在函数剩余路径上的最后一次使用，则 `let b: T = a`、`b = a`、按值实参 `foo(a)`、`return a` 与 `mv a …` 相同（搬走，不是 clone）。否则仍须写 `mv` 或 `clone`。`p.x` / `a[i]`、循环体内（`return` 除外）、以及仍被借用的名字不做隐式搬走。`rm` 只用于提前释放。`copy` 与 `clean out` 仍是可解析语法，类型检查为错误。
+
+`object` 是 C 句柄：Coffee **不会** `free` 其所指对象（class 字段也不例外）。`buf` 是 Coffee 拥有的 `malloc` 指针（LLVM 不透明 ptr，与 `str` 一样）：drop / `rm` / 作用域结束会 `free` 该指针。`let p: buf = malloc(n)` 通过 `object` → `buf` 强制转换。`clone` 一个 `buf` 是类型错误（没有长度；用切片）。`fopen` 存成 `object` 不会被释放；写成 `let f: buf = fopen(...)` 则用户选择了 `free`。
+
+容器 drop：定长资源数组 `[T; N]`（字段或局部）随容器 drop 每个元素（如 `[str; 2]` 会 `free` 两次）。元组里的资源字段按结构体下标 drop。class 的切片字段 `[T]` 按长度循环 drop 每个元素，**不** `free` 缓冲区指针（分配器未知）。`object` 仍不释放载荷。`&T` / `&mut T` 不 drop 所指对象。
 
 ### 移动操作（转移所有权）
 
@@ -625,23 +747,16 @@ use my_function in mylib of c
 mv source target
 ```
 
-将 `source` 的所有权转移给 `target`，`source` 变为无效。
+将 `source` 的所有权转移给 `target`，`source` 变为无效。被借用的变量不能 `mv`。
 
 ### 克隆操作（创建副本）
 
 ```coffee
 clone source target
+let b: T = clone a
 ```
 
-创建 `source` 的深拷贝到 `target`。
-
-### 复制操作（共享引用）
-
-```coffee
-copy source target
-```
-
-创建 `source` 的共享引用到 `target`。
+创建 `source` 的独立副本。类的 `clone` 不是只 memcpy 对象字节：嵌套的 `str`、class、资源数组、元组字段会再 clone（见 `src/backend/memory_ops/clone.rs`）。`object`、引用、切片字段仍是浅拷贝（不 clone 所指对象）。`buf` 不能 `clone`（没有长度）。不是最后一次使用时，资源仍须写 `mv` 或 `clone`（见上文 last-use）。
 
 ### 删除操作
 
@@ -650,31 +765,52 @@ rm variable
 rm var1, var2, var3
 ```
 
-删除变量，释放内存。
+提前释放。被借用的变量不能 `rm`。
 
-### 作用域清理
+### 借用
 
 ```coffee
-clean out                    # 清理所有变量
-clean out except var1, var2  # 除指定变量外清理所有
-clean out var1, var2         # 清理指定变量
+let y: &int = &x
+let z: &mut int = &mut x
+return *y
 ```
 
-**重要**: Coffee 语言要求所有变量必须在作用域结束前显式清理（使用 `rm`），不支持隐式内存清理。这是为了确保内存安全和避免内存泄漏。
+规则（过程内）：地点可以是变量、字段 `p.x`、下标 `a[i]`。
+
+- 同一地点可以有多个 `&`，或一个 `&mut`，不能同时存在。
+- 借用期间不能对该地点赋值、`mv` 或 `rm`。
+- 可变借用期间不能把该地点当普通值使用。
+- 不能返回指向局部变量的引用；返回指向参数的引用可以。
+- 块（`if` / `while` / `for` / `match` 臂）结束时，块内声明的引用绑定失效，loan 结束。
 
 ---
 
 ## 异常处理
 
-### 抛出异常
+没有 `try` / `catch`。未标记监听器的函数里，`raise` 向 stderr 打印并 `exit` 中止。带 `#name` 的函数里，只有该函数体中的 `raise` 调用 `name`（无穿透）；`name` 返回 `R`；`name` 里的 `raise` 仍中止。
+
+可 `raise` 的类型只有内建类 `Error`，以及继承链到达 `Error` 的类（`class C of Error`，或 `class D of C` 且 `C` 已是异常类）。**不以**类名是否以 `Error` 结尾为准；`class FooError:` 若没有 `of Error`，只是普通类，不能 `raise`。源码不能再声明 `class Error`。
+
+异常类保留普通类能力：额外字段、方法、`self`、再 `of` 子类。不要在子类上重声明 `code` / `note` / `e`（用继承字段）；额外字段用别的名字。构造与其它类相同（`C { ... }`）。`raise C(...)` 仍是 raise 语法糖（参数打进中止文本 / 监听器看到的 `Error` 前缀），不是另一套构造器。监听器仍只看到 `Error` 前缀；子类额外字段给持有子类类型的 Coffee 代码用。
 
 ```coffee
-raise ErrorType(arguments)
+raise Error(...)
+raise DivisionByZero(...)
+raise DivisionByZero { code: 1, note: "Cannot divide by zero", e: (), extra: 0 }
 ```
 
 **示例**:
 ```coffee
-fn divide(a: int, b: int) => int:
+class DivisionByZero of Error:
+    extra: int
+
+    fn describe(self) => str:
+        return self.note
+
+fn on_err(err: Error) => int:
+    return -1
+
+fn divide(a: int, b: int) #on_err => int:
     if b == 0:
         raise DivisionByZero("Cannot divide by zero")
     return a / b
@@ -689,7 +825,7 @@ fn divide(a: int, b: int) => int:
 .cfc 文件用于描述 C 函数签名：
 
 ```coffee
-# libc.cfc
+/#/ libc.cfc
 c fn printf(format: string, args: object) => int:
 c fn puts(s: string) => int:
 c fn exit(status: int) => ():
@@ -747,7 +883,7 @@ c fn coffee_function(param: type) => return_type:
 12. 位或: `|`
 13. 逻辑与: `&&`
 14. 逻辑或: `||`
-15. 赋值: `=`, `+=`, `-=`, `*=`, `/=`
+15. 赋值: `=`
 
 ---
 
@@ -756,39 +892,37 @@ c fn coffee_function(param: type) => return_type:
 ### Hello World
 
 ```coffee
+use printf in libc of c
+
 fn main() => int:
     printf("Hello, World!\n")
     return 0
-
-main(main())
 ```
 
 ### 类和方法调用
 
 ```coffee
+use printf in libc of c
+use sqrt in libm of c
+
 class Point:
     x: int
     y: int
-    
+
     fn new(x: int, y: int) => Point:
         return Point { x: x, y: y }
-    
+
     fn distance_to(self, other: Point) => float:
         let dx: float = float(self.x - other.x)
         let dy: float = float(self.y - other.y)
         return sqrt(dx * dx + dy * dy)
 
 fn main() => int:
-    use sqrt in libm of c
-    
-    let p1: Point = Point::new(0, 0)
-    let p2: Point = Point::new(3, 4)
+    let p1: Point = Point.new(0, 0)
+    let p2: Point = Point.new(3, 4)
     let dist: float = p1.distance_to(p2)
-    
     printf("Distance: %.2f\n", dist)
     return 0
-
-main(main())
 ```
 
 ### 枚举使用
@@ -801,33 +935,27 @@ enum Color:
 
 fn get_color_name(c: Color) => str:
     match c:
-        Color::Red => "Red"
-        Color::Green => "Green"
-        Color::Blue => "Blue"
+        Color.Red => "Red"
+        Color.Green => "Green"
+        Color.Blue => "Blue"
 
 fn main() => int:
-    let red: Color = Color::Red
-    
-    rm red
+    let red: Color = Color.Red
     return 0
-
-main(main())
 ```
 
 ### 数组和循环
 
 ```coffee
-fn main() => int:
-    let arr: [int] = [1, 2, 3, 4, 5]
-    let total: int = 0
-    for i in 0..5:
-        total = total + arr[i]
-    rm i
-    printf("Sum: %d\n", total)
-    rm total, arr
-    return 0
+use printf in libc of c
 
-main(main())
+fn main() => int:
+    let arr: [int; 5] = [1, 2, 3, 4, 5]
+    let total: int = 0
+    for item in arr:
+        total = total + item
+    printf("Sum: %d\n", total)
+    return 0
 ```
 
 ---
@@ -837,7 +965,7 @@ main(main())
 ### 关键字完整列表
 
 ```
-fn, c fn, class, packed, enum, of
+fn, c fn, class, type, packed, enum, of
 if, elif, else, while, for, in, match
 let, mv, clone, copy, rm, clean, raise, return, break, continue
 use, in, of, as
@@ -864,5 +992,5 @@ int, float, bool, string, str, void
 
 ---
 
-**版本**: 0.2.0
-**最后更新**: 2026-03-01
+**版本**: 0.3.9
+**最后更新**: 2026-09-06

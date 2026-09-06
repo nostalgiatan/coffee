@@ -12,15 +12,23 @@
 //! - Various type annotations including parametric types (int(4)+, float(8), etc.)
 
 use crate::coffee_debug;
+use crate::parser::ty::{parse_type, parse_type_params};
 use nom::{
     branch::alt,
-    bytes::complete::{tag, take_till, take_while1},
+    bytes::complete::{tag, take_while1},
     character::complete::{char, space0, space1},
-    combinator::{map, opt, recognize},
+    combinator::{map, opt},
     multi::separated_list1,
     sequence::{delimited, preceded},
     IResult, Parser,
 };
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_ANON_ID: AtomicU64 = AtomicU64::new(0);
+
+fn next_anon_name() -> String {
+    format!("__anon_{}", NEXT_ANON_ID.fetch_add(1, Ordering::Relaxed))
+}
 
 // Import Statement for function body
 use super::Statement;
@@ -28,7 +36,7 @@ use super::Statement;
 /// Represents a function parameter with its name, type, and variadic status
 /// 
 /// This structure captures the details of a parameter in a function signature.
-/// Parameters can be regular typed parameters or variadic parameters (like ... or object).
+/// Parameters can be regular typed parameters or C varargs (`...` only).
 #[derive(Debug, PartialEq, Clone)]
 pub struct Parameter {
     /// The name of the parameter
@@ -64,6 +72,8 @@ pub enum FunctionBody {
 pub struct Function {
     /// The name of the function
     pub name: String,
+    /// Generic type parameters (`fn id<T>`). Empty when the function is not generic.
+    pub type_params: Vec<String>,
     /// The list of parameters for the function
     pub parameters: Vec<Parameter>,
     /// The return type of the function
@@ -74,162 +84,6 @@ pub struct Function {
     pub body: FunctionBody,
     /// C ABI linkage (true = C function, false = Coffee function)
     pub is_c: bool,
-}
-
-impl Function {
-    /// Check if this function is an error handler
-    /// 
-    /// Error handlers in Coffee have a specific signature:
-    /// - First parameter must be of type "Error"
-    /// - Second parameter must be a tuple type (starts with '(' and ends with ')')
-    /// 
-    /// This signature allows the function to handle errors and potentially return
-    /// a result in a tuple format.
-    /// 
-    /// # Returns
-    /// 
-    /// * `true` if the function matches the error handler signature
-    /// * `false` otherwise
-    pub fn is_error_handler(&self) -> bool {
-        self.parameters.len() >= 2
-            && self.parameters[0].param_type == "Error"
-            && self.parameters[1].param_type.starts_with('(')
-            && self.parameters[1].param_type.ends_with(')')
-    }
-
-    /// Check if this is a C function (uses C ABI)
-    /// 
-    /// This method checks if the function uses C ABI linkage, which means it can be
-    /// called from C code or can call C functions. C functions are declared using
-    /// the 'c fn' syntax in Coffee.
-    /// 
-    /// # Returns
-    /// 
-    /// * `true` if the function uses C ABI linkage
-    /// * `false` otherwise
-    pub fn is_extern_c(&self) -> bool {
-        self.is_c
-    }
-
-    /// Normalize types in the function signature
-    /// 
-    /// This method converts common type names to their more specific equivalents:
-    /// - "int" becomes "int(4)+" (4-byte signed integer)
-    /// - "float" becomes "float(8)" (8-byte floating point)
-    /// 
-    /// The normalization helps ensure consistent type representation throughout
-    /// the compilation process.
-    /// 
-    /// # Returns
-    /// 
-    /// A new Function instance with normalized types
-    pub fn normalize_types(&self) -> Function {
-        Function {
-            parameters: self.parameters.iter().map(|p| Parameter {
-                name: p.name.clone(),
-                param_type: normalize_type(&p.param_type),
-                is_variadic: p.is_variadic,
-            }).collect(),
-            return_type: normalize_type(&self.return_type),
-            ..self.clone()
-        }
-    }
-
-    /// Check if the function uses dynamic types
-    /// 
-    /// This method checks if the function's return type or parameters use dynamic types
-    /// like "int" or "float" which have ambiguous sizes. This is important for
-    /// type checking and code generation.
-    /// 
-    /// # Returns
-    /// 
-    /// * `true` if the function uses dynamic types
-    /// * `false` otherwise
-    pub fn has_dynamic_types(&self) -> bool {
-        self.return_type == "int" || self.return_type == "float"
-            || self.parameters.iter().any(|p| p.param_type == "int" || p.param_type == "float")
-    }
-}
-
-/// Normalize type names to their explicit equivalents
-/// 
-/// This function converts common type names to their more specific equivalents:
-/// - "int" becomes "int(4)+" (4-byte signed integer)
-/// - "float" becomes "float(8)" (8-byte floating point)
-/// - Other types remain unchanged
-/// 
-/// # Arguments
-/// 
-/// * `ty` - The type name to normalize
-/// 
-/// # Returns
-/// 
-/// The normalized type name as a String
-fn normalize_type(ty: &str) -> String {
-    match ty {
-        "int" => "int(4)+".to_string(),
-        "float" => "float(8)".to_string(),
-        _ => ty.to_string(),
-    }
-}
-
-/// Convert Coffee type names to traditional system types
-/// 
-/// This function converts Coffee's specific type names to their traditional equivalents
-/// used by system APIs and other languages. It handles:
-/// - Parametric integer types (int(1)+ → i8, int(4)+ → i32, etc.)
-/// - Parametric float types (float(4) → f32, float(8) → f64, etc.)
-/// - Basic type aliases (int → i32, float → f64)
-/// 
-/// The function supports both signed and unsigned integer types, with the '+' suffix
-/// indicating signed and '-' indicating unsigned.
-/// 
-/// # Arguments
-/// 
-/// * `ty` - The Coffee type name to convert
-/// 
-/// # Returns
-/// 
-/// The traditional type name as a String, or the original type name if no conversion is applicable
-pub fn type_to_traditional(ty: &str) -> String {
-    if let Some(rest) = ty.strip_prefix("int(") {
-        if let Some(size_end) = rest.find(')') {
-            if let Ok(size) = rest[..size_end].parse::<u32>() {
-                let suffix = &rest[size_end + 1..];
-                return match (size, suffix) {
-                    (1, "+") => "i8".to_string(),
-                    (1, "-") => "u8".to_string(),
-                    (2, "+") => "i16".to_string(),
-                    (2, "-") => "u16".to_string(),
-                    (4, "+") => "i32".to_string(),
-                    (4, "-") => "u32".to_string(),
-                    (8, "+") => "i64".to_string(),
-                    (8, "-") => "u64".to_string(),
-                    (16, "+") => "i128".to_string(),
-                    (16, "-") => "u128".to_string(),
-                    _ => ty.to_string(),
-                };
-            }
-        }
-    }
-
-    if let Some(rest) = ty.strip_prefix("float(") {
-        if let Some(size_end) = rest.find(')') {
-            if let Ok(size) = rest[..size_end].parse::<u32>() {
-                return match size {
-                    4 => "f32".to_string(),
-                    8 => "f64".to_string(),
-                    _ => ty.to_string(),
-                };
-            }
-        }
-    }
-
-    match ty {
-        "int" => "i32".to_string(),
-        "float" => "f64".to_string(),
-        _ => ty.to_string(),
-    }
 }
 
 /// Parse an identifier token
@@ -250,90 +104,12 @@ fn parse_identifier(input: &str) -> IResult<&str, &str> {
     take_while1(|c: char| c.is_alphanumeric() || c == '_')(input)
 }
 
-/// Parse a parametric type specification
-/// 
-/// This function parses Coffee's parametric type syntax like `int(4)+`, `int(8)-`, `float(4)`, etc.
-/// The syntax follows the pattern: base_type(size)[sign] where:
-/// - base_type is either "int" or "float"
-/// - size is one or more digits in parentheses
-/// - sign is optional '+' for signed or '-' for unsigned (only for integers)
-/// 
-/// # Arguments
-/// 
-/// * `input` - The input string to parse
-/// 
-/// # Returns
-/// 
-/// * `Ok((remaining, type_string))` - Successfully parsed type and remaining input
-/// * `Err(nom::Err)` - If the input does not match the parametric type pattern
-fn parse_parametric_type(input: &str) -> IResult<&str, &str> {
-    let mut parser = alt((
-        // int types with optional sign: int(4)+, int(4)-, int(4)
-        recognize((
-            tag("int"),
-            char('('),
-            take_while1(|c: char| c.is_ascii_digit()),
-            char(')'),
-            opt(alt((tag("+"), tag("-")))),
-        )),
-        // float types without sign: float(4), float(8)
-        recognize((
-            tag("float"),
-            char('('),
-            take_while1(|c: char| c.is_ascii_digit()),
-            char(')'),
-        )),
-    ));
-    Parser::parse(&mut parser, input)
-}
-
-/// Parse any valid Coffee type expression
-/// 
-/// This function handles parsing all kinds of Coffee type expressions:
-/// - Basic types: int, float, string, bool, etc.
-/// - Parametric types: int(4)+, float(8), etc.
-/// - Generic types: List<int>, HashMap<String, int>, etc.
-/// - Tuple types: (int, string), (int, int, bool), etc.
-/// 
-/// The parser tries each type pattern in order from most complex to simplest.
-/// 
-/// # Arguments
-/// 
-/// * `input` - The input string to parse
-/// 
-/// # Returns
-/// 
-/// * `Ok((remaining, type_string))` - Successfully parsed type and remaining input
-/// * `Err(nom::Err)` - If the input does not match any type pattern
-fn parse_type(input: &str) -> IResult<&str, &str> {
-    let mut parser = alt((
-        // Generic types, such as List<int>, HashMap<String, int>, etc.
-        recognize((
-            take_while1(|c: char| c.is_alphanumeric() || c == '_'),
-            char('<'),
-            take_till(|c| c == '>'),
-            char('>'),
-        )),
-        // Tuple types, such as (int, string)
-        recognize((
-            char('('),
-            take_till(|c| c == ')'),
-            char(')'),
-        )),
-        // Parametric types, such as int(4), float(8)
-        parse_parametric_type,
-        // Basic types
-        take_while1(|c: char| c.is_alphanumeric() || c == '_'),
-    ));
-    Parser::parse(&mut parser, input)
-}
-
 /// Parse a function parameter
 /// 
 /// This function parses a single parameter in a function signature. The expected
 /// format is `name: type` where name is an identifier and type is any valid
-/// Coffee type expression. The function also handles variadic parameters where
-/// the type is "..." or "object".
+/// Coffee type expression. Only `...` is a C varargs marker. `object` is an
+/// opaque pointer (`void*`), not varargs.
 /// 
 /// # Arguments
 /// 
@@ -352,8 +128,7 @@ fn parse_parameter(input: &str) -> IResult<&str, Parameter> {
     let (input, param_type) = parse_type(input)?;
     let (input, _) = space0(input)?;
 
-    // Check if this is a variadic parameter
-    let is_variadic = param_type == "..." || param_type == "object";
+    let is_variadic = param_type == "...";
 
     Ok((
         input,
@@ -416,7 +191,14 @@ fn parse_indent(input: &str) -> IResult<&str, &str> {
 /// 
 /// * `Ok((remaining, FunctionBody))` - Successfully parsed function body and remaining input
 /// * `Err(nom::Err)` - If the input does not match any valid function body pattern
-fn parse_function_body(input: &str) -> IResult<&str, FunctionBody> {
+fn missing_indented_body(input: &str) -> nom::Err<nom::error::Error<&str>> {
+    nom::Err::Error(nom::error::Error {
+        input,
+        code: nom::error::ErrorKind::Fail,
+    })
+}
+
+fn parse_function_body(input: &str, is_c: bool) -> IResult<&str, FunctionBody> {
     let (input_after_colon, _) = char(':')(input)?;
     let (input, _) = space0(input_after_colon)?;
 
@@ -425,18 +207,36 @@ fn parse_function_body(input: &str) -> IResult<&str, FunctionBody> {
         // Check if there's actual body content on the next line
         if input.starts_with('\n') {
             let after_newline = &input[1..];
-            let trimmed = after_newline.trim_start();
-            // If the next non-empty line starts with valid Coffee syntax, it's a block
-            // If it's empty or just another declaration, it might be external
-            // Comments (/#/) should NOT cause the function to be treated as external
-            if trimmed.is_empty() || trimmed.starts_with("fn ") || trimmed.starts_with("c ") ||
-               trimmed.starts_with("main") {
-                // External declaration - no body
-                return Ok((input, FunctionBody::External));
+            let first_content = after_newline.lines().find(|l| !l.trim().is_empty());
+            match first_content {
+                None => {
+                    // `c fn` prototypes may omit a body; Coffee `fn` needs an indented body.
+                    if is_c {
+                        return Ok((input, FunctionBody::External));
+                    }
+                    return Err(missing_indented_body(input));
+                }
+                Some(line) => {
+                    // Indented lines are the function body (including nested `fn`).
+                    // A following *top-level* `fn` / `c fn` / `main` means this decl is external.
+                    let indented = line.starts_with(' ') || line.starts_with('\t');
+                    if !indented {
+                        let trimmed = line.trim_start();
+                        if trimmed.starts_with("fn ")
+                            || trimmed.starts_with("c ")
+                            || trimmed.starts_with("main")
+                        {
+                            return Ok((input, FunctionBody::External));
+                        }
+                    }
+                }
             }
         } else {
-            // Just ":" with nothing after - external declaration
-            return Ok((input, FunctionBody::External));
+            // Just ":" with nothing after — external only for `c fn`
+            if is_c {
+                return Ok((input, FunctionBody::External));
+            }
+            return Err(missing_indented_body(input));
         }
     }
 
@@ -514,7 +314,10 @@ fn parse_function_body(input: &str) -> IResult<&str, FunctionBody> {
                         statements.push(stmt);
                         i += 1;
                     } else {
-                        i += 1;
+                        return Err(nom::Err::Error(nom::error::Error {
+                            input,
+                            code: nom::error::ErrorKind::Fail,
+                        }));
                     }
                 } else {
                     coffee_debug!("DEBUG: parse_function_body: line='{}', calling parse_single_line_statement", line);
@@ -522,7 +325,10 @@ fn parse_function_body(input: &str) -> IResult<&str, FunctionBody> {
                         statements.push(stmt);
                         i += 1;
                     } else {
-                        i += 1;
+                        return Err(nom::Err::Error(nom::error::Error {
+                            input,
+                            code: nom::error::ErrorKind::Fail,
+                        }));
                     }
                 }
             }
@@ -545,7 +351,12 @@ fn parse_function_body(input: &str) -> IResult<&str, FunctionBody> {
     let expr = if expr_str.is_empty() {
         super::expr::Expression::Literal(String::new())
     } else {
-        super::expr::assignment_rhs(&expr_str)
+        super::expr::assignment_rhs(&expr_str).map_err(|_| {
+            nom::Err::Error(nom::error::Error {
+                input,
+                code: nom::error::ErrorKind::Fail,
+            })
+        })?
     };
 
     Ok((
@@ -560,7 +371,7 @@ fn parse_function_body(input: &str) -> IResult<&str, FunctionBody> {
 /// including:
 /// - Regular Coffee functions: `fn name(params) => return_type: body`
 /// - C ABI functions: `c fn name(params) => return_type: body`
-/// - Functions with error handlers: `fn name(params) #error_handler => return_type: body`
+/// - Functions with error listeners: `fn name(params) #on_err => return_type: body`
 /// - External function declarations: `fn name(params) => return_type:`
 /// 
 /// The parser identifies the function type based on the 'c' prefix, extracts
@@ -587,6 +398,7 @@ pub fn parse_function(input: &str) -> IResult<&str, Function> {
     let (input, _) = tag("fn")(input)?;
     let (input, _) = space1(input)?;
     let (input, name) = parse_identifier(input)?;
+    let (input, type_params) = parse_type_params(input)?;
     let (input, _) = space0(input)?;
     let (input, parameters) = parse_parameters(input)?;
     let (input, _) = space0(input)?;
@@ -605,12 +417,13 @@ pub fn parse_function(input: &str) -> IResult<&str, Function> {
     let (input, _) = space0(input)?;
     let (input, return_type) = parse_type(input)?;
     let (input, _) = space0(input)?;
-    let (input, body) = parse_function_body(input)?;
+    let (input, body) = parse_function_body(input, is_c)?;
 
     Ok((
         input,
         Function {
             name: name.to_string(),
+            type_params,
             parameters,
             return_type: return_type.to_string(),
             error_handler: error_handler.map(|s| s.to_string()),
@@ -620,20 +433,61 @@ pub fn parse_function(input: &str) -> IResult<&str, Function> {
     ))
 }
 
-/// Strip inline Coffee comments from a line
-/// 
-/// This function removes inline comments from a Coffee source line. Coffee uses
-/// '/#/' as the comment delimiter. The function is careful to not remove
-/// '/#/' sequences that appear inside string literals, as those are not comments.
-/// 
-/// # Arguments
-/// 
-/// * `s` - The source line to strip comments from
-/// 
-/// # Returns
-/// 
-/// The line with inline comments removed, or the original line if no comment was found
-/// outside of string literals
+/// `fn(params) => R:` with an indented body. Synthetic LLVM name `__anon_N`.
+pub fn parse_anonymous_function(input: &str) -> IResult<&str, Function> {
+    let (input, _) = space0(input)?;
+    let (input, _) = tag("fn")(input)?;
+    let (input, _) = space0(input)?;
+    let (input, parameters) = parse_parameters(input)?;
+    let (input, _) = space0(input)?;
+    let (input, _) = tag("=>")(input)?;
+    let (input, _) = space0(input)?;
+    let (input, return_type) = parse_type(input)?;
+    let (input, _) = space0(input)?;
+    let (input, body) = parse_function_body(input, false)?;
+    Ok((
+        input,
+        Function {
+            name: next_anon_name(),
+            type_params: vec![],
+            parameters,
+            return_type: return_type.to_string(),
+            error_handler: None,
+            body,
+            is_c: false,
+        },
+    ))
+}
+
+/// LLVM / `hir_fns` map key for a function declaration.
+///
+/// If `name` is not taken, it is used as-is (same as `declare_function` inserting
+/// `func.name`). On collision, `{parent}_{name}`, then `{parent}_{name}_{i}`.
+pub fn unique_function_key(name: &str, parent: Option<&str>, taken: impl Fn(&str) -> bool) -> String {
+    if !taken(name) {
+        return name.to_string();
+    }
+    let base = match parent {
+        Some(p) if !p.is_empty() => format!("{}_{}", p, name),
+        _ => format!("{}_1", name),
+    };
+    if !taken(&base) {
+        return base;
+    }
+    let mut i = 2u32;
+    loop {
+        let cand = format!("{}_{}", base, i);
+        if !taken(&cand) {
+            return cand;
+        }
+        i = i.saturating_add(1);
+        if i == u32::MAX {
+            return cand;
+        }
+    }
+}
+
+/// Strip `/#/` comments that are not inside quotes.
 fn strip_inline_comment(s: &str) -> &str {
     if let Some(start_pos) = s.find("/#/") {
         // Check if inside string literal
@@ -645,4 +499,111 @@ fn strip_inline_comment(s: &str) -> &str {
         }
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::Statement;
+
+    #[test]
+    fn unique_function_key_keeps_free_name() {
+        assert_eq!(unique_function_key("helper", Some("a"), |_| false), "helper");
+    }
+
+    #[test]
+    fn unique_function_key_prefixes_parent_on_collision() {
+        assert_eq!(
+            unique_function_key("helper", Some("b"), |n| n == "helper"),
+            "b_helper"
+        );
+    }
+
+    #[test]
+    fn unique_function_key_suffixes_when_parent_prefix_taken() {
+        assert_eq!(
+            unique_function_key("helper", Some("b"), |n| n == "helper" || n == "b_helper"),
+            "b_helper_2"
+        );
+    }
+
+    #[test]
+    fn indented_nested_fn_is_block_not_external() {
+        let src = "fn main() => int:\n    fn helper() => int:\n        return 1\n    return 0\n";
+        let (_, f) = parse_function(src).expect("parse outer");
+        match f.body {
+            FunctionBody::Block(stmts) => {
+                assert!(
+                    stmts.iter().any(|s| matches!(s, Statement::Function(inner) if inner.name == "helper")),
+                    "nested helper missing: {:?}",
+                    stmts
+                );
+            }
+            other => panic!("expected block body, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn following_top_level_fn_is_still_external() {
+        let src = "fn proto() => int:\nfn other() => int:\n    return 0\n";
+        let (_, f) = parse_function(src).expect("parse proto");
+        assert!(
+            matches!(f.body, FunctionBody::External),
+            "{:?}",
+            f.body
+        );
+    }
+
+    #[test]
+    fn coffee_fn_without_indented_body_is_error() {
+        assert!(parse_function("fn main() => int:\n").is_err());
+        assert!(parse_function("fn main() => int:").is_err());
+    }
+
+    #[test]
+    fn c_fn_without_body_is_external() {
+        let (_, f) = parse_function("c fn foo() => int:\n").expect("parse c fn proto");
+        assert!(matches!(f.body, FunctionBody::External), "{:?}", f.body);
+    }
+
+    #[test]
+    fn array_parameter_type_is_parsed() {
+        let src = "fn find_value(arr: [int; 5], target: int) => int:\n    return 0\n";
+        let (_, f) = parse_function(src).expect("parse");
+        assert_eq!(f.parameters.len(), 2);
+        assert_eq!(f.parameters[0].name, "arr");
+        assert_eq!(f.parameters[0].param_type, "[int; 5]");
+        assert_eq!(f.parameters[1].name, "target");
+        assert_eq!(f.parameters[1].param_type, "int");
+    }
+
+    #[test]
+    fn unparseable_body_line_is_error() {
+        let src = "fn main() => int:\n    @@@\n    return 0\n";
+        assert!(parse_function(src).is_err());
+    }
+
+    #[test]
+    fn nested_generic_parameter_type_is_complete() {
+        let src = "fn id(x: List<List<int>>, y: int) => int:\n    return 0\n";
+        let (_, f) = parse_function(src).expect("parse");
+        assert_eq!(f.parameters[0].param_type, "List<List<int>>");
+        assert_eq!(f.parameters[1].param_type, "int");
+    }
+
+    #[test]
+    fn map_parameter_type_not_truncated() {
+        let src = "fn use_map(m: Map<str, List<int>>) => int:\n    return 0\n";
+        let (_, f) = parse_function(src).expect("parse");
+        assert_eq!(f.parameters[0].param_type, "Map<str, List<int>>");
+    }
+
+    #[test]
+    fn fn_type_params_after_name() {
+        let src = "fn id<T>(x: T) => T:\n    return x\n";
+        let (_, f) = parse_function(src).expect("parse");
+        assert_eq!(f.type_params, vec!["T".to_string()]);
+        assert_eq!(f.parameters[0].param_type, "T");
+        assert_eq!(f.return_type, "T");
+    }
 }

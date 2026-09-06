@@ -54,6 +54,7 @@ fn main() => int:
     return 0
 
 "#;
+    assert_compiles(source).unwrap();
 }
 
 #[test]
@@ -389,6 +390,21 @@ fn main() => int:
 }
 
 #[test]
+fn test_unknown_c_lib_without_cfc_does_not_guess_signature() {
+    // Name used to be inferred as void() (`hello_world` heuristic). Without a
+    // `.cfc` (and not a libc/libm builtin), compile must fail.
+    let source = r#"
+use hello_world in fakelib of c
+
+fn main() => int:
+    hello_world()
+    return 0
+
+"#;
+    assert_compile_error(source, ".cfc").unwrap();
+}
+
+#[test]
 fn test_empty_import_list() {
     let source = r#"
 use in libc of c
@@ -485,4 +501,43 @@ fn main() => int:
 
 "#;
     assert_compiles(source).unwrap();
+}
+
+fn write_coffee_module_pair(tag: &str, helper: &str, main_cf: &str) -> (std::path::PathBuf, TestResult) {
+    let dir = std::env::temp_dir().join(format!("coffee_imp_{}_{}", tag, unique_temp_id()));
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("nums.cf"), helper).unwrap();
+    fs::write(dir.join("main.cf"), main_cf).unwrap();
+    let mut cmd = Command::new(coffee_bin(&std::env::current_dir().expect("cwd")));
+    cmd.current_dir(&dir);
+    cmd.arg("--test-mode");
+    cmd.arg("--emit-llvm");
+    cmd.arg("-o");
+    cmd.arg("out.ll");
+    cmd.arg("main.cf");
+    let output = cmd.output().expect("run coffee");
+    let result = test_result_from_output(&output);
+    (dir, result)
+}
+
+#[test]
+fn test_coffee_multi_symbol_import() {
+    let (dir, r) = write_coffee_module_pair(
+        "multi",
+        "fn inc(x: int) => int:\n    return x + 1\n\nfn dec(x: int) => int:\n    return x - 1\n",
+        "use inc, dec in nums\n\nfn main() => int:\n    return inc(1) - dec(2) - 1\n",
+    );
+    let _ = fs::remove_dir_all(&dir);
+    assert_eq!(r.exit_code, 0, "stderr={} stdout={}", r.stderr, r.stdout);
+}
+
+#[test]
+fn test_coffee_star_import() {
+    let (dir, r) = write_coffee_module_pair(
+        "star",
+        "fn inc(x: int) => int:\n    return x + 1\n\nfn dec(x: int) => int:\n    return x - 1\n",
+        "use * in nums\n\nfn main() => int:\n    return inc(1) - dec(2) - 1\n",
+    );
+    let _ = fs::remove_dir_all(&dir);
+    assert_eq!(r.exit_code, 0, "stderr={} stdout={}", r.stderr, r.stdout);
 }

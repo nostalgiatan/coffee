@@ -73,8 +73,6 @@ use crate::compiler::CompilationUnit;
 pub struct DependencyGraph {
     /// Adjacency list: node -> list of dependencies (what this module depends on)
     graph: HashMap<String, Vec<String>>,
-    /// Reverse graph: node -> list of dependents (what depends on this module)
-    reverse_graph: HashMap<String, Vec<String>>,
 }
 
 impl DependencyGraph {
@@ -82,15 +80,13 @@ impl DependencyGraph {
     pub fn new() -> Self {
         DependencyGraph {
             graph: HashMap::new(),
-            reverse_graph: HashMap::new(),
         }
     }
 
     /// Add a node (compilation unit)
     pub fn add_node(&mut self, name: impl Into<String>) {
         let name = name.into();
-        self.graph.entry(name.clone()).or_insert_with(Vec::new);
-        self.reverse_graph.entry(name).or_insert_with(Vec::new);
+        self.graph.entry(name).or_insert_with(Vec::new);
     }
 
     /// Add a dependency edge: target depends on dependency
@@ -98,15 +94,9 @@ impl DependencyGraph {
         let target = target.into();
         let dep = dependency.into();
 
-        // Add to forward graph
-        self.graph.entry(target.clone())
+        self.graph.entry(target)
             .or_insert_with(Vec::new)
-            .push(dep.clone());
-
-        // Add to reverse graph
-        self.reverse_graph.entry(dep)
-            .or_insert_with(Vec::new)
-            .push(target);
+            .push(dep);
     }
 
     /// Build dependency graph from compilation units
@@ -138,18 +128,6 @@ impl DependencyGraph {
         }
 
         graph
-    }
-
-    /// Get dependencies of a node
-    #[allow(dead_code)]
-    pub fn dependencies(&self, node: &str) -> Option<&[String]> {
-        self.graph.get(node).map(|v| v.as_slice())
-    }
-
-    /// Get dependents of a node (what depends on this)
-    #[allow(dead_code)]
-    pub fn dependents(&self, node: &str) -> Option<&[String]> {
-        self.reverse_graph.get(node).map(|v| v.as_slice())
     }
 
     /// Check for circular dependencies
@@ -270,48 +248,6 @@ impl DependencyGraph {
         }
 
         Ok(batches)
-    }
-
-    /// Find all nodes that would need recompilation if a node changes
-    #[allow(dead_code)]
-    pub fn affected_nodes(&self, changed: &str) -> HashSet<String> {
-        let mut affected = HashSet::new();
-        let mut visited = HashSet::new();
-        self.collect_affected(changed, &mut affected, &mut visited);
-        affected
-    }
-
-    #[allow(dead_code)]
-    fn collect_affected(&self, node: &str, affected: &mut HashSet<String>, visited: &mut HashSet<String>) {
-        if !visited.insert(node.to_string()) {
-            return; // Already visited
-        }
-
-        if let Some(dependents) = self.reverse_graph.get(node) {
-            for dependent in dependents {
-                if affected.insert(dependent.clone()) {
-                    self.collect_affected(dependent, affected, visited);
-                }
-            }
-        }
-    }
-
-    /// Visualize the dependency graph (for debugging)
-    #[allow(dead_code)]
-    pub fn visualize(&self) -> String {
-        let mut lines = Vec::new();
-
-        lines.push("Dependency Graph:".to_string());
-
-        for (node, deps) in &self.graph {
-            if deps.is_empty() {
-                lines.push(format!("  {}", node));
-            } else {
-                lines.push(format!("  {} -> {}", node, deps.join(", ")));
-            }
-        }
-
-        lines.join("\n")
     }
 }
 

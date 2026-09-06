@@ -4,12 +4,23 @@
 
 # Compiler / test scratch
 .coffee_compiler.lock
+.cargo-test.lock
 test_temp_*
 *.ll
 *.bc
 *.o
 *.so
 *.a
+*.hash
+*.exe
+
+# Accidental duplicate lockfile (canonical is Cargo.lock)
+/cargo.lock
+
+# Leftover coffee -c / generate_cfc files in the repo root (keep library/cfc/)
+/libow_*.cfc
+/ow_*.h
+/lib*.cfc
 
 # Agent scratch (plans live in docs/superpowers/)
 .superpowers/
@@ -18,3 +29,4 @@ test_temp_*
 # Local tool caches
 .claude/
 .iflow/
+.cursor/

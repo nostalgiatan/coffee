@@ -5,7 +5,7 @@
 Coffee 是一个用 Rust 编写的现代编程语言编译器，使用 LLVM 作为后端。它是一个实验性的静态类型语言，具有类似 Python 的缩进语法，支持函数式和面向对象编程特性，以及与 C 语言的完美双向互操作性。
 
 - **项目名称**: Coffee
-- **版本**: 0.2.1
+- **版本**: 0.3.9（从 0.2.2 起满 10 次落地到 0.3.0，再 patch；之后每 10 个 patch 升中版本）。`coffee --version` 为 `0.3.9+` 加编译器源码哈希前 12 位；同 patch 重装仍会使工程 `.o` 缓存失效。
 - **开发环境**: Rust 2024 edition (Termux on Android)
 - **编译器后端**: LLVM (通过 inkwell crate) 
 - **解析器**: 使用 nom 库的自定义解析器
@@ -18,7 +18,7 @@ Coffee 是一个用 Rust 编写的现代编程语言编译器，使用 LLVM 作�
 - 函数式编程支持
 - 面向对象编程 (类和继承)
 - 模式匹配
-- 先进的内存管理 (mv/clone/copy/rm/alloc/free/load/store/clean 操作)
+- 先进的内存管理（值类型作用域结束自动清理；资源用 `mv`/`clone`/`rm`；过程内 `&`/`&mut` 借用检查）
 - 完美的 C 语言双向互操作
 - 项目管理 (coffee.toml)
 - 异常处理 (raise 语句)
@@ -55,25 +55,24 @@ Coffee 是一个用 Rust 编写的现代编程语言编译器，使用 LLVM 作�
 ### 核心模块
 
 1. **Parser (src/parser/)**: 解析 Coffee 源代码
+   - 表达式在 `expr/`（不是 `expr.rs`）
    - 支持函数、类、枚举、控制流语句
    - 缩进和块结构跟踪
    - 错误恢复机制
 
 2. **Semantic Analysis (src/semantic/)**: 语义分析
-   - 作用域管理
-   - 类型检查
-   - 符号表管理
-   - 生命周期分析
+   - 主分析器在 `analyzer/`（`mod.rs` + decls/expr/const_eval/report/memory）
+   - 作用域管理、符号表、生命周期（`scope.rs` / `symbols.rs` / `lifetime.rs`）
 
 3. **Type System (src/types/)**: 类型系统
-   - 类型定义和注册
-   - 类型检查器
-   - 类型错误处理
+   - `definition/` 类型定义，`checker/` 类型检查
+   - `borrow.rs` 过程内借用；`registry.rs` / `errors.rs`
 
 4. **Backend (src/backend/)**: LLVM 代码生成
-   - IR 生成器
-   - 优化 passes
-   - 目标代码生成
+   - `CodeGenerator::compile_program_with_hir`；完整 MIR 在 `mir_gen.rs` 编译
+   - `if`/`while`、范围与集合 `for`（`ForRange`）、`match`（降为 `If`）、`raise` 为 MIR 原生；到达 codegen 的 `MirFn` 为 `complete: true` 且不含残留 `Match`/`ForIn`；codegen 不报 `internal leftover`
+   - 函数体里的嵌套 class/fn 是 `MirStmt::Nested(NestedDecl)`（源名 + hir/LLVM key），不是整份 `Statement` 克隆。无法降的 `match`/`for`（非 simple match、非 array/slice/tuple/literal 集合 for）由 `lower_function` `Err`（Error 诊断），该函数不进 `hir_fns`；缺 MIR 是硬错误（`missing MIR for function`），不是 AST 回退。`compile_program` 是死接口（禁止空 MIR）。`compile_statement` 的 Match/For/Raise 若被走到会报错。`p.x` 再 `rm` 仍产出完整 MIR
+   - 语句级 MIR，不是 SSA
 
 5. **C Integration (src/c/)**: C 语言集成
    - C 库函数解析
@@ -82,10 +81,10 @@ Coffee 是一个用 Rust 编写的现代编程语言编译器，使用 LLVM 作�
    - C头文件生成
    - 双向互操作实现
 
-6. **Compiler Frontend (src/compiler/)**: 编译器前端
-   - 项目配置管理
-   - 编译单元管理
-   - 构建调度
+6. **Compiler Frontend (`src/compiler.rs` + `src/compiler/`)**: 编译器前端
+   - 流水线在 `pipeline/`（`mod.rs`、`parse.rs`、`imports.rs`、`collect.rs`），不是 `pipeline.rs`
+   - `CompilationResult` 含 `program` / `c_imports` / `cfc_symbols` / `hir_fns`
+   - 项目配置、编译单元、构建调度
 
 ### 语言语法详述
 
@@ -108,8 +107,8 @@ fn function_name(param1: type1, param2: type2) => return_type:
 c fn function_name(param1: type1, param2: type2) => return_type:
     body
 
-# 带错误处理的函数
-fn function_name(param: type) #error_handler => return_type:
+# 带错误监听器的函数
+fn function_name(param: type) #on_err => return_type:
     body
 ```
 
@@ -173,28 +172,17 @@ match value:
     _ => default_result
 ```
 
-#### 7. 内存管理操作
+#### 7. 内存管理与借用
 ```coffee
-# 移动操作（转移所有权）
 mv source target
-
-# 克隆操作（创建副本）
 clone source target
-
-# 复制操作（共享引用）
-copy source target
-
-# 删除操作
+let b: T = clone a
 rm variable
-
-# 批量删除
-rm var1, var2, var3
-
-# 作用域清理
-clean out                    # 清理所有变量
-clean out except var1, var2  # 除指定变量外清理所有
-clean out var1, var2         # 清理指定变量
+let y: &int = &x
+return *y
 ```
+
+值类型离开作用域自动结束；资源必须 `mv`/`clone`，禁止 `copy`/`clean out`。`&`/`&mut` 由类型检查器做过程内借用检查。
 
 #### 8. 异常处理
 ```coffee
@@ -358,7 +346,7 @@ Coffee内置libc的常用函数签名，无需提供.cfc文件：
 - **字符串函数**: `strlen`, `strcmp`, `strcpy`
 - **数学函数**: `abs`
 - **进程控制**: `exit`, `abort`
-- **内存管理**: `malloc`, `free`
+- **内存管理**: 语言侧 `mv`/`clone`/`rm` 与借用；C 的 `malloc`/`free` 仅能通过 `use … in libc of c` 得到 `object` 句柄
 
 ### Coffee函数导出到C
 
@@ -472,21 +460,23 @@ authors = ["Author Name <email@example.com>"]  # 作者信息
 description = "Project description"            # 项目描述
 
 [dependencies]
-# 标准库依赖
-std = "0.2.0"
+# std 随编译器捆绑（coffee std install）；不要写本机 path= 指向 std
 
-# Coffee包依赖
-[dependencies.packages]
-# coffee_package = "0.1.0"
+# Coffee包依赖：path 或 url+hash（二选一）
+# [dependencies.packages.foo]
+# url = "https://example.com/foo.tar.gz"
+# hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+# [dependencies.packages.local_bar]
+# path = "../bar"
 
-# C库依赖
+# C 库：有 headers 时项目编译生成 target/cfc；include_paths 只给生成器用（-I），不是链接 -L
 [dependencies.c_libraries.libm]
-name = "m"               # 库名称
-headers = ["math.h"]     # C头文件（用于查找函数）
-include_paths = ["/usr/include"]  # 包含路径
-link_flags = ["-L/usr/lib"]       # 链接标志
-static_link = false      # 是否静态链接
-static_lib_path = ""     # 静态库路径（可选）
+name = "m"               # 可省略，默认等于表键
+headers = ["math.h"]
+include_paths = []       # 非标准头路径才需要
+link_flags = []
+static_link = false
+static_lib_path = ""
 
 [build]
 main = "src/main"        # 主入口模块

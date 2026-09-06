@@ -16,7 +16,7 @@ use nom::{
     branch::alt,
     bytes::complete::{tag, take_while1},
     character::complete::{multispace0, multispace1, space0},
-    combinator::{map, opt, peek},
+    combinator::opt,
     multi::separated_list1,
     sequence::delimited,
     sequence::preceded,
@@ -69,6 +69,11 @@ fn parse_identifier(input: &str) -> IResult<&str, &str> {
     take_while1(|c: char| c.is_alphanumeric() || c == '_' || c == '.')(input)
 }
 
+/// One selective-import item: a symbol name, or `*` for every exported function.
+fn parse_import_item(input: &str) -> IResult<&str, &str> {
+    alt((tag("*"), parse_identifier)).parse(input)
+}
+
 /// Parse an import statement with the 'in' syntax
 /// 
 /// This function handles import statements of the form:
@@ -93,7 +98,7 @@ fn parse_import_in(input: &str) -> IResult<&str, Import> {
     // Parse one or more identifiers separated by commas
     let (input, paths) = separated_list1(
         delimited(space0, tag(","), space0),
-        parse_identifier,
+        parse_import_item,
     ).parse(input)?;
 
     let (input, _) = multispace0(input)?;
@@ -269,4 +274,37 @@ pub fn parse_import(input: &str) -> IResult<&str, Import> {
         parse_import_as,                  // use module as alias
         parse_import_simple,              // use module
     )).parse(input)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn coffee_multi_import_is_not_c() {
+        let (rest, import) = parse_import("use sys_malloc, sys_free in sys").unwrap();
+        assert!(rest.trim().is_empty());
+        match import {
+            Import::InModuleWithLang { paths, module, lang, .. } => {
+                assert_eq!(paths, vec!["sys_malloc", "sys_free"]);
+                assert_eq!(module, "sys");
+                assert!(lang.is_empty(), "Coffee multi-import must not look like of c");
+            }
+            other => panic!("expected InModuleWithLang, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn star_import_parses() {
+        let (rest, import) = parse_import("use * in sys").unwrap();
+        assert!(rest.trim().is_empty());
+        match import {
+            Import::InModule { path, module, alias } => {
+                assert_eq!(path, "*");
+                assert_eq!(module, "sys");
+                assert!(alias.is_none());
+            }
+            other => panic!("expected InModule star, got {other:?}"),
+        }
+    }
 }

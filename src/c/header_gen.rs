@@ -134,7 +134,7 @@ impl HeaderGenContext {
 /// # Errors
 /// 
 /// This function returns an error if:
-/// - No exportable functions are found (all functions are external)
+/// - No exportable functions are found (all functions are `FunctionBody::External`)
 /// - File creation or writing fails
 pub fn generate_header<P: AsRef<Path>>(
     functions: &[Function],
@@ -144,14 +144,19 @@ pub fn generate_header<P: AsRef<Path>>(
 ) -> Result<PathBuf, String> {
     let output_path = output_path.as_ref();
 
-    // Filter all callable functions (both c fn and regular fn should be exported)
+    // Export `c fn` / `fn` with a body. External prototypes (no body) are skipped.
     let exportable_functions: Vec<&Function> = functions
         .iter()
-        .filter(|f| !matches!(&f.body, crate::parser::FunctionBody::External)) // Not external
+        .filter(|f| !matches!(&f.body, crate::parser::FunctionBody::External))
         .collect();
 
     if exportable_functions.is_empty() {
-        return Err("no exportable functions found".to_string());
+        return Err(
+            "no exportable functions found. `--have-c` emits a C header for Coffee `c fn` \
+             (and `fn`) implementations that have a body; External prototypes \
+             (`c fn name(...) => T:` with no body) are skipped"
+                .to_string(),
+        );
     }
 
     // Create context for tracking types
@@ -166,10 +171,10 @@ pub fn generate_header<P: AsRef<Path>>(
     for class in classes {
         if !class.has_constructor {
             // Pure data structure (struct) - only generate struct definition
-            generate_class_struct(&mut ctx, class);
+            generate_class_struct(&mut ctx, class, classes);
         } else {
             // Full class - generate struct definition, new and drop declarations
-            generate_class_struct(&mut ctx, class);
+            generate_class_struct(&mut ctx, class, classes);
             generate_class_new_decl(&mut ctx, class);
             generate_class_drop_decl(&mut ctx, class);
         }
@@ -412,8 +417,12 @@ fn collect_types_from_type(ctx: &mut HeaderGenContext, ty: &Type) {
             collect_types_from_type(ctx, return_type);
         }
 
-        // Named types need forward declarations
-        Type::NamedType { name } => {
+        // Named types need forward declarations (not builtin `buf` / C object)
+        Type::NamedType { name } if name != "buf" => {
+            ctx.add_forward_decl(name.clone());
+        }
+        Type::NamedType { .. } => {}
+        Type::App { name, .. } => {
             ctx.add_forward_decl(name.clone());
         }
     }
@@ -446,7 +455,7 @@ fn type_to_c_type_string(ty: &Type) -> String {
         Type::Void => "void".to_string(),
         Type::String => "const char*".to_string(),
         Type::Unit => "void".to_string(),
-        Type::Variadic => "...".to_string(),
+        Type::Variadic => "void*".to_string(),
         Type::Tuple(elem_types) => {
             // Generate struct name like Tuple_3 or Tuple_int_float
             let elem_names: Vec<String> = elem_types
@@ -483,9 +492,11 @@ fn type_to_c_type_string(ty: &Type) -> String {
                 }
             })
         }
+        Type::NamedType { name } if name == "buf" => "void*".to_string(),
         Type::NamedType { name } => {
             name.clone()
         }
+        Type::App { name, .. } => name.clone(),
     }
 }
 
@@ -528,7 +539,7 @@ fn type_to_base_name(ty: &Type) -> String {
         Type::Bool => "bool".to_string(),
         Type::Void | Type::Unit => "void".to_string(),
         Type::String => "str".to_string(),
-        Type::Variadic => "varargs".to_string(),
+        Type::Variadic => "object".to_string(),
         Type::Tuple(elem_types) => {
             let elem_names: Vec<String> = elem_types
                 .iter()
@@ -551,6 +562,7 @@ fn type_to_base_name(ty: &Type) -> String {
         Type::NamedType { name } => {
             name.clone()
         }
+        Type::App { name, .. } => name.clone(),
     }
 }
 
@@ -581,7 +593,8 @@ fn coffee_type_to_c_type_with_ctx(coffee_type: &str, ctx: &mut HeaderGenContext)
     }
 }
 
-/// Generate header name from input file path
+/// Generate header name from input file path (`--have-c` naming helper used by tests)
+#[cfg(test)]
 pub fn generate_header_name(input_path: &Path) -> String {
     input_path
         .file_stem()
@@ -600,9 +613,17 @@ mod tests {
         // Coffee's default "int" is 64-bit, which maps to C's "long long"
         assert_eq!(coffee_type_to_c_type_with_ctx("int", &mut ctx), "long long");
         assert_eq!(coffee_type_to_c_type_with_ctx("int(4)", &mut ctx), "int");
+        assert_eq!(coffee_type_to_c_type_with_ctx("int(4)+", &mut ctx), "int");
+        assert_eq!(coffee_type_to_c_type_with_ctx("int(4)-", &mut ctx), "unsigned int");
         assert_eq!(coffee_type_to_c_type_with_ctx("float", &mut ctx), "double");
+        assert_eq!(map_coffee_type_to_c("int(4)+"), "int");
+        assert_eq!(map_coffee_type_to_c("int(4)-"), "unsigned int");
         assert_eq!(coffee_type_to_c_type_with_ctx("void", &mut ctx), "void");
         assert_eq!(coffee_type_to_c_type_with_ctx("string", &mut ctx), "const char*");
+        assert_eq!(coffee_type_to_c_type_with_ctx("object", &mut ctx), "void*");
+        assert_eq!(coffee_type_to_c_type_with_ctx("buf", &mut ctx), "void*");
+        assert_eq!(map_coffee_type_to_c("object"), "void*");
+        assert_eq!(map_coffee_type_to_c("buf"), "void*");
     }
 
     #[test]
@@ -613,15 +634,48 @@ mod tests {
         let path = Path::new("lib/mylib.coffee");
         assert_eq!(generate_header_name(path), "mylib");
     }
+
+    #[test]
+    fn test_empty_exports_error_mentions_c_fn_and_external() {
+        let proto = Function {
+            type_params: vec![],
+            name: "foo".to_string(),
+            parameters: Vec::new(),
+            return_type: "void".to_string(),
+            error_handler: None,
+            body: crate::parser::FunctionBody::External,
+            is_c: true,
+        };
+        let err = generate_header(&[proto], &[], Path::new("unused.h"), "unused")
+            .expect_err("External-only functions must not emit a header");
+        assert!(
+            err.contains("no exportable functions found"),
+            "keep the existing diagnostic substring: {err}"
+        );
+        assert!(err.contains("c fn"), "mention `c fn`: {err}");
+        assert!(err.contains("--have-c"), "mention `--have-c`: {err}");
+        assert!(
+            err.contains("External"),
+            "explain that External prototypes are skipped: {err}"
+        );
+    }
 }
 
 /// Generate C struct definition for a Coffee class (pure data structure)
-fn generate_class_struct(ctx: &mut HeaderGenContext, class: &crate::parser::class::ClassDef) {
+fn generate_class_struct(
+    ctx: &mut HeaderGenContext,
+    class: &crate::parser::class::ClassDef,
+    all_classes: &[crate::parser::class::ClassDef],
+) {
     let struct_name = class.name.clone();
     
-    // Only generate if not already defined
     if !ctx.structs.contains_key(&struct_name) {
-        let fields: Vec<(String, String)> = class.fields
+        let map: std::collections::HashMap<String, crate::parser::class::ClassDef> = all_classes
+            .iter()
+            .map(|c| (c.name.clone(), c.clone()))
+            .collect();
+        let flattened = crate::backend::class_layout::flatten_class_fields(class, &map);
+        let fields: Vec<(String, String)> = flattened
             .iter()
             .map(|field| {
                 let field_type = map_coffee_type_to_c(&field.field_type);
@@ -670,19 +724,12 @@ fn generate_class_drop_decl(ctx: &mut HeaderGenContext, class: &crate::parser::c
     ctx.functions.push(drop_decl);
 }
 
-/// Map Coffee type to C type
+/// Map Coffee type to C type (class fields / ctor params).
+/// Uses the same `Type::from_str` → C mapping as function signatures
+/// (`int(4)+` → `int`, default `int` → `long long`, named types keep their name).
 fn map_coffee_type_to_c(coffee_type: &str) -> String {
-    // Simple type mapping for now
-    match coffee_type {
-        "int" | "int(8)+" => "long long".to_string(),
-        "int(4)+" => "int".to_string(),
-        "int(2)+" => "short".to_string(),
-        "int(1)+" => "char".to_string(),
-        "float" | "float(8)" => "double".to_string(),
-        "float(4)" => "float".to_string(),
-        "string" => "const char*".to_string(),
-        "bool" => "_Bool".to_string(),
-        "void" => "void".to_string(),
-        _ => coffee_type.to_string(), // For named types (classes), keep as-is
+    match Type::from_str(coffee_type) {
+        Ok(ty) => type_to_c_type_string(&ty),
+        Err(_) => coffee_type.to_string(),
     }
 }

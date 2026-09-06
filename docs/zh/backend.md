@@ -8,21 +8,27 @@
 
 ```
 src/backend/
-├── mod.rs            # 主后端模块和 Backend 结构体
-├── codegen.rs        # 主代码生成器
-├── context.rs        # LLVM 上下文管理
+├── mod.rs            # Backend、LLVM I/O、JIT（`compile_and_run` 接收 hir_fns）
+├── codegen/          # CodeGenerator 协调器
+├── context.rs        # LLVM 上下文
 ├── types.rs          # LLVM 类型映射
-├── arithmetic.rs     # 算术操作代码生成
-├── control_flow.rs   # 控制流代码生成
-├── memory_ops.rs     # 内存操作代码生成
-├── memory/           # 内存布局和管理
-├── functions.rs      # 函数代码生成
-├── expressions.rs    # 表达式代码生成
-├── variables.rs      # 变量代码生成
-├── statements.rs     # 语句代码生成
-├── classes.rs        # 类和枚举代码生成
-├── type_inference.rs # 代码生成的类型推断
-└── error.rs          # 后端错误处理
+├── class_layout.rs   # 继承字段摊平 / LLVM 成员顺序
+├── mir_gen.rs        # 完整语句 MIR → LLVM
+├── mir_raise.rs      # abort 与 `#name` 监听器
+├── match_gen/        # 遗留 AST match 辅助（Coffee 函数必须从 MIR 编译）
+├── opt_passes.rs     # 与 clang 对齐的 LLVM 优化档
+├── arithmetic/       # 整数/浮点算术
+├── control_flow/     # 控制流
+├── memory_ops/       # 内存操作（`clone.rs` 深 clone、`drop.rs` 复合 drop）（`clone.rs` 深 clone、`drop.rs` 复合 drop）
+├── memory/           # 内存布局
+├── functions/        # 函数
+├── expressions.rs    # 表达式
+├── expr/             # MIR 表达式取值（`compile_hir_expr_typed`）
+├── variables.rs      # 变量
+├── statements.rs     # 语句
+├── classes.rs        # 类和枚举
+├── type_inference.rs # 类型推断
+└── error.rs          # 监听器用 Error 布局
 ```
 
 ## 核心组件
@@ -55,7 +61,7 @@ pub struct Backend<'ctx> {
 - 平台特定的三元组清理（例如，Android API 级别移除）
 - 默认目标检测
 
-### 2. 代码生成器（`codegen.rs`）
+### 2. 代码生成器（`codegen/`）
 
 `CodeGenerator` 将 Coffee AST 转换为 LLVM IR。
 
@@ -69,7 +75,8 @@ pub struct CodeGenerator<'ctx> {
 ```
 
 **生成方法：**
-- `compile_program(program, c_imports, cfc_symbols)` - 编译整个程序
+- `compile_program_with_hir(program, c_imports, cfc_symbols, hir_fns)` — 驱动入口；完整 MIR 走 `mir_gen.rs`；不进 `hir_fns` 是编译错误（`missing MIR for function`），不是 AST 回退
+- `compile_program(...)` — 死接口：直接 `Err`，要求使用 `compile_program_with_hir`（禁止用空 MIR 编函数体）
 - `compile_statement(stmt)` - 编译单个语句
 - `compile_expression(expr)` - 编译表达式
 - `compile_function(func)` - 编译函数定义
@@ -97,7 +104,7 @@ pub fn coffee_type_to_llvm<'ctx>(context: &'ctx Context, type_: &Type) -> BasicT
 }
 ```
 
-### 4. 算术操作（`arithmetic.rs`）
+### 4. 算术操作（`arithmetic/`）
 
 为算术和逻辑操作生成 LLVM IR。
 
@@ -126,7 +133,7 @@ fn compile_binary_op(&mut self, left: &Expr, op: &BinaryOperator, right: &Expr)
 }
 ```
 
-### 5. 控制流（`control_flow.rs`）
+### 5. 控制流（`control_flow/`）
 
 为控制流构造生成 LLVM IR。
 
@@ -158,16 +165,15 @@ match value:
     _ => default
 ```
 
-### 6. 内存操作（`memory_ops.rs`）
+### 6. 内存操作（`memory_ops/`）
 
-为 Coffee 的内存管理操作生成 LLVM IR。
+为 Coffee 的内存管理操作生成 LLVM IR（`compile.rs`、`clone.rs`、`drop.rs`）。
 
 **操作：**
 - `mv` - 移动所有权（memcpy + 使源无效）
-- `clone` - 深拷贝（克隆整个结构）
-- `copy` - 共享引用（增加引用计数）
-- `rm` - 释放（释放内存）
-- `clean` - 作用域清理（释放所有变量）
+- `clone` - 深拷贝：先浅拷贝再替换资源指针。嵌套 `str` / class / 资源数组 / 元组字段会再 clone；`object`、引用、切片字段仍 memcpy（不 clone 所指）。见 `src/backend/memory_ops/clone.rs`
+- `rm` / 作用域结束 - 类型驱动 drop（`drop.rs`）：`[T; N]` 与 Coffee `[T]`（胖指针 `{ptr,len}`）随容器 drop **元素**；class 切片字段不 `free` 缓冲区指针。`object` 不 `free` 载荷。`buf` drop 会 `free` 该指针
+- `copy` / `clean out` - 仍可解析，类型检查为错误，不是受支持的 codegen 路径
 
 **实现：**
 ```rust
@@ -188,7 +194,7 @@ fn compile_mv(&mut self, source: &str, target: &str) -> Result<(), BackendError>
 }
 ```
 
-### 7. 函数（`functions.rs`）
+### 7. 函数（`functions/`）
 
 为函数定义和调用生成 LLVM IR。
 
@@ -268,6 +274,7 @@ pub fn compile_and_run(
     source: &Program,
     c_imports: &[String],
     cfc_symbols: HashMap<String, CSymbolTable>,
+    hir_fns: Vec<crate::hir::MirFn>,
     user_args: &[String],
 ) -> Result<i32, String>
 {
@@ -275,9 +282,9 @@ pub fn compile_and_run(
     let context = Context::create();
     let backend = Backend::new(&context, "coffee_jit");
 
-    // 生成代码
+    // 与 AOT 同一条代码生成路径
     let mut codegen = CodeGenerator::new(&backend);
-    codegen.compile_program(source, c_imports, cfc_symbols)?;
+    codegen.compile_program_with_hir(source, c_imports, cfc_symbols, hir_fns)?;
 
     // 验证模块
     backend.verify()?;
@@ -394,7 +401,7 @@ let context = Context::create();
 let backend = Backend::new(&context, "my_module");
 
 let mut codegen = CodeGenerator::new(&backend);
-codegen.compile_program(&program, &c_imports, &cfc_symbols)?;
+codegen.compile_program_with_hir(&program, &c_imports, cfc_symbols, hir_fns)?;
 
 // 验证
 backend.verify()?;
@@ -402,8 +409,8 @@ backend.verify()?;
 // 写入目标文件
 backend.write_object_file(std::path::Path::new("output.o"))?;
 
-// 或使用 JIT 执行
-let result = coffee::backend::compile_and_run(&program, &c_imports, &cfc_symbols, &[])?;
+// 或使用 JIT 执行（同样传入 hir_fns）
+let result = coffee::backend::compile_and_run(&program, &c_imports, cfc_symbols, hir_fns, &[])?;
 println!("程序退出代码: {}", result);
 ```
 

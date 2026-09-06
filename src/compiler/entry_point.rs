@@ -92,7 +92,7 @@ impl EntryPointManager {
     /// 
     /// * `true` - If a custom entry point has been set
     /// * `false` - If using the default entry point from configuration
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn has_custom_entry(&self) -> bool {
         self.custom_entry.is_some()
     }
@@ -136,10 +136,9 @@ impl EntryPointManager {
 
         // Check if already includes src_dir
         if custom_str.starts_with(&format!("{}/", src_dir)) || custom_str.starts_with(src_dir) {
-            custom.to_path_buf()
+            self.config.resolve_from_root(custom)
         } else {
-            // Relative to project root, join with src_dir
-            PathBuf::from(src_dir).join(custom)
+            self.config.src_dir_path().join(custom)
         }
     }
 
@@ -190,7 +189,7 @@ impl EntryPointManager {
     /// # Returns
     /// 
     /// A String containing the display name of the entry file
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn entry_display_name(&self) -> String {
         let entry = self.get_entry_file();
         format!("{}", entry.display())
@@ -201,13 +200,24 @@ impl EntryPointManager {
 mod tests {
     use super::*;
 
+    fn demo_config() -> ProjectConfig {
+        toml::from_str("[package]\nname = \"demo\"\n").unwrap()
+    }
+
     #[test]
     fn test_default_entry() {
-        // This would require a ProjectConfig, testing the basic structure
+        let manager = EntryPointManager::from_config(demo_config());
+        assert_eq!(manager.get_entry_file(), PathBuf::from("src/main.cf"));
+        assert!(!manager.has_custom_entry());
+        assert_eq!(manager.entry_display_name(), "src/main.cf");
     }
 
     #[test]
     fn test_custom_entry_resolution() {
-        // Test path resolution logic
+        let mut manager = EntryPointManager::from_config(demo_config());
+        manager.set_custom_entry("utils.cf");
+        assert_eq!(manager.get_entry_file(), PathBuf::from("src/utils.cf"));
+        manager.set_custom_entry("src/custom.cf");
+        assert_eq!(manager.get_entry_file(), PathBuf::from("src/custom.cf"));
     }
 }

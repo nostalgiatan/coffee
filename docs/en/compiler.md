@@ -7,52 +7,58 @@ The Compiler Frontend module (`src/compiler/`) orchestrates the entire Coffee co
 ## Module Structure
 
 ```
+src/compiler.rs              # Frontend module: CompilationResult, CompilerFrontend
 src/compiler/
-├── mod.rs          # Main compiler module
-├── pipeline.rs     # Compilation pipeline orchestration
-├── project.rs      # Project configuration (coffee.toml)
-├── session.rs      # Compilation session management
-├── scanner.rs      # Source file discovery
-├── builder.rs      # Project build coordinator
-├── entry_point.rs  # Entry point management
-├── scheduler.rs    # Compilation scheduling
-├── graph.rs        # Dependency graph
-├── import_resolver.rs # Import resolution
-├── linker.rs       # Object file linking
-├── module_loader.rs # Module loading
-├── unit.rs         # Compilation units
-└── statistics.rs   # Compilation statistics
+├── pipeline/                # CompilationPipeline (parse → imports → sema → types → MIR)
+│   ├── mod.rs
+│   ├── parse.rs
+│   ├── imports.rs
+│   └── collect.rs
+├── pkg/                     # fetch, cache, tree hash, import-root resolve
+├── project.rs               # Project configuration (coffee.toml), PackageDep
+├── session.rs               # Compilation session management
+├── scanner.rs               # Source file discovery
+├── builder.rs               # Project build coordinator
+├── entry_point.rs           # Entry point management
+├── scheduler.rs             # Compilation scheduling
+├── graph.rs                 # Dependency graph
+├── import_resolver.rs       # Import resolution
+├── linker.rs                # Object file linking
+└── unit.rs                  # Compilation units
 ```
 
 ## Core Components
 
-### 1. Compilation Pipeline (`pipeline.rs`)
+### 1. Compilation Pipeline (`pipeline/`)
 
-Coordinates all compilation phases.
+Coordinates all compilation phases. Live in `src/compiler/pipeline/` (`mod.rs`, `parse.rs`, `imports.rs`, `collect.rs`). There is no `pipeline.rs`.
 
 ```rust
 pub struct CompilationPipeline {
-    import_resolver: ImportResolver,
     session: Arc<Session>,
 }
 
 impl CompilationPipeline {
+    pub fn new() -> Self { /* default Session */ }
+    pub fn with_session(session: Arc<Session>) -> Self { /* ... */ }
     pub fn compile(&self, source: &str, file_name: Option<&str>) -> CompilationResult {
         // 1. Parse source code
         // 2. Process imports
-        // 3. Perform semantic analysis
+        // 3. Semantic analysis (declare, then bodies)
         // 4. Type checking
-        // 5. Generate compilation result
+        // 5. Lower functions to MirFn (hir_fns)
+        // 6. CompilationResult
     }
 }
 ```
 
 **Compilation Phases:**
-1. **Parsing**: Source code → AST
+1. **Parsing**: Source code → AST (`src/parser/`, expressions in `expr/`)
 2. **Import Processing**: Resolve and load imported modules
-3. **Semantic Analysis**: Scope and symbol resolution
-4. **Type Checking**: Type validation
-5. **Result Generation**: Diagnostics and statistics
+3. **Semantic Analysis**: `src/semantic/analyzer/`
+4. **Type Checking**: `src/types/checker/`
+5. **MIR lowering**: statement-list CFG, not SSA. Complete MIR covers `if`/`while`, range and collection `for` (as `ForRange`), `match` (as `If`), and `raise`. Nested `class`/`fn` are `MirStmt::Nested(NestedDecl)` (not a cloned `Statement`). Complete MIR never contains leftover `Match`/`ForIn`; unlowerable `match`/`for` omit the function from `hir_fns` (`lower_function` Err is an Error diagnostic). Typechecked `p.x` then `rm` still produces complete MIR.
+6. **Codegen (driver)**: `compile_program_with_hir`. A `MirFn` that reaches codegen is `complete: true` and has no leftover `Match`/`ForIn`. Complete MIR compiles in `mir_gen.rs`. Omitted `hir_fns` is a compile error (`missing MIR for function`), not an AST body. `compile_program` is a dead trap (do not compile from empty MIR). `compile_statement` Match/For/Raise already error if hit.
 
 ### 2. Project Configuration (`project.rs`)
 
@@ -67,7 +73,15 @@ authors = ["Author <email@example.com>"]
 description = "Project description"
 
 [dependencies]
-std = "0.2.0"
+# std is bundled (`coffee std install`). Do not set a machine-local path= to std
+# unless you intend to override with [dependencies.packages.std].
+
+# path XOR (url + SHA-256 of unpacked tree). Not semver foo = "1.0".
+# [dependencies.packages.foo]
+# url = "https://example.com/foo.tar.gz"
+# hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+# [dependencies.packages.local_bar]
+# path = "../bar"
 
 [dependencies.c_libraries.libm]
 name = "m"
@@ -93,7 +107,18 @@ pub struct ProjectConfig {
     pub build: BuildConfig,
     pub target: TargetConfig,
 }
+
+/// One `[dependencies.packages.<key>]`: `path` XOR (`url` and `hash`).
+pub struct PackageDep {
+    pub path: Option<String>,
+    pub url: Option<String>,
+    pub hash: Option<String>,
+}
 ```
+
+**Packages (`src/compiler/pkg/`):** Zig-style, no registry. `coffee fetch` downloads url+hash deps into `$COFFEE_CACHE` (else `$XDG_CACHE_HOME/coffee`, else `~/.cache/coffee`). `coffee fetch <url>` prints the tree hash; `--save [name]` writes the toml key (name defaults to the fetched `[package].name`). Project compile (`ProjectBuilder`) resolves the graph and prepends import roots. Path deps are local directories; url deps are `.tar.gz`.
+
+**Official std:** embedded from `library/std`. `coffee std install` extracts it. Compile prepends that import root unless the project already has package key `std`. User code `use print in std`; `of c` lives in `sys.cf`.
 
 ### 3. Compilation Session (`session.rs`)
 
@@ -312,19 +337,9 @@ impl EntryPointManager {
 }
 ```
 
-### 12. Compiler Statistics (`statistics.rs`)
+### 12. Compiler Statistics
 
-Tracks compilation metrics.
-
-```rust
-pub struct CompilationStatistics {
-    pub line_count: usize,
-    pub statement_count: usize,
-    pub function_count: usize,
-    pub class_count: usize,
-    pub compilation_time: Duration,
-}
-```
+`CompilationStatistics` lives on `CompilationResult` in `src/compiler.rs` (there is no `statistics.rs`).
 
 ## Compilation Flow
 
@@ -405,6 +420,10 @@ pub struct CompilationResult {
     pub hints: Vec<Diagnostic>,
     pub report: AnalysisReport,
     pub stats: CompilationStatistics,
+    pub c_imports: Vec<String>,
+    pub cfc_symbols: HashMap<String, CSymbolTable>,
+    /// Complete MIR compiles in mir_gen.rs; omitted hir_fns is a compile error.
+    pub hir_fns: Vec<hir::MirFn>,
 }
 ```
 
@@ -416,7 +435,7 @@ pub struct CompilationResult {
 use coffee::compiler::{CompilationPipeline, Session};
 
 let session = Arc::new(Session::new());
-let pipeline = CompilationPipeline::new(session);
+let pipeline = CompilationPipeline::new();
 
 let source = r#"
 fn main() => ():

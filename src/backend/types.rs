@@ -12,16 +12,64 @@ use crate::coffee_debug;
 use inkwell::context::Context;
 use inkwell::types::{BasicTypeEnum, StructType};
 use inkwell::AddressSpace;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use crate::types::Type as CoffeeType;  // Use unified Type from types module
 
+/// LLVM `BasicTypeEnum` → Coffee type spelling used in backend diagnostics.
+///
+/// Vector / scalable-vector kinds are not Coffee types and must not stringify
+/// as `int` (or a Coffee slice of int).
+pub fn llvm_basic_to_coffee(type_: BasicTypeEnum<'_>) -> Result<String, String> {
+    match type_ {
+        BasicTypeEnum::IntType(t) => {
+            let width = t.get_bit_width();
+            Ok(match width {
+                1 => "i1".to_string(),
+                8 => "int(1)".to_string(),
+                16 => "int(2)".to_string(),
+                32 => "int(4)".to_string(),
+                64 => "int(8)".to_string(),
+                128 => "int(16)".to_string(),
+                _ => format!("int({})", width / 8),
+            })
+        }
+        BasicTypeEnum::FloatType(t) => {
+            let width = t.get_bit_width();
+            Ok(match width {
+                32 => "float(4)".to_string(),
+                64 => "float(8)".to_string(),
+                _ => format!("float({})", width / 8),
+            })
+        }
+        BasicTypeEnum::PointerType(_) => Ok("ptr".to_string()),
+        BasicTypeEnum::ArrayType(t) => {
+            let len = t.len();
+            let element = llvm_basic_to_coffee(t.get_element_type())?;
+            Ok(format!("[{}; {}]", element, len))
+        }
+        BasicTypeEnum::StructType(t) => {
+            if t.is_packed() {
+                Ok("packed struct".to_string())
+            } else {
+                Ok("struct".to_string())
+            }
+        }
+        BasicTypeEnum::VectorType(_) => {
+            Err("unsupported LLVM type: vector".to_string())
+        }
+        BasicTypeEnum::ScalableVectorType(_) => {
+            Err("unsupported LLVM type: scalable vector".to_string())
+        }
+    }
+}
+
 /// Type mapper from Coffee types to LLVM types
-/// 
+///
 /// The TypeMapper is responsible for converting Coffee language types to their
 /// corresponding LLVM types during code generation. It maintains a cache of
 /// struct types and provides different mapping strategies depending on whether
 /// C ABI compatibility is required.
-/// 
+///
 /// The mapper supports both Coffee's native type system and C-compatible type
 /// mappings for FFI (Foreign Function Interface) operations. It handles complex
 /// type conversions including integers of various sizes and signedness,
@@ -32,8 +80,16 @@ pub struct TypeMapper<'ctx> {
     pub struct_types: HashMap<String, StructType<'ctx>>,
     /// Cache of struct field names to indices
     struct_fields: HashMap<String, Vec<String>>,
+    /// Interned tuple LLVM structs keyed by mapped field-type debug names
+    tuple_types: std::cell::RefCell<HashMap<String, StructType<'ctx>>>,
     /// Whether to use C type mapping (for C ABI compatibility)
     c_abi: bool,
+    /// Complete C unions: LLVM `[i8 x size]` overlay storage.
+    pub(crate) c_union_byte_sizes: HashMap<String, u32>,
+    /// C enums: integer ABI (`i32`).
+    pub(crate) c_enum_names: HashSet<String>,
+    /// Complete `c class` names: LLVM struct by value (not Coffee heap ptr).
+    pub(crate) c_struct_names: HashSet<String>,
 }
 
 impl<'ctx> TypeMapper<'ctx> {
@@ -55,7 +111,11 @@ impl<'ctx> TypeMapper<'ctx> {
             context,
             struct_types: HashMap::new(),
             struct_fields: HashMap::new(),
+            tuple_types: std::cell::RefCell::new(HashMap::new()),
             c_abi: false,
+            c_union_byte_sizes: HashMap::new(),
+            c_enum_names: HashSet::new(),
+            c_struct_names: HashSet::new(),
         }
     }
 
@@ -79,7 +139,11 @@ impl<'ctx> TypeMapper<'ctx> {
             context,
             struct_types: HashMap::new(),
             struct_fields: HashMap::new(),
+            tuple_types: std::cell::RefCell::new(HashMap::new()),
             c_abi: true,
+            c_union_byte_sizes: HashMap::new(),
+            c_enum_names: HashSet::new(),
+            c_struct_names: HashSet::new(),
         }
     }
 
@@ -93,11 +157,11 @@ impl<'ctx> TypeMapper<'ctx> {
     /// Coffee types → C types:
     /// - int(8)+, int(16)+, int(32)+, int(64)+ → int8_t, int16_t, int32_t, int64_t
     /// - int(8)-, int(16)-, int(32)-, int(64)- → uint8_t, uint16_t, uint32_t, uint64_t
-    /// - int (defaults to i32) → int (32-bit on most platforms)
+    /// - int (8-byte default) → i64 / long long
     /// - float, float(8) → double
     /// - float(4) → float
-    /// - bool → _Bool (C99) or int (C89)
-    /// - string → const char*
+    /// - bool → i8 (_Bool)
+    /// - str / object → ptr (const char* / void*)
     /// 
     /// # Arguments
     /// 
@@ -129,9 +193,14 @@ impl<'ctx> TypeMapper<'ctx> {
 
             // Other types
             CoffeeType::Bool => self.context.i8_type().into(),   // _Bool or int
-            CoffeeType::String => self.context.ptr_type(AddressSpace::default()).into(), // const char*
+            CoffeeType::String | CoffeeType::Variadic => {
+                self.context.ptr_type(AddressSpace::default()).into()
+            }
+            CoffeeType::NamedType { name } if name == "buf" => {
+                self.context.ptr_type(AddressSpace::default()).into()
+            }
 
-            // Pointers, arrays, and slices
+            // Pointers and arrays. C has no Coffee `[T]` fat-pointer ABI.
             CoffeeType::Ref { .. } | CoffeeType::Array { .. } | CoffeeType::Slice(_) =>
                 self.context.ptr_type(AddressSpace::default()).into(),
 
@@ -139,138 +208,104 @@ impl<'ctx> TypeMapper<'ctx> {
         })
     }
 
-    /// Convert Coffee type string to LLVM type with signed/unsigned support
-    /// 
-    /// This method converts a Coffee type string (such as "int(32)+", "float(64)", 
-    /// "bool", etc.) to its corresponding LLVM type. The method uses the unified
-    /// Type system from crate::types for validation and proper type system support.
-    /// 
-    /// The conversion handles various Coffee type formats including basic types,
-    /// sized integers with signedness, floating-point types, and composite types.
-    /// The method provides fallback behavior for unknown types by returning a
-    /// pointer type.
-    /// 
-    /// Uses unified Type from crate::types for validation and type system support
-    /// 
-    /// # Arguments
-    /// 
-    /// * `type_str` - The Coffee type string to convert (e.g., "int(32)+", "float")
-    /// 
-    /// # Returns
-    /// 
-    /// The corresponding LLVM BasicTypeEnum for the given Coffee type string
-    pub fn map_type(&self, type_str: &str) -> BasicTypeEnum<'ctx> {
-        // Parse type string using unified type system
-        let parsed_type = crate::types::type_from_str(type_str);
-
-        let coffee_type = match parsed_type {
-            Ok(t) => t,
-            Err(_) => {
-                // Fallback for unknown types - use pointer type
-                return self.context.ptr_type(AddressSpace::default()).into();
-            }
-        };
-
-        // Handle based on the unified Type enum
-        self.map_unified_type(&coffee_type)
+    /// Coffee type string → LLVM, without silent ptr/i64/f32 fallbacks.
+    pub fn try_map_type(&self, type_str: &str) -> Result<BasicTypeEnum<'ctx>, String> {
+        let coffee_type = crate::types::type_from_str(type_str).map_err(|e| {
+            format!("cannot map Coffee type '{type_str}' to LLVM: {e}")
+        })?;
+        self.try_map_unified_type(&coffee_type)
     }
 
-    /// Map unified Type enum to LLVM type
-    /// 
-    /// This internal method converts a CoffeeType enum value to its corresponding
-    /// LLVM type. The method handles the full range of Coffee types including
-    /// integers of various sizes and signedness, floating-point types, and
-    /// composite types. In C ABI mode, it prioritizes C-compatible mappings.
-    /// 
-    /// The method implements Coffee's type system semantics while ensuring
-    /// compatibility with LLVM's type system. It handles special cases like
-    /// variadic arguments and provides appropriate fallbacks for complex types.
-    /// 
-    /// # Arguments
-    /// 
-    /// * `coffee_type` - The CoffeeType enum value to convert
-    /// 
-    /// # Returns
-    /// 
-    /// The corresponding LLVM BasicTypeEnum for the given CoffeeType
-    fn map_unified_type(&self, coffee_type: &CoffeeType) -> BasicTypeEnum<'ctx> {
-        // If in C ABI mode, try map_c_type first for better C compatibility
+    /// Coffee `[T]` fat pointer: `{ ptr, i64 len }`.
+    pub fn slice_fat_type(&self) -> StructType<'ctx> {
+        self.context.struct_type(
+            &[
+                self.context.ptr_type(AddressSpace::default()).into(),
+                self.context.i64_type().into(),
+            ],
+            false,
+        )
+    }
+
+    /// Unified Coffee `Type` → LLVM. Unknown integer/float widths are `Err`.
+    /// Named classes, `str`, refs, arrays, and fn types map to opaque ptr (ABI).
+    /// `[T]` maps to `{ ptr, i64 }` (not C ABI).
+    pub fn try_map_unified_type(&self, coffee_type: &CoffeeType) -> Result<BasicTypeEnum<'ctx>, String> {
         if self.c_abi {
             if let Some(llvm_type) = self.map_c_type(coffee_type) {
-                return llvm_type;
+                return Ok(llvm_type);
             }
         }
 
-        // Default Coffee type mapping
+        let ptr = || self.context.ptr_type(AddressSpace::default()).into();
+
         match coffee_type {
-            // Variadic arguments - represent as i8 marker (handled separately in function declaration)
-            CoffeeType::Variadic => self.context.i8_type().into(),
-
-            // Signed integers
-            CoffeeType::Int { bits, signed: true } => match bits {
-                8 => self.context.i8_type().into(),
-                16 => self.context.i16_type().into(),
-                32 => self.context.i32_type().into(),
-                64 => self.context.i64_type().into(),
-                128 => self.context.i128_type().into(),
-                _ => self.context.i64_type().into(),
+            CoffeeType::Int { bits, .. } => match bits {
+                8 => Ok(self.context.i8_type().into()),
+                16 => Ok(self.context.i16_type().into()),
+                32 => Ok(self.context.i32_type().into()),
+                64 => Ok(self.context.i64_type().into()),
+                128 => Ok(self.context.i128_type().into()),
+                _ => Err(format!(
+                    "cannot map Coffee type '{coffee_type}' to LLVM: unsupported integer width {bits} bits"
+                )),
             },
-
-            // Unsigned integers
-            CoffeeType::Int { bits, signed: false } => match bits {
-                8 => self.context.i8_type().into(),
-                16 => self.context.i16_type().into(),
-                32 => self.context.i32_type().into(),
-                64 => self.context.i64_type().into(),
-                128 => self.context.i128_type().into(),
-                _ => self.context.i64_type().into(),
-            },
-
-            // Floating point
             CoffeeType::Float { bits } => match bits {
-                32 => self.context.f32_type().into(),
-                64 => self.context.f64_type().into(),
-                _ => self.context.f32_type().into(),
+                32 => Ok(self.context.f32_type().into()),
+                64 => Ok(self.context.f64_type().into()),
+                _ => Err(format!(
+                    "cannot map Coffee type '{coffee_type}' to LLVM: unsupported float width {bits} bits"
+                )),
             },
-
-            // Other types
-            CoffeeType::Bool => self.context.i8_type().into(),  // bool = i8 (统一，C兼容)
-            CoffeeType::String => self.context.ptr_type(AddressSpace::default()).into(),
-            CoffeeType::Unit => self.context.i8_type().into(),  // () as i8
-            CoffeeType::Void => self.context.i8_type().into(),  // void - placeholder, will be handled specially
-
-            // Composite types
+            CoffeeType::Variadic => Ok(ptr()),
+            CoffeeType::Bool => Ok(self.context.i8_type().into()),
+            CoffeeType::String => Ok(ptr()),
+            CoffeeType::Unit => Ok(self.context.i8_type().into()),
+            CoffeeType::Void => Ok(self.context.i8_type().into()),
             CoffeeType::Tuple(types) => {
-                // Convert tuple types to LLVM struct type
-                let field_types: Vec<BasicTypeEnum> = types
-                    .iter()
-                    .map(|t| self.map_unified_type(t))
-                    .collect();
-                
-                // Create a struct type for the tuple
-                // Use a unique name based on the tuple's field types
-                let type_name = format!("tuple_{}", types.len());
-                self.context.struct_type(&field_types, false).into()
-            }
-            CoffeeType::Array { .. } => self.context.ptr_type(AddressSpace::default()).into(),
-            CoffeeType::Slice(_) => self.context.ptr_type(AddressSpace::default()).into(),
-            CoffeeType::Ref { .. } => self.context.ptr_type(AddressSpace::default()).into(),
-            CoffeeType::Function { .. } => self.context.ptr_type(AddressSpace::default()).into(),
-
-            // Named types
-            CoffeeType::NamedType { name } => {
-                if let Some(&struct_type) = self.struct_types.get(name) {
-                    // For named types (classes), return a pointer to the struct
-                    // This is because class instances are passed by reference
-                    struct_type.ptr_type(AddressSpace::default()).into()
-                } else {
-                    self.context.ptr_type(AddressSpace::default()).into()
+                let mut field_types = Vec::with_capacity(types.len());
+                for t in types {
+                    field_types.push(self.try_map_unified_type(t)?);
                 }
-            },
+                let key = format!("{:?}", types);
+                if let Some(st) = self.tuple_types.borrow().get(&key).copied() {
+                    return Ok(st.into());
+                }
+                let st = self.context.struct_type(&field_types, false);
+                self.tuple_types.borrow_mut().insert(key, st);
+                Ok(st.into())
+            }
+            CoffeeType::Slice(_) => Ok(self.slice_fat_type().into()),
+            CoffeeType::Array { .. }
+            | CoffeeType::Ref { .. }
+            | CoffeeType::Function { .. }
+            | CoffeeType::App { .. } => Ok(ptr()),
+            CoffeeType::NamedType { name } => {
+                if self.c_struct_names.contains(name) {
+                    if let Some(st) = self.struct_types.get(name) {
+                        return Ok((*st).into());
+                    }
+                }
+                if let Some(&size) = self.c_union_byte_sizes.get(name) {
+                    return Ok(self.context.i8_type().array_type(size).into());
+                }
+                if self.c_enum_names.contains(name) {
+                    return Ok(self.context.i32_type().into());
+                }
+                Ok(ptr())
+            }
         }
     }
 
-/// Get or create a struct type from a class definition
+    /// Coffee `Type` → LLVM using the same table as codegen (`try_map_unified_type`).
+    /// Drop/clone must not keep a second match.
+    pub fn llvm_abi_of(context: &'ctx Context, ty: &CoffeeType) -> BasicTypeEnum<'ctx> {
+        TypeMapper::new(context)
+            .try_map_unified_type(ty)
+            .unwrap_or_else(|e| panic!("llvm_abi_of {ty}: {e}"))
+    }
+
+    /// Get or create a struct type from a class definition
     /// 
     /// This method creates an LLVM struct type for a Coffee class, using the class
     /// definition to determine the number, order, and types of fields. The struct
@@ -283,53 +318,44 @@ impl<'ctx> TypeMapper<'ctx> {
     /// * `all_classes` - All class definitions (for inheritance support)
     /// 
     /// # Returns
-    /// 
-    /// * `Some(StructType)` - The created or cached struct type
-    /// * `None` - If the class cannot be converted to a struct type
+    ///
+    /// * `Ok(StructType)` - The created or cached struct type
+    /// * `Err(String)` - If a field type cannot be mapped to LLVM
     pub fn get_or_create_struct_type_from_class(
         &mut self,
         class_name: &str,
         class: &crate::parser::class::ClassDef,
         all_classes: &std::collections::HashMap<String, crate::parser::class::ClassDef>,
-    ) -> Option<StructType<'ctx>> {
+    ) -> Result<StructType<'ctx>, String> {
         // Check cache first
         if let Some(&struct_type) = self.struct_types.get(class_name) {
-            return Some(struct_type);
+            return Ok(struct_type);
         }
 
-        // Convert Coffee field types to LLVM types
+        let flattened = super::class_layout::flatten_class_fields(class, all_classes);
         let mut field_types = Vec::new();
         let mut field_names = Vec::new();
-
-        // Handle inheritance: add parent fields first
-        if let Some(ref parent_name) = class.parent {
-            if let Some(parent_class) = all_classes.get(parent_name) {
-                for field in &parent_class.fields {
-                    let llvm_type = self.map_type(&field.field_type);
-                    field_types.push(llvm_type);
-                    field_names.push(field.name.clone());
-                }
-            }
-        }
-
-        // Add current class fields
-        for field in &class.fields {
-            let llvm_type = self.map_type(&field.field_type);
-            field_types.push(llvm_type);
+        for field in &flattened {
+            let mapped = self.try_map_type(&field.field_type).map_err(|e| {
+                format!(
+                    "cannot map field '{}' of class '{}': {e}",
+                    field.name, class_name
+                )
+            })?;
+            field_types.push(mapped);
             field_names.push(field.name.clone());
         }
 
-        // Create opaque struct type
+        // Opaque then a single set_body: parent fields, then self, declaration order.
+        // compile_class must not call set_body again with a packed/reordered permutation.
         let struct_type = self.context.opaque_struct_type(class_name);
-
-        // Set struct body with field types
         struct_type.set_body(&field_types, class.packed);
 
         // Cache the struct type and field names
         self.struct_types.insert(class_name.to_string(), struct_type);
         self.struct_fields.insert(class_name.to_string(), field_names);
 
-        Some(struct_type)
+        Ok(struct_type)
     }
 
     /// Get field index by name in a struct type
@@ -355,5 +381,179 @@ impl<'ctx> TypeMapper<'ctx> {
             coffee_debug!("DEBUG: get_field_index: struct '{}' not found in struct_fields", struct_name);
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{llvm_basic_to_coffee, TypeMapper};
+    use crate::types::type_from_str;
+    use inkwell::context::Context;
+    use inkwell::types::BasicTypeEnum;
+
+    #[test]
+    fn try_map_type_rejects_unparsable_coffee_type_instead_of_ptr() {
+        let context = Context::create();
+        let mapper = TypeMapper::new(&context);
+        let err = mapper
+            .try_map_type("List<int>")
+            .expect_err("generics are not Coffee types");
+        assert!(
+            !err.contains("ptr") && !err.eq_ignore_ascii_case("int"),
+            "error must not look like a silent ptr/int fallback: {err}"
+        );
+        assert!(
+            err.contains("List<int>") || err.contains("generic") || err.contains("parse"),
+            "error should mention the bad type: {err}"
+        );
+    }
+
+    #[test]
+    fn try_map_type_rejects_unsupported_int_width_instead_of_i64() {
+        let context = Context::create();
+        let mapper = TypeMapper::new(&context);
+        let err = mapper
+            .try_map_type("int(3)+")
+            .expect_err("24-bit int is not a mapped LLVM integer");
+        assert!(
+            !err.contains("i64") && !err.eq_ignore_ascii_case("int"),
+            "must not silently map to i64/int: {err}"
+        );
+    }
+
+    #[test]
+    fn try_map_type_maps_plain_int() {
+        let context = Context::create();
+        let mapper = TypeMapper::new(&context);
+        let ty = mapper.try_map_type("int").expect("int is valid");
+        assert!(ty.is_int_type());
+        assert_eq!(ty.into_int_type().get_bit_width(), 64);
+    }
+
+    #[test]
+    fn try_map_type_rejects_unsupported_float_width_instead_of_f32() {
+        let context = Context::create();
+        let mapper = TypeMapper::new(&context);
+        let err = mapper
+            .try_map_type("float(3)")
+            .expect_err("24-bit float is not a mapped LLVM float");
+        assert!(
+            !err.contains("f32") && !err.contains("float(4)"),
+            "must not silently map to f32: {err}"
+        );
+    }
+
+    #[test]
+    fn try_map_type_rejects_unsupported_int_width_inside_tuple() {
+        let context = Context::create();
+        let mapper = TypeMapper::new(&context);
+        let err = mapper
+            .try_map_type("(int(3)+, int)")
+            .expect_err("tuple field int(3)+ must not fall through to i64");
+        assert!(
+            !err.contains("i64"),
+            "must not silently map tuple field to i64: {err}"
+        );
+    }
+
+    #[test]
+    fn try_map_type_maps_named_class_and_str_to_ptr() {
+        let context = Context::create();
+        let mapper = TypeMapper::new(&context);
+        for ty in ["Point", "str", "object", "buf"] {
+            let llvm = mapper.try_map_type(ty).unwrap_or_else(|e| panic!("{ty}: {e}"));
+            assert!(llvm.is_pointer_type(), "{ty} ABI is pointer, got {llvm:?}");
+        }
+        let c_abi = TypeMapper::with_c_abi(&context);
+        let obj = c_abi.try_map_type("object").expect("C object");
+        assert!(obj.is_pointer_type(), "C object is ptr, not i8/i64");
+        let buf = c_abi.try_map_type("buf").expect("C buf");
+        assert!(buf.is_pointer_type(), "C buf is ptr");
+    }
+
+    #[test]
+    fn c_abi_strlen_matches_libc_int4_not_invented_i64() {
+        let context = Context::create();
+        let ty = crate::backend::functions::c_abi_fn_type(&context, "int(4)+", &["string"], false)
+            .expect("strlen");
+        let ret = ty.get_return_type().expect("strlen returns int").into_int_type();
+        assert_eq!(ret.get_bit_width(), 32, "libc.cfc strlen => int(4)+");
+    }
+
+    #[test]
+    fn try_map_type_maps_slice_to_fat_pointer() {
+        let context = Context::create();
+        let mapper = TypeMapper::new(&context);
+        let llvm = mapper.try_map_type("[int]").expect("[int] maps");
+        let st = llvm.into_struct_type();
+        assert_eq!(st.count_fields(), 2, "fat pointer is {{ ptr, i64 }}");
+        assert!(st.get_field_type_at_index(0).unwrap().is_pointer_type());
+        let len = st.get_field_type_at_index(1).unwrap().into_int_type();
+        assert_eq!(len.get_bit_width(), 64);
+    }
+
+    #[test]
+    fn struct_from_class_rejects_unparsable_field_instead_of_ptr() {
+        use crate::parser::class::{ClassDef, ClassField};
+        use std::collections::HashMap;
+
+        let context = Context::create();
+        let mut mapper = TypeMapper::new(&context);
+        let class = ClassDef {
+            type_params: vec![],
+            name: "Bad".to_string(),
+            parent: None,
+            fields: vec![ClassField {
+                name: "xs".to_string(),
+                field_type: "List<int>".to_string(),
+                bit_width: None,
+            }],
+            methods: vec![],
+            packed: false,
+            has_constructor: false,
+        };
+        let all = HashMap::new();
+        let err = mapper
+            .get_or_create_struct_type_from_class("Bad", &class, &all)
+            .expect_err("unparsable field type must not become an LLVM ptr member");
+        assert!(
+            err.contains("List<int>") || err.contains("generic") || err.contains("parse"),
+            "error should mention the unmappable field type: {err}"
+        );
+        assert!(
+            !mapper.struct_types.contains_key("Bad"),
+            "failed mapping must not cache a partial LLVM struct"
+        );
+    }
+
+    #[test]
+    fn llvm_basic_to_coffee_does_not_map_vector_to_int() {
+        let context = Context::create();
+        let vec_ty: BasicTypeEnum = context.i32_type().vec_type(4).into();
+        let err = llvm_basic_to_coffee(vec_ty).expect_err("SIMD vector is not a Coffee type");
+        assert_ne!(err, "int");
+        assert!(!err.starts_with("int("), "vector must not stringify as int: {err}");
+        assert!(
+            type_from_str(&err)
+                .ok()
+                .is_none_or(|t| !matches!(t, crate::types::Type::Int { .. })),
+            "error text must not parse as Coffee int: {err}"
+        );
+    }
+
+    #[test]
+    fn llvm_basic_to_coffee_does_not_map_scalable_vector_to_int() {
+        let context = Context::create();
+        let vec_ty: BasicTypeEnum = context.i32_type().scalable_vec_type(4).into();
+        let err = llvm_basic_to_coffee(vec_ty).expect_err("scalable vector is not a Coffee type");
+        assert_ne!(err, "int");
+        assert!(!err.starts_with("int("), "scalable vector must not stringify as int: {err}");
+    }
+
+    #[test]
+    fn llvm_basic_to_coffee_maps_i64() {
+        let context = Context::create();
+        let ty: BasicTypeEnum = context.i64_type().into();
+        assert_eq!(llvm_basic_to_coffee(ty).expect("i64"), "int(8)");
     }
 }

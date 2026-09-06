@@ -3,7 +3,6 @@
 use crate::backend::codegen::CodeGenerator;
 use crate::backend::type_inference;
 use crate::backend::type_inference::TypeInferenceContext;
-use crate::parser::expr::Expression;
 use inkwell::types::BasicTypeEnum;
 use inkwell::values::{BasicValueEnum, PointerValue};
 
@@ -34,9 +33,25 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 format!("command-line argument '{}' can only be used in the main() statement", expr)));
         }
 
+        if let Some(&array_ptr) = self.array_allocas.get(expr) {
+            self.used_variables.insert(expr.to_string());
+            if self.array_sizes.contains_key(expr) {
+                return Ok(array_ptr.into());
+            }
+            if let Some(&(ptr, var_type)) = self.variables.get(expr) {
+                self.memory_ctx.record_use(expr);
+                let value = self.backend.builder.build_load(var_type, ptr, expr)
+                    .map_err(|e| self.error("compile_expression",
+                        format!("failed to load slice '{}': {}", expr, e)))?;
+                return Ok(value);
+            }
+            return self.load_slice_fat_from_parts(expr, array_ptr);
+        }
+
         if let Some(&(ptr, var_type)) = self.variables.get(expr) {
             self.used_variables.insert(expr.to_string());
             self.memory_ctx.record_use(expr);
+            self.note_mir_name_use(expr);
             if self.memory_ctx.is_moved(expr) {
                 return Err(self.error("compile_expression",
                     format!("use of moved variable: '{}'", expr)));
@@ -45,13 +60,24 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 return Err(self.error("compile_expression",
                     format!("use of dropped variable: '{}'", expr)));
             }
-            if let BasicTypeEnum::StructType(_) = var_type {
+            if let BasicTypeEnum::StructType(_) | BasicTypeEnum::ArrayType(_) = var_type {
                 return Ok(ptr.into());
             }
             let value = self.backend.builder.build_load(var_type, ptr, expr)
                 .map_err(|e| self.error("compile_expression",
                     format!("failed to load variable '{}': {}", expr, e)))?;
             return Ok(value);
+        }
+
+        if let Some(gv) = self.backend.module.get_global(expr) {
+            if let Some(init) = gv.get_initializer() {
+                self.used_variables.insert(expr.to_string());
+                let ty = init.get_type();
+                let value = self.backend.builder.build_load(ty, gv.as_pointer_value(), expr)
+                    .map_err(|e| self.error("compile_expression",
+                        format!("failed to load global '{}': {}", expr, e)))?;
+                return Ok(value);
+            }
         }
 
         if expr.contains("::") {
@@ -86,18 +112,69 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             format!("cannot find enum variant '{}::{}'", enum_name, variant_name)))
     }
 
-    pub(crate) fn compile_array_literal_expr(&mut self, elements: &[Expression]) -> Result<BasicValueEnum<'ctx>, String> {
-        let mut compiled = Vec::new();
-        for elem in elements {
-            compiled.push(self.compile_expr(elem)?);
-        }
+    pub(crate) fn emit_empty_array_literal(
+        &mut self,
+        ty: &crate::types::Type,
+    ) -> Result<BasicValueEnum<'ctx>, String> {
+        let (elem_ty, size) = match ty {
+            crate::types::Type::Array { elem, size } => (elem.as_ref().clone(), *size as u32),
+            crate::types::Type::Slice(elem) => (elem.as_ref().clone(), 0),
+            _ => (crate::types::Type::int(), 0),
+        };
+        let elem_llvm = self
+            .coffee_type_to_llvm(&elem_ty.to_string())
+            .map_err(|e| self.error("compile_expression", format!("empty array element type: {}", e)))?;
+        let array_type = match elem_llvm {
+            BasicTypeEnum::IntType(t) => t.array_type(size),
+            BasicTypeEnum::FloatType(t) => t.array_type(size),
+            BasicTypeEnum::PointerType(t) => t.array_type(size),
+            BasicTypeEnum::StructType(t) => t.array_type(size),
+            BasicTypeEnum::ArrayType(t) => t.array_type(size),
+            BasicTypeEnum::VectorType(t) => t.array_type(size),
+            other => {
+                return Err(self.error(
+                    "compile_expression",
+                    format!("unsupported empty array element type {:?}", other),
+                ))
+            }
+        };
+        let alloca = self
+            .backend
+            .builder
+            .build_alloca(array_type, "array_lit_empty")
+            .map_err(|e| {
+                self.error(
+                    "compile_expression",
+                    format!("failed to allocate empty array: {}", e),
+                )
+            })?;
+        Ok(alloca.into())
+    }
+
+    pub(crate) fn emit_array_literal(
+        &mut self,
+        compiled: Vec<BasicValueEnum<'ctx>>,
+    ) -> Result<BasicValueEnum<'ctx>, String> {
         if compiled.is_empty() {
-            return Err(self.error("compile_expression", "empty array literal"));
+            return self.emit_empty_array_literal(&crate::types::Type::Array {
+                elem: Box::new(crate::types::Type::int()),
+                size: 0,
+            });
         }
         let elem_type = compiled[0].get_type();
         let array_type = match elem_type {
             BasicTypeEnum::IntType(t) => t.array_type(compiled.len() as u32),
-            _ => return Err(self.error("compile_expression", "unsupported array element type")),
+            BasicTypeEnum::FloatType(t) => t.array_type(compiled.len() as u32),
+            BasicTypeEnum::PointerType(t) => t.array_type(compiled.len() as u32),
+            BasicTypeEnum::StructType(t) => t.array_type(compiled.len() as u32),
+            BasicTypeEnum::ArrayType(t) => t.array_type(compiled.len() as u32),
+            BasicTypeEnum::VectorType(t) => t.array_type(compiled.len() as u32),
+            other => {
+                return Err(self.error(
+                    "compile_expression",
+                    format!("unsupported array element type {:?}", other),
+                ))
+            }
         };
         let alloca = self.backend.builder.build_alloca(array_type, "array_lit")
             .map_err(|e| self.error("compile_expression", format!("failed to allocate array literal: {}", e)))?;
@@ -118,11 +195,10 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         Ok(alloca.into())
     }
 
-    pub(crate) fn compile_tuple_literal_expr(&mut self, elements: &[Expression]) -> Result<BasicValueEnum<'ctx>, String> {
-        let mut compiled_elements = Vec::new();
-        for elem in elements {
-            compiled_elements.push(self.compile_expr(elem)?);
-        }
+    pub(crate) fn emit_tuple_literal(
+        &mut self,
+        compiled_elements: Vec<BasicValueEnum<'ctx>>,
+    ) -> Result<BasicValueEnum<'ctx>, String> {
         let element_types: Vec<BasicTypeEnum> = compiled_elements.iter().map(|v| v.get_type()).collect();
         let tuple_type = self.backend.context.struct_type(&element_types, false);
         let tuple_ptr = self.backend.builder.build_alloca(tuple_type, "tuple")
@@ -148,28 +224,43 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             .map_err(|e| self.error("compile_expression", format!("failed to load tuple: {}", e)))
     }
 
-    pub(crate) fn compile_struct_literal_from_ast(
+    pub(crate) fn emit_struct_literal(
         &mut self,
         struct_name: &str,
-        fields: &[(String, Expression)],
+        fields: Vec<(String, BasicValueEnum<'ctx>)>,
     ) -> Result<BasicValueEnum<'ctx>, String> {
         let class_def = self.classes.get(struct_name)
             .ok_or_else(|| self.error("compile_struct_literal",
                 format!("unknown class '{}'", struct_name)))?
             .clone();
         let struct_type = self.type_mapper.get_or_create_struct_type_from_class(struct_name, &class_def, &self.classes)
-            .ok_or_else(|| self.error("compile_struct_literal",
-                format!("failed to create struct type for '{}'", struct_name)))?;
-        let alloca = self.backend.builder.build_alloca(struct_type, &format!("{}_literal", struct_name))
-            .map_err(|e| self.error("compile_struct_literal",
-                format!("failed to allocate struct '{}': {}", struct_name, e)))?;
-        for (field_name, field_value_expr) in fields {
-            let field_value = if field_name == "_" || matches!(field_value_expr, Expression::Variable(v) if v == "_") {
-                self.backend.context.i64_type().const_int(0, false).into()
-            } else {
-                self.compile_expr(field_value_expr)?
-            };
-            let field_index = self.type_mapper.get_field_index(struct_name, field_name)
+            .map_err(|e| self.error("compile_struct_literal", e))?;
+        // `fn new` returns this pointer; a stack alloca would dangle after return.
+        let alloca = if class_def.has_constructor {
+            let malloc_fn = self.functions.get("malloc").copied().ok_or_else(|| {
+                self.error("compile_struct_literal", "malloc function not found for heap allocation")
+            })?;
+            let size = self.llvm_target_data().get_store_size(&BasicTypeEnum::StructType(struct_type));
+            let size_value = self.backend.context.i64_type().const_int(size, false);
+            let heap_ptr = self.backend.builder.build_call(
+                malloc_fn,
+                &[size_value.into()],
+                &format!("{}_malloc", struct_name),
+            ).map_err(|e| self.error("compile_struct_literal",
+                format!("failed to call malloc: {}", e)))?;
+            match heap_ptr.try_as_basic_value() {
+                inkwell::values::ValueKind::Basic(BasicValueEnum::PointerValue(ptr)) => ptr,
+                _ => {
+                    return Err(self.error("compile_struct_literal", "malloc did not return a pointer"));
+                }
+            }
+        } else {
+            self.backend.builder.build_alloca(struct_type, &format!("{}_literal", struct_name))
+                .map_err(|e| self.error("compile_struct_literal",
+                    format!("failed to allocate struct '{}': {}", struct_name, e)))?
+        };
+        for (field_name, field_value) in fields {
+            let field_index = self.type_mapper.get_field_index(struct_name, &field_name)
                 .ok_or_else(|| self.error("compile_struct_literal",
                     format!("field '{}' not found in struct '{}'", field_name, struct_name)))?;
             let field_type = struct_type.get_field_type_at_index(field_index as u32)
@@ -187,7 +278,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 ).map_err(|e| self.error("compile_struct_literal",
                     format!("failed to get field pointer: {}", e)))?
             };
-            let converted_value = self.convert_value_to_type(field_value, field_type, field_name)?;
+            let converted_value = self.convert_value_to_type(field_value, field_type, &field_name)?;
             self.backend.builder.build_store(field_ptr, converted_value)
                 .map_err(|e| self.error("compile_struct_literal",
                     format!("failed to store field '{}': {}", field_name, e)))?;
@@ -195,8 +286,11 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         Ok(alloca.into())
     }
 
-    pub(crate) fn compile_type_cast_expr(&mut self, target_type: &str, value: &Expression) -> Result<BasicValueEnum<'ctx>, String> {
-        let value = self.compile_expr(value)?;
+    pub(crate) fn emit_type_cast(
+        &mut self,
+        target_type: &str,
+        value: BasicValueEnum<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, String> {
         match target_type {
             "int" => match value {
                 BasicValueEnum::FloatValue(f) => {
@@ -241,192 +335,233 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 }
                 _ => Err(self.error("compile_expression", "cannot convert type to bool: unsupported type".to_string())),
             },
-            other => Err(self.error("compile_expression", format!("unknown type conversion function: {}", other))),
+            other => {
+                let llvm_ty = self.coffee_type_to_llvm(other).map_err(|e| {
+                    self.error(
+                        "compile_expression",
+                        format!("unknown type conversion function: {other}: {e}"),
+                    )
+                })?;
+                self.convert_value_to_type(value, llvm_ty, "as_cast")
+            }
         }
     }
 
 
-    /// Compile an f-string from AST (template and placeholders already parsed)
+    /// Compile an f-string from AST (template and placeholders already parsed).
+    ///
+    /// Two-pass snprintf: `snprintf(null, 0, ...)` for size, `malloc(n+1)`, then
+    /// write. Negative return or truncation (`n >= size`) is `unreachable`.
     pub fn compile_fstring_from_ast(&mut self, template: &str, placeholders: &[String]) -> Result<BasicValueEnum<'ctx>, String> {
-        // Build format string and load placeholder values
         if placeholders.is_empty() {
-            // No placeholders, just return the string constant
             return self.build_string_constant(template);
         }
 
-        // Get or declare snprintf function
-        if !self.functions.contains_key("snprintf") {
-            self.used_c_functions.insert("snprintf".to_string());
-            crate::backend::functions::declare_builtin_c_function(
-                "snprintf",
-                self.backend.context,
-                &self.backend.module,
-                &mut self.functions,
-            )?;
-        }
+        let snprintf_fn = self.ensure_fstring_builtin("snprintf")?;
+        let malloc_fn = self.ensure_fstring_builtin("malloc")?;
 
-        let snprintf_fn = *self.functions.get("snprintf")
-            .ok_or_else(|| self.error("fstring", "snprintf function not declared"))?;
+        let mut spec_map: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+        let mut loaded_args: Vec<inkwell::values::BasicMetadataValueEnum<'_>> = Vec::new();
 
-        // Calculate required buffer size
-        // Estimate: template length + placeholder values max length
-        // For safety, use a reasonable limit (4KB)
-        let template_len = template.len();
-        let estimated_size = template_len + 1024; // Extra space for placeholder values
-        
-        // Cap buffer size to prevent stack overflow
-        const MAX_FSTRING_SIZE: usize = 4096; // 4KB max
-        let buffer_size = std::cmp::min(estimated_size, MAX_FSTRING_SIZE);
-        
-        // Allocate stack buffer for the formatted string
-        let buffer_size_const = self.backend.context.i64_type().const_int(buffer_size as u64, false);
-        let buffer_type = self.backend.context.i8_type().array_type(buffer_size as u32);
-        let buffer_alloca = self.backend.builder.build_alloca(buffer_type, "fstring_buffer")
-            .map_err(|e| self.error("fstring",
-                format!("failed to allocate fstring buffer: {}", e)))?;
-
-        // Get pointer to the buffer using GEP
-        let buffer_ptr = unsafe {
-            self.backend.builder.build_in_bounds_gep(
-                buffer_type,
-                buffer_alloca,
-                &[self.backend.context.i32_type().const_int(0, false), self.backend.context.i32_type().const_int(0, false)],
-                "fstring_buffer_ptr"
-            ).map_err(|e| self.error("fstring",
-                format!("failed to get buffer pointer: {}", e)))?
-        };
-
-        // Build format string
-        let format_str = self.build_string_constant(template)?;
-
-        // Build snprintf arguments
-        let mut snprintf_args: Vec<inkwell::values::BasicMetadataValueEnum<'_>> = vec![
-            buffer_ptr.into(),
-            buffer_size_const.into(),
-            format_str.into()
-        ];
-
-        // Load each placeholder variable
         for placeholder in placeholders {
-            // HIGH-10 FIX: Mark placeholder variable as used
             self.used_variables.insert(placeholder.clone());
-
-            // Record variable use for lifetime tracking
-            // Update current line to ensure it's not zero
             self.memory_ctx.set_line(self.memory_ctx.current_line + 1);
             self.memory_ctx.record_use(placeholder);
 
-            let &(ptr, var_type) = self.variables.get(placeholder)
+            let (ptr, var_type) = *self.variables.get(placeholder)
                 .ok_or_else(|| self.error("fstring",
                     format!("variable '{}' not found in scope", placeholder)))?;
 
-            let value = self.backend.builder.build_load(
+            let coffee_ty = self.variable_types.get(placeholder).cloned();
+            let spec = fstring_printf_spec(coffee_ty.as_deref(), fstring_llvm_kind(var_type))
+                .map_err(|e| self.error("fstring", format!("{}: {}", placeholder, e)))?;
+            spec_map.insert(placeholder.as_str(), spec);
+
+            let mut value = self.backend.builder.build_load(
                 var_type,
                 ptr,
                 placeholder
             ).map_err(|e| self.error("fstring",
                     format!("failed to load variable '{}': {}", placeholder, e)))?;
 
-            snprintf_args.push(value.into());
+            value = self.promote_fstring_snprintf_arg(value, spec, coffee_ty.as_deref())?;
+            loaded_args.push(value.into());
         }
 
-        // Call snprintf to format the string
-        let snprintf_call = self.backend.builder.build_call(
-            snprintf_fn,
-            &snprintf_args,
-            "fstring_snprintf"
-        ).map_err(|e| self.error("fstring",
-            format!("failed to build snprintf call: {}", e)))?;
+        let format_cooked = rewrite_fstring_format(template, &spec_map);
+        let format_str = self.build_string_constant(&format_cooked)?;
 
-        // Get the return value (number of characters written, excluding null terminator)
-        let bytes_written = match snprintf_call.try_as_basic_value() {
-            inkwell::values::ValueKind::Basic(val) => val,
-            inkwell::values::ValueKind::Instruction(_) => {
-                return Err(self.error("fstring", "snprintf returned void"));
-            }
-        };
+        let ptr_ty = self.backend.context.ptr_type(inkwell::AddressSpace::default());
+        let null_ptr = ptr_ty.const_null();
+        let i64_ty = self.backend.context.i64_type();
+        let i32_ty = self.backend.context.i32_type();
+        let zero_size = i64_ty.const_int(0, false);
 
-        let bytes_written = match bytes_written {
-            inkwell::values::BasicValueEnum::IntValue(val) => val,
-            _ => return Err(self.error("fstring", "snprintf returned unexpected type")),
-        };
+        let mut size_args: Vec<inkwell::values::BasicMetadataValueEnum<'_>> = vec![
+            null_ptr.into(),
+            zero_size.into(),
+            format_str.into(),
+        ];
+        size_args.extend(loaded_args.iter().copied());
 
-        // Create a constant 0 for comparison
-        let zero = self.backend.context.i32_type().const_int(0, false);
-        
-        // Check if snprintf returned negative value (error)
-        let is_negative = self.backend.builder.build_int_compare(
+        let needed = self.call_snprintf_i32(snprintf_fn, &size_args, "fstring_snprintf_size")?;
+        let needed_neg = self.backend.builder.build_int_compare(
             inkwell::IntPredicate::SLT,
-            bytes_written,
-            zero,
-            "is_negative"
-        ).map_err(|e| self.error("fstring",
-            format!("failed to build comparison: {}", e)))?;
+            needed,
+            i32_ty.const_zero(),
+            "fstring_size_neg",
+        ).map_err(|e| self.error("fstring", format!("failed to compare snprintf size: {}", e)))?;
+        self.fstring_trap_if(needed_neg, "fstring_size_fail", "fstring_size_ok")?;
 
-        // Build error message for buffer overflow
-        let error_msg = self.build_string_constant(
-            "Error: f-string buffer overflow - formatted string too long\n"
-        )?;
+        let needed_i64 = self.backend.builder.build_int_s_extend(needed, i64_ty, "fstring_n64")
+            .map_err(|e| self.error("fstring", format!("failed to extend snprintf length: {}", e)))?;
+        let buf_size = self.backend.builder.build_int_add(
+            needed_i64,
+            i64_ty.const_int(1, false),
+            "fstring_buf_size",
+        ).map_err(|e| self.error("fstring", format!("failed to add snprintf NUL: {}", e)))?;
 
-        // Get printf function for error reporting
-        if !self.functions.contains_key("printf") {
-            self.used_c_functions.insert("printf".to_string());
-            crate::backend::functions::declare_builtin_c_function(
-                "printf",
-                self.backend.context,
-                &self.backend.module,
-                &mut self.functions,
-            )?;
+        let malloc_call = self.backend.builder.build_call(
+            malloc_fn,
+            &[buf_size.into()],
+            "fstring_malloc",
+        ).map_err(|e| self.error("fstring", format!("failed to call malloc: {}", e)))?;
+        let heap_ptr = match malloc_call.try_as_basic_value() {
+            inkwell::values::ValueKind::Basic(BasicValueEnum::PointerValue(p)) => p,
+            _ => return Err(self.error("fstring", "malloc did not return a pointer")),
+        };
+        let heap_int = self.backend.builder.build_ptr_to_int(heap_ptr, i64_ty, "fstring_heap_int")
+            .map_err(|e| self.error("fstring", format!("failed to ptrtoint malloc: {}", e)))?;
+        let malloc_null = self.backend.builder.build_int_compare(
+            inkwell::IntPredicate::EQ,
+            heap_int,
+            i64_ty.const_zero(),
+            "fstring_malloc_null",
+        ).map_err(|e| self.error("fstring", format!("failed to compare malloc: {}", e)))?;
+        self.fstring_trap_if(malloc_null, "fstring_malloc_fail", "fstring_malloc_ok")?;
+
+        let mut write_args: Vec<inkwell::values::BasicMetadataValueEnum<'_>> = vec![
+            heap_ptr.into(),
+            buf_size.into(),
+            format_str.into(),
+        ];
+        write_args.extend(loaded_args.iter().copied());
+
+        let written = self.call_snprintf_i32(snprintf_fn, &write_args, "fstring_snprintf")?;
+        let written_neg = self.backend.builder.build_int_compare(
+            inkwell::IntPredicate::SLT,
+            written,
+            i32_ty.const_zero(),
+            "fstring_write_neg",
+        ).map_err(|e| self.error("fstring", format!("failed to compare snprintf write: {}", e)))?;
+        let written_i64 = self.backend.builder.build_int_s_extend(written, i64_ty, "fstring_written64")
+            .map_err(|e| self.error("fstring", format!("failed to extend snprintf write: {}", e)))?;
+        let truncated = self.backend.builder.build_int_compare(
+            inkwell::IntPredicate::SGE,
+            written_i64,
+            buf_size,
+            "fstring_truncated",
+        ).map_err(|e| self.error("fstring", format!("failed to compare truncation: {}", e)))?;
+        let write_bad = self.backend.builder.build_or(written_neg, truncated, "fstring_write_bad")
+            .map_err(|e| self.error("fstring", format!("failed to or snprintf checks: {}", e)))?;
+        self.fstring_trap_if(write_bad, "fstring_write_fail", "fstring_write_ok")?;
+
+        Ok(heap_ptr.into())
+    }
+
+    fn ensure_fstring_builtin(
+        &mut self,
+        name: &str,
+    ) -> Result<inkwell::values::FunctionValue<'ctx>, String> {
+        if !self.functions.contains_key(name) {
+            self.used_c_functions.insert(name.to_string());
+            self.declare_external_function(name)?;
         }
+        self.functions
+            .get(name)
+            .copied()
+            .ok_or_else(|| self.error("fstring", format!("{} function not declared", name)))
+    }
 
-        let printf_fn = *self.functions.get("printf")
-            .ok_or_else(|| self.error("fstring", "printf function not declared"))?;
+    fn call_snprintf_i32(
+        &mut self,
+        snprintf_fn: inkwell::values::FunctionValue<'ctx>,
+        args: &[inkwell::values::BasicMetadataValueEnum<'ctx>],
+        name: &str,
+    ) -> Result<inkwell::values::IntValue<'ctx>, String> {
+        let call = self.backend.builder.build_call(snprintf_fn, args, name)
+            .map_err(|e| self.error("fstring", format!("failed to build snprintf call: {}", e)))?;
+        match call.try_as_basic_value() {
+            inkwell::values::ValueKind::Basic(BasicValueEnum::IntValue(v)) => Ok(v),
+            inkwell::values::ValueKind::Instruction(_) => {
+                Err(self.error("fstring", "snprintf returned void"))
+            }
+            _ => Err(self.error("fstring", "snprintf returned unexpected type")),
+        }
+    }
 
-        // If snprintf failed (returned negative), print error and use empty string
-        let error_block = self.backend.context.append_basic_block(
-            self.backend.builder.get_insert_block().unwrap().get_parent().unwrap(),
-            "fstring_error"
-        );
-        
-        let success_block = self.backend.context.append_basic_block(
-            self.backend.builder.get_insert_block().unwrap().get_parent().unwrap(),
-            "fstring_success"
-        );
+    fn fstring_trap_if(
+        &mut self,
+        cond: inkwell::values::IntValue<'ctx>,
+        trap_name: &str,
+        cont_name: &str,
+    ) -> Result<(), String> {
+        let function = self
+            .backend
+            .builder
+            .get_insert_block()
+            .and_then(|b| b.get_parent())
+            .ok_or_else(|| self.error("fstring", "no parent function for trap"))?;
+        let trap = self.backend.context.append_basic_block(function, trap_name);
+        let cont = self.backend.context.append_basic_block(function, cont_name);
+        self.backend.builder.build_conditional_branch(cond, trap, cont)
+            .map_err(|e| self.error("fstring", format!("failed to build trap branch: {}", e)))?;
+        self.backend.builder.position_at_end(trap);
+        self.backend.builder.build_unreachable()
+            .map_err(|e| self.error("fstring", format!("failed to build unreachable: {}", e)))?;
+        self.backend.builder.position_at_end(cont);
+        Ok(())
+    }
 
-        // Conditional branch: if negative, go to error block
-        self.backend.builder.build_conditional_branch(
-            is_negative,
-            error_block,
-            success_block
-        ).map_err(|e| self.error("fstring",
-            format!("failed to build conditional branch: {}", e)))?;
-
-        // Error block: print error message and use empty string
-        self.backend.builder.position_at_end(error_block);
-        self.backend.builder.build_call(
-            printf_fn,
-            &[error_msg.into()],
-            "print_error"
-        ).map_err(|e| self.error("fstring",
-            format!("failed to build printf call: {}", e)))?;
-        
-        // Set first character to null (empty string)
-        let null_val = self.backend.context.i8_type().const_int(0, false);
-        self.backend.builder.build_store(
-            buffer_ptr,
-            null_val
-        ).map_err(|e| self.error("fstring",
-            format!("failed to store null terminator: {}", e)))?;
-
-        self.backend.builder.build_unconditional_branch(success_block)
-            .map_err(|e| self.error("fstring",
-                format!("failed to build unconditional branch: {}", e)))?;
-
-        // Success block: continue with the formatted string
-        self.backend.builder.position_at_end(success_block);
-
-        // Return the buffer pointer (string type)
-        Ok(buffer_ptr.into())
+    fn promote_fstring_snprintf_arg(
+        &self,
+        value: BasicValueEnum<'ctx>,
+        spec: &str,
+        coffee_type: Option<&str>,
+    ) -> Result<BasicValueEnum<'ctx>, String> {
+        match value {
+            BasicValueEnum::IntValue(i) => {
+                let bits = i.get_type().get_bit_width();
+                let unsigned = coffee_type_is_unsigned(coffee_type)
+                    || coffee_type == Some("bool");
+                if matches!(spec, "%lld" | "%llu") && bits < 64 {
+                    let i64t = self.backend.context.i64_type();
+                    let ext = if unsigned {
+                        self.backend.builder.build_int_z_extend(i, i64t, "fstring_zext64")
+                    } else {
+                        self.backend.builder.build_int_s_extend(i, i64t, "fstring_sext64")
+                    }.map_err(|e| self.error("fstring", format!("failed to extend int for snprintf: {}", e)))?;
+                    return Ok(ext.into());
+                }
+                if bits < 32 {
+                    let i32t = self.backend.context.i32_type();
+                    let ext = if unsigned {
+                        self.backend.builder.build_int_z_extend(i, i32t, "fstring_zext32")
+                    } else {
+                        self.backend.builder.build_int_s_extend(i, i32t, "fstring_sext32")
+                    }.map_err(|e| self.error("fstring", format!("failed to promote int for snprintf: {}", e)))?;
+                    return Ok(ext.into());
+                }
+                Ok(value)
+            }
+            BasicValueEnum::FloatValue(f) if spec == "%g" && f.get_type().get_bit_width() < 64 => {
+                let f64t = self.backend.context.f64_type();
+                let ext = self.backend.builder.build_float_ext(f, f64t, "fstring_fpext")
+                    .map_err(|e| self.error("fstring", format!("failed to promote float for snprintf: {}", e)))?;
+                Ok(ext.into())
+            }
+            _ => Ok(value),
+        }
     }
 
     /// Process escape sequences in a string literal
@@ -616,5 +751,236 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         self.string_constants.insert(s.to_string(), ptr);
 
         Ok(ptr.into())
+    }
+}
+
+/// LLVM type kind used only to pick an f-string printf specifier.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FstringLlvmKind {
+    Int { bits: u32 },
+    Float { bits: u32 },
+    Pointer,
+    Other,
+}
+
+fn coffee_int_printf_spec(t: &str) -> Option<&'static str> {
+    let rest = t.strip_prefix("int(")?;
+    let (n, signed) = if let Some(inner) = rest.strip_suffix(")+") {
+        (inner, true)
+    } else if let Some(inner) = rest.strip_suffix(")-") {
+        (inner, false)
+    } else {
+        return None;
+    };
+    let bytes: u32 = n.parse().ok()?;
+    Some(match (bytes, signed) {
+        (1, true) => "%hhd",
+        (1, false) => "%hhu",
+        (2, true) => "%hd",
+        (2, false) => "%hu",
+        (4, true) => "%d",
+        (4, false) => "%u",
+        (_, true) => "%lld",
+        (_, false) => "%llu",
+    })
+}
+
+/// Choose a printf conversion specifier from the Coffee type when known,
+/// otherwise from the loaded LLVM type.
+pub(crate) fn fstring_printf_spec(
+    coffee_type: Option<&str>,
+    llvm: FstringLlvmKind,
+) -> Result<&'static str, String> {
+    if let Some(ty) = coffee_type {
+        let t = ty.trim();
+        if t == "bool" {
+            return Ok("%d");
+        }
+        if t == "str" || t == "string" {
+            return Ok("%s");
+        }
+        if t == "float" || t.starts_with("float(") {
+            return Ok("%g");
+        }
+        if t == "int" {
+            return Ok("%lld");
+        }
+        if let Some(spec) = coffee_int_printf_spec(t) {
+            return Ok(spec);
+        }
+        if t == "ptr" || t == "object" || t.starts_with('&') {
+            return Ok("%s");
+        }
+    }
+    match llvm {
+        FstringLlvmKind::Float { .. } => Ok("%g"),
+        FstringLlvmKind::Pointer => Ok("%s"),
+        FstringLlvmKind::Int { bits } => Ok(match bits {
+            1 => "%d",
+            8 => "%hhd",
+            16 => "%hd",
+            32 => "%d",
+            _ => "%lld",
+        }),
+        FstringLlvmKind::Other => Err(
+            "unsupported f-string placeholder type (need int, float, bool, str, or pointer)".to_string(),
+        ),
+    }
+}
+
+fn fstring_llvm_kind(ty: BasicTypeEnum<'_>) -> FstringLlvmKind {
+    match ty {
+        BasicTypeEnum::IntType(t) => FstringLlvmKind::Int {
+            bits: t.get_bit_width(),
+        },
+        BasicTypeEnum::FloatType(t) => FstringLlvmKind::Float {
+            bits: t.get_bit_width(),
+        },
+        BasicTypeEnum::PointerType(_) => FstringLlvmKind::Pointer,
+        _ => FstringLlvmKind::Other,
+    }
+}
+
+fn coffee_type_is_unsigned(coffee_type: Option<&str>) -> bool {
+    coffee_type
+        .map(|t| t.trim().ends_with('-') && t.trim().starts_with("int("))
+        .unwrap_or(false)
+}
+
+/// Rewrite `{name}` (and `{{` / `}}`) into a snprintf format string.
+/// Literal `%` in the template is doubled so snprintf does not treat it as a spec.
+pub(crate) fn rewrite_fstring_format(
+    template: &str,
+    specs: &std::collections::HashMap<&str, &str>,
+) -> String {
+    let mut out = String::new();
+    let mut chars = template.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            out.push_str("%%");
+            continue;
+        }
+        if c == '{' {
+            if chars.peek() == Some(&'{') {
+                chars.next();
+                out.push('{');
+                continue;
+            }
+            let mut name = String::new();
+            while let Some(&next) = chars.peek() {
+                if next == '}' {
+                    chars.next();
+                    break;
+                }
+                name.push(chars.next().unwrap());
+            }
+            if let Some(spec) = specs.get(name.as_str()) {
+                out.push_str(spec);
+            } else {
+                out.push('{');
+                out.push_str(&name);
+                out.push('}');
+            }
+            continue;
+        }
+        if c == '}' {
+            if chars.peek() == Some(&'}') {
+                chars.next();
+            }
+            out.push('}');
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
+#[cfg(test)]
+mod fstring_spec_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn int_default_is_lld() {
+        assert_eq!(
+            fstring_printf_spec(Some("int"), FstringLlvmKind::Int { bits: 64 }).unwrap(),
+            "%lld"
+        );
+    }
+
+    #[test]
+    fn int_widths_match_printf() {
+        assert_eq!(
+            fstring_printf_spec(Some("int(1)+"), FstringLlvmKind::Int { bits: 8 }).unwrap(),
+            "%hhd"
+        );
+        assert_eq!(
+            fstring_printf_spec(Some("int(2)+"), FstringLlvmKind::Int { bits: 16 }).unwrap(),
+            "%hd"
+        );
+        assert_eq!(
+            fstring_printf_spec(Some("int(4)+"), FstringLlvmKind::Int { bits: 32 }).unwrap(),
+            "%d"
+        );
+        assert_eq!(
+            fstring_printf_spec(Some("int(4)-"), FstringLlvmKind::Int { bits: 32 }).unwrap(),
+            "%u"
+        );
+        assert_eq!(
+            fstring_printf_spec(Some("int(8)-"), FstringLlvmKind::Int { bits: 64 }).unwrap(),
+            "%llu"
+        );
+    }
+
+    #[test]
+    fn float_bool_str_and_ptr() {
+        assert_eq!(
+            fstring_printf_spec(Some("float"), FstringLlvmKind::Float { bits: 64 }).unwrap(),
+            "%g"
+        );
+        assert_eq!(
+            fstring_printf_spec(Some("float(4)"), FstringLlvmKind::Float { bits: 32 }).unwrap(),
+            "%g"
+        );
+        assert_eq!(
+            fstring_printf_spec(Some("bool"), FstringLlvmKind::Int { bits: 8 }).unwrap(),
+            "%d"
+        );
+        assert_eq!(
+            fstring_printf_spec(Some("str"), FstringLlvmKind::Pointer).unwrap(),
+            "%s"
+        );
+        assert_eq!(
+            fstring_printf_spec(None, FstringLlvmKind::Pointer).unwrap(),
+            "%s"
+        );
+    }
+
+    #[test]
+    fn llvm_fallback_without_coffee_type() {
+        assert_eq!(
+            fstring_printf_spec(None, FstringLlvmKind::Int { bits: 64 }).unwrap(),
+            "%lld"
+        );
+        assert_eq!(
+            fstring_printf_spec(None, FstringLlvmKind::Float { bits: 64 }).unwrap(),
+            "%g"
+        );
+    }
+
+    #[test]
+    fn rewrite_placeholder_to_spec() {
+        let mut specs = HashMap::new();
+        specs.insert("name", "%s");
+        assert_eq!(rewrite_fstring_format("Hello {name}", &specs), "Hello %s");
+    }
+
+    #[test]
+    fn rewrite_int_and_no_placeholder_shape() {
+        let mut specs = HashMap::new();
+        specs.insert("n", "%lld");
+        assert_eq!(rewrite_fstring_format("n={n}", &specs), "n=%lld");
+        let empty: HashMap<&str, &str> = HashMap::new();
+        assert_eq!(rewrite_fstring_format("plain", &empty), "plain");
     }
 }

@@ -33,22 +33,24 @@ pub struct BreakStmt;
 pub struct ContinueStmt;
 
 pub fn parse_variable_decl(input: &str) -> IResult<&str, VariableDecl> {
+    parse_variable_decl_at(input, 0)
+}
+
+pub fn parse_variable_decl_at(input: &str, base: usize) -> IResult<&str, VariableDecl> {
     coffee_debug!("DEBUG: parse_variable_decl: input='{}'", input);
+    let src = input;
     let (input, _) = tag("let")(input)?;
     let (input, _) = space1(input)?;
     let (input, name) = parse_identifier(input)?;
     let (input, _) = space0(input)?;
     let (input, _) = tag(":")(input)?;
     let (input, _) = space0(input)?;  // Skip spaces after colon!
-    let (input, var_type) = parse_type_identifier(input)?;
+    let (input, var_type) = crate::parser::ty::parse_type(input)?;
     let var_type = var_type.trim();  // Trim whitespace from type
     let (input, _) = multispace0(input)?;
     let (input, _) = tag("=")(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, value_raw) = parse_expression(input)?;
-    let value_raw = value_raw.trim();
-    let value = crate::parser::expr::parse_expression(value_raw)
-        .unwrap_or_else(|_| Expression::Literal(value_raw.to_string()));
+    let (input, value) = parse_let_value(src, base, input)?;
 
     coffee_debug!("DEBUG: parse_variable_decl: name='{}', var_type='{}', value='{}'", name, var_type, value);
 
@@ -63,6 +65,11 @@ pub fn parse_variable_decl(input: &str) -> IResult<&str, VariableDecl> {
 }
 
 pub fn parse_return(input: &str) -> IResult<&str, ReturnStmt> {
+    parse_return_at(input, 0)
+}
+
+pub fn parse_return_at(input: &str, base: usize) -> IResult<&str, ReturnStmt> {
+    let src = input;
     let (input, _) = tag("return")(input)?;
     let (input, _) = multispace0(input)?;
     let (input, value) = opt(parse_expression).parse(input)?;
@@ -71,11 +78,17 @@ pub fn parse_return(input: &str) -> IResult<&str, ReturnStmt> {
     Ok((
         input,
         ReturnStmt {
-            value: value.map(|v| {
-                let v = v.trim();
-                crate::parser::expr::parse_expression(v)
-                    .unwrap_or_else(|_| Expression::Literal(v.to_string()))
-            }),
+            value: match value {
+                None => None,
+                Some(v) => {
+                    let v = v.trim();
+                    if v.is_empty() {
+                        None
+                    } else {
+                        Some(crate::parser::multiline::parse_expr_at(src, base, v)?)
+                    }
+                }
+            },
         },
     ))
 }
@@ -88,6 +101,33 @@ pub fn parse_break(input: &str) -> IResult<&str, BreakStmt> {
 pub fn parse_continue(input: &str) -> IResult<&str, ContinueStmt> {
     let (input, _) = tag("continue")(input)?;
     Ok((input, ContinueStmt))
+}
+
+fn looks_like_anonymous_fn(input: &str) -> bool {
+    let rest = input.trim_start();
+    let rest = match rest.strip_prefix("fn") {
+        Some(r) => r,
+        None => return false,
+    };
+    rest.trim_start().starts_with('(')
+}
+
+fn parse_let_value<'a>(
+    parent: &str,
+    parent_base: usize,
+    input: &'a str,
+) -> IResult<&'a str, Expression> {
+    if looks_like_anonymous_fn(input) {
+        if let Ok((rest, func)) = crate::parser::function::parse_anonymous_function(input) {
+            return Ok((rest, Expression::AnonymousFunction {
+                func: Box::new(func),
+            }));
+        }
+    }
+    let (input, value_raw) = parse_expression(input)?;
+    let value_raw = value_raw.trim();
+    let value = crate::parser::multiline::parse_expr_at(parent, parent_base, value_raw)?;
+    Ok((input, value))
 }
 
 fn parse_identifier(input: &str) -> IResult<&str, &str> {
@@ -104,44 +144,6 @@ fn parse_identifier(input: &str) -> IResult<&str, &str> {
         .take_while(|&(_, c)| c.is_ascii_alphanumeric() || c == '_')
         .map(|(_, c)| c.len_utf8())
         .sum::<usize>() + 1;
-
-    Ok((&input[len..], &input[..len]))
-}
-
-fn parse_type_identifier(input: &str) -> IResult<&str, &str> {
-    // 类型标识符可以包含字母、数字、下划线、括号、加减号、数组括号、引用符号等
-    // 例如: int, int(4)+, float(8), (int, float), Option<int>, [int; 10], [int], &int, &mut int
-    let mut chars = input.char_indices();
-    match chars.next() {
-        Some((_, c)) if c.is_ascii_alphabetic() || c == '_' || c == '(' || c == '[' || c == '&' => {}
-        _ => return Err(nom::Err::Error(nom::error::Error {
-            input,
-            code: nom::error::ErrorKind::Alpha,
-        })),
-    }
-
-    let mut len = 1;
-    let mut _paren_depth = 0;
-    let mut _bracket_depth = 0;
-
-    for (_, c) in chars {
-        match c {
-            '(' => _paren_depth += 1,
-            ')' => _paren_depth -= 1,
-            '[' => _bracket_depth += 1,
-            ']' => {
-                _bracket_depth -= 1;
-                if _bracket_depth == 0 {
-                    len += c.len_utf8();
-                    break;  // 完整的数组类型，如 [int; 10]
-                }
-            }
-            c if c.is_ascii_alphanumeric() || c == '_' || c == '(' || c == ')' || c == '+' || c == '-' || c == ',' || c == '<' || c == '>' || c == '[' || c == ']' || c == ';' || c == ' ' || c == '&' => {}
-            _ if c.is_whitespace() && _bracket_depth == 0 && _paren_depth == 0 => break,
-            _ => break,
-        }
-        len += c.len_utf8();
-    }
 
     Ok((&input[len..], &input[..len]))
 }
@@ -210,4 +212,49 @@ fn parse_expression(input: &str) -> IResult<&str, &str> {
     }
 
     Ok((&input[end..], &input[..end]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::expr::Expression;
+
+    #[test]
+    fn parse_let_valid_int() {
+        let (_, decl) = parse_variable_decl("let x: int = 1").expect("valid let");
+        assert_eq!(decl.name, "x");
+        assert_eq!(decl.var_type, "int");
+        assert!(matches!(decl.value.kind(), Expression::Literal(_)));
+    }
+
+    #[test]
+    fn parse_return_valid_expr() {
+        let (_, stmt) = parse_return("return 42").expect("valid return");
+        match stmt.value.as_ref().map(|e| e.kind()) {
+            Some(Expression::Literal(s)) => assert_eq!(s, "42"),
+            other => panic!("{:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_let_invalid_value_is_error_not_literal() {
+        match parse_variable_decl("let x: int = @@@") {
+            Err(_) => {}
+            Ok((_, decl)) => panic!(
+                "invalid let value must not parse; got {:?}",
+                decl.value
+            ),
+        }
+    }
+
+    #[test]
+    fn parse_return_invalid_expr_is_error_not_literal() {
+        match parse_return("return @@@") {
+            Err(_) => {}
+            Ok((_, stmt)) => panic!(
+                "invalid return expr must not parse; got {:?}",
+                stmt.value
+            ),
+        }
+    }
 }

@@ -60,13 +60,6 @@ pub enum ParseError {
         statement_type: String,
     },
 
-    /// Invalid type syntax
-    InvalidTypeSyntax {
-        line: usize,
-        type_str: String,
-        reason: String,
-    },
-
     /// Generic syntax error with context
     GenericSyntaxError {
         line: usize,
@@ -90,17 +83,102 @@ pub enum ParseError {
 }
 
 impl ParseError {
+    /// Coffee uses `{` `}` in struct literals (`Point { x: 1 }`, `raise Err { field: v }`).
+    /// Only treat braces as C-style *blocks* when the line looks like a brace-delimited body.
+    fn looks_like_c_block_braces(trimmed: &str) -> bool {
+        if trimmed == "{" || trimmed == "}" {
+            return true;
+        }
+        if trimmed.ends_with('{') {
+            return true;
+        }
+        if !trimmed.contains('{') && !trimmed.contains('}') {
+            return false;
+        }
+        matches!(
+            Self::leading_word(trimmed),
+            "if" | "while" | "for" | "fn" | "else" | "elif"
+        )
+    }
+
+    fn leading_word(trimmed: &str) -> &str {
+        let raw = trimmed
+            .split(|c: char| c.is_whitespace() || c == '(')
+            .next()
+            .unwrap_or("");
+        raw.trim_end_matches(|c: char| matches!(c, ':' | '{' | '}' | ';' | ','))
+    }
+
+    fn is_foreign_keyword_error(err: &ParseError) -> bool {
+        match err {
+            ParseError::UnexpectedKeyword { keyword, .. } => matches!(
+                keyword.as_str(),
+                "import"
+                    | "try"
+                    | "except"
+                    | "catch"
+                    | "finally"
+                    | "def"
+                    | "function"
+                    | "func"
+                    | "var"
+                    | "const"
+                    | "#include"
+                    | "package"
+            ),
+            ParseError::InvalidUseOfBraces { .. } | ParseError::WrongCommentSyntax { .. } => true,
+            _ => false,
+        }
+    }
+
+    /// Prefer a foreign-construct / C-brace diagnostic inside a failed `fn`/`if`/… block
+    /// over blaming a complete-looking header (`InvalidFunctionSyntax` on `fn main() => int:`).
+    pub fn detect_error_in_block(start_line: usize, lines: &[&str]) -> Self {
+        let mut header: Option<ParseError> = None;
+        for (i, raw) in lines.iter().enumerate() {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() || trimmed.starts_with("/#/") {
+                continue;
+            }
+            let err = Self::detect_error(start_line + i, raw);
+            if Self::is_foreign_keyword_error(&err) {
+                return err;
+            }
+            // Prefer incomplete inner blocks (`if true:` with no indent) over a
+            // generic error on the enclosing `fn` header.
+            if matches!(err, ParseError::MissingBlockBody { .. }) {
+                header = Some(err);
+                continue;
+            }
+            if header.is_none() {
+                header = Some(err);
+            }
+        }
+        header.unwrap_or_else(|| {
+            Self::detect_error(start_line, lines.first().copied().unwrap_or(""))
+        })
+    }
+
     /// Detect specific error patterns from a failed parse line
     pub fn detect_error(line_num: usize, line: &str) -> Self {
         let trimmed = line.trim();
 
-        // Check for braces FIRST - Coffee is indentation-based
-        if trimmed.contains('{') || trimmed.contains('}') {
+        // C-style blocks only — not Coffee struct literals.
+        if Self::looks_like_c_block_braces(trimmed) {
             let brace_type = if trimmed.contains('{') { "{" } else { "}" };
             return ParseError::InvalidUseOfBraces {
                 line: line_num,
                 context: trimmed.to_string(),
                 brace_type: brace_type.to_string(),
+            };
+        }
+
+        // `#include` is a C leftover, not a Coffee `#` comment.
+        if trimmed.starts_with("#include") {
+            return ParseError::UnexpectedKeyword {
+                line: line_num,
+                keyword: "#include".to_string(),
+                expected: Self::known_keywords(),
             };
         }
 
@@ -166,23 +244,20 @@ impl ParseError {
             };
         }
 
-        // Unknown keyword at the start of a failed statement
-        if let Some(word) = trimmed.split(|c: char| c.is_whitespace() || c == '(').next() {
-            const KNOWN: &[&str] = &[
-                "fn", "c", "if", "elif", "else", "while", "for", "match", "enum", "class",
-                "packed", "let", "return", "raise", "break", "continue", "use", "main",
-                "mv", "copy", "clone", "rm", "clean", "true", "false",
-            ];
-            if !word.is_empty()
-                && word.chars().all(|c| c.is_ascii_lowercase() || c == '_')
-                && !KNOWN.contains(&word)
-            {
-                return ParseError::UnexpectedKeyword {
-                    line: line_num,
-                    keyword: word.to_string(),
-                    expected: KNOWN.iter().map(|s| (*s).to_string()).collect(),
-                };
-            }
+        // Unknown keyword at the start of a failed statement (`try:` → `try`)
+        let word = Self::leading_word(trimmed);
+        if !word.is_empty()
+            && (word == "#include"
+                || word
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c == '_'))
+            && !Self::known_keyword_slice().contains(&word)
+        {
+            return ParseError::UnexpectedKeyword {
+                line: line_num,
+                keyword: word.to_string(),
+                expected: Self::known_keywords(),
+            };
         }
 
         // Check for missing colon patterns
@@ -289,6 +364,14 @@ impl ParseError {
             }
         }
 
+        // Complete header (`fn name(...) => Type:`) with no indented body
+        if line.contains(')') && line.contains("=>") && line.trim_end().ends_with(':') {
+            return ParseError::MissingBlockBody {
+                line: line_num,
+                statement_type: "fn".to_string(),
+            };
+        }
+
         // Generic function syntax error
         ParseError::InvalidFunctionSyntax {
             line: line_num,
@@ -374,18 +457,42 @@ impl ParseError {
             .map(|s| s.to_string())
     }
 
+    fn known_keyword_slice() -> &'static [&'static str] {
+        &[
+            "fn", "c", "if", "elif", "else", "while", "for", "match", "enum", "class",
+            "packed", "let", "return", "raise", "break", "continue", "use", "main",
+            "mv", "copy", "clone", "rm", "clean", "true", "false",
+        ]
+    }
+
+    fn known_keywords() -> Vec<String> {
+        Self::known_keyword_slice()
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect()
+    }
+
     /// Coffee-specific hints for unknown/wrong keywords (Python/JS leftovers, etc.)
     fn unexpected_keyword_suggestions(keyword: &str, expected: &[String]) -> Vec<String> {
         let mut hints = Vec::new();
         match keyword {
-            "def" => hints.push(
-                "Coffee uses `fn` for functions, not `def`. Example: `fn foo() => int:`.".to_string(),
+            "def" | "function" | "func" => hints.push(
+                "Coffee uses `fn` for functions, not `def`/`function`/`func`. Example: `fn foo() => int:`.".to_string(),
             ),
             "try" | "catch" | "except" | "finally" => hints.push(
                 "Coffee has no try/catch. Use `raise` to throw; there is no catch block.".to_string(),
             ),
-            "function" => hints.push(
-                "Coffee uses `fn` for functions, not `function`.".to_string(),
+            "import" => hints.push(
+                "Coffee imports with `use module` or `use name in lib of c`, not `import`.".to_string(),
+            ),
+            "var" | "const" => hints.push(
+                "Coffee bindings use `let name: Type = value`, not `var` or `const`.".to_string(),
+            ),
+            "#include" => hints.push(
+                "Coffee has no `#include`. Use `use name in lib of c` (and a `.cfc` file when needed).".to_string(),
+            ),
+            "package" => hints.push(
+                "Coffee has no `package` keyword. Put sources under `src/` with `coffee.toml`.".to_string(),
             ),
             _ => {}
         }
@@ -443,13 +550,14 @@ impl ParseError {
                 format!("line {}: Invalid function syntax in '{}'. Expected: {}", line, context.trim(), expected)
             }
             ParseError::UnexpectedKeyword { line, keyword, expected } => {
-                format!("line {}: Unexpected keyword '{}'. Expected one of: {}", line, keyword, expected.join(", "))
+                let hint = Self::unexpected_keyword_suggestions(keyword, expected)
+                    .into_iter()
+                    .next()
+                    .unwrap_or_else(|| format!("Expected one of: {}", expected.join(", ")));
+                format!("line {}: Unexpected keyword '{}'. {}", line, keyword, hint)
             }
             ParseError::MissingBlockBody { line, statement_type } => {
                 format!("line {}: Missing body for '{}'. Expected to end with ':'", line, statement_type)
-            }
-            ParseError::InvalidTypeSyntax { line, type_str, reason } => {
-                format!("line {}: Invalid type syntax '{}': {}", line, type_str, reason)
             }
             ParseError::GenericSyntaxError { line, context, hint } => {
                 format!("line {}: Invalid syntax '{}'. {}", line, context.trim(), hint)
@@ -480,7 +588,6 @@ impl ParseError {
             ParseError::InvalidFunctionSyntax { line, .. } => *line,
             ParseError::UnexpectedKeyword { line, .. } => *line,
             ParseError::MissingBlockBody { line, .. } => *line,
-            ParseError::InvalidTypeSyntax { line, .. } => *line,
             ParseError::GenericSyntaxError { line, .. } => *line,
             ParseError::WrongCommentSyntax { line, .. } => *line,
             ParseError::InvalidUseOfBraces { line, .. } => *line,
@@ -533,12 +640,6 @@ impl ParseError {
                 vec![
                     format!("End `{}` with ':' and indent the body (4 spaces).", statement_type),
                     "Coffee is indentation-based and does not use `{` `}` for blocks.".to_string(),
-                ]
-            }
-            ParseError::InvalidTypeSyntax { type_str, .. } => {
-                vec![
-                    format!("Check type syntax: '{}'. Valid types: int, float, str, bool, or custom types", type_str),
-                    "Integer sizes are in bytes, e.g. `int(4)+` for a 4-byte signed int.".to_string(),
                 ]
             }
             ParseError::GenericSyntaxError { hint, .. } => {
@@ -610,6 +711,15 @@ mod tests {
     }
 
     #[test]
+    fn test_missing_block_body_for_complete_fn_header() {
+        let error = ParseError::detect_error(1, "fn main() => int:");
+        assert!(
+            matches!(error, ParseError::MissingBlockBody { ref statement_type, .. } if statement_type == "fn"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
     fn test_unexpected_keyword() {
         let error = ParseError::detect_error(1, "def foo():");
         assert!(matches!(error, ParseError::UnexpectedKeyword { keyword, .. } if keyword == "def"));
@@ -639,5 +749,43 @@ mod tests {
         let joined = error.suggestions().join(" ");
         assert!(joined.contains("`raise`"), "{joined}");
         assert!(joined.contains("no try/catch"), "{joined}");
+    }
+
+    #[test]
+    fn try_with_colon_is_unexpected_keyword() {
+        let error = ParseError::detect_error(2, "    try:");
+        assert!(matches!(error, ParseError::UnexpectedKeyword { ref keyword, .. } if keyword == "try"));
+        assert!(error.to_message().contains("raise"), "{}", error.to_message());
+    }
+
+    #[test]
+    fn import_suggests_use_module() {
+        let error = ParseError::detect_error(1, "import math");
+        let msg = error.to_message();
+        let joined = error.suggestions().join(" ");
+        assert!(msg.contains("use") || joined.contains("use"), "{msg} / {joined}");
+        assert!(joined.contains("use name in lib of c") || joined.contains("`use module`"), "{joined}");
+    }
+
+    #[test]
+    fn struct_literal_braces_are_not_c_blocks() {
+        let point = ParseError::detect_error(1, "Point { x: 1 }");
+        assert!(!matches!(point, ParseError::InvalidUseOfBraces { .. }), "{point:?}");
+        let raise = ParseError::detect_error(1, "raise Err { field: v }");
+        assert!(!matches!(raise, ParseError::InvalidUseOfBraces { .. }), "{raise:?}");
+    }
+
+    #[test]
+    fn c_style_if_brace_is_c_block() {
+        let error = ParseError::detect_error(2, "    if true {");
+        assert!(matches!(error, ParseError::InvalidUseOfBraces { .. }), "{error:?}");
+        assert!(error.to_message().to_lowercase().contains("indent"), "{}", error.to_message());
+    }
+
+    #[test]
+    fn detect_error_in_block_prefers_try_in_fn_body() {
+        let lines = ["fn main() => int:", "    try:", "        return 0"];
+        let error = ParseError::detect_error_in_block(1, &lines);
+        assert!(matches!(error, ParseError::UnexpectedKeyword { keyword, .. } if keyword == "try"));
     }
 }

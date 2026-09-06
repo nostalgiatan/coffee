@@ -2,14 +2,14 @@ use crate::types::definition::*;
 use crate::types::errors::TypeSystemError;
 use std::collections::HashMap;
 
-/// 生命周期参数
+/// Named lifetime parameter (future `'a` syntax; not used for function names).
 #[derive(Debug, Clone)]
 pub struct LifetimeParam {
     pub name: String,
     pub bounds: Vec<String>,
 }
 
-/// 生命周期空间：管理引用的有效性和生命周期约束
+/// Lifetime parameter space for a future `'a`. Borrow checking is `src/types/borrow.rs`.
 pub struct LifetimeSpace {
     /// 空间ID
     id: SpaceId,
@@ -37,8 +37,8 @@ impl LifetimeSpace {
         if self.params.contains_key(&param.name) {
             return Err(TypeSystemError::Duplicate {
                 name: param.name.clone(),
-                existing: Span::new(0, 0),
-                new: Span::new(0, 0),
+                existing: TypeSystemError::span_for_name(&param.name),
+                new: TypeSystemError::span_for_name(&param.name),
             });
         }
         self.params.insert(param.name.clone(), param);
@@ -108,5 +108,35 @@ impl Space for LifetimeSpace {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_lifetime_param_span_covers_name() {
+        let mut space = LifetimeSpace::new("fn");
+        space
+            .add_param(LifetimeParam {
+                name: "a".to_string(),
+                bounds: vec![],
+            })
+            .unwrap();
+        let err = space
+            .add_param(LifetimeParam {
+                name: "a".to_string(),
+                bounds: vec![],
+            })
+            .unwrap_err();
+        match err {
+            TypeSystemError::Duplicate { name, existing, new } => {
+                assert_eq!(name, "a");
+                assert_eq!(existing, TypeSystemError::span_for_name("a"));
+                assert_eq!(new, TypeSystemError::span_for_name("a"));
+            }
+            other => panic!("expected Duplicate, got {other:?}"),
+        }
     }
 }

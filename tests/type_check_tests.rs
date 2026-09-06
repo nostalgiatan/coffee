@@ -16,6 +16,18 @@ fn main() => int:
 }
 
 #[test]
+fn test_mismatch_displays_int_byte_width() {
+    let source = r#"
+fn main() => int:
+    let x: int(4)+ = true
+    rm x
+    return 0
+
+"#;
+    assert_compile_error(source, "int(4)+").unwrap();
+}
+
+#[test]
 fn test_nested_let_in_if_is_type_error() {
     let source = r#"
 fn main() => int:
@@ -260,6 +272,38 @@ class Point:
 fn main() => int:
     let p: Point = Point { x: 1 }
     rm p
+    return 0
+
+"#;
+    assert_compile_error(source, "field").unwrap();
+}
+
+#[test]
+fn test_struct_literal_missing_ancestor_field_is_error() {
+    let source = r#"
+class Base:
+    x: int
+
+class Child of Base:
+    y: int
+
+fn main() => int:
+    let c: Child = Child { y: 9 }
+    rm c
+    return 0
+
+"#;
+    assert_compile_error(source, "field").unwrap();
+}
+
+#[test]
+fn test_error_subclass_literal_missing_code_is_error() {
+    let source = r#"
+class E of Error:
+
+fn main() => int:
+    let e: E = E { }
+    rm e
     return 0
 
 "#;
@@ -847,4 +891,401 @@ fn main() => int:
 
 "#;
     assert_compile_error(source, "not a Coffee memory primitive").unwrap();
+}
+
+#[test]
+fn test_narrow_int_literal_fits_annotated_width() {
+    let source = r#"
+fn main() => int:
+    let a: int(1)+ = 127
+    let b: int(1)+ = -128
+    return 0
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_narrow_int_literal_overflow_is_error() {
+    let source = r#"
+fn main() => int:
+    let a: int(1)+ = 128
+    return 0
+
+"#;
+    assert_compile_error(source, "type mismatch").unwrap();
+}
+
+#[test]
+fn test_float32_literal_fits_annotation() {
+    let source = r#"
+fn main() => int:
+    let a: float(4) = 1.5
+    return 0
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_functions_typecheck_without_named_lifetime_syntax() {
+    let source = r#"
+fn helper(x: int) => int:
+    return x
+
+fn main() => int:
+    return helper(1)
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_narrow_int_from_wider_variable_is_error() {
+    let source = r#"
+fn main() => int:
+    let a: int = 1
+    let b: int(1)+ = a
+    return 0
+
+"#;
+    assert_compile_error(source, "type mismatch").unwrap();
+}
+
+#[test]
+fn test_function_match_mixed_is_error() {
+    let source = r#"
+c fn go() => void:
+
+fn main() => int:
+    match go():
+        1 => 0
+        _ => 0
+    return 0
+
+"#;
+    assert_compile_error(source, "catch-all").unwrap();
+}
+
+#[test]
+fn test_void_match_mixed_is_error() {
+    let source = r#"
+c fn go() => void:
+
+fn main() => int:
+    match go():
+        Color.Red => 0
+        _ => 0
+    return 0
+
+"#;
+    assert_compile_error(source, "catch-all").unwrap();
+}
+
+#[test]
+fn test_object_match_mixed_is_error() {
+    let source = r#"
+fn take(x: object) => int:
+    match x:
+        1 => 0
+        _ => 0
+    return 0
+
+fn main() => int:
+    return 0
+
+"#;
+    assert_compile_error(source, "catch-all").unwrap();
+}
+
+#[test]
+fn test_function_match_catchall_ok() {
+    let source = r#"
+c fn go() => void:
+
+fn main() => int:
+    match go():
+        _ => 0
+    return 0
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_error_listener_missing_handler_is_error() {
+    let source = r#"
+fn f() #on_err => int:
+    return 0
+
+fn main() => int:
+    return 0
+
+"#;
+    assert_compile_error(source, "undefined function").unwrap();
+}
+
+#[test]
+fn test_error_listener_same_name_is_error() {
+    let source = r#"
+fn f(err: Error) #f => int:
+    rm err
+    return 0
+
+fn main() => int:
+    return 0
+
+"#;
+    assert_compile_error(source, "different name").unwrap();
+}
+
+#[test]
+fn test_error_listener_wrong_signature_is_error() {
+    let source = r#"
+fn on_err(x: int) => int:
+    return x
+
+fn f() #on_err => int:
+    return 0
+
+fn main() => int:
+    return 0
+
+"#;
+    assert_compile_error(source, "type mismatch").unwrap();
+}
+
+#[test]
+fn test_error_listener_ok_compiles() {
+    let source = r#"
+fn on_err(err: Error) => int:
+    rm err
+    return 1
+
+fn f() #on_err => int:
+    return 0
+
+fn main() => int:
+    return f()
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_raise_ordinary_point_class_is_error() {
+    let source = r#"
+class Point:
+    x: int
+    y: int
+
+fn main() => int:
+    raise Point { x: 1, y: 2 }
+
+"#;
+    assert_compile_error(source, "type mismatch").unwrap();
+}
+
+#[test]
+fn test_raise_class_of_error_compiles() {
+    let source = r#"
+use fprintf, exit in libc of c
+
+class E of Error:
+
+fn main() => int:
+    raise E { code: 1, note: "n", e: 0 }
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_error_subclass_extra_field_and_method_typechecks() {
+    let source = r#"
+use fprintf, exit in libc of c
+
+class Boom of Error:
+    extra: int
+
+    fn ping(self) => int:
+        return self.extra
+
+fn main() => int:
+    let b: Boom = Boom { extra: 1, code: 1, note: "n", e: 0 }
+    b.ping()
+    rm b
+    raise Boom { extra: 1, code: 1, note: "n", e: 0 }
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_user_class_error_is_type_error() {
+    let source = r#"
+class Error:
+    code: int
+
+fn main() => int:
+    return 0
+
+"#;
+    assert_compile_error(source, "Error").unwrap();
+}
+
+#[test]
+fn test_fooerror_without_of_error_cannot_raise() {
+    let source = r#"
+class FooError:
+    n: int
+
+fn main() => int:
+    raise FooError { n: 1 }
+
+"#;
+    assert_compile_error(source, "type mismatch").unwrap();
+}
+
+#[test]
+fn test_list_int_generic_is_type_error() {
+    let source = r#"
+fn main() => int:
+    let x: List<int> = 0
+    return 0
+
+"#;
+    assert_compile_error(source, "undefined type").unwrap();
+}
+
+#[test]
+fn test_slice_cannot_be_c_function_parameter() {
+    let source = r#"
+c fn f(xs: [int]) => int:
+
+fn main() => int:
+    return 0
+
+"#;
+    assert_compile_error(source, "slice").unwrap();
+}
+
+#[test]
+fn test_named_instance_field_assign_compiles() {
+    let source = r#"
+class Box:
+    n: int
+
+fn main() => int:
+    let b: Box = Box { n: 0 }
+    b.assign("n", 1)
+    rm b
+    return 0
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_named_instance_field_assign_type_mismatch() {
+    let source = r#"
+class Box:
+    n: int
+
+fn main() => int:
+    let b: Box = Box { n: 0 }
+    b.assign("n", true)
+    rm b
+    return 0
+
+"#;
+    assert_compile_error(source, "type mismatch").unwrap();
+}
+
+#[test]
+fn test_generic_box_struct_lit_typechecks() {
+    let source = r#"
+class Box<T>:
+    v: T
+
+fn main() => int:
+    let b: Box<int> = Box { v: 1 }
+    rm b
+    return 0
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_generic_nested_box_typechecks() {
+    let source = r#"
+class Box<T>:
+    v: T
+
+fn main() => int:
+    let inner: Box<int> = Box { v: 1 }
+    let b: Box<Box<int>> = Box { v: inner }
+    rm b
+    return 0
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_generic_wrong_arity_is_error() {
+    let source = r#"
+class Box<T>:
+    v: T
+
+fn main() => int:
+    let b: Box<int, int> = Box { v: 1 }
+    rm b
+    return 0
+
+"#;
+    assert_compile_error(source, "generic").unwrap();
+}
+
+#[test]
+fn test_generic_missing_args_is_error() {
+    let source = r#"
+class Box<T>:
+    v: T
+
+fn main() => int:
+    let b: Box = Box { v: 1 }
+    rm b
+    return 0
+
+"#;
+    assert_compile_error(source, "without type arguments").unwrap();
+}
+
+#[test]
+fn test_generic_id_infers_t() {
+    let source = r#"
+fn id<T>(x: T) => T:
+    return x
+
+fn main() => int:
+    let y: int = id(1)
+    return y
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_generic_cannot_infer_t() {
+    let source = r#"
+fn none<T>() => int:
+    return 0
+
+fn main() => int:
+    return none()
+
+"#;
+    assert_compile_error(source, "cannot infer T").unwrap();
 }

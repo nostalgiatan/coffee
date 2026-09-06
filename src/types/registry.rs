@@ -1,7 +1,27 @@
 use super::definition::*;
 use super::errors::TypeSystemError;
-use std::collections::HashMap;
+use super::mono;
+use crate::coffee_debug;
+use crate::parser::class::ClassDef;
+use crate::parser::function::Function;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
+
+/// Kind of a C record registered from `.cfc`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CLayoutKind {
+    Class,
+    Union,
+    Enum,
+}
+
+/// Clang size/align for a `.cfc` value type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CLayout {
+    pub size: u64,
+    pub align: u64,
+    pub kind: CLayoutKind,
+}
 
 /// 统一类型注册器：合并 TypeSpace 和 BuiltinTypes 的功能
 ///
@@ -15,29 +35,42 @@ pub struct TypeRegistry {
     id: SpaceId,
     /// 空间名称
     name: String,
-    /// 父类型空间
-    parent: Option<Arc<RwLock<TypeRegistry>>>,
     /// 类型定义
     types: Arc<RwLock<HashMap<String, TypeDef>>>,
     /// 类型别名
     aliases: Arc<RwLock<HashMap<String, Type>>>,
-    /// 泛型实例缓存
-    instances: Arc<RwLock<HashMap<String, Vec<Vec<Type>>>>>,
-    /// 类型约束
-    constraints: Arc<RwLock<HashMap<String, Vec<TypeConstraint>>>>,
+    class_params: Arc<RwLock<HashMap<String, Vec<String>>>>,
+    fn_params: Arc<RwLock<HashMap<String, Vec<String>>>>,
+    class_templates: Arc<RwLock<HashMap<String, ClassDef>>>,
+    fn_templates: Arc<RwLock<HashMap<String, Function>>>,
+    instantiated_classes: Arc<RwLock<Vec<ClassDef>>>,
+    instantiated_fns: Arc<RwLock<Vec<Function>>>,
+    /// concrete class name → template name
+    instance_of: Arc<RwLock<HashMap<String, String>>>,
+    /// Nominal `type Name: T` brands (not aliases).
+    pub(crate) newtypes: Arc<RwLock<HashMap<String, Type>>>,
+    /// `.cfc` `c class` / `c union` / `c enum` layouts (memcpy value types).
+    pub(crate) c_layouts: Arc<RwLock<HashMap<String, CLayout>>>,
 }
 
 impl TypeRegistry {
     /// 创建新的类型注册器
+    #[cfg(test)]
     pub fn new(name: impl Into<String>) -> Self {
         TypeRegistry {
             id: SpaceId::new(),
             name: name.into(),
-            parent: None,
             types: Arc::new(RwLock::new(HashMap::new())),
             aliases: Arc::new(RwLock::new(HashMap::new())),
-            instances: Arc::new(RwLock::new(HashMap::new())),
-            constraints: Arc::new(RwLock::new(HashMap::new())),
+            class_params: Arc::new(RwLock::new(HashMap::new())),
+            fn_params: Arc::new(RwLock::new(HashMap::new())),
+            class_templates: Arc::new(RwLock::new(HashMap::new())),
+            fn_templates: Arc::new(RwLock::new(HashMap::new())),
+            instantiated_classes: Arc::new(RwLock::new(Vec::new())),
+            instantiated_fns: Arc::new(RwLock::new(Vec::new())),
+            instance_of: Arc::new(RwLock::new(HashMap::new())),
+            newtypes: Arc::new(RwLock::new(HashMap::new())),
+            c_layouts: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -46,29 +79,22 @@ impl TypeRegistry {
         let mut registry = TypeRegistry {
             id: SpaceId::new(),
             name: "builtin".to_string(),
-            parent: None,
             types: Arc::new(RwLock::new(HashMap::new())),
             aliases: Arc::new(RwLock::new(HashMap::new())),
-            instances: Arc::new(RwLock::new(HashMap::new())),
-            constraints: Arc::new(RwLock::new(HashMap::new())),
+            class_params: Arc::new(RwLock::new(HashMap::new())),
+            fn_params: Arc::new(RwLock::new(HashMap::new())),
+            class_templates: Arc::new(RwLock::new(HashMap::new())),
+            fn_templates: Arc::new(RwLock::new(HashMap::new())),
+            instantiated_classes: Arc::new(RwLock::new(Vec::new())),
+            instantiated_fns: Arc::new(RwLock::new(Vec::new())),
+            instance_of: Arc::new(RwLock::new(HashMap::new())),
+            newtypes: Arc::new(RwLock::new(HashMap::new())),
+            c_layouts: Arc::new(RwLock::new(HashMap::new())),
         };
 
         // 注册内置类型
         registry.register_builtin_types();
         registry
-    }
-
-    /// 创建带有父注册器的注册器（用于作用域）
-    pub fn with_parent(parent: Arc<RwLock<TypeRegistry>>) -> Self {
-        TypeRegistry {
-            id: SpaceId::new(),
-            name: format!("child-{}", parent.read().unwrap().name),
-            parent: Some(parent),
-            types: Arc::new(RwLock::new(HashMap::new())),
-            aliases: Arc::new(RwLock::new(HashMap::new())),
-            instances: Arc::new(RwLock::new(HashMap::new())),
-            constraints: Arc::new(RwLock::new(HashMap::new())),
-        }
     }
 
     /// 注册内置类型（合并 BuiltinTypes 和 TypeSpace 的内置类型）
@@ -85,198 +111,25 @@ impl TypeRegistry {
         aliases.insert("bool".to_string(), Type::bool());
         aliases.insert("str".to_string(), Type::String);
         aliases.insert("string".to_string(), Type::String);
+        aliases.insert("buf".to_string(), Type::buf());
         aliases.insert("void".to_string(), Type::void());
         aliases.insert("()".to_string(), Type::unit());
 
-        // Error 基类
-        types.insert("Error".to_string(), TypeDef::Class {
-            name: "Error".to_string(),
-            fields: vec![
-                ClassField {
-                    name: "code".to_string(),
-                    ty: "int".to_string(),
-                    visibility: Visibility::Public,
-                },
-                ClassField {
-                    name: "message".to_string(),
-                    ty: "str".to_string(),
-                    visibility: Visibility::Public,
-                },
-            ],
-            methods: vec![
-                MethodSignature {
-                    name: "to_string".to_string(),
-                    params: vec![],
-                    return_type: Type::NamedType {
-                        name: "str".to_string(),
-                    },
-                    receiver: None,
-                    generics: vec![],
-                },
-                MethodSignature {
-                    name: "get_code".to_string(),
-                    params: vec![],
-                    return_type: Type::NamedType {
-                        name: "int".to_string(),
-                    },
-                    receiver: None,
-                    generics: vec![],
-                },
-                MethodSignature {
-                    name: "get_message".to_string(),
-                    params: vec![],
-                    return_type: Type::NamedType {
-                        name: "str".to_string(),
-                    },
-                    receiver: None,
-                    generics: vec![],
-                },
-            ],
-            generics: vec![],
-            parent: None,
-        });
-
-        // ErrorContext (Ctx) 结构
-        types.insert("Ctx".to_string(), TypeDef::Struct {
-            name: "Ctx".to_string(),
-            fields: vec![
-                ClassField {
-                    name: "file".to_string(),
-                    ty: "str".to_string(),
-                    visibility: Visibility::Public,
-                },
-                ClassField {
-                    name: "line".to_string(),
-                    ty: "int".to_string(),
-                    visibility: Visibility::Public,
-                },
-                ClassField {
-                    name: "column".to_string(),
-                    ty: "int".to_string(),
-                    visibility: Visibility::Public,
-                },
-                ClassField {
-                    name: "function".to_string(),
-                    ty: "str".to_string(),
-                    visibility: Visibility::Public,
-                },
-            ],
-            methods: vec![],
-            generics: vec![],
-        });
-
-        // ErrorContext 别名
-        aliases.insert("ErrorContext".to_string(), Type::NamedType {
-            name: "Ctx".to_string(),
-        });
-
-        // 标准库类型（来自 TypeSpace）
-        types.insert("Vec".to_string(), TypeDef::Class {
-            name: "Vec".to_string(),
-            fields: vec![
-                ClassField {
-                    name: "ptr".to_string(),
-                    ty: "*T".to_string(),
-                    visibility: Visibility::Private,
-                },
-                ClassField {
-                    name: "len".to_string(),
-                    ty: "usize".to_string(),
-                    visibility: Visibility::Private,
-                },
-                ClassField {
-                    name: "cap".to_string(),
-                    ty: "usize".to_string(),
-                    visibility: Visibility::Private,
-                },
-            ],
-            methods: vec![
-                MethodSignature {
-                    name: "new".to_string(),
-                    params: vec![],
-                    return_type: Type::NamedType { name: "Vec".to_string() },
-                    receiver: None,
-                    generics: vec![],
-                },
-                MethodSignature {
-                    name: "push".to_string(),
-                    params: vec![Type::int()],  // Vec<int> for now
-                    return_type: Type::unit(),
-                    receiver: Some(ReceiverKind::Mutable),
-                    generics: vec![],
-                },
-                MethodSignature {
-                    name: "pop".to_string(),
-                    params: vec![],
-                    return_type: Type::NamedType { name: "Vec".to_string() },  // Simplified
-                    receiver: Some(ReceiverKind::Mutable),
-                    generics: vec![],
-                },
-                MethodSignature {
-                    name: "get".to_string(),
-                    params: vec![Type::Int { bits: 64, signed: false }],
-                    return_type: Type::NamedType { name: "Vec".to_string() },  // Simplified
-                    receiver: Some(ReceiverKind::Shared),
-                    generics: vec![],
-                },
-            ],
-            generics: vec![],  // No generics anymore
-            parent: None,
-        });
-
-        // Coffee 内置错误处理类型
-        types.insert("Error".to_string(), TypeDef::Struct {
-            name: "Error".to_string(),
-            fields: vec![
-                ClassField {
-                    name: "code".to_string(),
-                    ty: "int".to_string(),
-                    visibility: Visibility::Public,
-                },
-                ClassField {
-                    name: "message".to_string(),
-                    ty: "str".to_string(),
-                    visibility: Visibility::Public,
-                },
-            ],
-            methods: vec![],
-            generics: vec![],
-        });
-
-        types.insert("ErrorContext".to_string(), TypeDef::Struct {
-            name: "ErrorContext".to_string(),
-            fields: vec![
-                ClassField {
-                    name: "line".to_string(),
-                    ty: "int".to_string(),
-                    visibility: Visibility::Public,
-                },
-                ClassField {
-                    name: "column".to_string(),
-                    ty: "int".to_string(),
-                    visibility: Visibility::Public,
-                },
-                ClassField {
-                    name: "file".to_string(),
-                    ty: "str".to_string(),
-                    visibility: Visibility::Public,
-                },
-            ],
-            methods: vec![],
-            generics: vec![],
-        });
+        types.insert("Error".to_string(), Self::builtin_error_def());
     }
 
     /// 注册类型定义
     pub fn define_type(&self, name: impl Into<String>, def: TypeDef) -> Result<(), TypeSystemError> {
         let name = name.into();
 
+        coffee_debug!("define_type: {} ({})", name, def.name());
         if let Ok(mut types) = self.types.write() {
             if types.contains_key(&name) {
+                let span = TypeSystemError::span_for_name(&name);
                 return Err(TypeSystemError::Duplicate {
                     name,
-                    existing: Span::new(0, 0),
-                    new: Span::new(0, 0),
+                    existing: span,
+                    new: span,
                 });
             }
             types.insert(name, def);
@@ -295,10 +148,11 @@ impl TypeRegistry {
 
         if let Ok(mut aliases) = self.aliases.write() {
             if aliases.contains_key(&name) {
+                let span = TypeSystemError::span_for_name(&name);
                 return Err(TypeSystemError::Duplicate {
                     name,
-                    existing: Span::new(0, 0),
-                    new: Span::new(0, 0),
+                    existing: span,
+                    new: span,
                 });
             }
             aliases.insert(name, ty);
@@ -319,13 +173,6 @@ impl TypeRegistry {
             }
         }
 
-        // 检查父注册器
-        if let Some(ref parent) = self.parent {
-            if let Ok(parent_lock) = parent.read() {
-                return parent_lock.get_type(name);
-            }
-        }
-
         None
     }
 
@@ -337,49 +184,40 @@ impl TypeRegistry {
             }
         }
 
-        // 检查父注册器
-        if let Some(ref parent) = self.parent {
-            if let Ok(parent_lock) = parent.read() {
-                return parent_lock.get_alias(name);
-            }
-        }
-
         None
     }
 
-    /// 解析类型字符串，支持泛型参数替换
+    /// 解析类型字符串
     pub fn resolve_type(&self, type_str: &str) -> Result<Type, TypeSystemError> {
-        self.resolve_type_with_params(type_str, &[])
-    }
-
-    /// 解析类型字符串，支持泛型参数替换（合并 BuiltinTypes 的功能）
-    pub fn resolve_type_with_params(&self, type_str: &str, type_params: &[String]) -> Result<Type, TypeSystemError> {
-        // 先检查别名
+        if type_str == "Error" {
+            self.ensure_error_type();
+        }
         if let Some(ty) = self.get_alias(type_str) {
-            return Ok(self.substitute_type_params(ty, type_params));
+            return Ok(ty);
         }
 
-        // 再检查类型定义
         if self.get_type(type_str).is_some() {
-            return Ok(self.substitute_type_params(Type::NamedType {
+            if self.is_generic_class(type_str) {
+                return Err(TypeSystemError::InstantiationError {
+                    type_name: type_str.to_string(),
+                    args: vec![],
+                    reason: format!("type '{type_str}' used without type arguments"),
+                    span: TypeSystemError::span_for_name(type_str),
+                });
+            }
+            return Ok(Type::NamedType {
                 name: type_str.to_string(),
-            }, type_params));
+            });
         }
 
-        // 尝试从字符串解析基础类型
+        if self.is_newtype(type_str) {
+            return Ok(Type::NamedType {
+                name: type_str.to_string(),
+            });
+        }
+
         match super::definition::type_from_str(type_str) {
-            Ok(ty) => {
-                // 如果是命名类型，检查它是否存在于注册器中
-                if let Type::NamedType { name } = &ty {
-                    if self.get_type(name).is_none() {
-                        return Err(TypeSystemError::UndefinedType {
-                            name: name.clone(),
-                            span: super::definition::Span::new(0, type_str.len()),
-                        });
-                    }
-                }
-                Ok(self.substitute_type_params(ty, type_params))
-            }
+            Ok(ty) => self.normalize_type(ty, type_str),
             Err(e) => Err(TypeSystemError::ParseError {
                 type_str: type_str.to_string(),
                 reason: e,
@@ -387,98 +225,368 @@ impl TypeRegistry {
         }
     }
 
-    /// 替换类型参数（不再支持泛型，直接返回原类型）
-    fn substitute_type_params(&self, ty: Type, _type_params: &[String]) -> Type {
-        // 不再支持泛型，直接返回原类型
-        ty
-    }
-
-    /// 添加泛型实例（已废弃，保留API兼容性）
-    pub fn add_instance(&self, _name: impl Into<String>, _args: Vec<Type>) -> Result<(), TypeSystemError> {
-        // 不再支持泛型，此函数已废弃
-        Ok(())
-    }
-
-    /// 获取泛型的所有实例
-    pub fn get_instances(&self, name: &str) -> Vec<Vec<Type>> {
-        if let Ok(instances) = self.instances.read() {
-            instances.get(name).cloned().unwrap_or_default()
-        } else {
-            Vec::new()
-        }
-    }
-
-    /// 添加类型约束
-    pub fn add_constraint(&self, name: impl Into<String>, constraint: TypeConstraint) -> Result<(), TypeSystemError> {
-        let name = name.into();
-
-        if let Ok(mut constraints) = self.constraints.write() {
-            constraints.entry(name).or_insert_with(Vec::new).push(constraint);
-            Ok(())
-        } else {
-            Err(TypeSystemError::NotFound {
-                name: format!("constraint '{}'", name),
-                kind: SpaceKind::Type,
-            })
-        }
-    }
-
-    /// 获取类型约束
-    pub fn get_constraints(&self, name: &str) -> Vec<TypeConstraint> {
-        if let Ok(constraints) = self.constraints.read() {
-            constraints.get(name).cloned().unwrap_or_default()
-        } else {
-            Vec::new()
-        }
-    }
-
-    /// 检查类型是否满足约束
-    pub fn check_constraints(&self, name: &str, ty: &Type) -> Result<(), TypeSystemError> {
-        let constraints = self.get_constraints(name);
-
-        for constraint in constraints {
-            match constraint {
-                TypeConstraint::Trait(trait_name) => {
-                    // 简化实现：检查类型是否实现了指定的trait
-                    // 实际实现需要trait系统
-                    if !self.implements_trait(ty, &trait_name) {
-                        return Err(TypeSystemError::ConstraintViolation {
-                            constraint: trait_name.clone(),
-                            reason: format!("type {} does not implement trait {}", ty, trait_name),
-                            span: Span::new(0, 0),
-                        });
-                    }
+    fn normalize_type(&self, ty: Type, origin: &str) -> Result<Type, TypeSystemError> {
+        match ty {
+            Type::App { name, args } => {
+                let mut norm_args = Vec::with_capacity(args.len());
+                for a in args {
+                    norm_args.push(self.normalize_type(a, origin)?);
                 }
-                TypeConstraint::Equals(expected_type) => {
-                    let expected = self.resolve_type(&expected_type)
-                        .map_err(|_| TypeSystemError::NotFound {
-                            name: expected_type.clone(),
-                            kind: SpaceKind::Type,
-                        })?;
-
-                    if ty != &expected {
-                        return Err(TypeSystemError::ConstraintViolation {
-                            constraint: expected_type,
-                            reason: format!("type {} does not equal expected type {}", ty, expected),
-                            span: Span::new(0, 0),
-                        });
-                    }
+                self.instantiate_class_app(&name, &norm_args)
+            }
+            Type::NamedType { name } => {
+                if self.is_generic_class(&name) {
+                    return Err(TypeSystemError::InstantiationError {
+                        type_name: name.clone(),
+                        args: vec![],
+                        reason: format!("type '{name}' used without type arguments"),
+                        span: TypeSystemError::span_for_name(&name),
+                    });
                 }
-                TypeConstraint::All(sub_constraints) => {
-                    for _sub in sub_constraints {
-                        // 递归检查（简化实现）
-                    }
+                if self.get_type(&name).is_none()
+                    && self.get_alias(&name).is_none()
+                    && !self.is_newtype(&name)
+                {
+                    return Err(TypeSystemError::undefined_type(
+                        name,
+                        super::definition::Span::new(0, origin.len()),
+                    ));
+                }
+                Ok(Type::NamedType { name })
+            }
+            Type::Ref { elem, mutable } => Ok(Type::Ref {
+                elem: Box::new(self.normalize_type(*elem, origin)?),
+                mutable,
+            }),
+            Type::Array { elem, size } => Ok(Type::Array {
+                elem: Box::new(self.normalize_type(*elem, origin)?),
+                size,
+            }),
+            Type::Slice(elem) => Ok(Type::Slice(Box::new(self.normalize_type(*elem, origin)?))),
+            Type::Tuple(elems) => {
+                let mut out = Vec::with_capacity(elems.len());
+                for e in elems {
+                    out.push(self.normalize_type(e, origin)?);
+                }
+                Ok(Type::Tuple(out))
+            }
+            Type::Function {
+                params,
+                return_type,
+            } => {
+                let mut ps = Vec::with_capacity(params.len());
+                for p in params {
+                    ps.push(self.normalize_type(p, origin)?);
+                }
+                Ok(Type::Function {
+                    params: ps,
+                    return_type: Box::new(self.normalize_type(*return_type, origin)?),
+                })
+            }
+            other => Ok(other),
+        }
+    }
+
+    pub fn install_header_generics(&self, headers: &mono::HeaderGenerics) {
+        if let Ok(mut m) = self.class_params.write() {
+            for (k, v) in &headers.classes {
+                m.insert(k.clone(), v.clone());
+            }
+        }
+        if let Ok(mut m) = self.fn_params.write() {
+            for (k, v) in &headers.functions {
+                m.insert(k.clone(), v.clone());
+            }
+        }
+    }
+
+    pub fn register_class_template(&self, class: &ClassDef) {
+        let mut params = mono::ast_class_type_params(class);
+        if params.is_empty() {
+            if let Ok(m) = self.class_params.read() {
+                if let Some(p) = m.get(&class.name) {
+                    params = p.clone();
+                }
+            }
+        } else if let Ok(mut m) = self.class_params.write() {
+            m.insert(class.name.clone(), params.clone());
+        }
+        if !params.is_empty() {
+            if let Ok(mut t) = self.class_templates.write() {
+                t.insert(class.name.clone(), class.clone());
+            }
+        }
+    }
+
+    pub fn register_fn_template(&self, func: &Function) {
+        let mut params = mono::ast_fn_type_params(func);
+        if params.is_empty() {
+            if let Ok(m) = self.fn_params.read() {
+                if let Some(p) = m.get(&func.name) {
+                    params = p.clone();
+                }
+            }
+        } else if let Ok(mut m) = self.fn_params.write() {
+            m.insert(func.name.clone(), params.clone());
+        }
+        if !params.is_empty() {
+            if let Ok(mut t) = self.fn_templates.write() {
+                t.insert(func.name.clone(), func.clone());
+            }
+        }
+    }
+
+    pub fn class_type_params(&self, name: &str) -> Vec<String> {
+        self.class_params
+            .read()
+            .ok()
+            .and_then(|m| m.get(name).cloned())
+            .unwrap_or_default()
+    }
+
+    pub fn fn_type_params(&self, name: &str) -> Vec<String> {
+        self.fn_params
+            .read()
+            .ok()
+            .and_then(|m| m.get(name).cloned())
+            .unwrap_or_default()
+    }
+
+    pub fn is_generic_class(&self, name: &str) -> bool {
+        !self.class_type_params(name).is_empty()
+    }
+
+    pub fn is_generic_fn(&self, name: &str) -> bool {
+        !self.fn_type_params(name).is_empty()
+    }
+
+    pub fn template_name_of(&self, concrete: &str) -> Option<String> {
+        self.instance_of
+            .read()
+            .ok()
+            .and_then(|m| m.get(concrete).cloned())
+    }
+
+    pub fn take_instantiated_classes(&self) -> Vec<ClassDef> {
+        self.instantiated_classes
+            .write()
+            .map(|mut v| std::mem::take(&mut *v))
+            .unwrap_or_default()
+    }
+
+    pub fn cloned_instantiated_classes(&self) -> Vec<ClassDef> {
+        self.instantiated_classes
+            .read()
+            .map(|v| v.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn take_instantiated_fns(&self) -> Vec<Function> {
+        self.instantiated_fns
+            .write()
+            .map(|mut v| std::mem::take(&mut *v))
+            .unwrap_or_default()
+    }
+
+    pub fn cloned_instantiated_fns(&self) -> Vec<Function> {
+        self.instantiated_fns
+            .read()
+            .map(|v| v.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn generic_class_names(&self) -> Vec<String> {
+        self.class_params
+            .read()
+            .ok()
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    pub fn generic_fn_names(&self) -> Vec<String> {
+        self.fn_params
+            .read()
+            .ok()
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    fn instantiate_class_app(&self, name: &str, args: &[Type]) -> Result<Type, TypeSystemError> {
+        let params = self.class_type_params(name);
+        if params.is_empty() {
+            if self.get_type(name).is_some() {
+                return Err(TypeSystemError::InstantiationError {
+                    type_name: name.to_string(),
+                    args: args.to_vec(),
+                    reason: format!("type '{name}' is not generic"),
+                    span: TypeSystemError::span_for_name(name),
+                });
+            }
+            return Err(TypeSystemError::undefined_type(
+                name.to_string(),
+                TypeSystemError::span_for_name(name),
+            ));
+        }
+        if params.len() != args.len() {
+            return Err(TypeSystemError::GenericArgCountMismatch {
+                type_name: name.to_string(),
+                expected: params.len(),
+                found: args.len(),
+                span: TypeSystemError::span_for_name(name),
+            });
+        }
+        let concrete = Type::App {
+            name: name.to_string(),
+            args: args.to_vec(),
+        }
+        .mono_name();
+        if self.get_type(&concrete).is_some() {
+            return Ok(Type::NamedType { name: concrete });
+        }
+        let template = self
+            .class_templates
+            .read()
+            .ok()
+            .and_then(|m| m.get(name).cloned())
+            .ok_or_else(|| TypeSystemError::undefined_type(
+                name.to_string(),
+                TypeSystemError::span_for_name(name),
+            ))?;
+        let inst = mono::instantiate_class(&template, &params, args).map_err(|reason| {
+            TypeSystemError::InstantiationError {
+                type_name: name.to_string(),
+                args: args.to_vec(),
+                reason,
+                span: TypeSystemError::span_for_name(name),
+            }
+        })?;
+        let type_def = self.bind_class(&inst)?;
+        self.define_type(inst.name.clone(), type_def)?;
+        if let Ok(mut m) = self.instance_of.write() {
+            m.insert(inst.name.clone(), name.to_string());
+        }
+        if let Ok(mut v) = self.instantiated_classes.write() {
+            if !v.iter().any(|c| c.name == inst.name) {
+                v.push(inst);
+            }
+        }
+        Ok(Type::NamedType { name: concrete })
+    }
+
+    pub fn instantiate_generic_fn(
+        &self,
+        name: &str,
+        args: &[Type],
+    ) -> Result<Type, TypeSystemError> {
+        let params = self.fn_type_params(name);
+        if params.is_empty() {
+            return Err(TypeSystemError::undefined_function(
+                name,
+                TypeSystemError::span_for_name(name),
+            ));
+        }
+        if params.len() != args.len() {
+            return Err(TypeSystemError::GenericArgCountMismatch {
+                type_name: name.to_string(),
+                expected: params.len(),
+                found: args.len(),
+                span: TypeSystemError::span_for_name(name),
+            });
+        }
+        let template = self
+            .fn_templates
+            .read()
+            .ok()
+            .and_then(|m| m.get(name).cloned())
+            .ok_or_else(|| {
+                TypeSystemError::undefined_function(name, TypeSystemError::span_for_name(name))
+            })?;
+        if let Some(existing) = self.get_alias(name) {
+            return Ok(existing);
+        }
+        let inst = mono::instantiate_function(&template, &params, args).map_err(|reason| {
+            TypeSystemError::InstantiationError {
+                type_name: name.to_string(),
+                args: args.to_vec(),
+                reason,
+                span: TypeSystemError::span_for_name(name),
+            }
+        })?;
+        let ty = self.bind_function(&inst)?;
+        if self.get_alias(name).is_none() {
+            self.define_alias(name.to_string(), ty.clone())?;
+        }
+        if let Ok(mut v) = self.instantiated_fns.write() {
+            if !v.iter().any(|f| f.name == inst.name) {
+                v.push(inst);
+            }
+        }
+        Ok(ty)
+    }
+
+    pub fn generic_fn_value_arity(&self, name: &str) -> Option<usize> {
+        self.fn_templates
+            .read()
+            .ok()
+            .and_then(|m| m.get(name).map(|f| f.parameters.len()))
+    }
+
+    /// Rewrite `Box { }` → `Box__int` and splice concrete class/fn ASTs into `program`.
+    pub fn inject_monomorphized(&self, program: &mut crate::parser::Program) {
+        mono::rewrite_program(program, self);
+        let classes = self.take_instantiated_classes();
+        let fns = self.take_instantiated_fns();
+        let mut statements = Vec::with_capacity(program.statements.len() + classes.len() + fns.len());
+        let mut spans = Vec::with_capacity(program.stmt_spans.len() + classes.len() + fns.len());
+        for (stmt, span) in program
+            .statements
+            .drain(..)
+            .zip(program.stmt_spans.drain(..))
+        {
+            match &stmt {
+                crate::parser::Statement::Class(c) if !c.type_params.is_empty() => continue,
+                crate::parser::Statement::Function(f) if !f.type_params.is_empty() => continue,
+                _ => {
+                    statements.push(stmt);
+                    spans.push(span);
                 }
             }
         }
-
-        Ok(())
+        for class in classes {
+            statements.push(crate::parser::Statement::Class(class));
+            spans.push(crate::types::definition::Span::new(0, 0));
+        }
+        for func in fns {
+            statements.push(crate::parser::Statement::Function(func));
+            spans.push(crate::types::definition::Span::new(0, 0));
+        }
+        program.statements = statements;
+        program.stmt_spans = spans;
     }
 
-    /// 检查类型是否实现了指定trait（简化实现）
-    fn implements_trait(&self, _ty: &Type, _trait_name: &str) -> bool {
-        // 简化实现：假设所有类型都实现了基本trait
-        true
+    pub fn infer_fn_instance(&self, name: &str, arg_types: &[Type]) -> Result<Type, TypeSystemError> {
+        let params = self.fn_type_params(name);
+        let template = self
+            .fn_templates
+            .read()
+            .ok()
+            .and_then(|m| m.get(name).cloned());
+        let Some(func) = template else {
+            return Err(TypeSystemError::undefined_function(
+                name,
+                TypeSystemError::span_for_name(name),
+            ));
+        };
+        let param_strs: Vec<String> = func.parameters.iter().map(|p| p.param_type.clone()).collect();
+        let args = mono::infer_generic_args(&params, &param_strs, arg_types).map_err(|reason| {
+            TypeSystemError::InstantiationError {
+                type_name: name.to_string(),
+                args: vec![],
+                reason,
+                span: TypeSystemError::span_for_name(name),
+            }
+        })?;
+        self.instantiate_generic_fn(name, &args)
     }
 
     /// 检查类型兼容性
@@ -517,28 +625,61 @@ impl TypeRegistry {
         false
     }
 
-    /// 获取类型的所有字段
-    pub fn get_fields(&self, type_name: &str) -> Vec<ClassField> {
-        match self.get_type(type_name) {
-            Some(TypeDef::Class { fields, .. }) | Some(TypeDef::Struct { fields, .. }) => fields,
-            _ => vec![],
-        }
+    /// Builtin `Error` or a class whose `of` chain reaches it.
+    pub fn is_exception_type(&self, name: &str) -> bool {
+        self.is_subtype_of(name, "Error")
     }
 
-    /// 获取类型的所有方法
-    pub fn get_methods(&self, type_name: &str) -> Vec<MethodSignature> {
-        match self.get_type(type_name) {
-            Some(TypeDef::Class { methods, .. }) | Some(TypeDef::Struct { methods, .. }) => methods,
-            _ => vec![],
+    /// Layout order: ancestor fields (root first), then this class's own fields.
+    /// Missing or non-class parents, and parent cycles, are errors (not a partial name list).
+    pub fn class_field_names_including_ancestors(
+        &self,
+        class_name: &str,
+    ) -> Result<Vec<String>, TypeSystemError> {
+        match self.get_type(class_name) {
+            Some(TypeDef::Class { .. }) => {}
+            None => {
+                return Err(TypeSystemError::undefined_type(
+                    class_name.to_string(),
+                    TypeSystemError::span_for_name(class_name),
+                ));
+            }
+            Some(_) => {
+                return Err(TypeSystemError::internal(format!(
+                    "expected class `{class_name}` for ancestor field walk"
+                )));
+            }
         }
-    }
 
-    /// 获取枚举的所有变体
-    pub fn get_variants(&self, type_name: &str) -> Vec<EnumVariant> {
-        match self.get_type(type_name) {
-            Some(TypeDef::Enum { variants, .. }) => variants,
-            _ => vec![],
+        let mut layers: Vec<Vec<String>> = Vec::new();
+        let mut current = Some(class_name.to_string());
+        let mut seen = HashSet::new();
+        while let Some(name) = current {
+            if !seen.insert(name.clone()) {
+                return Err(TypeSystemError::internal(format!(
+                    "cyclic class parent chain at `{name}`"
+                )));
+            }
+            match self.get_type(&name) {
+                Some(TypeDef::Class { fields, parent, .. }) => {
+                    layers.push(fields.iter().map(|f| f.name.clone()).collect());
+                    current = parent;
+                }
+                None => {
+                    return Err(TypeSystemError::undefined_type(
+                        name.clone(),
+                        TypeSystemError::span_for_name(&name),
+                    ));
+                }
+                Some(_) => {
+                    return Err(TypeSystemError::internal(format!(
+                        "parent `{name}` is not a class"
+                    )));
+                }
+            }
         }
+        layers.reverse();
+        Ok(layers.into_iter().flatten().collect())
     }
 
     /// 获取所有类型名称
@@ -556,46 +697,43 @@ impl TypeRegistry {
         names
     }
 
-    /// 合并另一个类型注册器
-    pub fn merge(&self, other: &TypeRegistry) -> Result<(), TypeSystemError> {
-        // 合并类型定义
-        if let Ok(mut types) = self.types.write() {
-            if let Ok(other_types) = other.types.read() {
-                for (name, def) in other_types.iter() {
-                    if types.contains_key(name) {
-                        return Err(TypeSystemError::Duplicate {
-                            name: name.clone(),
-                            existing: Span::new(0, 0),
-                            new: Span::new(0, 0),
-                        });
-                    }
-                    types.insert(name.clone(), def.clone());
-                }
-            }
+    /// Builtin `Error { code: int, note: str, e: object }` for `#on_err` listeners.
+    pub fn builtin_error_def() -> TypeDef {
+        TypeDef::Class {
+            name: "Error".to_string(),
+            fields: vec![
+                ClassField {
+                    name: "code".to_string(),
+                    ty: "int".to_string(),
+                    visibility: Visibility::Public,
+                },
+                ClassField {
+                    name: "note".to_string(),
+                    ty: "str".to_string(),
+                    visibility: Visibility::Public,
+                },
+                ClassField {
+                    name: "e".to_string(),
+                    ty: "object".to_string(),
+                    visibility: Visibility::Public,
+                },
+            ],
+            methods: vec![],
+            generics: vec![],
+            parent: None,
         }
-
-        // 合并别名
-        if let Ok(mut aliases) = self.aliases.write() {
-            if let Ok(other_aliases) = other.aliases.read() {
-                for (name, ty) in other_aliases.iter() {
-                    if aliases.contains_key(name) {
-                        return Err(TypeSystemError::Duplicate {
-                            name: name.clone(),
-                            existing: Span::new(0, 0),
-                            new: Span::new(0, 0),
-                        });
-                    }
-                    aliases.insert(name.clone(), ty.clone());
-                }
-            }
-        }
-
-        Ok(())
     }
 
-    /// 从 AST 的 VariableDecl 创建变量绑定（来自 TypeEnv）
-    pub fn bind_variable_decl(&self, decl: &crate::parser::var::VariableDecl) -> Result<Type, TypeSystemError> {
-        self.resolve_type(&decl.var_type)
+    /// Register builtin `Error` when it is missing (empty / test registries).
+    pub fn ensure_error_type(&self) {
+        if self.get_type("Error").is_some() {
+            return;
+        }
+        if let Ok(mut types) = self.types.write() {
+            types
+                .entry("Error".to_string())
+                .or_insert_with(Self::builtin_error_def);
+        }
     }
 
     /// 从 AST 的 Function 创建函数类型（来自 TypeEnv）
@@ -619,9 +757,44 @@ impl TypeRegistry {
 
     /// 从 AST 的 ClassDef 创建类型定义（来自 TypeEnv）
     pub fn bind_class(&self, class: &crate::parser::class::ClassDef) -> Result<TypeDef, TypeSystemError> {
+        if class.name == "Error" {
+            return Err(TypeSystemError::duplicate(
+                "Error",
+                Span::new(0, 5),
+                Span::new(0, 5),
+            ));
+        }
+        if class.name == "buf" {
+            return Err(TypeSystemError::duplicate(
+                "buf",
+                Span::new(0, 3),
+                Span::new(0, 3),
+            ));
+        }
+
+        let type_params = {
+            let mut p = mono::ast_class_type_params(class);
+            if p.is_empty() {
+                p = self.class_type_params(&class.name);
+            }
+            p
+        };
+
         // 解析字段类型
         let mut fields = Vec::new();
         for field in &class.fields {
+            if !type_params.is_empty() {
+                if let Ok(ty) = super::definition::type_from_str(&field.field_type) {
+                    if ty.mentions_type_param(&type_params) {
+                        fields.push(ClassField {
+                            name: field.name.clone(),
+                            ty: field.field_type.clone(),
+                            visibility: Visibility::Public,
+                        });
+                        continue;
+                    }
+                }
+            }
             fields.push(ClassField {
                 name: field.name.clone(),
                 ty: field.field_type.clone(),
@@ -631,15 +804,20 @@ impl TypeRegistry {
 
         // 解析方法签名
         let mut methods = Vec::new();
+        if type_params.is_empty() {
         for method in &class.methods {
             let mut param_types = Vec::new();
-            // 添加 self 参数
-            let self_type = Type::NamedType {
-                name: class.name.clone(),
-            };
-            param_types.push(self_type);
+            let has_self = method.parameters.iter().any(|p| p.name == "self");
+            if has_self {
+                param_types.push(Type::NamedType {
+                    name: class.name.clone(),
+                });
+            }
 
             for param in &method.parameters {
+                if param.name == "self" {
+                    continue;
+                }
                 // 如果参数类型是类本身，使用 NamedType 避免循环依赖
                 let ty = if param.param_type == class.name {
                     Type::NamedType {
@@ -668,13 +846,14 @@ impl TypeRegistry {
                 generics: vec![],
             });
         }
+        }
 
         Ok(TypeDef::Class {
             name: class.name.clone(),
             fields,
             methods,
-            generics: vec![],  // No generics anymore
-            parent: None,
+            generics: type_params,
+            parent: class.parent.clone(),
         })
     }
 
@@ -718,16 +897,6 @@ impl TypeRegistry {
             generics: vec![],  // No generics anymore
         })
     }
-
-    /// 获取空间ID
-    pub fn id(&self) -> SpaceId {
-        self.id
-    }
-
-    /// 获取空间名称
-    pub fn name(&self) -> &str {
-        &self.name
-    }
 }
 
 impl Clone for TypeRegistry {
@@ -735,11 +904,17 @@ impl Clone for TypeRegistry {
         TypeRegistry {
             id: self.id,
             name: self.name.clone(),
-            parent: self.parent.clone(),
             types: Arc::clone(&self.types),
             aliases: Arc::clone(&self.aliases),
-            instances: Arc::clone(&self.instances),
-            constraints: Arc::clone(&self.constraints),
+            class_params: Arc::clone(&self.class_params),
+            fn_params: Arc::clone(&self.fn_params),
+            class_templates: Arc::clone(&self.class_templates),
+            fn_templates: Arc::clone(&self.fn_templates),
+            instantiated_classes: Arc::clone(&self.instantiated_classes),
+            instantiated_fns: Arc::clone(&self.instantiated_fns),
+            instance_of: Arc::clone(&self.instance_of),
+            newtypes: Arc::clone(&self.newtypes),
+            c_layouts: Arc::clone(&self.c_layouts),
         }
     }
 }
@@ -787,9 +962,111 @@ mod tests {
         assert!(registry.get_alias("bool").is_some());
         assert!(registry.get_alias("str").is_some());
 
-        // 检查标准库类型
-        assert!(registry.get_type("Vec").is_some());
-        // Note: Option and Result are not built-in types, they are user-defined enums
+        let error_ty = registry.get_type("Error").expect("builtin Error");
+        match error_ty {
+            TypeDef::Class {
+                parent,
+                fields,
+                methods,
+                generics,
+                ..
+            } => {
+                assert!(parent.is_none());
+                assert!(methods.is_empty());
+                assert!(generics.is_empty());
+                let names: Vec<_> = fields.iter().map(|f| f.name.as_str()).collect();
+                assert_eq!(names, vec!["code", "note", "e"]);
+                assert_eq!(fields[0].ty, "int");
+                assert_eq!(fields[1].ty, "str");
+                assert_eq!(fields[2].ty, "object");
+            }
+            other => panic!("Error should be a class, got {:?}", other),
+        }
+        assert!(registry.resolve_type("Error").is_ok());
+    }
+
+    fn class_named(name: &str, parent: Option<&str>) -> crate::parser::class::ClassDef {
+        crate::parser::class::ClassDef {
+            type_params: vec![],
+            name: name.to_string(),
+            parent: parent.map(str::to_string),
+            fields: vec![],
+            methods: vec![],
+            packed: false,
+            has_constructor: false,
+        }
+    }
+
+    #[test]
+    fn test_bind_class_rejects_user_error() {
+        let registry = TypeRegistry::root();
+        let err = registry
+            .bind_class(&class_named("Error", None))
+            .expect_err("user class Error must not bind");
+        assert!(
+            err.to_string().contains("Error"),
+            "unexpected error: {err}"
+        );
+        match registry.get_type("Error").expect("builtin remains") {
+            TypeDef::Class { name, parent: None, .. } => assert_eq!(name, "Error"),
+            other => panic!("builtin Error overwritten: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_is_exception_type_walks_class_parents() {
+        let registry = TypeRegistry::root();
+        assert!(registry.is_exception_type("Error"));
+        assert!(!registry.is_exception_type("Point"));
+        assert!(!registry.is_exception_type("FooError"));
+
+        registry
+            .define_type(
+                "E",
+                TypeDef::Class {
+                    name: "E".to_string(),
+                    fields: vec![],
+                    methods: vec![],
+                    generics: vec![],
+                    parent: Some("Error".to_string()),
+                },
+            )
+            .unwrap();
+        registry
+            .define_type(
+                "F",
+                TypeDef::Class {
+                    name: "F".to_string(),
+                    fields: vec![],
+                    methods: vec![],
+                    generics: vec![],
+                    parent: Some("E".to_string()),
+                },
+            )
+            .unwrap();
+        registry
+            .define_type(
+                "FooError",
+                TypeDef::Class {
+                    name: "FooError".to_string(),
+                    fields: vec![],
+                    methods: vec![],
+                    generics: vec![],
+                    parent: None,
+                },
+            )
+            .unwrap();
+        assert!(registry.is_exception_type("E"));
+        assert!(registry.is_exception_type("F"));
+        assert!(!registry.is_exception_type("FooError"));
+    }
+
+    #[test]
+    fn test_ensure_error_type_on_empty_registry() {
+        let registry = TypeRegistry::new("test");
+        assert!(registry.get_type("Error").is_none());
+        assert!(registry.resolve_type("Error").is_ok());
+        assert!(registry.get_type("Error").is_some());
     }
 
     #[test]
@@ -843,5 +1120,21 @@ mod tests {
 
         // 注意：int 到 float 的隐式转换被禁用以防止精度损失
         // 这需要显式类型转换
+    }
+
+    #[test]
+    fn duplicate_type_span_covers_name() {
+        let registry = TypeRegistry::root();
+        let err = registry
+            .define_type("Error", TypeRegistry::builtin_error_def())
+            .expect_err("Error is already registered");
+        match err {
+            TypeSystemError::Duplicate { name, existing, new } => {
+                assert_eq!(name, "Error");
+                assert_eq!(existing, TypeSystemError::span_for_name("Error"));
+                assert_eq!(new, TypeSystemError::span_for_name("Error"));
+            }
+            other => panic!("expected Duplicate, got {other:?}"),
+        }
     }
 }

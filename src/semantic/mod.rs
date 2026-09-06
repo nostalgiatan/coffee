@@ -2,7 +2,7 @@
 //!
 //! This module provides advanced semantic analysis capabilities including:
 //! - Scope management and variable visibility
-//! - Lifetime tracking and reference validation
+//! - LifetimeSpace (future `'a`; intra-procedural borrows are `types::borrow`)
 //! - Symbol declaration and resolution
 //! - Comprehensive semantic analysis coordination
 
@@ -12,7 +12,6 @@ pub mod scope;
 pub mod lifetime;
 pub mod symbols;
 pub mod analyzer;
-pub mod c_builtins;
 
 // Re-export main types for convenience
 

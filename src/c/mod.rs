@@ -16,9 +16,13 @@
 //! making it possible to use C libraries without having the original C header files available.
 
 pub mod parser;
+pub mod bundled;
 pub mod signature;
 pub mod generator;
 pub mod header_gen;
+pub mod dep_graph;
+pub mod diag;
 
-pub use signature::{CSymbol, CSymbolTable};
-pub use parser::{parse_cfc_file, CFCParseError};
+pub use signature::{CSymbol, CSymbolTable, CTypeDef};
+pub use parser::{parse_cfc_content, parse_cfc_file};
+pub use bundled::load_bundled_c_tables;

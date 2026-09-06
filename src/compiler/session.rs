@@ -30,7 +30,14 @@ impl Session {
     pub fn with_config(config: CompilerConfig) -> Self {
         let type_registry = Arc::new(RwLock::new(TypeRegistry::root()));
 
-        let analyzer = Arc::new(RwLock::new(SemanticAnalyzer::new(type_registry.clone())));
+        let c_imports = Arc::new(RwLock::new(Vec::new()));
+        let cfc_symbols = Arc::new(RwLock::new(c::load_bundled_c_tables()));
+
+        let analyzer = Arc::new(RwLock::new(SemanticAnalyzer::with_cfc_symbols(
+            type_registry.clone(),
+            Arc::clone(&cfc_symbols),
+            Arc::clone(&c_imports),
+        )));
         let type_checker = Arc::new(RwLock::new(
             crate::types::TypeChecker::with_analyzer(
                 type_registry.clone(),
@@ -46,20 +53,8 @@ impl Session {
             config,
             module_cache: Arc::new(RwLock::new(HashMap::new())),
             import_stack: Arc::new(RwLock::new(Vec::new())),
-            c_imports: Arc::new(RwLock::new(Vec::new())),
-            cfc_symbols: Arc::new(RwLock::new(HashMap::new())),
+            c_imports,
+            cfc_symbols,
         }
-    }
-
-    pub fn get_c_imports(&self) -> Vec<String> {
-        self.c_imports.read()
-            .map(|imports| imports.clone())
-            .unwrap_or_default()
-    }
-
-    pub fn get_cfc_symbols(&self) -> std::collections::HashMap<String, c::CSymbolTable> {
-        self.cfc_symbols.read()
-            .map(|symbols| symbols.clone())
-            .unwrap_or_default()
     }
 }

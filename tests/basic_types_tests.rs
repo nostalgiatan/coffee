@@ -675,6 +675,20 @@ fn main() => int:
 }
 
 #[test]
+fn test_array_index_binary_expr() {
+    let source = r#"
+fn main() => int:
+    let arr: [int; 3] = [1, 2, 3]
+    let i: int = 1
+    let x: int = arr[i + 1]
+    rm arr, i, x
+    return 0
+
+"#;
+    assert_compiles(source).unwrap();
+}
+
+#[test]
 fn test_nested_tuple() {
     let source = r#"
 fn main() => int:

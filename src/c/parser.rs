@@ -245,46 +245,74 @@ fn extract_library_name(path: &Path) -> String {
 /// assert!(table.contains("sqrt"));
 /// assert!(table.contains("sin"));
 /// ```
-fn parse_cfc_content(content: &str, library: &str) -> Result<CSymbolTable, CFCParseError> {
+pub fn parse_cfc_content(content: &str, library: &str) -> Result<CSymbolTable, CFCParseError> {
     let mut table = CSymbolTable::new(library.to_string());
+    let lines: Vec<&str> = content.lines().collect();
+    let mut i = 0;
 
-    // Split into lines and parse each function declaration
-    for (line_num, line) in content.lines().enumerate() {
-        let line = line.trim();
+    while i < lines.len() {
+        let line_num = i + 1;
+        let line = lines[i].trim();
 
-        // Skip empty lines and comments
-        if line.is_empty() || line.starts_with("//") {
+        if line.is_empty() || line.starts_with("/#/") {
+            i += 1;
             continue;
         }
 
-        // Try to parse as a function
+        if line.starts_with("//") {
+            apply_cfc_meta_comment(&mut table, library, line);
+            i += 1;
+            continue;
+        }
+
+        if line.starts_with("type ") {
+            match parse_type_line(line) {
+                Ok(type_def) => {
+                    table.type_defs.insert(type_def.name().to_string(), type_def);
+                }
+                Err(msg) => {
+                    return Err(CFCParseError::ParseError(format!("line {}: {}", line_num, msg)));
+                }
+            }
+            i += 1;
+            continue;
+        }
+
+        if line.starts_with("c class ") || line.starts_with("c union ") || line.starts_with("c enum ") {
+            match parse_c_record(&lines, i) {
+                Ok((type_def, n)) => {
+                    table.type_defs.insert(type_def.name().to_string(), type_def);
+                    i += n;
+                }
+                Err(msg) => {
+                    return Err(CFCParseError::ParseError(format!("line {}: {}", line_num, msg)));
+                }
+            }
+            continue;
+        }
+
         match parse_function(line) {
             Ok((_, func)) => {
-                // Must be a C function (c fn)
                 if !func.is_c {
                     return Err(CFCParseError::NotCFunction(func.name.clone()));
                 }
-
-                // Must have a body (we'll use empty body for declarations)
                 if func.body != FunctionBody::External {
                     return Err(CFCParseError::ParseError(format!(
                         "line {}: function '{}' should not have a body in .cfc file",
-                        line_num + 1,
+                        line_num,
                         func.name
                     )));
                 }
-
-                let symbol = CSymbol::from_function(&func);
-                table.add(symbol);
+                table.add(CSymbol::from_function(&func));
             }
             Err(_) => {
                 return Err(CFCParseError::ParseError(format!(
                     "line {}: failed to parse '{}'",
-                    line_num + 1,
-                    line
+                    line_num, line
                 )));
             }
         }
+        i += 1;
     }
 
     if table.is_empty() {
@@ -292,6 +320,207 @@ fn parse_cfc_content(content: &str, library: &str) -> Result<CSymbolTable, CFCPa
     }
 
     Ok(table)
+}
+
+/// Parse `// coffee-cfc` / `// module:` / `// linker:` / `// headers:` / `// needs:` into `table`.
+/// Unknown `// coffee-cfc` keys are ignored. `library` stays the map key unless it is empty.
+fn apply_cfc_meta_comment(table: &mut CSymbolTable, library_arg: &str, line: &str) {
+    let body = if let Some(rest) = line.strip_prefix("// coffee-cfc ") {
+        let rest = rest.trim();
+        if rest.is_empty() || rest.chars().all(|c| c.is_ascii_digit()) {
+            return;
+        }
+        if rest.contains(':') {
+            rest
+        } else {
+            return;
+        }
+    } else if let Some(rest) = line.strip_prefix("// coffee-cfc") {
+        let rest = rest.trim();
+        if rest.is_empty() || rest.chars().all(|c| c.is_ascii_digit()) {
+            return;
+        }
+        if rest.contains(':') {
+            rest
+        } else {
+            return;
+        }
+    } else if let Some(rest) = line.strip_prefix("//") {
+        rest.trim()
+    } else {
+        return;
+    };
+
+    if let Some(v) = body.strip_prefix("module:") {
+        let name = v.trim();
+        if !name.is_empty() && library_arg.is_empty() {
+            table.library = name.to_string();
+        }
+        return;
+    }
+    if let Some(v) = body.strip_prefix("linker:") {
+        let name = v.trim();
+        if !name.is_empty() {
+            table.linker = name.to_string();
+        }
+        return;
+    }
+    if let Some(v) = body.strip_prefix("headers:") {
+        table.owned_headers = v.split_whitespace().map(|s| s.to_string()).collect();
+        return;
+    }
+    if let Some(v) = body.strip_prefix("needs:") {
+        table.needs = v.split_whitespace().map(|s| s.to_string()).collect();
+        return;
+    }
+    // Unknown keys (including extra `// coffee-cfc` keys): ignore.
+}
+
+fn parse_c_record(lines: &[&str], start: usize) -> Result<(crate::c::CTypeDef, usize), String> {
+    let header = lines[start].trim();
+    let (kind, rest) = if let Some(r) = header.strip_prefix("c class ") {
+        ("class", r)
+    } else if let Some(r) = header.strip_prefix("c union ") {
+        ("union", r)
+    } else if let Some(r) = header.strip_prefix("c enum ") {
+        ("enum", r)
+    } else {
+        return Err("expected c class, c union, or c enum".to_string());
+    };
+    let rest = rest.trim().trim_end_matches(':').trim();
+    let (name, size, align) = parse_record_header_name(rest)?;
+    if name.is_empty() {
+        return Err("missing type name".to_string());
+    }
+
+    let mut i = start + 1;
+    let mut fields: Vec<(String, String)> = Vec::new();
+    let mut variants: Vec<(String, i64)> = Vec::new();
+    while i < lines.len() {
+        let raw = lines[i];
+        if raw.trim().is_empty() || raw.trim().starts_with("//") || raw.trim().starts_with("/#/") {
+            i += 1;
+            continue;
+        }
+        let indent = raw.len() - raw.trim_start().len();
+        if indent == 0 {
+            break;
+        }
+        let body = raw.trim();
+        if kind == "enum" {
+            variants.push(parse_enum_variant_line(body)?);
+        } else {
+            fields.push(parse_field_line(body)?);
+        }
+        i += 1;
+    }
+    let n = i - start;
+    let def = match kind {
+        "class" => crate::c::CTypeDef::Class {
+            name,
+            fields,
+            size,
+            align,
+        },
+        "union" => crate::c::CTypeDef::Union {
+            name,
+            fields,
+            size,
+            align,
+        },
+        _ => crate::c::CTypeDef::Enum { name, variants },
+    };
+    Ok((def, n))
+}
+
+fn parse_record_header_name(rest: &str) -> Result<(String, u64, u64), String> {
+    let mut parts = rest.split_whitespace();
+    let name = parts.next().unwrap_or("").to_string();
+    let mut size = 0u64;
+    let mut align = 0u64;
+    for p in parts {
+        if let Some(v) = p.strip_prefix("sizeof=") {
+            size = v.parse().map_err(|_| format!("bad sizeof in '{rest}'"))?;
+        } else if let Some(v) = p.strip_prefix("align=") {
+            align = v.parse().map_err(|_| format!("bad align in '{rest}'"))?;
+        }
+    }
+    Ok((name, size, align))
+}
+
+fn parse_field_line(line: &str) -> Result<(String, String), String> {
+    let (name, ty) = line
+        .split_once(':')
+        .ok_or_else(|| format!("expected 'name: type', got '{line}'"))?;
+    let name = name.trim();
+    let ty = ty.trim();
+    if name.is_empty() || ty.is_empty() {
+        return Err(format!("empty field in '{line}'"));
+    }
+    Ok((name.to_string(), ty.to_string()))
+}
+
+fn parse_enum_variant_line(line: &str) -> Result<(String, i64), String> {
+    if let Some((name, val)) = line.split_once('=') {
+        let name = name.trim();
+        let val = val
+            .trim()
+            .parse::<i64>()
+            .map_err(|_| format!("bad enum value in '{line}'"))?;
+        if name.is_empty() {
+            return Err(format!("empty enum name in '{line}'"));
+        }
+        Ok((name.to_string(), val))
+    } else {
+        let name = line.trim();
+        if name.is_empty() {
+            return Err("empty enum variant".to_string());
+        }
+        Ok((name.to_string(), 0))
+    }
+}
+
+/// Parse `type NAME: object` from a single trimmed line.
+fn parse_type_line(line: &str) -> Result<crate::c::CTypeDef, String> {
+    let rest = line
+        .strip_prefix("type ")
+        .ok_or_else(|| "expected line to start with 'type '".to_string())?
+        .trim();
+
+    let colon = rest
+        .find(':')
+        .ok_or_else(|| "expected ':' after type name".to_string())?;
+
+    let name = rest[..colon].trim();
+    if name.is_empty() {
+        return Err("type name must not be empty".to_string());
+    }
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(format!("invalid type name '{}'", name));
+    }
+
+    let after_colon = rest[colon + 1..].trim();
+    let source = after_colon
+        .split_whitespace()
+        .next()
+        .ok_or_else(|| "expected source type after ':'".to_string())?;
+
+    if source != "object" {
+        return Err(format!(
+            "unsupported type source '{}'; only 'object' is supported",
+            source
+        ));
+    }
+
+    let trailing = after_colon[source.len()..].trim();
+    if !trailing.is_empty() {
+        return Err(format!("unexpected trailing input '{}'", trailing));
+    }
+
+    Ok(crate::c::CTypeDef::Newtype {
+        name: name.to_string(),
+        source: source.to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -365,5 +594,110 @@ c fn printf(fmt: string, args: object) => int(4):
 
         let symbol = table.get("printf").unwrap();
         assert!(symbol.is_variadic);
+        assert_eq!(symbol.parameters.len(), 1);
+        assert_eq!(symbol.parameters[0].param_type, "string");
+    }
+
+    #[test]
+    fn object_params_are_pointers_not_varargs() {
+        let content = r#"
+c fn write(fd: int, buf: object, count: int) => int(4)+:
+"#;
+        let table = parse_cfc_content(content, "libc").unwrap();
+        let write = table.get("write").unwrap();
+        assert!(!write.is_variadic);
+        assert_eq!(write.parameters.len(), 3);
+        assert_eq!(write.parameters[1].param_type, "object");
+        assert!(!write.parameters[1].is_variadic);
+    }
+
+    #[test]
+    fn parse_type_line_and_fopen_return_file() {
+        use crate::c::CTypeDef;
+
+        let content = "type FILE: object\nc fn fopen(filename: string, mode: string) => FILE:\n";
+        let table = parse_cfc_content(content, "libc").unwrap();
+
+        let file_def = table.type_defs.get("FILE").expect("FILE type def");
+        assert_eq!(
+            file_def,
+            &CTypeDef::Newtype {
+                name: "FILE".to_string(),
+                source: "object".to_string(),
+            }
+        );
+
+        let fopen = table.get("fopen").expect("fopen symbol");
+        assert_eq!(fopen.return_type, "FILE");
+    }
+
+    #[test]
+    fn parse_type_only_is_not_empty_file() {
+        let content = "type FILE: object\n";
+        let table = parse_cfc_content(content, "test").unwrap();
+        assert!(table.type_defs.contains_key("FILE"));
+        assert!(table.symbols.is_empty());
+        assert!(!table.is_empty());
+    }
+
+    #[test]
+    fn reject_type_with_non_object_source() {
+        let content = "type FILE: int\nc fn f() => void:\n";
+        let err = parse_cfc_content(content, "test").unwrap_err();
+        assert!(matches!(err, CFCParseError::ParseError(_)));
+    }
+
+    #[test]
+    fn skip_hash_comment_lines() {
+        use crate::c::CTypeDef;
+
+        let content = "/#/ header comment\ntype FILE: object\n/#/ another\nc fn f() => void:\n";
+        let table = parse_cfc_content(content, "test").unwrap();
+        assert_eq!(
+            table.type_defs.get("FILE"),
+            Some(&CTypeDef::Newtype {
+                name: "FILE".to_string(),
+                source: "object".to_string(),
+            })
+        );
+        assert!(table.contains("f"));
+    }
+
+    #[test]
+    fn parse_c_class_union_enum() {
+        use crate::c::CTypeDef;
+        let content = r#"
+c class Point sizeof=8 align=4:
+    x: int(4)+
+    y: int(4)+
+c union Num sizeof=4 align=4:
+    i: int(4)+
+    f: float(4)
+c enum Color:
+    Red = 1
+    Green = 2
+c fn orig(p: Point) => Point:
+"#;
+        let table = parse_cfc_content(content, "t").unwrap();
+        match table.type_defs.get("Point").unwrap() {
+            CTypeDef::Class { fields, size, align, .. } => {
+                assert_eq!(fields, &[("x".into(), "int(4)+".into()), ("y".into(), "int(4)+".into())]);
+                assert_eq!((*size, *align), (8, 4));
+            }
+            other => panic!("{other:?}"),
+        }
+        match table.type_defs.get("Num").unwrap() {
+            CTypeDef::Union { fields, .. } => {
+                assert_eq!(fields.len(), 2);
+            }
+            other => panic!("{other:?}"),
+        }
+        match table.type_defs.get("Color").unwrap() {
+            CTypeDef::Enum { variants, .. } => {
+                assert_eq!(variants, &[("Red".into(), 1), ("Green".into(), 2)]);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(table.get("orig").unwrap().parameters[0].param_type, "Point");
     }
 }

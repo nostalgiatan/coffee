@@ -9,6 +9,7 @@
 ```
 src/parser/
 ├── mod.rs           # 主解析器模块和协调
+├── ty.rs            # 统一类型子串扫描（`List<List<int>>`、`type_params`）
 ├── import.rs        # 导入语句解析
 ├── function.rs      # 函数定义解析
 ├── main.rs          # 主入口点解析
@@ -18,9 +19,11 @@ src/parser/
 ├── for.rs           # for 循环解析
 ├── var.rs           # 变量声明和控制流解析
 ├── comment.rs       # 注释解析
-├── class.rs         # 类和枚举定义解析
+├── class/           # 类和枚举定义解析
 ├── memory.rs        # 内存操作解析
-├── expr.rs          # 表达式解析
+├── expr/            # 表达式 AST 与解析（不是 expr.rs）
+├── program.rs       # `Program { statements, stmt_spans }` 与 `parse_program`
+├── stmt.rs          # `Statement` 枚举
 ├── error.rs         # 错误类型和处理
 ├── tracker.rs       # 块跟踪（用于缩进）
 ├── indent.rs        # 缩进处理
@@ -37,7 +40,7 @@ src/parser/
 
 **`parse_program(input: &str) -> Result<Program, Vec<ParseError>>`**
 
-将整个 Coffee 源文件解析为 AST。该函数逐行处理输入，根据结构和内容识别每条语句的适当解析策略。
+将整个 Coffee 源文件解析为 `Program`：`statements` 加上 `stmt_spans`（本文件内半开字节区间）。`(0,0)` 只用于 `Program::new` / 测试里合成的程序。该函数逐行处理输入，根据结构和内容识别每条语句的适当解析策略。
 
 **解析策略：**
 1. 跳过空行和整行注释
@@ -140,11 +143,13 @@ pub enum Statement {
 
 **函数类型：**
 - 普通 Coffee 函数：`fn name(params) => return_type:`
+- 泛型函数：`fn id<T>(x: T) => T:`（解析 `type_params`）
 - C ABI 函数：`c fn name(params) => return_type:`
-- 带错误处理器的函数：`fn name(params) #error_handler => return_type:`
+- 带错误监听器的函数：`fn f(params) #name => R:`（`#name` 命名已有 `fn name(err: Error) => R`；无调用栈穿透；`name` 里的 `raise` 仍中止）
 
 **组件：**
 - 函数名
+- 可选类型参数 `type_params`（`<T, U>`；空 `<>` 是解析错误）
 - 参数（名称、类型、默认值）
 - 返回类型
 - 函数体（语句）
@@ -156,6 +161,7 @@ pub enum Statement {
 
 **类类型：**
 - 普通类：`class ClassName:`
+- 泛型类：`class List<T>:`（`type_params`）
 - 紧凑类：`packed class ClassName:`（字段间无填充）
 - 枚举：`enum EnumName:`
 
@@ -218,15 +224,19 @@ match value:
 
 **操作：**
 - `mv source target` - 移动所有权
-- `clone source target` - 创建副本
-- `copy source target` - 共享引用
-- `rm variable` - 删除变量
-- `rm var1, var2, var3` - 批量删除
-- `clean out` - 清理所有变量
-- `clean out except var1, var2` - 除指定变量外清理
-- `clean out var1, var2` - 清理指定变量
+- `clone source target` - 深拷贝（嵌套 `str` / class / 资源数组 / 元组；`object` / 引用 / 切片字段浅拷贝）
+- `copy source target` - 可解析；类型检查拒绝
+- `rm variable` - 提前释放
+- `rm var1, var2, var3` - 批量提前释放
+- `clean out` / `clean out except …` — 可解析；类型检查拒绝
 
-### 9. 表达式解析（`expr.rs`）
+Last-use 隐式搬走不是解析语法，由 `src/types/last_use.rs` 把 `let b = a` / 实参 / `return` 当成 `mv`。
+
+### 8b. 类型（`ty.rs`）
+
+`parse_type` 是唯一的类型字符串扫描器。嵌套应用是一个类型（`List<List<int>>`）。`class List<T>:` 和 `fn id<T>(x: T) => T` 用 `parse_type_params`。
+
+### 9. 表达式解析（`expr/`）
 
 解析各种表达式类型：
 
@@ -240,6 +250,8 @@ match value:
 - 数组索引（`array[index]`）
 - 格式化字符串（`f"Hello {name}!"`）
 - 元组（`(value1, value2, value3)`）
+
+类型注解（参数、返回值、`let`、字段、方法）走 `src/parser/ty.rs`。嵌套 `List<List<int>>` 是一个完整类型字符串，不会在第一个 `>` 处截断。
 
 ### 10. 错误处理（`error.rs`）
 
@@ -268,10 +280,13 @@ pub enum ParseError {
 
 ### 12. Raise 语句（`raise.rs`）
 
-解析异常抛出：
+解析异常抛出（此处只管语法；能否 `raise` 由类型检查决定）：
 ```coffee
-raise ErrorType(arguments)
+raise DivisionByZero(...)
+raise DivisionByZero { code: 1, note: "...", e: (), extra: 0 }
 ```
+
+可 `raise` 的是内建 `Error` 以及 `of Error` 的类（及其后代）。这些类可以有额外字段和方法。类名以 `Error` 结尾不够。`#name` 监听器规则不变（`fn name(err: Error) => R`）。
 
 ## 解析算法
 

@@ -112,3 +112,34 @@ fn parse_error_kinds_are_distinguishable() {
     assert!(!comment_err.stderr.contains("E002"), "comment must not look like UnexpectedToken: {}", comment_err.stderr);
     assert!(!colon_err.stderr.contains("E002"), "colon must not look like UnexpectedToken: {}", colon_err.stderr);
 }
+
+#[test]
+fn python_import_suggests_use() {
+    let source = r#"
+import math
+fn main() => int:
+    return 0
+"#;
+    assert_compile_error(source, "use").unwrap();
+}
+
+#[test]
+fn try_keyword_suggests_raise() {
+    let source = r#"
+fn main() => int:
+    try:
+        return 0
+"#;
+    assert_compile_error(source, "raise").unwrap();
+}
+
+#[test]
+fn c_style_if_brace_is_rejected_with_indent_help() {
+    let source = r#"
+fn main() => int:
+    if true {
+        return 1
+    return 0
+"#;
+    assert_compile_error(source, "indent").unwrap();
+}

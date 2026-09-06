@@ -8,52 +8,66 @@ The Type System module (`src/types/`) provides comprehensive type checking, type
 
 ```
 src/types/
-├── mod.rs         # Main type system module
-├── definition.rs  # Type definitions
-├── registry.rs    # Type registry and management
-├── checker.rs     # Type checker
-├── inference.rs   # Type inference engine
-└── errors.rs      # Type system errors
+├── mod.rs           # Type system module
+├── definition/      # Type definitions (not definition.rs)
+│   ├── mod.rs
+│   └── tests.rs
+├── registry.rs      # Type registry
+├── mono.rs          # Generics v1: token substitute → List__int
+├── checker/         # TypeChecker (not checker.rs)
+│   ├── mod.rs
+│   ├── values.rs
+│   ├── stmt.rs
+│   ├── expr/        # expression checking (not a single expr.rs)
+│   ├── call.rs
+│   ├── match_check.rs
+│   ├── memory.rs
+│   ├── import_main.rs
+│   ├── compat.rs
+│   └── tests.rs
+├── borrow.rs        # Intra-procedural borrow checker
+├── last_use.rs      # Last-use implicit move
+└── errors.rs        # Type system errors
 ```
 
 ## Core Components
 
-### 1. Type Definitions (`definition.rs`)
+### 1. Type Definitions (`definition/`)
 
 Defines all types in the Coffee language.
+
+Surface syntax `int(N)+` / `int(N)-` / `float(N)` uses **N as a byte count** (`int(4)+` is C `int`). The enum stores **bit width**: `bits = 8 * N`.
 
 **Built-in Types:**
 ```rust
 pub enum Type {
-    // Primitive types
-    Int { signed: bool, bytes: usize },
-    Float { bytes: usize },
+    Int { bits: u8, signed: bool },
+    Float { bits: u8 },
     Bool,
     String,
     Void,
-
-    // Composite types
-    Array(Box<Type>, Option<usize>),      // [T; N] or [T]
-    Slice(Box<Type>),                      // [T]
-    Tuple(Vec<Type>),                      // (T1, T2, ...)
-    Function(Vec<Type>, Box<Type>),        // fn(params) -> return
-    Reference(Box<Type>, bool),            // &T or &mut T
-
-    // User-defined types
-    Struct(String, Vec<(String, Type)>),
-    Enum(String, Vec<EnumVariant>),
-    Class(String),
-
-    // Type variables (for generics)
-    TypeVar(String),
+    Unit,
+    Array { elem: Box<Type>, size: usize },
+    Slice(Box<Type>),
+    Tuple(Vec<Type>),
+    Function { params: Vec<Type>, return_type: Box<Type> },
+    Ref { elem: Box<Type>, mutable: bool },
+    NamedType { name: String },
+    App { name: String, args: Vec<Type> },  // List<int>
+    Variadic,
 }
 ```
 
 **Type Properties:**
 - Size and alignment information
-- Method dispatch capabilities
-- Trait implementations
+- Method dispatch on concrete (monomorphized) names
 - Subtype relationships
+
+**Generics v1 (`mono.rs`):** `Type::App` instantiates by substituting type-param tokens. `List<int>` becomes the concrete class `List__int`; methods are `List__int_push`. Syntax: `class List<T>:` / `fn id<T>(x: T) => T`. Nested `List<List<int>>` is one type. There is no generic std `List` (std ships `IntBuf`) and no trait bounds (`T: Trait` is not a feature).
+
+**`buf`:** builtin resource (`NamedType "buf"`): owned malloc pointer; drop `free`s it; `clone buf` is a type error. `object` is an unfreed C handle.
+
+**Slices:** Coffee `[T]` is a fat pointer on Coffee `fn` params/returns. `c fn` still rejects slices. Last-use implicit move: `src/types/last_use.rs`.
 
 ### 2. Type Registry (`registry.rs`)
 
@@ -79,21 +93,23 @@ impl TypeRegistry {
 ```
 
 **Built-in Types:**
-- `int(8)+` (i64), `int(4)+` (i32), `int(2)+` (i16), `int(1)+` (i8)
+- `int(8)+` (i64, 8 bytes), `int(4)+` (i32, 4 bytes), `int(2)+` (i16), `int(1)+` (i8)
 - `int(8)-` (u64), `int(4)-` (u32), `int(2)-` (u16), `int(1)-` (u8)
 - `float(8)` (f64), `float(4)` (f32)
 - `bool`, `string`, `void`
+- Builtin class `Error` `{ code: int, note: str, e: object }` (not user-redefinable)
 
-### 3. Type Checker (`checker.rs`)
+**Exceptions (`raise`):** Allowed iff the type is `Error` or a class whose inheritance chain reaches `Error` (`class C of Error`, then further subclasses). Extra fields and methods on exception classes are allowed (do not redeclare `code` / `note` / `e`). A class named `*Error` without `of Error` is a normal class and cannot be raised. `#name` listeners still take `err: Error` and may only rely on that prefix.
+
+### 3. Type Checker (`checker/`)
 
 Validates type correctness across the program.
 
 **Checking Modes:**
 ```rust
 pub enum CheckingMode {
-    Strict,        // Require explicit type annotations
-    Inference,     // Infer types where possible
-    Comprehensive, // Full type checking with inference
+    Simple,        // Structural types only
+    Comprehensive, // Ownership, memory ops, borrow checker
 }
 ```
 
@@ -118,35 +134,15 @@ impl TypeChecker {
 
 **Type Compatibility Rules:**
 - Exact match for most types
-- Numeric type promotion (int to float, smaller int to larger int)
-- Reference compatibility
-- Subtype polymorphism
+- Integer/float *literals* may fit a narrower annotated width if the value is in range
+- `object` C handles vs pointer-sized ints as documented in the type checker
+- `&T` / `&mut T` follow the borrow checker (shared XOR exclusive)
 
-### 4. Type Inference (`inference.rs`)
+### 3b. Borrow checker (`borrow.rs`)
 
-Infers types for expressions without explicit annotations.
+Intra-procedural loans on **variable, field (`p.x`), and index (`a[i]`) places**. Wired from `TypeChecker` (`&x`, `&mut x`, `*r`, move/assign/rm, returning `&local`). A call whose callee returns `&T` may keep argument loans past the statement (same module; no `'a`). See `docs/superpowers/specs/2026-09-05-borrow-checker.md`.
 
-**Inference Algorithm (Hindley-Milner variant):**
-1. Generate type variables for unannotated expressions
-2. Generate constraints from expression structure
-3. Unify constraints to solve for type variables
-4. Substitute type variables with concrete types
-
-**Inference Examples:**
-```rust
-// Infers: int
-let x = 42;
-
-// Infers: float
-let y = 3.14;
-
-// Infers: int (from function signature)
-fn add(a: int, b: int) => int:
-    return a + b  // a + b inferred as int
-
-// Infers: [int]
-let arr = [1, 2, 3];
-```
+Expression types are inferred and checked in `checker/`, not a separate `inference.rs` module.
 
 ### 5. Type System Errors (`errors.rs`)
 
@@ -232,7 +228,7 @@ let mut checker = TypeChecker::new(type_registry.clone(), CheckingMode::Comprehe
 // Check variable declaration
 let decl = VariableDecl {
     name: "x".to_string(),
-    type_: Type::Int { signed: true, bytes: 4 },
+    type_: Type::Int { bits: 32, signed: true },
     init: Some(Box::new(Expr::Literal(Literal::Int(42)))),
 };
 checker.check_variable_decl(&decl)?;
@@ -260,13 +256,12 @@ let result_type = checker.check_expression(&expr)?;
 
 ### 3. Extensibility
 - Easy to add new types
-- Trait system support (future)
-- Generic type parameters (future)
+- Generics v1 (`Type::App` / `mono.rs`); no `T: Trait`
+- Trait system (not shipping)
 
 ## Future Enhancements
 
-- Generic types and type parameters
-- Trait system
+- Trait bounds and a generic std `List` (std has `IntBuf`, not `List<T>`)
 - Associated types
 - Type-level programming
 - Dependent types

@@ -26,7 +26,6 @@ pub enum Severity {
     Error,   // Prevents compilation
     Warning, // Does not prevent compilation but should be addressed
     Hint,    // Suggestion for improvement
-    Note,    // Additional information
 }
 ```
 
@@ -34,7 +33,6 @@ pub enum Severity {
 - `Error`: Red (`\x1b[31m`)
 - `Warning`: Yellow (`\x1b[33m`)
 - `Hint`: Cyan (`\x1b[36m`)
-- `Note`: Gray (`\x1b[90m`)
 
 ### 2. Source Location (`SourceLocation`)
 

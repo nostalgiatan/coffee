@@ -5,9 +5,9 @@
 
 mod literal;
 mod binary;
+mod logic;
 mod call;
 mod member;
-mod index;
 
 use crate::backend::codegen::CodeGenerator;
 use inkwell::types::BasicTypeEnum;
@@ -137,6 +137,10 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             return Ok(converted.into());
         }
 
+        if let (BasicValueEnum::PointerValue(ptr_val), BasicTypeEnum::PointerType(_)) = (value, target_type) {
+            return Ok(ptr_val.into());
+        }
+
         // Type mismatch error with helpful information
         let value_type_str = self.type_to_string(value_type);
         let target_type_str = self.type_to_string(target_type);
@@ -146,50 +150,10 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 value_type_str, target_type_str)))
     }
 
-    /// Convert LLVM type to human-readable string
+    /// Convert LLVM type to human-readable Coffee spelling.
+    /// Unknown LLVM kinds (vector / scalable vector) are not `int`.
     pub fn type_to_string(&self, type_: BasicTypeEnum<'ctx>) -> String {
-        match type_ {
-            BasicTypeEnum::IntType(t) => {
-                let width = t.get_bit_width();
-                match width {
-                    1 => "i1".to_string(),  // LLVM native bool (not used by Coffee)
-                    8 => "int(1)".to_string(),  // Coffee bool/int(1) = i8
-                    16 => "int(2)".to_string(),
-                    32 => "int(4)".to_string(),
-                    64 => "int(8)".to_string(),
-                    128 => "int(16)".to_string(),
-                    _ => format!("int({})", width / 8),
-                }
-            }
-            BasicTypeEnum::FloatType(t) => {
-                let width = t.get_bit_width();
-                match width {
-                    32 => "float(4)".to_string(),
-                    64 => "float(8)".to_string(),
-                    _ => format!("float({})", width / 8),
-                }
-            }
-            BasicTypeEnum::PointerType(_) => {
-                format!("ptr")
-            }
-            BasicTypeEnum::ArrayType(t) => {
-                let len = t.len();
-                let element_type = t.get_element_type();
-                format!("[{}; {}]", self.type_to_string(element_type), len)
-            }
-            BasicTypeEnum::StructType(t) => {
-                if t.is_packed() {
-                    format!("packed struct")
-                } else {
-                    format!("struct")
-                }
-            }
-            BasicTypeEnum::VectorType(t) => {
-                // Vector type has num_elements field
-                format!("[{}]", self.type_to_string(t.get_element_type()))
-            }
-            _ => "unknown".to_string(),
-        }
+        crate::backend::types::llvm_basic_to_coffee(type_).unwrap_or_else(|e| e)
     }
 
     /// Check if two types are compatible for implicit conversion
@@ -209,6 +173,11 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
 
             // Float to integer: compatible
             (BasicTypeEnum::FloatType(_), BasicTypeEnum::IntType(_)) => true,
+
+            // C `object` / `str` / `buf`: opaque ptr, and int handles via inttoptr/ptrtoint
+            (BasicTypeEnum::PointerType(_), BasicTypeEnum::PointerType(_)) => true,
+            (BasicTypeEnum::PointerType(_), BasicTypeEnum::IntType(_)) => true,
+            (BasicTypeEnum::IntType(_), BasicTypeEnum::PointerType(_)) => true,
 
             // All other combinations are incompatible
             _ => false,

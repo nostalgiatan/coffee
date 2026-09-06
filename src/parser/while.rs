@@ -47,11 +47,17 @@ pub struct WhileLoop {
 /// 
 /// * `Ok((remaining, WhileLoop))` - Successfully parsed while loop and remaining input
 /// * `Err(nom::Err)` - If the input does not match the while loop pattern
+#[cfg(test)]
 pub fn parse_while(input: &str) -> IResult<&str, WhileLoop> {
+    parse_while_at(input, 0)
+}
+
+pub fn parse_while_at(input: &str, base: usize) -> IResult<&str, WhileLoop> {
+    let src = input;
     let (input, _) = tag("while")(input)?;
     let (input, _) = space1(input)?;
-    let (input, condition_raw) = take_until_colon(input)?;
-    let condition = parse_expr_from_slice(condition_raw)?;
+    let (input, condition_raw) = super::take_until_header_colon(input)?;
+    let condition = super::multiline::parse_expr_at(src, base, condition_raw)?;
     let (input, _) = char(':')(input)?;
     let (input, _) = space0(input)?;
 
@@ -65,44 +71,6 @@ pub fn parse_while(input: &str) -> IResult<&str, WhileLoop> {
             body,
         },
     ))
-}
-
-fn parse_expr_from_slice(raw: &str) -> Result<Expression, nom::Err<nom::error::Error<&str>>> {
-    crate::parser::expr::parse_expression(raw.trim()).map_err(|_| {
-        nom::Err::Error(nom::error::Error {
-            input: raw,
-            code: nom::error::ErrorKind::Fail,
-        })
-    })
-}
-
-/// Take characters from input until a colon is encountered
-/// 
-/// This utility function scans the input string until it finds a colon character,
-/// returning the text before the colon as the parsed content and the colon and
-/// everything after as the remaining input.
-/// 
-/// This function is used to parse the condition part of while loops and other
-/// control flow statements that have the format `keyword condition:`.
-/// 
-/// # Arguments
-/// 
-/// * `input` - The input string to scan for a colon
-/// 
-/// # Returns
-/// 
-/// * `Ok((remaining, content))` - The part after the colon and the part before the colon
-/// * `Err(nom::Err)` - If no colon is found in the input
-fn take_until_colon(input: &str) -> IResult<&str, &str> {
-    for (i, c) in input.char_indices() {
-        if c == ':' {
-            return Ok((&input[i..], &input[..i]));
-        }
-    }
-    Err(nom::Err::Error(nom::error::Error {
-        input,
-        code: nom::error::ErrorKind::TakeUntil,
-    }))
 }
 
 /// Parse an indented block of statements
@@ -132,10 +100,16 @@ fn parse_statement_block(input: &str) -> IResult<&str, Vec<Statement>> {
         if line.is_empty() {
             return Ok((input, Vec::new()));
         }
-        if let Some(stmt) = super::parse_single_line_statement(line) {
+        if let Some(stmt) = super::line::parse_single_line_statement_at(
+            line,
+            super::multiline::slice_base(line, 0),
+        ) {
             return Ok((input, vec![stmt]));
         } else {
-            return Ok((input, Vec::new()));
+            return Err(nom::Err::Error(nom::error::Error {
+                input: line,
+                code: nom::error::ErrorKind::Fail,
+            }));
         }
     }
 
@@ -149,10 +123,16 @@ fn parse_statement_block(input: &str) -> IResult<&str, Vec<Statement>> {
         if line.is_empty() {
             return Ok((input, Vec::new()));
         }
-        if let Some(stmt) = super::parse_single_line_statement(line) {
+        if let Some(stmt) = super::line::parse_single_line_statement_at(
+            line,
+            super::multiline::slice_base(line, 0),
+        ) {
             return Ok((input, vec![stmt]));
         } else {
-            return Ok((input, Vec::new()));
+            return Err(nom::Err::Error(nom::error::Error {
+                input: line,
+                code: nom::error::ErrorKind::Fail,
+            }));
         }
     }
 
@@ -198,14 +178,23 @@ fn parse_statement_block(input: &str) -> IResult<&str, Vec<Statement>> {
         }
 
         // Try multiline statement first (for if, while, for, match)
-        if let Some((stmt, lines_consumed)) = super::parse_multiline_statement(&body_lines_vec[i..]) {
+        if let Some((stmt, lines_consumed)) = super::multiline::parse_multiline_statement_at(
+            &body_lines_vec[i..],
+            super::multiline::slice_base(body_lines_vec[i], 0),
+        ) {
             statements.push(stmt);
             i += lines_consumed;
-        } else if let Some(stmt) = super::parse_single_line_statement(line) {
+        } else if let Some(stmt) = super::line::parse_single_line_statement_at(
+            line,
+            super::multiline::slice_base(line, 0),
+        ) {
             statements.push(stmt);
             i += 1;
         } else {
-            i += 1;
+            return Err(nom::Err::Error(nom::error::Error {
+                input: line,
+                code: nom::error::ErrorKind::Fail,
+            }));
         }
     }
 
@@ -255,5 +244,34 @@ fn take_until_newline(input: &str) -> IResult<&str, &str> {
         Ok((&input[pos..], &input[..pos]))
     } else {
         Ok(("", input))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn while_body_allows_self_field_assignment() {
+        let src = "while i < times:\n    self.value = self.value + n\n    i = i + 1\n";
+        let (_, loop_) = parse_while(src).unwrap_or_else(|e| panic!("parse_while: {:?}", e));
+        assert_eq!(loop_.body.len(), 2);
+    }
+
+    #[test]
+    fn while_condition_keeps_double_colon_path() {
+        let (rest, before) =
+            crate::parser::take_until_header_colon("Foo::ok:").expect("header colon");
+        assert_eq!(before, "Foo::ok");
+        assert_eq!(rest, ":");
+
+        let src = "while Foo::ok():\n    return 0\n";
+        let (_, loop_) = parse_while(src).expect("parse");
+        let s = format!("{:?}", loop_.condition);
+        assert!(
+            s.contains("Foo") && s.contains("ok"),
+            "condition truncated: {:?}",
+            loop_.condition
+        );
     }
 }

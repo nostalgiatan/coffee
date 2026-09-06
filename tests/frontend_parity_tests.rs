@@ -73,6 +73,36 @@ fn test_single_and_project_emit_llvm_both_succeed() {
 }
 
 #[test]
+fn test_member_then_rm_compiles_from_mir() {
+    let source = r#"
+class Point:
+    x: int
+
+fn main() => int:
+    let p: Point = Point { x: 1 }
+    let n: int = p.x
+    rm p
+    return n
+"#;
+    let r = compile_coffee(source, &["--emit-llvm"]).unwrap();
+    assert_eq!(
+        r.exit_code, 0,
+        "valid Member-then-rm must compile from complete MIR: {}",
+        r.stderr
+    );
+    assert!(
+        !r.stderr.contains("failed to lower") && !r.stderr.contains("compiling from AST"),
+        "must not fall back to AST or fail MIR lower:\n{}",
+        r.stderr
+    );
+    assert!(
+        !r.stderr.lines().any(|l| l.starts_with("DEBUG:")),
+        "stderr must not have DEBUG: coffee_debug lines:\n{}",
+        r.stderr
+    );
+}
+
+#[test]
 fn test_default_compile_stderr_has_no_debug_prefix() {
     let r = compile_coffee(tiny_program(), &["--emit-llvm"]).unwrap();
     assert_eq!(r.exit_code, 0, "{}", r.stderr);
@@ -80,5 +110,19 @@ fn test_default_compile_stderr_has_no_debug_prefix() {
         !r.stderr.lines().any(|l| l.starts_with("DEBUG:")),
         "stderr still has DEBUG lines:\n{}",
         r.stderr
+    );
+}
+
+#[test]
+fn test_jit_runs_tiny_main_returning_zero() {
+    let source = r#"
+fn main() => int:
+    return 0
+"#;
+    let r = compile_coffee(source, &["--jit"]).unwrap();
+    assert_eq!(
+        r.exit_code, 0,
+        "JIT tiny main should exit 0; stdout={} stderr={}",
+        r.stdout, r.stderr
     );
 }

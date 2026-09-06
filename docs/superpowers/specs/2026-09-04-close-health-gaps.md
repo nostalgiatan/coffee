@@ -1,7 +1,5 @@
 # Close remaining health-map gaps
 
-Do not change `mv`/`clone`/`rm`/`copy` language meaning. `int(N)+` is bytes. No try/catch. Tests need `rm` on `let`. Cargo: `flock /data/data/com.termux/files/home/coffee/.superpowers/sdd/cargo.lock cargo test --offline … -- --test-threads=1`.
+**Status (2026-09-05):** Plan B memory contract, dual-frontend unify, literal narrowing, and intra-procedural borrow checking have landed. Remaining out-of-scope items: full nom rewrite of `expr.rs`; lifetime parameters / field places; new C-handle ownership spec beyond `object`.
 
-**Out of this wave (language-scale, not a missing if-arm):** full nom rewrite of `expr.rs`; full borrow/`LifetimeSpace` proof; new C-handle ownership spec.
-
-Everything else on the 2026-09-04 health map is in scope.
+Do not change `mv`/`clone`/`rm` language meaning. `int(N)+` is bytes. No try/catch. Cargo: `flock /data/data/com.termux/files/home/coffee/.superpowers/sdd/cargo.lock cargo test --offline … -- --test-threads=1`.
