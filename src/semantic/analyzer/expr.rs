@@ -321,6 +321,15 @@ impl SemanticAnalyzer {
                     }
                 }
 
+                // A generic function has no symbol of its own until the checker instantiates it.
+                let generic_callee = matches!(function.kind(), Expression::Variable(n)
+                    if self.type_registry.read().map(|r| r.is_generic_fn(n)).unwrap_or(false));
+                if generic_callee {
+                    for arg in args {
+                        self.analyze_expression(arg)?;
+                    }
+                    return Ok(());
+                }
                 self.analyze_expression(function)?;
 
                 if let Expression::Variable(func_name) = function.kind() {
@@ -676,7 +685,7 @@ mod tests {
             name: "anon".into(),
             parameters: vec![Parameter {
                 name: "x".into(),
-                param_type: "Foo<T>".into(),
+                param_type: "[int; x]".into(),
                 is_variadic: false,
             }],
             return_type: "int".into(),

@@ -393,6 +393,27 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 }
                 Ok(())
             }
+            MemoryOp::Move { source, target } | MemoryOp::Clone { source, target } => {
+                // The new name has the source's type: field access and drops key off it.
+                if let Some(class_name) = self.variable_types.get(source).cloned() {
+                    self.variable_types.insert(target.clone(), class_name);
+                }
+                if let Some(ty) = self.memory_ctx.get_variable_type(source).cloned() {
+                    self.memory_ctx.set_variable_type(target.clone(), ty);
+                }
+                memory_ops::compile_memory_op(
+                    op,
+                    self.backend.context,
+                    &self.backend.builder,
+                    &mut self.variables,
+                    &mut self.memory_ctx,
+                    &self.functions,
+                )?;
+                // The target is a new owner: scope end must drop it.
+                self.memory_ctx.register_birth(target.clone());
+                self.memory_ctx.mark_initialized(target);
+                Ok(())
+            }
             _ => memory_ops::compile_memory_op(
                 op,
                 self.backend.context,

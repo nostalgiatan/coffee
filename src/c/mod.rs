@@ -25,4 +25,4 @@ pub mod diag;
 
 pub use signature::{CSymbol, CSymbolTable, CTypeDef};
 pub use parser::{parse_cfc_content, parse_cfc_file};
-pub use bundled::load_bundled_c_tables;
+pub use bundled::{is_bundled_c_symbol, load_bundled_c_tables};

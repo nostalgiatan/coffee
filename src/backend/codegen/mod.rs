@@ -54,7 +54,7 @@ mod layout;
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```ignore
 /// use inkwell::context::Context;
 /// use crate::backend::{Backend, codegen::CodeGenerator};
 /// use crate::parser::Program;

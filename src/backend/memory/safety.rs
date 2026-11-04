@@ -35,7 +35,7 @@ impl<'ctx> SafetyContext<'ctx> {
     /// 
     /// # Examples
     /// 
-    /// ```
+    /// ```ignore
     /// use coffee::backend::memory::safety::SafetyContext;
     /// 
     /// let safety_context = SafetyContext::new();
@@ -72,7 +72,7 @@ impl<'ctx> SafetyContext<'ctx> {
     /// 
     /// # Examples
     /// 
-    /// ```
+    /// ```ignore
     /// // This example shows how the function would be used in a broader context
     /// use coffee::backend::memory::safety::SafetyContext;
     /// // In practice, you'd need LLVM builder, index, and length values

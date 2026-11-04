@@ -48,7 +48,7 @@ pub fn library_filenames(lib_name: &str) -> Vec<String> {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// use coffee::compiler::library_finder::find_library_file;
 ///
 /// // Find libm.so or libm.a

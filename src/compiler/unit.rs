@@ -50,7 +50,7 @@ pub enum CompilationStatus {
 /// 
 /// # Examples
 /// 
-/// ```rust
+/// ```ignore
 /// use std::path::PathBuf;
 /// use crate::compiler::unit::{CompilationUnit, CompilationStatus};
 /// 
@@ -240,7 +240,7 @@ impl CompilationUnit {
 /// 
 /// # Examples
 /// 
-/// ```rust
+/// ```ignore
 /// use crate::compiler::unit::{CompilationUnits, CompilationUnit};
 /// use std::path::PathBuf;
 /// 

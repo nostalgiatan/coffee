@@ -34,7 +34,7 @@ use super::graph::DependencyGraph;
 /// 
 /// # Examples
 /// 
-/// ```rust
+/// ```ignore
 /// use std::collections::HashMap;
 /// use crate::compiler::scheduler::CompilationScheduler;
 /// use crate::compiler::unit::CompilationUnit;

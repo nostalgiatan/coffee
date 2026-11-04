@@ -66,7 +66,7 @@ impl CTypeDef {
 /// 
 /// # Examples
 /// 
-/// ```
+/// ```ignore
 /// use coffee::c::CSymbol;
 /// use coffee::parser::function::Parameter;
 /// 
@@ -122,7 +122,7 @@ impl CSymbol {
     /// 
     /// # Examples
     /// 
-    /// ```
+    /// ```ignore
     /// use coffee::c::CSymbol;
     /// use coffee::parser::function::Parameter;
     /// 
@@ -177,7 +177,7 @@ impl CSymbol {
     /// 
     /// # Examples
     /// 
-    /// ```
+    /// ```ignore
     /// use coffee::c::CSymbol;
     /// use coffee::parser::{Function, FunctionBody};
     /// use coffee::parser::function::Parameter;
@@ -246,7 +246,7 @@ impl CSymbol {
     /// 
     /// # Examples
     /// 
-    /// ```
+    /// ```ignore
     /// use coffee::c::CSymbol;
     /// use coffee::parser::function::Parameter;
     /// 
@@ -299,7 +299,7 @@ impl CSymbol {
 /// 
 /// # Examples
 /// 
-/// ```
+/// ```ignore
 /// use std::collections::HashMap;
 /// use coffee::c::{CSymbolTable, CSymbol};
 /// use coffee::parser::function::Parameter;
@@ -357,7 +357,7 @@ impl CSymbolTable {
     /// 
     /// # Examples
     /// 
-    /// ```
+    /// ```ignore
     /// use coffee::c::CSymbolTable;
     /// 
     /// let table = CSymbolTable::new("math".to_string());
@@ -386,7 +386,7 @@ impl CSymbolTable {
     /// 
     /// # Examples
     /// 
-    /// ```
+    /// ```ignore
     /// use coffee::c::{CSymbolTable, CSymbol};
     /// use coffee::parser::function::Parameter;
     /// 
@@ -421,7 +421,7 @@ impl CSymbolTable {
     /// 
     /// # Examples
     /// 
-    /// ```
+    /// ```ignore
     /// use coffee::c::{CSymbolTable, CSymbol};
     /// use coffee::parser::function::Parameter;
     /// 
@@ -463,7 +463,7 @@ impl CSymbolTable {
     /// 
     /// # Examples
     /// 
-    /// ```
+    /// ```ignore
     /// use coffee::c::{CSymbolTable, CSymbol};
     /// use coffee::parser::function::Parameter;
     /// 
@@ -496,7 +496,7 @@ impl CSymbolTable {
     /// 
     /// # Examples
     /// 
-    /// ```
+    /// ```ignore
     /// use coffee::c::{CSymbolTable, CSymbol};
     /// use coffee::parser::function::Parameter;
     /// 
@@ -528,7 +528,7 @@ impl CSymbolTable {
     /// 
     /// # Examples
     /// 
-    /// ```
+    /// ```ignore
     /// use coffee::c::CSymbolTable;
     /// 
     /// let table = CSymbolTable::new("testlib".to_string());

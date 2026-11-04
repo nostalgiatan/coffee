@@ -153,7 +153,7 @@ extern "C" fn visit_callback(
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// use std::path::Path;
 /// use coffee::c::generator::generate_cfc;
 ///

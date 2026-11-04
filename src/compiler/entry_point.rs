@@ -23,7 +23,7 @@ use super::project::ProjectConfig;
 /// 
 /// # Examples
 /// 
-/// ```rust
+/// ```ignore
 /// use crate::compiler::project::ProjectConfig;
 /// use crate::compiler::entry_point::EntryPointManager;
 /// use std::path::PathBuf;

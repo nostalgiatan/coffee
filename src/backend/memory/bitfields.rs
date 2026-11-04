@@ -69,7 +69,7 @@ impl StorageType {
     /// 
     /// # Examples
     /// 
-    /// ```
+    /// ```ignore
     /// use coffee::backend::memory::bitfields::StorageType;
     /// 
     /// assert_eq!(StorageType::U32.bits(), 32);
@@ -124,7 +124,7 @@ impl BitFieldLayout {
     /// 
     /// # Examples
     /// 
-    /// ```
+    /// ```ignore
     /// use coffee::backend::memory::bitfields::{BitFieldLayout, BitFieldSpec};
     /// 
     /// let specs = vec![

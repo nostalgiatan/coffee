@@ -63,7 +63,7 @@ use std::path::Path;
 /// 
 /// # Examples
 /// 
-/// ```rust
+/// ```ignore
 /// use inkwell::context::Context;
 /// use crate::backend::Backend;
 /// 

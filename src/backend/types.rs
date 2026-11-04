@@ -401,14 +401,14 @@ mod tests {
         let context = Context::create();
         let mapper = TypeMapper::new(&context);
         let err = mapper
-            .try_map_type("List<int>")
-            .expect_err("generics are not Coffee types");
+            .try_map_type("[int; x]")
+            .expect_err("a bad array size is not a Coffee type");
         assert!(
             !err.contains("ptr") && !err.eq_ignore_ascii_case("int"),
             "error must not look like a silent ptr/int fallback: {err}"
         );
         assert!(
-            err.contains("List<int>") || err.contains("generic") || err.contains("parse"),
+            err.contains("[int; x]") || err.contains("generic") || err.contains("parse"),
             "error should mention the bad type: {err}"
         );
     }
@@ -510,7 +510,7 @@ mod tests {
             parent: None,
             fields: vec![ClassField {
                 name: "xs".to_string(),
-                field_type: "List<int>".to_string(),
+                field_type: "[int; x]".to_string(),
                 bit_width: None,
             }],
             methods: vec![],
@@ -522,7 +522,7 @@ mod tests {
             .get_or_create_struct_type_from_class("Bad", &class, &all)
             .expect_err("unparsable field type must not become an LLVM ptr member");
         assert!(
-            err.contains("List<int>") || err.contains("generic") || err.contains("parse"),
+            err.contains("[int; x]") || err.contains("generic") || err.contains("parse"),
             "error should mention the unmappable field type: {err}"
         );
         assert!(

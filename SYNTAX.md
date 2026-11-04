@@ -853,6 +853,27 @@ fn divide(a: int, b: int) #on_err => int:
     return a // b
 ```
 
+### 错误处理怎么分工
+
+`raise` 是不可恢复错误（panic）的出口，不是返回错误的通道：
+
+- **可恢复的错误**用带载荷的枚举返回，调用方用 `match` 处理。这样调用方一定知道失败了，不会和哨兵值混淆。
+- **`raise`** 只表示"这里不该发生"。没有 `#name` 时打印并以状态 1 退出；有 `#name` 时由监听器决定这个函数怎么收场（返回哨兵值、返回默认值等）。
+- 监听器可以读 `err.code` 和 `err.note`。`raise Error(k)` 里的 `k`、`note:` 的字符串都是运行时值；为这次 `raise` 临时造出的字符串在监听器返回后释放，命名局部变量仍由它的作用域释放。
+- `raise` 不再要求程序 `use fprintf, exit in libc of c`；中止路径自己声明需要的 libc 函数。
+- 监听器的返回类型必须和被监听函数一致，所以每种返回类型各需要一个监听器。
+
+```coffee
+enum ParseResult:
+    Ok(v: int)
+    Bad(pos: int)
+
+fn parse_digit(c: int, pos: int) => ParseResult:
+    if c >= 48 && c <= 57:
+        return ParseResult.Ok(c - 48)
+    return ParseResult.Bad(pos)
+```
+
 ---
 
 ## C 语言互操作性

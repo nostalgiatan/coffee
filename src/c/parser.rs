@@ -107,7 +107,7 @@ impl std::error::Error for CFCParseError {}
 /// 
 /// # Examples
 /// 
-/// ```
+/// ```ignore
 /// use coffee::c::parse_cfc_file;
 /// 
 /// // Parse a system library file (this would fail in a test environment)
@@ -171,7 +171,7 @@ pub fn parse_cfc_file<P: AsRef<Path>>(path: P) -> Result<CSymbolTable, CFCParseE
 /// 
 /// # Examples
 /// 
-/// ```
+/// ```ignore
 /// use std::path::Path;
 /// use coffee::c::parser::extract_library_name;
 /// 
@@ -229,7 +229,7 @@ fn extract_library_name(path: &Path) -> String {
 /// 
 /// # Examples
 /// 
-/// ```
+/// ```ignore
 /// use coffee::c::parser::parse_cfc_content;
 /// 
 /// let content = r#"

@@ -101,7 +101,7 @@ pub fn declare_function<'ctx>(
     // Add function to module
     // For C functions, use None linkage to ensure proper C ABI
     // For Coffee functions, also use None (default is C ABI, which is fine for both)
-    let llvm_name = coffee_llvm_fn_name(&func.name);
+    let llvm_name = if func.is_c { func.name.clone() } else { coffee_llvm_fn_name(&func.name) };
     let function = module.add_function(&llvm_name, fn_type, None);
 
     // Set calling convention for C functions
@@ -133,7 +133,8 @@ pub fn declare_function<'ctx>(
 /// LLVM symbol for a Coffee function. Must not steal libc/CRT names: after
 /// `fn main` returns, the C runtime calls `exit`, not a Coffee wrapper.
 pub fn coffee_llvm_fn_name(name: &str) -> String {
-    if name != "main" && shadows_c_process_abi(name) {
+    // A Coffee `fn write` must not become the libc `write` that `puts` and friends call.
+    if name != "main" && (shadows_c_process_abi(name) || crate::c::is_bundled_c_symbol(name)) {
         format!("_cf_{name}")
     } else {
         name.to_string()
@@ -322,6 +323,11 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             }
         }
 
+        // A Coffee function of the same name shadows the implicit libc/libm table.
+        if self.hir_fns.contains_key(func_name) {
+            return false;
+        }
+
         self.cfc_symbols
             .values()
             .any(|table| table.get(func_name).is_some())
@@ -365,7 +371,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         &mut self,
         func: &Function,
     ) -> Result<(), String> {
-        let want = coffee_llvm_fn_name(&func.name);
+        let want = if func.is_c { func.name.clone() } else { coffee_llvm_fn_name(&func.name) };
         let already = self.functions.get(&func.name).is_some_and(|f| {
             f.get_name().to_str().ok() == Some(want.as_str())
         });
@@ -429,15 +435,15 @@ mod tests {
             "f",
             vec![Parameter {
                 name: "xs".to_string(),
-                param_type: "List<int>".to_string(),
+                param_type: "[int; x]".to_string(),
                 is_variadic: false,
             }],
             "void",
         );
         let err = declare_function(&func, &module, &context, &mapper, &mut functions)
-            .expect_err("List<int> is not a Coffee type");
+            .expect_err("`[int; x]` is not a Coffee type");
         assert!(
-            err.contains("List<int>") || err.contains("generic") || err.contains("parse"),
+            err.contains("[int; x]") || err.contains("generic") || err.contains("parse"),
             "error should mention the bad type: {err}"
         );
     }

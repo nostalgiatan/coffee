@@ -178,12 +178,28 @@ impl SemanticAnalyzer {
     }
 
     /// 检查符号是否是C库导入
+    /// A Coffee `fn` of this name is in scope (it shadows the implicit libc/libm table).
+    fn is_user_function(&self, name: &str) -> bool {
+        let Ok(symbols) = self.symbol_space.read() else {
+            return false;
+        };
+        let binding = symbols.lookup(name).or_else(|| {
+            self.current_function_name
+                .as_ref()
+                .and_then(|f| symbols.lookup(&format!("{}::{}", f, name)))
+        });
+        matches!(binding.map(|b| &b.entity), Some(crate::types::definition::Entity::Function { .. }))
+    }
+
     pub(super) fn is_c_import(&self, symbol_name: &str) -> bool {
         if self.is_explicit_c_import(symbol_name) {
             return true;
         }
 
-        // 然后检查是否是内置的C函数（libc/libm）
+        // 然后检查是否是内置的C函数（libc/libm）；用户自己定义的同名函数优先
+        if self.is_user_function(symbol_name) {
+            return false;
+        }
         if self.get_c_symbol(symbol_name).is_some() {
             return true;
         }

@@ -3,10 +3,24 @@
 //! Keys are always `libc` and `libm`. Do not run `extract_library_name` on
 //! `libc.cfc` (that yields `"c"`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 
 use super::parser::parse_cfc_content;
 use super::CSymbolTable;
+
+/// True if `name` is a function of the bundled libc/libm tables.
+pub fn is_bundled_c_symbol(name: &str) -> bool {
+    static NAMES: OnceLock<HashSet<String>> = OnceLock::new();
+    NAMES
+        .get_or_init(|| {
+            load_bundled_c_tables()
+                .values()
+                .flat_map(|t| t.symbols.keys().cloned())
+                .collect()
+        })
+        .contains(name)
+}
 
 /// Parse the bundled `library/cfc/{libc,libm}.cfc` files shipped in the binary.
 pub fn load_bundled_c_tables() -> HashMap<String, CSymbolTable> {

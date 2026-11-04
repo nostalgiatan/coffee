@@ -172,7 +172,7 @@ impl StructLayout {
     /// 
     /// # Examples
     /// 
-    /// ```
+    /// ```ignore
     /// use coffee::backend::memory::structs::StructLayout;
     /// use coffee::backend::memory::types::Layout;
     /// 

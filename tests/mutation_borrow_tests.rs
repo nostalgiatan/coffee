@@ -110,6 +110,7 @@ fn test_let_copy_str_resource() {
 fn main() => int:
     let s: str = "hi"
     let t: str = s
+    let u: str = s
     return 0
 
 "#;

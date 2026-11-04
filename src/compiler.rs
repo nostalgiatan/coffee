@@ -486,7 +486,8 @@ fn main() => int:
         );
 
         let imported_len = result.program.statements.len() - main_parsed.statements.len();
-        assert_eq!(imported_len, 1, "selective import prepends one function");
+        // The requested function plus the module's other exports (callees must typecheck here).
+        assert_eq!(imported_len, 2, "selective import prepends the module's exported functions");
 
         let helper_idx = module_parsed
             .statements

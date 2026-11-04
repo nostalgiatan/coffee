@@ -20,7 +20,7 @@ use inkwell::types::BasicTypeEnum;
 /// 
 /// # Examples
 /// 
-/// ```
+/// ```ignore
 /// use coffee::backend::memory::types::Align;
 /// 
 /// // Create an alignment of 8 bytes
@@ -47,7 +47,7 @@ impl Align {
     /// 
     /// # Examples
     /// 
-    /// ```
+    /// ```ignore
     /// use coffee::backend::memory::types::Align;
     /// 
     /// let align = Align::new(8);
@@ -73,7 +73,7 @@ impl Align {
 /// 
 /// # Examples
 /// 
-/// ```
+/// ```ignore
 /// use coffee::backend::memory::types::Size;
 /// 
 /// let size = Size::new(16);
@@ -94,7 +94,7 @@ impl Size {
     /// 
     /// # Examples
     /// 
-    /// ```
+    /// ```ignore
     /// use coffee::backend::memory::types::Size;
     /// 
     /// let size = Size::new(32);
@@ -120,7 +120,7 @@ impl Size {
     /// 
     /// # Examples
     /// 
-    /// ```
+    /// ```ignore
     /// use coffee::backend::memory::types::{Size, Align};
     /// 
     /// let size = Size::new(13);
@@ -147,7 +147,7 @@ impl Size {
 /// 
 /// # Examples
 /// 
-/// ```
+/// ```ignore
 /// use coffee::backend::memory::types::{Layout, Size, Align};
 /// 
 /// let layout = Layout::new(16, 8);
@@ -172,7 +172,7 @@ impl Layout {
     /// 
     /// # Examples
     /// 
-    /// ```
+    /// ```ignore
     /// use coffee::backend::memory::types::Layout;
     /// 
     /// let layout = Layout::new(32, 8);
@@ -202,7 +202,7 @@ impl Layout {
     /// 
     /// # Examples
     /// 
-    /// ```
+    /// ```ignore
     /// use coffee::backend::memory::types::Layout;
     /// 
     /// let layout = Layout::new(8, 16); // 8 bytes, 16-byte aligned

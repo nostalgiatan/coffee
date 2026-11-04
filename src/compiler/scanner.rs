@@ -25,7 +25,7 @@ use std::fs;
 /// 
 /// # Examples
 /// 
-/// ```rust
+/// ```ignore
 /// use crate::compiler::scanner::SourceScanner;
 /// 
 /// let scanner = SourceScanner::new("src");

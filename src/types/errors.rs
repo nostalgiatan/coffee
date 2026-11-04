@@ -834,8 +834,8 @@ mod tests {
         let mismatch: TypeSystemError = Diagnostic::new(
             Severity::Error,
             ErrorKind::TypeMismatch {
-                expected: "List<int>".to_string(),
-                found: "Foo<bar>".to_string(),
+                expected: "List<".to_string(),
+                found: "Foo<".to_string(),
             },
             "mismatch",
         )
@@ -844,8 +844,8 @@ mod tests {
             TypeSystemError::TypeMismatch {
                 expected, found, ..
             } => {
-                assert_eq!(expected, named("List<int>"));
-                assert_eq!(found, named("Foo<bar>"));
+                assert_eq!(expected, named("List<"));
+                assert_eq!(found, named("Foo<"));
             }
             other => panic!("expected TypeMismatch, got {:?}", other),
         }
@@ -854,16 +854,16 @@ mod tests {
             Severity::Error,
             ErrorKind::InvalidOperation {
                 op: "+".to_string(),
-                left: "List<int>".to_string(),
-                right: "Map<str>".to_string(),
+                left: "List<".to_string(),
+                right: "Map<".to_string(),
             },
             "op",
         )
         .into();
         match op {
             TypeSystemError::InvalidOperation { left, right, .. } => {
-                assert_eq!(left, named("List<int>"));
-                assert_eq!(right, named("Map<str>"));
+                assert_eq!(left, named("List<"));
+                assert_eq!(right, named("Map<"));
             }
             other => panic!("expected InvalidOperation, got {:?}", other),
         }
@@ -871,14 +871,14 @@ mod tests {
         let call: TypeSystemError = Diagnostic::new(
             Severity::Error,
             ErrorKind::NotCallable {
-                ty: "List<int>".to_string(),
+                ty: "List<".to_string(),
             },
             "call",
         )
         .into();
         match call {
             TypeSystemError::NotCallable { ty, .. } => {
-                assert_eq!(ty, named("List<int>"));
+                assert_eq!(ty, named("List<"));
             }
             other => panic!("expected NotCallable, got {:?}", other),
         }

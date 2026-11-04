@@ -3,12 +3,15 @@ use super::super::var::ReturnStmt;
 use super::super::Statement;
 
 /// Class definition
+///
+/// ```text
 /// class Name<T> of Parent:
 ///     field:type
 ///     field2:type
 ///
 ///     fn method(params:type) => return_type:
 ///         body
+/// ```
 #[derive(Debug, PartialEq, Clone)]
 pub struct ClassDef {
     pub name: String,

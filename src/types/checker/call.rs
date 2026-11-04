@@ -220,7 +220,8 @@ impl super::TypeChecker {
             let imported = self.analyzer.as_ref().and_then(|a| a.read().ok())
                 .map(|a| a.is_explicit_c_import(name))
                 .unwrap_or(false);
-            if !imported {
+            let user_fn = self.registry.read().map(|r| r.resolve_type(name).is_ok()).unwrap_or(false);
+            if !imported && !user_fn {
                 let error = TypeSystemError::ParseError {
                     type_str: name.to_string(),
                     reason: format!(

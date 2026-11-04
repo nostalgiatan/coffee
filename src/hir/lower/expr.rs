@@ -110,6 +110,9 @@ where
 {
     pub fn lower_expr(&mut self, expr: &Expression) -> Result<HirExpr, String> {
         let expr = expr.kind();
+        if let Some(concrete) = self.concrete_generic_call(expr) {
+            return self.lower_expr(&concrete);
+        }
         if let Some(ctor) = self.try_lower_class_ctor_call(expr)? {
             return Ok(ctor);
         }
@@ -155,6 +158,9 @@ where
     pub(super) fn lower_expr_typed(&mut self, expr: &Expression, ty: Type) -> Result<HirExpr, String> {
         if let Expression::Spanned { inner, .. } = expr {
             return self.lower_expr_typed(inner, ty);
+        }
+        if let Some(concrete) = self.concrete_generic_call(expr) {
+            return self.lower_expr_typed(&concrete, ty);
         }
         // Collect children first, then assemble — each child calls `lower_expr`.
         match expr {
@@ -378,6 +384,33 @@ where
             Type::Function { return_type, .. } => Some(*return_type),
             _ => None,
         }
+    }
+
+    /// `id(5)` where `id` is generic: the same call to the instance the checker made, `id__int(5)`.
+    fn concrete_generic_call(&mut self, expr: &Expression) -> Option<Expression> {
+        let Expression::Call { function, args } = expr else {
+            return None;
+        };
+        let Expression::Variable(name) = function.kind() else {
+            return None;
+        };
+        let registry = self.registry.clone()?;
+        if !registry.read().ok()?.is_generic_fn(name) {
+            return None;
+        }
+        let mut arg_types = Vec::with_capacity(args.len());
+        for a in args {
+            let ty = match (self.infer)(a) {
+                Ok(t) => t,
+                Err(_) => self.lower_expr(a).ok()?.ty,
+            };
+            arg_types.push(ty);
+        }
+        let concrete = registry.read().ok()?.generic_fn_instance_name(name, &arg_types).ok()?;
+        Some(Expression::Call {
+            function: Box::new(Expression::Variable(concrete)),
+            args: args.clone(),
+        })
     }
 
     /// When `infer(Binary/Unary)` fails (pattern binds only in `extra_types`),

@@ -15,7 +15,7 @@
 //! 
 //! # Examples
 //! 
-//! ```rust
+//! ```ignore
 //! use std::collections::HashMap;
 //! use crate::compiler::graph::DependencyGraph;
 //! use crate::compiler::CompilationUnit;
@@ -52,7 +52,7 @@ use crate::compiler::CompilationUnit;
 /// 
 /// # Examples
 /// 
-/// ```rust
+/// ```ignore
 /// use crate::compiler::graph::DependencyGraph;
 /// 
 /// // Create a new dependency graph

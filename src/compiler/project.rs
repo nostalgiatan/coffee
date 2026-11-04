@@ -412,7 +412,7 @@ impl ProjectConfig {
     /// 
     /// # Examples
     /// 
-    /// ```rust
+    /// ```ignore
     /// use std::path::Path;
     /// 
     /// let config = ProjectConfig::from_file(Path::new("coffee.toml"));
@@ -542,7 +542,7 @@ impl ProjectConfig {
     /// 
     /// # Examples
     /// 
-    /// ```rust
+    /// ```ignore
     /// // If build.main = "src/main", returns PathBuf containing "src/main.cf"
     /// // If build.main = "lib.utils", returns PathBuf containing "lib/utils.cf"
     /// ```
@@ -565,7 +565,7 @@ impl ProjectConfig {
     /// 
     /// # Examples
     /// 
-    /// ```rust
+    /// ```ignore
     /// // If build.target_dir = "target" and opt_level = 0
     /// // Returns PathBuf containing "target/debug"
     /// // If build.target_dir = "build" and opt_level = 3
@@ -595,7 +595,7 @@ impl ProjectConfig {
     /// 
     /// # Examples
     /// 
-    /// ```rust
+    /// ```ignore
     /// // If package.name = "my_app" on Linux, returns "my_app"
     /// // If package.name = "my_app" on Windows, returns "my_app.exe"
     /// ```

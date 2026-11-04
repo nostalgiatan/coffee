@@ -296,7 +296,7 @@ mod tests {
         let mut cg = CodeGenerator::new(&backend);
         let program = Program::new(vec![Statement::Function(int_main())]);
         let err = cg
-            .compile_program_with_hir(&program, &[], std::collections::HashMap::new(), Vec::new())
+            .compile_program_with_hir(&program, &[], crate::c::load_bundled_c_tables(), Vec::new())
             .expect_err("empty hir_fns is missing MIR, not AST");
         assert!(
             err.contains("missing MIR for function"),

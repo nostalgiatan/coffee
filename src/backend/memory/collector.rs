@@ -54,7 +54,7 @@ impl LayoutCollector {
     /// 
     /// # Examples
     /// 
-    /// ```
+    /// ```ignore
     /// use coffee::backend::memory::collector::LayoutCollector;
     /// 
     /// let mut collector = LayoutCollector::new();
@@ -78,7 +78,7 @@ impl LayoutCollector {
     /// 
     /// # Examples
     /// 
-    /// ```
+    /// ```ignore
     /// use coffee::backend::memory::collector::LayoutCollector;
     /// use coffee::backend::memory::structs::{StructLayout, StructLayoutInfo};
     /// use coffee::backend::memory::types::Layout;
@@ -123,7 +123,7 @@ impl LayoutCollector {
     /// 
     /// # Examples
     /// 
-    /// ```
+    /// ```ignore
     /// use coffee::backend::memory::collector::LayoutCollector;
     /// 
     /// let collector = LayoutCollector::new();

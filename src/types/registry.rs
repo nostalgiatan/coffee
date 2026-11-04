@@ -501,10 +501,11 @@ impl TypeRegistry {
             .ok_or_else(|| {
                 TypeSystemError::undefined_function(name, TypeSystemError::span_for_name(name))
             })?;
-        if let Some(existing) = self.get_alias(name) {
+        let mangled = Self::generic_fn_mangled(name, args);
+        if let Some(existing) = self.get_alias(&mangled) {
             return Ok(existing);
         }
-        let inst = mono::instantiate_function(&template, &params, args).map_err(|reason| {
+        let mut inst = mono::instantiate_function(&template, &params, args).map_err(|reason| {
             TypeSystemError::InstantiationError {
                 type_name: name.to_string(),
                 args: args.to_vec(),
@@ -512,16 +513,39 @@ impl TypeRegistry {
                 span: TypeSystemError::span_for_name(name),
             }
         })?;
+        inst.name = mangled.clone();
         let ty = self.bind_function(&inst)?;
-        if self.get_alias(name).is_none() {
-            self.define_alias(name.to_string(), ty.clone())?;
-        }
+        self.define_alias(mangled, ty.clone())?;
         if let Ok(mut v) = self.instantiated_fns.write() {
             if !v.iter().any(|f| f.name == inst.name) {
                 v.push(inst);
             }
         }
         Ok(ty)
+    }
+
+    /// `id` instantiated at `int` → `id__int` (one concrete function per argument list).
+    pub fn generic_fn_mangled(name: &str, args: &[Type]) -> String {
+        let mut out = name.to_string();
+        for a in args {
+            out.push_str("__");
+            out.push_str(&a.mono_name());
+        }
+        out
+    }
+
+    /// Concrete name the call `name(arg_types)` resolves to.
+    pub fn generic_fn_instance_name(&self, name: &str, arg_types: &[Type]) -> Result<String, String> {
+        let params = self.fn_type_params(name);
+        let template = self
+            .fn_templates
+            .read()
+            .ok()
+            .and_then(|m| m.get(name).cloned())
+            .ok_or_else(|| format!("'{}' is not a generic function", name))?;
+        let param_strs: Vec<String> = template.parameters.iter().map(|p| p.param_type.clone()).collect();
+        let args = mono::infer_generic_args(&params, &param_strs, arg_types)?;
+        Ok(Self::generic_fn_mangled(name, &args))
     }
 
     pub fn generic_fn_value_arity(&self, name: &str) -> Option<usize> {

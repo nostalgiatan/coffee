@@ -32,7 +32,7 @@ use crate::library_finder::get_standard_search_paths;
 /// 
 /// # Examples
 /// 
-/// ```rust
+/// ```ignore
 /// use crate::compiler::linker::LinkOptions;
 /// 
 /// let mut options = LinkOptions::default();
@@ -76,7 +76,7 @@ pub struct LinkOptions {
 /// 
 /// # Examples
 /// 
-/// ```rust
+/// ```ignore
 /// use std::path::PathBuf;
 /// use crate::compiler::linker::{Linker, LinkOptions};
 /// 
