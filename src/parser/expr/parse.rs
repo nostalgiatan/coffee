@@ -79,19 +79,11 @@ fn parse_expression_kind(input: &str, start: usize) -> Result<Expression, String
         return Ok(expr);
     }
 
-    if let Some(expr) = postfix::try_index(input, start)? {
-        return Ok(expr);
-    }
-
     if let Some(expr) = primary::try_struct_literal(input, start)? {
         return Ok(expr);
     }
 
-    if let Some(expr) = postfix::try_call(input, start)? {
-        return Ok(expr);
-    }
-
-    if let Some(expr) = postfix::try_member(input, start)? {
+    if let Some(expr) = postfix::try_postfix(input, start)? {
         return Ok(expr);
     }
 

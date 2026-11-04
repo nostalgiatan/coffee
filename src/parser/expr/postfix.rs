@@ -2,127 +2,184 @@ use crate::coffee_debug;
 use super::ast::Expression;
 use super::ident::is_valid_identifier;
 use super::parse::parse_expression_at;
-use super::scan::{find_last_dot_outside_parens, matching_close_paren, parse_arg_list};
+use super::scan::parse_arg_list;
 
-/// Array indexing: `array[index]`
-pub(super) fn try_index(input: &str, start: usize) -> Result<Option<Expression>, String> {
-    if let Some(pos) = input.find('[') {
-        if input.ends_with(']') {
-            let array_expr = parse_expression_at(&input[..pos], start)?;
-            let index_expr =
-                parse_expression_at(&input[pos + 1..input.len() - 1], start + pos + 1)?;
-
-            return Ok(Some(Expression::Index {
-                array: Box::new(array_expr),
-                index: Box::new(index_expr),
-            }));
+/// Byte mask of positions inside a string literal (quotes included).
+fn string_mask(input: &str) -> Vec<bool> {
+    let bytes = input.as_bytes();
+    let mut mask = vec![false; bytes.len()];
+    let mut in_str = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if in_str {
+            mask[i] = true;
+            if c == b'\\' && i + 1 < bytes.len() {
+                mask[i + 1] = true;
+                i += 1;
+            } else if c == b'"' {
+                in_str = false;
+            }
+        } else if c == b'"' {
+            in_str = true;
+            mask[i] = true;
         }
+        i += 1;
     }
-    Ok(None)
+    mask
 }
 
-/// Function calls: `name(args)` or `class::new(args)` or `Enum::Variant(args)`
-pub(super) fn try_call(input: &str, start: usize) -> Result<Option<Expression>, String> {
-        if let Some(pos) = input.find('(') {
-            if matching_close_paren(input, pos) == Some(input.len() - 1) {
-                let func_name = input[..pos].trim().to_string();
-                let args_raw = &input[pos + 1..input.len() - 1];
-                let args_str = args_raw.trim();
-                coffee_debug!("DEBUG: parse_expression: input='{}', pos={}, func_name='{}', args_str='{}'", input, pos, func_name, args_str);
-    
-                if func_name.contains('.') || func_name.contains('+') || func_name.contains('-') || func_name.contains('*') || func_name.contains('/') || func_name.contains('%') || func_name.contains('&') || func_name.contains('|') || func_name.contains('^') || func_name.contains('<') || func_name.contains('>') || func_name.contains('=') || func_name.contains('!') {
-                    coffee_debug!("DEBUG: parse_expression: func_name contains operator or '.', skipping function call parsing");
-                } else {
-                if matches!(func_name.as_str(), "int" | "float" | "bool") {
-                    coffee_debug!("DEBUG: parse_expression: type conversion function '{}'", func_name);
-                    let arg_expr = parse_expression_at(args_raw, start + pos + 1)?;
-                    return Ok(Some(Expression::TypeCast {
-                        target_type: func_name.clone(),
-                        value: Box::new(arg_expr),
-                    }));
-                }
-                
-                coffee_debug!("DEBUG: parse_expression: func_name.contains(\"::new\")={}", func_name.contains("::new"));
-                if func_name.contains("::new") {
-                    let parts: Vec<&str> = func_name.split("::").collect();
-                    if parts.len() == 2 && parts[1] == "new" {
-                        let class_name = parts[0].to_string();
-                        let args = parse_arg_list(args_raw, start + pos + 1)?;
-    
-                        return Ok(Some(Expression::ConstructorCall {
-                            class_name,
-                            args,
-                        }));
-                    }
-                }
-                
-                if func_name.contains("::") {
-                    let parts: Vec<&str> = func_name.split("::").collect();
-                    if parts.len() == 2 {
-                        let enum_name = parts[0].to_string();
-                        let variant_name = parts[1].to_string();
-                        let args = parse_arg_list(args_raw, start + pos + 1)?;
-                        return Ok(Some(Expression::Call {
-                            function: Box::new(Expression::var(&format!("{}::{}", enum_name, variant_name))),
-                            args,
-                        }));
-                    }
-                }
+/// Position of the opening bracket that matches the closing one at `close`, scanning back.
+fn matching_open(input: &str, close: usize, open_ch: u8, close_ch: u8, mask: &[bool]) -> Option<usize> {
+    let bytes = input.as_bytes();
+    let mut depth = 0i32;
+    for i in (0..=close).rev() {
+        if mask[i] {
+            continue;
+        }
+        if bytes[i] == close_ch {
+            depth += 1;
+        } else if bytes[i] == open_ch {
+            depth -= 1;
+            if depth == 0 {
+                return Some(i);
+            }
+        }
+    }
+    None
+}
 
-                let args = parse_arg_list(args_raw, start + pos + 1)?;
-                return Ok(Some(Expression::Call {
-                    function: Box::new(Expression::var(func_name)),
+/// Last `.` outside any bracket or string.
+fn last_top_level_dot(input: &str, mask: &[bool]) -> Option<usize> {
+    let bytes = input.as_bytes();
+    let mut depth = 0i32;
+    let mut last = None;
+    for (i, &c) in bytes.iter().enumerate() {
+        if mask[i] {
+            continue;
+        }
+        match c {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b'.' if depth == 0 => last = Some(i),
+            _ => {}
+        }
+    }
+    last
+}
+
+/// Postfix forms, outermost last: `x[i]`, `f(args)`, `x.method(args)`, `x.field`.
+/// The final suffix of the expression is peeled off and the rest is parsed recursively,
+/// so chains such as `a[1].x` and `c.me().get()` nest correctly.
+pub(super) fn try_postfix(input: &str, start: usize) -> Result<Option<Expression>, String> {
+    let mask = string_mask(input);
+    let last = input.len() - 1;
+    match input.as_bytes()[last] {
+        b']' if !mask[last] => {
+            let Some(open) = matching_open(input, last, b'[', b']', &mask) else {
+                return Ok(None);
+            };
+            if input[..open].trim().is_empty() {
+                return Ok(None);
+            }
+            let array_expr = parse_expression_at(&input[..open], start)?;
+            let index_expr = parse_expression_at(&input[open + 1..last], start + open + 1)?;
+            Ok(Some(Expression::Index {
+                array: Box::new(array_expr),
+                index: Box::new(index_expr),
+            }))
+        }
+        b')' if !mask[last] => {
+            let Some(open) = matching_open(input, last, b'(', b')', &mask) else {
+                return Ok(None);
+            };
+            let callee_raw = &input[..open];
+            let callee = callee_raw.trim_end();
+            if callee.trim().is_empty() {
+                return Ok(None);
+            }
+            let args_raw = &input[open + 1..last];
+            let args_base = start + open + 1;
+            let callee_mask = &mask[..callee.len()];
+            if let Some(dot) = last_top_level_dot(callee, callee_mask) {
+                let method = callee[dot + 1..].trim();
+                let object_raw = &callee[..dot];
+                if object_raw.trim().is_empty() || !is_valid_identifier(method) {
+                    return Ok(None);
+                }
+                // `1.5(…)` style input is not a method call.
+                if object_raw.trim().chars().all(|c| c.is_ascii_digit()) {
+                    return Ok(None);
+                }
+                let args = parse_arg_list(args_raw, args_base)?;
+                if method == "assign" {
+                    if let Some(assign) = try_parse_assign_expr(object_raw, start, &args)? {
+                        return Ok(Some(assign));
+                    }
+                }
+                return Ok(Some(Expression::Member {
+                    object: Box::new(parse_expression_at(object_raw, start)?),
+                    field: method.to_string(),
                     args,
                 }));
             }
-        }    }
-    Ok(None)
-}
-
-/// Member access: `object.method(args)` or `object.field`
-pub(super) fn try_member(input: &str, start: usize) -> Result<Option<Expression>, String> {
-    if !input.starts_with('"') && !input.ends_with('"') && input.contains('.') {
-        if let Some(pos) = find_last_dot_outside_parens(input) {
-            let object_raw = &input[..pos];
-            let rest_raw = &input[pos + 1..];
-            let object_str = object_raw.trim();
-            let rest = rest_raw.trim();
-            let object_ok = !object_str.is_empty()
-                && object_str.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.');
-            if object_ok && !object_str.chars().all(|c| c.is_ascii_digit() || c == '.') {
-                let is_float_literal = object_str.parse::<f64>().is_ok() && rest.parse::<u64>().is_ok();
-                if !is_float_literal {
-                    if rest.contains('(') && rest.ends_with(')') {
-                        let method_name = &rest[..rest.find('(').unwrap()];
-                        if is_valid_identifier(method_name) {
-                            let paren_in_rest = rest.find('(').unwrap();
-                            let rest_lead = rest_raw.len() - rest_raw.trim_start().len();
-                            let args_base = start + pos + 1 + rest_lead + paren_in_rest + 1;
-                            let args_raw = &rest[method_name.len() + 1..rest.len() - 1];
-                            let args = parse_arg_list(args_raw, args_base)?;
-                            if method_name == "assign" {
-                                if let Some(assign) = try_parse_assign_expr(object_raw, start, &args)? {
-                                    return Ok(Some(assign));
-                                }
-                            }
-                            return Ok(Some(Expression::Member {
-                                object: Box::new(parse_expression_at(object_raw, start)?),
-                                field: method_name.to_string(),
-                                args,
-                            }));
-                        }
-                    } else if is_valid_identifier(rest) {
-                        return Ok(Some(Expression::Member {
-                            object: Box::new(parse_expression_at(object_raw, start)?),
-                            field: rest.to_string(),
-                            args: Vec::new(),
-                        }));
-                    }
-                }
+            let func_name = callee.trim().to_string();
+            let name_ok = {
+                let mut parts = func_name.split("::");
+                let first = parts.next().unwrap_or("");
+                let second = parts.next();
+                parts.next().is_none()
+                    && is_valid_identifier(first)
+                    && second.map_or(true, is_valid_identifier)
+            };
+            if !name_ok {
+                return Ok(None);
             }
+            coffee_debug!("DEBUG: parse_expression: call '{}'", func_name);
+            if matches!(func_name.as_str(), "int" | "float" | "bool") {
+                let arg_expr = parse_expression_at(args_raw, args_base)?;
+                return Ok(Some(Expression::TypeCast {
+                    target_type: func_name,
+                    value: Box::new(arg_expr),
+                }));
+            }
+            if let Some((class_name, "new")) = func_name.split_once("::") {
+                let args = parse_arg_list(args_raw, args_base)?;
+                return Ok(Some(Expression::ConstructorCall {
+                    class_name: class_name.to_string(),
+                    args,
+                }));
+            }
+            let args = parse_arg_list(args_raw, args_base)?;
+            Ok(Some(Expression::Call {
+                function: Box::new(Expression::var(func_name)),
+                args,
+            }))
+        }
+        _ => {
+            if input.starts_with('"') && input.ends_with('"') {
+                return Ok(None);
+            }
+            let Some(dot) = last_top_level_dot(input, &mask) else {
+                return Ok(None);
+            };
+            let object_raw = &input[..dot];
+            let field = input[dot + 1..].trim();
+            let object_str = object_raw.trim();
+            if object_str.is_empty() || !is_valid_identifier(field) {
+                return Ok(None);
+            }
+            // `3.14`: digits on both sides of the dot are a float literal, not a field.
+            if object_str.chars().all(|c| c.is_ascii_digit()) {
+                return Ok(None);
+            }
+            Ok(Some(Expression::Member {
+                object: Box::new(parse_expression_at(object_raw, start)?),
+                field: field.to_string(),
+                args: Vec::new(),
+            }))
         }
     }
-    Ok(None)
 }
 
 /// `value as Type` (newtype wrap/unwrap). Last ` as ` at paren/bracket/brace depth 0.

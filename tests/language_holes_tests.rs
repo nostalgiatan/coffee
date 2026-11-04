@@ -98,3 +98,55 @@ fn test_float_cast_makes_mixed_arithmetic_explicit() {
 fn test_payload_free_enum_equality() {
     assert_exit_code("enum E:\n    A\n    B\n\nfn main() => int:\n    let a: E = E.A\n    if a == E.A:\n        return 1\n    return 0\n", 1).unwrap();
 }
+
+const CHAIN: &str = "class C:\n    n: int\n    fn me(self) => C:\n        return C { n: self.n }\n    fn get(self) => int:\n        return self.n\n\n";
+
+#[test]
+fn test_method_chain_on_call_result() {
+    assert_exit_code(&format!("{CHAIN}fn main() => int:\n    let c: C = C {{ n: 4 }}\n    return c.me().get()\n"), 4).unwrap();
+}
+
+#[test]
+fn test_method_chain_temporary_is_freed() {
+    assert_balanced(&format!("{CHAIN}fn main() => int:\n    let c: C = C {{ n: 4 }}\n    return c.me().get()\n"));
+}
+
+#[test]
+fn test_field_of_indexed_element() {
+    assert_exit_code("class P:\n    x: int\n\nfn main() => int:\n    let a: [P; 2] = [P { x: 1 }, P { x: 2 }]\n    return a[1].x\n", 2).unwrap();
+}
+
+#[test]
+fn test_index_of_field_and_call_result() {
+    assert_exit_code("class B:\n    xs: [int; 3]\n\nfn mk() => [int; 3]:\n    return [1, 2, 3]\n\nfn main() => int:\n    let b: B = B { xs: [3, 4, 5] }\n    return b.xs[2] + mk()[0]\n", 6).unwrap();
+}
+
+#[test]
+fn test_return_with_multiline_call_arguments() {
+    assert_exit_code("fn add3(a: int, b: int, c: int) => int:\n    return a + b + c\n\nfn main() => int:\n    return add3(\n        1,\n        2,\n        3\n    )\n", 6).unwrap();
+}
+
+#[test]
+fn test_multiline_parameter_list() {
+    assert_exit_code("fn add3(\n    a: int,\n    b: int,\n    c: int\n) => int:\n    return a + b + c\n\nfn main() => int:\n    return add3(1, 2, 3)\n", 6).unwrap();
+}
+
+#[test]
+fn test_trailing_operator_continues_the_statement() {
+    assert_exit_code("fn main() => int:\n    let x: int = 0\n    x = 1 +\n        2\n    return x\n", 3).unwrap();
+}
+
+#[test]
+fn test_comment_inside_multiline_call_is_ignored() {
+    assert_exit_code("fn add(a: int, b: int) => int:\n    return a + b\n\nfn main() => int:\n    return add(\n        1,  /#/ first\n        2   /#/ second\n    )\n", 3).unwrap();
+}
+
+#[test]
+fn test_error_after_joined_lines_keeps_original_line_number() {
+    assert_compile_error("fn add(a: int, b: int) => int:\n    return add(\n        1,\n        2\n    )\n\nfn main() => int:\n    let x: int = 1 $ 2\n    return 0\n", "line 8").unwrap();
+}
+
+#[test]
+fn test_sized_integer_type_suffix_is_not_a_continuation() {
+    assert_compiles("class P:\n    x: int(4)+\n    y: int(4)-\n\nfn main() => int:\n    return 0\n").unwrap();
+}

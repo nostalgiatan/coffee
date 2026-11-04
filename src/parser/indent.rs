@@ -141,6 +141,154 @@ impl Default for IndentCache {
     }
 }
 
+/// Code part of `line` (strings kept, `/#/` comment dropped) and the bracket depth change.
+/// `in_block_comment` carries `/#* … *#/` state across lines.
+fn scan_code(line: &str, in_block_comment: &mut bool) -> (usize, i32) {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    let mut in_str = false;
+    let mut depth = 0i32;
+    while i < bytes.len() {
+        if *in_block_comment {
+            if bytes[i..].starts_with(b"*#/") {
+                *in_block_comment = false;
+                i += 3;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+        let c = bytes[i];
+        if in_str {
+            if c == b'\\' {
+                i += 1;
+            } else if c == b'"' {
+                in_str = false;
+            }
+        } else if bytes[i..].starts_with(b"/#*") {
+            *in_block_comment = true;
+            i += 3;
+            continue;
+        } else if bytes[i..].starts_with(b"/#/") {
+            return (i, depth);
+        } else {
+            match c {
+                b'"' => in_str = true,
+                b'(' | b'[' | b'{' => depth += 1,
+                b')' | b']' | b'}' => depth -= 1,
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    (bytes.len(), depth)
+}
+
+/// True when `code` ends in an operator that cannot end a statement.
+fn ends_with_continuation_operator(code: &str) -> bool {
+    let t = code.trim_end();
+    if t.ends_with("=>") {
+        return false;
+    }
+    // `int(4)+` / `int(2)-` are types, not a dangling operator.
+    if let Some(head) = t.strip_suffix('+').or_else(|| t.strip_suffix('-')) {
+        if let Some(inner) = head.strip_suffix(')') {
+            if let Some(open) = inner.rfind('(') {
+                let digits = &inner[open + 1..];
+                if !digits.is_empty()
+                    && digits.chars().all(|c| c.is_ascii_digit())
+                    && inner[..open].ends_with("int")
+                {
+                    return false;
+                }
+            }
+        }
+    }
+    ["&&", "||", "==", "!=", "<=", ">=", "<<", ">>", "+", "-", "*", "/", "%", "&", "|", "^", "=", ",", "\\"]
+        .iter()
+        .any(|op| t.ends_with(op))
+}
+
+/// Join logical lines that span several physical ones: an unclosed `(` `[` `{`, or a trailing
+/// binary operator. Newlines become spaces and the comment text on joined lines is blanked, so
+/// every byte offset stays valid; only line numbers change, so the returned map gives the
+/// original 0-based line of each joined line. `None` when nothing needs joining.
+pub fn join_continuation_lines(source: &str) -> Option<(String, Vec<usize>)> {
+    let lines: Vec<&str> = source.split('\n').collect();
+    let mut out = String::with_capacity(source.len());
+    let mut map: Vec<usize> = Vec::new();
+    let mut joined_any = false;
+    let mut in_block_comment = false;
+    let mut i = 0;
+    while i < lines.len() {
+        let start_in_comment = in_block_comment;
+        let (code_end, depth0) = scan_code(lines[i], &mut in_block_comment);
+        let first_code = &lines[i][..code_end];
+        let wants_more = !start_in_comment
+            && !in_block_comment
+            && (depth0 > 0 || (!first_code.trim().is_empty() && ends_with_continuation_operator(first_code)));
+        if !wants_more || i + 1 >= lines.len() {
+            map.push(i);
+            out.push_str(lines[i]);
+            if i + 1 < lines.len() {
+                out.push('\n');
+            }
+            i += 1;
+            continue;
+        }
+        // Gather the continuation; give up (keep the lines apart) if it never closes.
+        let mut depth = depth0;
+        let mut group = vec![i];
+        let mut j = i;
+        let mut bc = in_block_comment;
+        let mut last_code = first_code;
+        let mut closed = false;
+        while j + 1 < lines.len() {
+            j += 1;
+            group.push(j);
+            let (end, d) = scan_code(lines[j], &mut bc);
+            depth += d;
+            last_code = &lines[j][..end];
+            if depth <= 0 && !(bc || (!last_code.trim().is_empty() && ends_with_continuation_operator(last_code))) {
+                closed = true;
+                break;
+            }
+            if lines[j].trim().is_empty() && depth <= 0 {
+                break;
+            }
+        }
+        let _ = last_code;
+        if !closed {
+            map.push(i);
+            out.push_str(lines[i]);
+            out.push('\n');
+            i += 1;
+            continue;
+        }
+        joined_any = true;
+        map.push(i);
+        let mut bc2 = in_block_comment;
+        for (k, &idx) in group.iter().enumerate() {
+            let line = lines[idx];
+            let (end, _) = scan_code(line, &mut bc2);
+            let last = k + 1 == group.len();
+            if last {
+                out.push_str(line);
+            } else {
+                out.push_str(&line[..end]);
+                out.extend(std::iter::repeat(' ').take(line.len() - end));
+                out.push(' ');
+            }
+        }
+        in_block_comment = bc;
+        if j + 1 < lines.len() {
+            out.push('\n');
+        }
+        i = j + 1;
+    }
+    joined_any.then_some((out, map))
+}
+
 /// First line whose indentation falls between two open block levels (a dedent that matches no
 /// enclosing block). Without this the parser silently drops or reparents the line.
 /// Returns the 1-based line number. Lines inside brackets and comments are continuations.

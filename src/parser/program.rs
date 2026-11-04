@@ -100,7 +100,24 @@ fn span_for_consumed_lines(
 /// * `Ok(Program)` - Successfully parsed program if no errors occurred
 /// * `Err(Vec<ParseError>)` - List of parsing errors if any syntax errors were found
 pub fn parse_program(input: &str) -> Result<Program, Vec<ParseError>> {
-    with_source_origin(input, || parse_program_inner(input))
+    match super::indent::join_continuation_lines(input) {
+        None => with_source_origin(input, || parse_program_inner(input)),
+        // Same bytes, fewer lines: parse the joined text, then report errors against the
+        // original line numbers.
+        Some((joined, line_map)) => {
+            with_source_origin(&joined, || parse_program_inner(&joined)).map_err(|errors| {
+                errors
+                    .into_iter()
+                    .map(|e| {
+                        let original = line_map
+                            .get(e.line().saturating_sub(1))
+                            .map_or(e.line(), |&l| l + 1);
+                        e.with_line(original)
+                    })
+                    .collect()
+            })
+        }
+    }
 }
 
 fn parse_program_inner(input: &str) -> Result<Program, Vec<ParseError>> {

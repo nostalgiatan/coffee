@@ -577,6 +577,24 @@ impl ParseError {
         }
     }
 
+    /// The same error reported at `new_line`.
+    pub fn with_line(mut self, new_line: usize) -> Self {
+        match &mut self {
+            ParseError::MissingParameterName { line, .. }
+            | ParseError::MissingClosingParen { line, .. }
+            | ParseError::MissingReturnType { line, .. }
+            | ParseError::MissingColon { line, .. }
+            | ParseError::MissingTypeAnnotation { line, .. }
+            | ParseError::InvalidFunctionSyntax { line, .. }
+            | ParseError::UnexpectedKeyword { line, .. }
+            | ParseError::MissingBlockBody { line, .. }
+            | ParseError::GenericSyntaxError { line, .. }
+            | ParseError::WrongCommentSyntax { line, .. }
+            | ParseError::InvalidUseOfBraces { line, .. } => *line = new_line,
+        }
+        self
+    }
+
     /// Get error location
     pub fn line(&self) -> usize {
         match self {

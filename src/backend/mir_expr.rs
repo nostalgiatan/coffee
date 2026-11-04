@@ -939,6 +939,19 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             }
         }
         let object_value = self.compile_hir_expr_typed(object)?;
+        // `c.me().get()`: the receiver is a temporary, so a no-argument method call looks
+        // like a field read; the method table decides.
+        if let Some(class_name) = hir_named_type(&object.ty) {
+            let mut current = Some(class_name.to_string());
+            while let Some(name) = current {
+                if self.functions.contains_key(&format!("{}_{}", name, field)) {
+                    let result = self.emit_method_call(field, class_name, field, object_value, vec![])?;
+                    self.drop_temporary_receiver(object, object_value)?;
+                    return Ok(result);
+                }
+                current = self.classes.get(&name).and_then(|c| c.parent.clone());
+            }
+        }
         let object_str = hir_variable_name(object).unwrap_or(field);
         self.emit_field_load(
             object_str,
@@ -1013,7 +1026,61 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             .or_else(|| hir_named_type(&object.ty).map(str::to_string))
             .unwrap_or_else(|| object_str.to_string());
         let compiled_args = self.compile_hir_call_args(args)?;
-        self.emit_method_call(object_str, &class_name, field, object_value, compiled_args)
+        let result = self.emit_method_call(object_str, &class_name, field, object_value, compiled_args)?;
+        self.drop_temporary_receiver(object, object_value)?;
+        Ok(result)
+    }
+
+    /// A method called on a fresh value (`c.me().get()`) leaves that value without an owner:
+    /// free it once the call is done.
+    fn drop_temporary_receiver(
+        &mut self,
+        object: &HirExpr,
+        value: BasicValueEnum<'ctx>,
+    ) -> Result<(), String> {
+        let is_rvalue = match &object.kind {
+            HirExprKind::Call { .. }
+            | HirExprKind::ConstructorCall { .. }
+            | HirExprKind::StructLiteral { .. } => true,
+            // `c.me()` with no arguments is a `Member`; a field read would be a place.
+            HirExprKind::Member { object: inner, field, .. } => {
+                let mut current = hir_named_type(&inner.ty).map(str::to_string);
+                let mut found = false;
+                while let Some(name) = current {
+                    if self.functions.contains_key(&format!("{}_{}", name, field)) {
+                        found = true;
+                        break;
+                    }
+                    current = self.classes.get(&name).and_then(|c| c.parent.clone());
+                }
+                found
+            }
+            _ => false,
+        };
+        if !is_rvalue || !self.ty_is_owned_resource(&object.ty) {
+            return Ok(());
+        }
+        let BasicValueEnum::PointerValue(_) = value else {
+            return Ok(());
+        };
+        let llvm_ty = value.get_type();
+        let slot = self
+            .backend
+            .builder
+            .build_alloca(llvm_ty, "tmp_receiver")
+            .map_err(|e| self.error("compile_method_call", e.to_string()))?;
+        self.backend
+            .builder
+            .build_store(slot, value)
+            .map_err(|e| self.error("compile_method_call", e.to_string()))?;
+        super::memory_ops::drop_coffee_place(
+            self.backend.context,
+            &self.backend.builder,
+            &self.functions,
+            &object.ty,
+            slot,
+            llvm_ty,
+        )
     }
 
     fn compile_hir_constructor_typed(
