@@ -220,7 +220,7 @@ fn on_err(err: Error) => int:
 fn divide(a: int, b: int) #on_err => int:
     if b == 0:
         raise TestError(400)
-    return a / b
+    return a // b
 
 fn main() => int:
     let result: int = divide(10, 2)

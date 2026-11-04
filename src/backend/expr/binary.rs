@@ -214,7 +214,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                     "+" => self.arithmetic_ctx.build_int_add(self.backend.context, &self.backend.builder, l, r, signed)?.into(),
                     "-" => self.arithmetic_ctx.build_int_sub(self.backend.context, &self.backend.builder, l, r, signed)?.into(),
                     "*" => self.arithmetic_ctx.build_int_mul(self.backend.context, &self.backend.builder, l, r, signed)?.into(),
-                    "/" => self.arithmetic_ctx.build_int_div(self.backend.context, &self.backend.builder, l, r, signed)?,
+                    "/" | "//" => self.arithmetic_ctx.build_int_div(self.backend.context, &self.backend.builder, l, r, signed)?,
                     "%" => self.arithmetic_ctx.build_int_mod(self.backend.context, &self.backend.builder, l, r, signed)?,
                     "&&" => self.backend.builder.build_and(l, r, "and")
                         .map_err(|e| self.error("binary_operation", format!("failed to build and operation: {}", e)))?.into(),

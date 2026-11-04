@@ -66,7 +66,7 @@ impl SemanticAnalyzer {
         }
 
         // Try binary operations with constant folding
-        for op in ["+", "-", "*", "/", "%", "==", "!=", "<", ">", "<=", ">=", "&&", "||"] {
+        for op in ["+", "-", "*", "//", "/", "%", "==", "!=", "<", ">", "<=", ">=", "&&", "||"] {
             if let Some(pos) = expr.find(op) {
                 if pos > 0 {
                     let left_str = &expr[..pos].trim();
@@ -117,7 +117,7 @@ impl SemanticAnalyzer {
                         .ok_or_else(|| "Integer overflow in constant expression: subtraction".to_string())?,
                     "*" => l.checked_mul(*r)
                         .ok_or_else(|| "Integer overflow in constant expression: multiplication".to_string())?,
-                    "/" => {
+                    "/" | "//" => {
                         if *r == 0 {
                             return Err("Division by zero in constant expression".to_string());
                         }

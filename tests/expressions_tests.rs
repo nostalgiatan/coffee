@@ -122,7 +122,7 @@ fn main() => int:
 fn test_division() {
     let source = r#"
 fn main() => int:
-    let a: int = 20 / 5
+    let a: int = 20 // 5
     rm a
     return 0
 
@@ -266,7 +266,7 @@ fn main() => int:
 fn test_complex_expression() {
     let source = r#"
 fn main() => int:
-    let a: int = (10 + 20) * (30 - 40) / 5
+    let a: int = (10 + 20) * (30 - 40) // 5
     rm a
     return 0
 
@@ -444,7 +444,7 @@ fn main() => int:
 fn test_complex_arithmetic() {
     let source = r#"
 fn main() => int:
-    let a: int = ((10 + 20) * 30 - 40) / 5
+    let a: int = ((10 + 20) * 30 - 40) // 5
     rm a
     return 0
 
@@ -532,7 +532,7 @@ fn main() => int:
 fn test_division_by_zero_compiles() {
     let source = r#"
 fn main() => int:
-    let a: int = 10 / 0
+    let a: int = 10 // 0
     rm a
     return 0
 
@@ -612,7 +612,7 @@ fn test_complex_arithmetic_operations() {
 fn main() => int:
     let a: int = 10
     let b: int = 5
-    let c: int = (a + b) * (a - b) / (a / b)
+    let c: int = (a + b) * (a - b) // (a // b)
     rm a, b, c
     return 0
 
@@ -629,8 +629,8 @@ fn main() => int:
     let c: int = 3
     let d: int = a + b * c
     let e: int = (a + b) * c
-    let f: int = a / b + c
-    let g: int = a / (b + c)
+    let f: int = a // b + c
+    let g: int = a // (b + c)
     rm a, b, c, d, e, f, g
     return 0
 
@@ -642,7 +642,7 @@ fn main() => int:
 fn test_nested_expressions() {
     let source = r#"
 fn main() => int:
-    let a: int = (((1 + 2) * 3) - 4) / 2
+    let a: int = (((1 + 2) * 3) - 4) // 2
     rm a
     return 0
 
@@ -884,4 +884,23 @@ fn main() => int:
         "mul overflow must not store 0 and continue:\n{}",
         body
     );
+}
+#[test]
+fn test_slash_on_two_ints_is_an_error() {
+    assert_compile_error("fn main() => int:\n    let a: int = 7 / 2\n    return a\n", "invalid operation").unwrap();
+}
+
+#[test]
+fn test_double_slash_is_integer_division() {
+    assert_exit_code("fn main() => int:\n    let a: int = 17\n    let b: int = 5\n    return a // b\n", 3).unwrap();
+}
+
+#[test]
+fn test_double_slash_rejects_floats() {
+    assert_compile_error("fn main() => int:\n    let a: float = 7.0 // 2.0\n    return 0\n", "invalid operation").unwrap();
+}
+
+#[test]
+fn test_slash_on_floats_is_still_float_division() {
+    assert_exit_code("fn main() => int:\n    let a: float = 7.0 / 2.0\n    if a > 3.4:\n        return 1\n    return 0\n", 1).unwrap();
 }

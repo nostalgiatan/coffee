@@ -87,6 +87,17 @@ impl super::super::TypeChecker {
         let location = TypeSystemError::span_for_name(op);
 
         match op {
+            "//" => {
+                if left_type.is_int() && right_type.is_int() {
+                    Ok(self.promote_numeric_types(left_type, right_type))
+                } else {
+                    Err(TypeSystemError::invalid_operation(op, left_type.clone(), right_type.clone(), location))
+                }
+            }
+            "/" if left_type.is_int() && right_type.is_int() => {
+                // `/` is float division; integer division is `//`.
+                Err(TypeSystemError::invalid_operation(op, left_type.clone(), right_type.clone(), location))
+            }
             "+" | "-" | "*" | "/" | "%" => {
                 if left_type.is_numeric() && right_type.is_numeric() {
                     Ok(self.promote_numeric_types(left_type, right_type))

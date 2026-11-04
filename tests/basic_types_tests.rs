@@ -149,7 +149,7 @@ fn main() => int:
     let c: int = a + b
     let d: int = a - b
     let e: int = a * b
-    let f: int = b / a
+    let f: int = b // a
     let g: int = b % a
     rm g
     rm f
