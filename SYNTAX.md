@@ -186,6 +186,18 @@ let name: str = "Coffee"
 let enabled: bool = true
 ```
 
+**类型推断**：省略类型标注时，类型取自右边的值。
+
+```coffee
+let n = 42                 /#/ int
+let ratio = 1.5            /#/ float
+let name = "Coffee"        /#/ str
+let p = P { x: 1 }         /#/ P
+let total = n + 8          /#/ int
+```
+
+数字字面量推断为默认的 `int` / `float`（8 字节）；需要 `int(4)+` 这类窄类型时仍写标注。推断不出的值（空数组 `[]`、返回 `void` 的调用）是错误，要加标注。
+
 ### 赋值语句
 
 ```coffee

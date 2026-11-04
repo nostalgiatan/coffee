@@ -9,12 +9,19 @@ use nom::{
 use crate::parser::expr::Expression;
 
 /// 变量声明
-/// let name:type = value
+/// let name:type = value, or let name = value
 #[derive(Debug, PartialEq, Clone)]
 pub struct VariableDecl {
     pub name: String,
+    /// Empty for `let name = value`: the type is inferred from `value`.
     pub var_type: String,
     pub value: Expression,
+}
+
+impl VariableDecl {
+    pub fn is_inferred(&self) -> bool {
+        self.var_type.is_empty()
+    }
 }
 
 /// Return 语句
@@ -43,10 +50,14 @@ pub fn parse_variable_decl_at(input: &str, base: usize) -> IResult<&str, Variabl
     let (input, _) = space1(input)?;
     let (input, name) = parse_identifier(input)?;
     let (input, _) = space0(input)?;
-    let (input, _) = tag(":")(input)?;
-    let (input, _) = space0(input)?;  // Skip spaces after colon!
-    let (input, var_type) = crate::parser::ty::parse_type(input)?;
-    let var_type = var_type.trim();  // Trim whitespace from type
+    // `let name = value` leaves the type empty; the checker infers it from the value.
+    let (input, var_type) = if let Ok((input, _)) = tag::<_, _, nom::error::Error<&str>>(":")(input) {
+        let (input, _) = space0(input)?;  // Skip spaces after colon!
+        let (input, var_type) = crate::parser::ty::parse_type(input)?;
+        (input, var_type.trim())  // Trim whitespace from type
+    } else {
+        (input, "")
+    };
     let (input, _) = multispace0(input)?;
     let (input, _) = tag("=")(input)?;
     let (input, _) = multispace0(input)?;

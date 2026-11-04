@@ -60,6 +60,18 @@ impl super::TypeChecker {
         Ok(())
     }
 
+    /// True when `ty` still contains the `_` placeholder (an element type nothing fixed).
+    fn type_has_infer_hole(ty: &Type) -> bool {
+        match ty {
+            Type::NamedType { .. } => ty.is_infer_hole(),
+            Type::Tuple(elems) => elems.iter().any(Self::type_has_infer_hole),
+            Type::Array { elem, .. } | Type::Slice(elem) | Type::Ref { elem, .. } => {
+                Self::type_has_infer_hole(elem)
+            }
+            _ => false,
+        }
+    }
+
     /// Check a variable declaration
     pub fn check_variable_decl(&mut self, decl: &parser::var::VariableDecl) -> Result<(), TypeSystemError> {
         let location = Span::new(0, decl.name.len());
@@ -82,7 +94,30 @@ impl super::TypeChecker {
         }
 
         // Resolve type
-        let ty = if let Some(fn_ty) = Self::coffee_fn_type_from_str(&decl.var_type) {
+        let mut inferred_value_type: Option<Type> = None;
+        let ty = if decl.is_inferred() {
+            let value_ty = match self.check_expression_hint(&decl.value, None) {
+                Ok(t) => t,
+                Err(e) => {
+                    self.add_error(e.clone());
+                    return Err(e);
+                }
+            };
+            if matches!(value_ty, Type::Void) || Self::type_has_infer_hole(&value_ty) {
+                let error = TypeSystemError::ConstraintViolation {
+                    constraint: "let type inference".to_string(),
+                    reason: format!(
+                        "cannot infer the type of '{}' from a value of type {}; add a type annotation",
+                        decl.name, value_ty
+                    ),
+                    span: location,
+                };
+                self.add_error(error.clone());
+                return Err(error);
+            }
+            inferred_value_type = Some(value_ty.clone());
+            value_ty
+        } else if let Some(fn_ty) = Self::coffee_fn_type_from_str(&decl.var_type) {
             fn_ty
         } else {
             let registry_result = self.registry.read();
@@ -103,6 +138,7 @@ impl super::TypeChecker {
         coffee_debug!("[DEBUG] check_variable_decl: resolved type to {:?}", ty);
 
         let value_type = match decl.value.kind() {
+            _ if inferred_value_type.is_some() => inferred_value_type.clone().unwrap(),
             crate::parser::expr::Expression::ArrayLiteral { elements }
                 if elements.is_empty() =>
             {

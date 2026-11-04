@@ -486,7 +486,7 @@ impl ParseError {
                 "Coffee imports with `use module` or `use name in lib of c`, not `import`.".to_string(),
             ),
             "var" | "const" => hints.push(
-                "Coffee bindings use `let name: Type = value`, not `var` or `const`.".to_string(),
+                "Coffee bindings use `let name: Type = value` or `let name = value`, not `var` or `const`.".to_string(),
             ),
             "#include" => hints.push(
                 "Coffee has no `#include`. Use `use name in lib of c` (and a `.cfc` file when needed).".to_string(),
@@ -522,7 +522,7 @@ impl ParseError {
         } else if line.contains("for ") {
             "For syntax: for var in iterable:".to_string()
         } else if line.starts_with("let ") {
-            "Let syntax: let name: Type = value".to_string()
+            "Let syntax: let name: Type = value (or let name = value to infer the type)".to_string()
         } else {
             "Check syntax in language documentation".to_string()
         }

@@ -50,6 +50,13 @@ impl SemanticAnalyzer {
 
         if let Some(binding) = binding {
             match &binding.entity {
+                crate::types::definition::Entity::Variable { ty, .. } if ty.is_infer_hole() => {
+                    Err(TypeSystemError::ParseError {
+                        type_str: name.to_string(),
+                        reason: "cannot infer type here; type checking owns this `let` type"
+                            .to_string(),
+                    })
+                }
                 crate::types::definition::Entity::Variable { ty, .. } => Ok(ty.clone()),
                 crate::types::definition::Entity::Function { .. } => {
                     Err(TypeSystemError::ParseError {

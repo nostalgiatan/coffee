@@ -19,6 +19,21 @@ where
                 name,
                 var_type,
                 value,
+            }) if var_type.is_empty() => {
+                // `let x = value`: the value's own type is the variable's type.
+                let value = self.lower_expr(value)?;
+                let ty = value.ty.clone();
+                self.extra_types.insert(name.clone(), ty.clone());
+                Ok(HirStmt::Let {
+                    name: name.clone(),
+                    ty,
+                    value,
+                })
+            }
+            Statement::VariableDecl(VariableDecl {
+                name,
+                var_type,
+                value,
             }) => {
                 let ty = type_from_str(var_type)?;
                 // Annotation types the RHS so `p.x` does not need checker
@@ -225,12 +240,35 @@ where
         let mut saved = Vec::new();
         for s in stmts {
             if let Statement::VariableDecl(VariableDecl { name, var_type, .. }) = s {
+                if var_type.is_empty() {
+                    continue;
+                }
                 let ty = type_from_str(var_type)?;
                 saved.push((name.clone(), self.extra_types.insert(name.clone(), ty)));
             }
         }
-        let result: Result<Vec<HirStmt>, String> =
-            stmts.iter().map(|s| self.lower_stmt(s)).collect();
+        let mut result: Result<Vec<HirStmt>, String> = Ok(Vec::with_capacity(stmts.len()));
+        for s in stmts {
+            // An inferred `let` is typed only once its value is lowered, so it binds then.
+            let inferred_prev = match s {
+                Statement::VariableDecl(d) if d.var_type.is_empty() => {
+                    Some((d.name.clone(), self.extra_types.get(&d.name).cloned()))
+                }
+                _ => None,
+            };
+            let lowered = self.lower_stmt(s);
+            if let Some(prev) = inferred_prev {
+                saved.push(prev);
+            }
+            match (&mut result, lowered) {
+                (Ok(out), Ok(stmt)) => out.push(stmt),
+                (_, Err(e)) => {
+                    result = Err(e);
+                    break;
+                }
+                _ => break,
+            }
+        }
         for (name, prev) in saved.into_iter().rev() {
             self.restore_extra_type(name, prev);
         }

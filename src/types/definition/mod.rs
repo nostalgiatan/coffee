@@ -57,6 +57,15 @@ pub enum Type {
 }
 
 impl Type {
+    /// Placeholder for a `let` whose type the type checker infers; never a real type.
+    pub fn infer_hole() -> Self {
+        Type::NamedType { name: "_".to_string() }
+    }
+
+    pub fn is_infer_hole(&self) -> bool {
+        matches!(self, Type::NamedType { name } if name == "_")
+    }
+
     /// 创建默认 int 类型 (i64)
     pub fn int() -> Self {
         Type::Int { bits: 64, signed: true }

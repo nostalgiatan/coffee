@@ -275,7 +275,9 @@ fn subst_stmts(stmts: &mut [Statement], map: &HashMap<String, Type>) -> Result<(
 fn subst_stmt(stmt: &mut Statement, map: &HashMap<String, Type>) -> Result<(), String> {
     match stmt {
         Statement::VariableDecl(decl) => {
-            decl.var_type = subst_type_string(&decl.var_type, map)?;
+            if !decl.is_inferred() {
+                decl.var_type = subst_type_string(&decl.var_type, map)?;
+            }
             subst_expr(&mut decl.value, map)?;
         }
         Statement::Assignment(_, value) => subst_expr(value, map)?,
@@ -420,7 +422,9 @@ fn rewrite_stmt(
 ) {
     match stmt {
         Statement::VariableDecl(decl) => {
-            rewrite_type_str(&mut decl.var_type, reg);
+            if !decl.is_inferred() {
+                rewrite_type_str(&mut decl.var_type, reg);
+            }
             let ty = reg.resolve_type(&decl.var_type).ok();
             rewrite_expr(&mut decl.value, ty.as_ref(), reg);
         }

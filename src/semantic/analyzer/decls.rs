@@ -9,12 +9,18 @@ impl SemanticAnalyzer {
         let span = Span::new(0, decl.name.len());
 
         // 解析类型
-        let ty = match self.type_registry.read() {
-            Ok(reg) => reg.resolve_type(&decl.var_type)?,
-            Err(_) => return Err(TypeSystemError::ParseError {
-                type_str: decl.var_type.clone(),
-                reason: "Failed to access type registry".to_string(),
-            }),
+        let ty = if decl.is_inferred() {
+            // `let x = value`: infer what is cheap here; a hole means the type checker
+            // owns the type (calls, members, binary expressions).
+            self.infer_expression_type(&decl.value).unwrap_or_else(|_| Type::infer_hole())
+        } else {
+            match self.type_registry.read() {
+                Ok(reg) => reg.resolve_type(&decl.var_type)?,
+                Err(_) => return Err(TypeSystemError::ParseError {
+                    type_str: decl.var_type.clone(),
+                    reason: "Failed to access type registry".to_string(),
+                }),
+            }
         };
 
         // 创建实体
