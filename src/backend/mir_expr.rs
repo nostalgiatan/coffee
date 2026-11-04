@@ -336,7 +336,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         ))
     }
 
-    fn enum_is_unit_only(&self, enum_name: &str) -> bool {
+    pub(crate) fn enum_is_unit_only(&self, enum_name: &str) -> bool {
         self.enums.get(enum_name).map(|e| {
             e.variants.iter().all(|v| v.fields.is_empty())
         }).unwrap_or(true)
@@ -810,10 +810,17 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         &mut self,
         object: &HirExpr,
         field: &str,
-        _full: &HirExpr,
+        full: &HirExpr,
     ) -> Result<BasicValueEnum<'ctx>, String> {
         if let Some(name) = hir_variable_name(object) {
             if self.enums.contains_key(name) {
+                // A value of an enum with payload variants is a pointer to `{ tag, payload.. }`
+                // (parameters, `match`), so its unit variants must be one too. Match patterns
+                // build the same node typed `int` and want the bare tag.
+                let is_enum_value = hir_named_type(&full.ty) == Some(name);
+                if is_enum_value && !self.enum_is_unit_only(name) {
+                    return self.emit_enum_variant_call(name, field, Vec::new());
+                }
                 return self.compile_enum_simple_variant(name, field);
             }
             if self.variables.contains_key(name) {
