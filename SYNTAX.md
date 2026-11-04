@@ -429,6 +429,16 @@ fn describe(x: int) => str:
         _ => "other"
 ```
 
+分支可以是多语句块：`=>` 后面换行，下面写更深一层缩进的语句。
+
+```coffee
+match e:
+    E.A => return 0
+    E.B(n) =>
+        let m = n + 1
+        return m * 2
+```
+
 `match` 是语句，不是可以放在 `let` 右侧的表达式。当它是**非 void 函数（或方法）的最后一条语句**时，写成裸表达式的分支值就是返回值（等价于 `return <表达式>`）。其它位置的 `match` 分支值会被丢弃。
 
 非 void 函数的每条路径都必须以 `return` 或 `raise` 结束，否则报 `missing return`。`if` 要有 `else` 且各分支都返回；`match` 要所有分支都返回；`while true:` 且循环内没有 `break` 视为不会落出。

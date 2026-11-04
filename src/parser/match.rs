@@ -69,7 +69,18 @@ fn parse_match_arm(input: &str) -> IResult<&str, MatchArm> {
     let (input, pattern_raw) = take_until_double_arrow(input)?;
     let (input, _) = tag("=>")(input)?;
     let (input, _) = space0(input)?;
-    let (input, result) = parse_single_line(input)?;
+    // `pat =>` with nothing after it opens a block of more deeply indented statements.
+    let arm_indent = pattern_raw.rsplit('\n').next().map_or(0, leading_spaces);
+    let (input, block) = if input.starts_with('\n') {
+        take_indented_block(input, arm_indent)
+    } else {
+        (input, None)
+    };
+    let (input, result) = if block.is_some() {
+        (input, "")
+    } else {
+        parse_single_line(input)?
+    };
 
     let pattern_raw = pattern_raw.trim();
     let (pattern, guard) = if let Some(pos) = pattern_raw.find(" if ") {
@@ -81,7 +92,17 @@ fn parse_match_arm(input: &str) -> IResult<&str, MatchArm> {
     };
 
     let line = result.trim();
-    let body = if line.is_empty() {
+    let body = if let Some(block) = block {
+        match super::r#if::parse_statement_block(&block, true) {
+            Ok((_, stmts)) => stmts,
+            Err(_) => {
+                return Err(nom::Err::Error(nom::error::Error {
+                    input,
+                    code: ErrorKind::Fail,
+                }))
+            }
+        }
+    } else if line.is_empty() {
         Vec::new()
     } else if let Some(stmt) = super::line::parse_single_line_statement_at(
         line,
@@ -103,6 +124,38 @@ fn parse_match_arm(input: &str) -> IResult<&str, MatchArm> {
             body,
         },
     ))
+}
+
+fn leading_spaces(line: &str) -> usize {
+    line.len() - line.trim_start_matches(' ').len()
+}
+
+/// `input` starts at the newline ending an arm's `=>` line. Takes the following lines that
+/// are indented deeper than the arm; returns what is left (starting at the newline that ends
+/// the block, so the next arm still sees its leading newline) and the block text with a
+/// leading newline, or `None` when no deeper line follows.
+fn take_indented_block(input: &str, arm_indent: usize) -> (&str, Option<String>) {
+    let mut pos = 1;
+    let mut end = 0;
+    while pos <= input.len() {
+        let line_end = input[pos..].find('\n').map_or(input.len(), |i| pos + i);
+        let line = &input[pos..line_end];
+        if line.trim().is_empty() {
+            // A blank line belongs to the block only if a deeper line follows it.
+        } else if leading_spaces(line) > arm_indent {
+            end = line_end;
+        } else {
+            break;
+        }
+        if line_end >= input.len() {
+            break;
+        }
+        pos = line_end + 1;
+    }
+    if end == 0 {
+        return (input, None);
+    }
+    (&input[end..], Some(input[..end].to_string()))
 }
 
 fn parse_pattern<'a>(parent: &str, raw: &'a str) -> Result<Pattern, nom::Err<nom::error::Error<&'a str>>> {

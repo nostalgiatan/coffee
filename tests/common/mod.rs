@@ -132,6 +132,53 @@ main = "src/main"
     Ok(test_result_from_output(&output))
 }
 
+#[allow(dead_code)]
+fn run_with_timeout(
+    exe: &str,
+    limit: std::time::Duration,
+) -> Result<std::process::Output, String> {
+    use std::io::Read;
+    use std::process::Stdio;
+    let mut child = Command::new(exe)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to run executable: {}", e))?;
+    let mut stdout = child.stdout.take().expect("piped stdout");
+    let mut stderr = child.stderr.take().expect("piped stderr");
+    let out_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stdout.read_to_end(&mut buf);
+        buf
+    });
+    let err_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stderr.read_to_end(&mut buf);
+        buf
+    });
+    let start = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if start.elapsed() > limit => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "executable did not finish within {:?} (infinite loop?)",
+                    limit
+                ));
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(10)),
+            Err(e) => return Err(format!("Failed to wait for executable: {}", e)),
+        }
+    };
+    Ok(std::process::Output {
+        status,
+        stdout: out_thread.join().unwrap_or_default(),
+        stderr: err_thread.join().unwrap_or_default(),
+    })
+}
+
 /// 编译并执行Coffee程序，成功时返回**运行**结果（stdout/stderr/exit_code）。
 /// 编译失败时返回编译结果（非零 exit），与原先 compile-fail 路径一致。
 #[allow(dead_code)]
@@ -189,18 +236,16 @@ pub fn compile_and_run_coffee(source: &str) -> Result<TestResult, String> {
         format!("Failed to set executable permissions: {}", e)
     })?;
 
-    let run_output = Command::new(format!("./{}", exe_file))
-        .output()
-        .map_err(|e| {
-            let _ = fs::remove_file(&test_file);
-            remove_exe_and_object(&exe_file);
-            format!("Failed to run executable: {}", e)
-        })?;
+    // A miscompiled loop must fail the test, not hang the suite.
+    let run_output = run_with_timeout(&format!("./{}", exe_file), std::time::Duration::from_secs(20));
 
     let _ = fs::remove_file(&test_file);
     remove_exe_and_object(&exe_file);
 
-    Ok(test_result_from_output(&run_output))
+    match run_output {
+        Ok(output) => Ok(test_result_from_output(&output)),
+        Err(e) => Err(e),
+    }
 }
 
 /// 编译并执行Coffee程序（`compile_and_run_coffee` 的别名）
@@ -281,12 +326,12 @@ pub fn assert_exit_code(source: &str, expected: i32) -> Result<(), String> {
         perms.set_mode(0o755);
         let _ = fs::set_permissions(&exe_file, perms);
 
-        let run_output = Command::new(format!("./{}", exe_file))
-            .output()
+        // A miscompiled loop must fail the test, not hang the suite.
+        let run_output = run_with_timeout(&format!("./{}", exe_file), std::time::Duration::from_secs(20))
             .map_err(|e| {
                 let _ = fs::remove_file(&test_file);
                 remove_exe_and_object(&exe_file);
-                format!("Failed to run executable: {}", e)
+                e
             })?;
 
         remove_exe_and_object(&exe_file);

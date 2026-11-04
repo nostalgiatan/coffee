@@ -276,7 +276,7 @@ fn parse_else(input: &str) -> IResult<&str, Vec<Statement>> {
 /// 
 /// * `Ok((remaining, Vec<Statement>))` - Successfully parsed statements and remaining input
 /// * `Err(nom::Err)` - If the block parsing fails
-fn parse_statement_block(input: &str, is_last_branch: bool) -> IResult<&str, Vec<Statement>> {
+pub(super) fn parse_statement_block(input: &str, is_last_branch: bool) -> IResult<&str, Vec<Statement>> {
     if !input.starts_with('\n') {
         // Single line - try both multiline and single line parsers
         let (input, line) = take_until_newline(input)?;

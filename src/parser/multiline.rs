@@ -526,6 +526,9 @@ fn collect_multiline_content<'a>(lines: &'a [&str], keyword: &str) -> Option<(Co
     // Initialize block tracker
     let mut tracker = BlockTracker::new();
     let mut base_indent = None;
+    // The first line ends in `:` (`if` / `while` / `for` / `match` / `fn` ...): its body is
+    // indented, so any later non-blank line back at the base indent starts a new statement.
+    let mut opens_block = false;
     const MAX_ITER: usize = 1_000_000;
 
     for (line_idx, line) in lines.iter().enumerate() {
@@ -582,6 +585,7 @@ fn collect_multiline_content<'a>(lines: &'a [&str], keyword: &str) -> Option<(Co
             // If the line ends with ':', it's a block start
             // If the line has unclosed braces/brackets/parens, it's a multiline expression
             if trimmed.ends_with(':') {
+                opens_block = true;
                 // Start tracking this block
                 if let Some(block_type) = BlockTracker::detect_block_type(line) {
                     tracker.push_block(block_type, current_indent, line_num, true);
@@ -639,7 +643,9 @@ fn collect_multiline_content<'a>(lines: &'a [&str], keyword: &str) -> Option<(Co
                 } else if current_indent < base_level {
                     true // Dedented past the base level
                 } else {
-                    false // Continue collecting
+                    // Same indent as the block header: a sibling statement ends the block
+                    // (`elif` / `else` continuations were handled above).
+                    opens_block
                 }
             } else {
                 false
