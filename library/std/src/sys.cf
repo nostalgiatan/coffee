@@ -43,3 +43,7 @@ fn sys_next_cap(len: int, cap: int) => int:
     if len == cap:
         return cap * 2
     return cap
+
+fn sys_write_str(fd: int, s: str) => int:
+    let n: int = strlen(s)
+    return write(fd, s, n)

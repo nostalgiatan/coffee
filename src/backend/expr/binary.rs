@@ -160,6 +160,32 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         }
     }
 
+    /// Widen the narrower of two integers to the other's width.
+    fn unify_int_widths(
+        &self,
+        l: inkwell::values::IntValue<'ctx>,
+        r: inkwell::values::IntValue<'ctx>,
+        signed: bool,
+    ) -> Result<(inkwell::values::IntValue<'ctx>, inkwell::values::IntValue<'ctx>), String> {
+        let (lw, rw) = (l.get_type().get_bit_width(), r.get_type().get_bit_width());
+        if lw == rw {
+            return Ok((l, r));
+        }
+        let widen = |v: inkwell::values::IntValue<'ctx>, to: inkwell::types::IntType<'ctx>| {
+            let result = if signed {
+                self.backend.builder.build_int_s_extend(v, to, "widen")
+            } else {
+                self.backend.builder.build_int_z_extend(v, to, "widen")
+            };
+            result.map_err(|e| self.error("binary_operation", format!("failed to widen operand: {}", e)))
+        };
+        if lw < rw {
+            Ok((widen(l, r.get_type())?, r))
+        } else {
+            Ok((l, widen(r, l.get_type())?))
+        }
+    }
+
     /// Build binary operation using arithmetic module
     pub(crate) fn build_binary_op(&mut self, op: &str, left: BasicValueEnum<'ctx>, right: BasicValueEnum<'ctx>) -> Result<BasicValueEnum<'ctx>, String> {
         use inkwell::IntPredicate;
@@ -172,6 +198,9 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             }
             (BasicValueEnum::IntValue(l), BasicValueEnum::IntValue(r)) => {
                 let signed = self.coffee_int_is_signed(l) && self.coffee_int_is_signed(r);
+                // The checker promotes mixed widths (`int(4)+` from C with `int`); LLVM needs
+                // both operands the same width.
+                let (l, r) = self.unify_int_widths(l, r, signed)?;
                 // HIGH-11 FIX: Use safe shift operations that check for negative amounts and overflow
                 let result: BasicValueEnum<'ctx> = match op {
                     "<<" => self.arithmetic_ctx.build_int_shl(self.backend.context, &self.backend.builder, l, r)?.into(),

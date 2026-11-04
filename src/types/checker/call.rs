@@ -80,7 +80,10 @@ impl super::TypeChecker {
                 return Err(error);
             }
         }
-        self.consume_last_use_call_args(param_types, args)?;
+        // C callees borrow `str` arguments (the caller frees them); other resources such as
+        // `buf` may be handed to `free`/`realloc`, so those still move.
+        let borrow_str = self.is_c_callee(callee);
+        self.consume_last_use_call_args(param_types, args, borrow_str)?;
         Ok(())
     }
 
@@ -130,7 +133,7 @@ impl super::TypeChecker {
                 return Err(error);
             }
         }
-        self.consume_last_use_call_args(&param_types, args)?;
+        self.consume_last_use_call_args(&param_types, args, false)?;
         self.extend_arg_loans_if_ref_return(&return_type, Some(name), args);
         Ok(return_type)
     }
@@ -178,7 +181,7 @@ impl super::TypeChecker {
             }
         }
 
-        self.consume_last_use_call_args(&param_types, args)?;
+        self.consume_last_use_call_args(&param_types, args, false)?;
         self.extend_arg_loans_if_ref_return(&method.return_type, None, args);
         Ok(method.return_type)
     }
@@ -490,6 +493,23 @@ impl super::TypeChecker {
             &param_strs,
             &ret_str,
         )?))
+    }
+
+    /// `name` resolves to an imported C symbol and not to a Coffee function.
+    fn is_c_callee(&self, name: &str) -> bool {
+        if self.registry.read().map(|r| r.resolve_type(name).is_ok()).unwrap_or(false) {
+            return false;
+        }
+        let Some(ref analyzer) = self.analyzer else {
+            return false;
+        };
+        let Ok(analyzer) = analyzer.read() else {
+            return false;
+        };
+        let Ok(cfc_symbols) = analyzer.get_cfc_symbols() else {
+            return false;
+        };
+        cfc_symbols.iter().any(|(_lib, table)| table.symbols.contains_key(name))
     }
 
     pub(super) fn c_symbol_is_variadic(&self, name: &str) -> bool {

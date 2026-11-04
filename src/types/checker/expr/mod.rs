@@ -90,6 +90,10 @@ impl super::TypeChecker {
             Expression::Variable(name) => {
                 self.lookup_live_variable(name)
             },
+            Expression::Binary { left, op, right } if op == "=" => {
+                self.check_store(left, right)?;
+                Ok(Type::void())
+            },
             Expression::Binary { left, op, right } => {
                 let left_type = self.check_expression(left)?;
                 let right_type = self.check_expression(right)?;

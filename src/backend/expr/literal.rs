@@ -240,10 +240,19 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         size: u64,
         name: &str,
     ) -> Result<PointerValue<'ctx>, String> {
+        let size_value = self.backend.context.i64_type().const_int(size, false);
+        self.emit_heap_alloc_dyn(size_value, name)
+    }
+
+    /// `malloc` a block whose size is only known at run time.
+    pub(crate) fn emit_heap_alloc_dyn(
+        &mut self,
+        size_value: inkwell::values::IntValue<'ctx>,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, String> {
         let malloc_fn = self.functions.get("malloc").copied().ok_or_else(|| {
             self.error("emit_heap_alloc", "malloc function not found for heap allocation")
         })?;
-        let size_value = self.backend.context.i64_type().const_int(size, false);
         let call = self
             .backend
             .builder
@@ -253,6 +262,81 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             inkwell::values::ValueKind::Basic(BasicValueEnum::PointerValue(ptr)) => Ok(ptr),
             _ => Err(self.error("emit_heap_alloc", "malloc did not return a pointer")),
         }
+    }
+
+    /// `lhs + rhs + ...` over `str`: one `malloc` of the total length, then a copy per
+    /// operand. Each operand is `(pointer, is_temporary)`; a temporary (a call result or
+    /// f-string) is a fresh owned string nobody else holds, so it is freed once copied.
+    pub(crate) fn emit_str_concat(
+        &mut self,
+        operands: &[(PointerValue<'ctx>, bool)],
+    ) -> Result<BasicValueEnum<'ctx>, String> {
+        let strlen_fn = self.ensure_fstring_builtin("strlen")?;
+        let i64_ty = self.backend.context.i64_type();
+        let i8_ty = self.backend.context.i8_type();
+        let mut lens = Vec::with_capacity(operands.len());
+        let mut total = i64_ty.const_int(1, false);
+        for (ptr, _) in operands {
+            let call = self
+                .backend
+                .builder
+                .build_call(strlen_fn, &[(*ptr).into()], "concat_len")
+                .map_err(|e| self.error("str_concat", format!("failed to call strlen: {}", e)))?;
+            let len = match call.try_as_basic_value() {
+                inkwell::values::ValueKind::Basic(BasicValueEnum::IntValue(v)) => self
+                    .backend
+                    .builder
+                    .build_int_z_extend_or_bit_cast(v, i64_ty, "concat_len64")
+                    .map_err(|e| self.error("str_concat", format!("failed to widen length: {}", e)))?,
+                _ => return Err(self.error("str_concat", "strlen did not return an integer")),
+            };
+            total = self
+                .backend
+                .builder
+                .build_int_add(total, len, "concat_total")
+                .map_err(|e| self.error("str_concat", format!("failed to add lengths: {}", e)))?;
+            lens.push(len);
+        }
+        let dst = self.emit_heap_alloc_dyn(total, "concat")?;
+        let mut offset = i64_ty.const_zero();
+        for ((ptr, _), len) in operands.iter().zip(&lens) {
+            let at = unsafe {
+                self.backend
+                    .builder
+                    .build_gep(i8_ty, dst, &[offset], "concat_at")
+                    .map_err(|e| self.error("str_concat", format!("failed to index buffer: {}", e)))?
+            };
+            self.backend
+                .builder
+                .build_memcpy(at, 1, *ptr, 1, *len)
+                .map_err(|e| self.error("str_concat", format!("failed to copy operand: {}", e)))?;
+            offset = self
+                .backend
+                .builder
+                .build_int_add(offset, *len, "concat_offset")
+                .map_err(|e| self.error("str_concat", format!("failed to advance offset: {}", e)))?;
+        }
+        let end = unsafe {
+            self.backend
+                .builder
+                .build_gep(i8_ty, dst, &[offset], "concat_end")
+                .map_err(|e| self.error("str_concat", format!("failed to index buffer end: {}", e)))?
+        };
+        self.backend
+            .builder
+            .build_store(end, i8_ty.const_zero())
+            .map_err(|e| self.error("str_concat", format!("failed to terminate string: {}", e)))?;
+        if let Some(&free_fn) = self.functions.get("free") {
+            for (ptr, is_temp) in operands {
+                if *is_temp {
+                    self.backend
+                        .builder
+                        .build_call(free_fn, &[(*ptr).into()], "concat_free_temp")
+                        .map_err(|e| self.error("str_concat", format!("failed to free operand: {}", e)))?;
+                }
+            }
+        }
+        Ok(dst.into())
     }
 
     /// Heap copy of a string literal. A `str` that owns its bytes can be freed; the
@@ -495,7 +579,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         Ok(heap_ptr.into())
     }
 
-    fn ensure_fstring_builtin(
+    pub(crate) fn ensure_fstring_builtin(
         &mut self,
         name: &str,
     ) -> Result<inkwell::values::FunctionValue<'ctx>, String> {
@@ -637,108 +721,9 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         result
     }
 
-    /// Build string constant
-    /// Build string concatenation: str1 + str2
+    /// `str1 + str2` over two borrowed operands.
     pub(crate) fn build_string_concat(&mut self, left: PointerValue<'ctx>, right: PointerValue<'ctx>) -> Result<BasicValueEnum<'ctx>, String> {
-        // Get or declare strlen function
-        if !self.functions.contains_key("strlen") {
-            self.used_c_functions.insert("strlen".to_string());
-        }
-        let strlen_fn = if self.functions.contains_key("strlen") {
-            *self.functions.get("strlen").unwrap()
-        } else {
-            // Declare it
-            self.declare_external_function("strlen")?
-        };
-
-        // Get or declare strcpy function
-        if !self.functions.contains_key("strcpy") {
-            self.used_c_functions.insert("strcpy".to_string());
-        }
-        let strcpy_fn = if self.functions.contains_key("strcpy") {
-            *self.functions.get("strcpy").unwrap()
-        } else {
-            // Declare it
-            self.declare_external_function("strcpy")?
-        };
-
-        // Get or declare strcat function
-        if !self.functions.contains_key("strcat") {
-            self.used_c_functions.insert("strcat".to_string());
-        }
-        let strcat_fn = if self.functions.contains_key("strcat") {
-            *self.functions.get("strcat").unwrap()
-        } else {
-            // Declare it
-            self.declare_external_function("strcat")?
-        };
-
-        // Get or declare malloc function
-        if !self.functions.contains_key("malloc") {
-            self.used_c_functions.insert("malloc".to_string());
-        }
-        let malloc_fn = if self.functions.contains_key("malloc") {
-            *self.functions.get("malloc").unwrap()
-        } else {
-            // Declare it
-            self.declare_external_function("malloc")?
-        };
-
-        // Calculate lengths of both strings
-        let left_len_call = self.backend.builder.build_call(strlen_fn, &[left.into()], "left_len")
-            .map_err(|e| self.error("string_concat", format!("failed to call strlen: {}", e)))?;
-
-        let left_len = match left_len_call.try_as_basic_value() {
-            inkwell::values::ValueKind::Basic(val) => val,
-            inkwell::values::ValueKind::Instruction(_) => {
-                return Err(self.error("string_concat", "strlen returned void"));
-            }
-        };
-
-        let right_len_call = self.backend.builder.build_call(strlen_fn, &[right.into()], "right_len")
-            .map_err(|e| self.error("string_concat", format!("failed to call strlen: {}", e)))?;
-
-        let right_len = match right_len_call.try_as_basic_value() {
-            inkwell::values::ValueKind::Basic(val) => val,
-            inkwell::values::ValueKind::Instruction(_) => {
-                return Err(self.error("string_concat", "strlen returned void"));
-            }
-        };
-
-        // Calculate total length (left_len + right_len + 1 for null terminator)
-        let total_len = self.backend.builder.build_int_add(
-            left_len.into_int_value(),
-            right_len.into_int_value(),
-            "total_len"
-        ).map_err(|e| self.error("string_concat", format!("failed to build int add: {}", e)))?;
-        let total_len = self.backend.builder.build_int_add(
-            total_len,
-            self.backend.context.i64_type().const_int(1, false),
-            "total_len_with_null"
-        ).map_err(|e| self.error("string_concat", format!("failed to build int add: {}", e)))?;
-
-        // Allocate memory for concatenated string
-        let result_ptr_call = self.backend.builder.build_call(malloc_fn, &[total_len.into()], "result_ptr")
-            .map_err(|e| self.error("string_concat", format!("failed to call malloc: {}", e)))?;
-
-        let result_ptr = match result_ptr_call.try_as_basic_value() {
-            inkwell::values::ValueKind::Basic(val) => val,
-            inkwell::values::ValueKind::Instruction(_) => {
-                return Err(self.error("string_concat", "malloc returned void"));
-            }
-        };
-
-        let result_ptr = result_ptr.into_pointer_value();
-
-        // Copy left string to result
-        self.backend.builder.build_call(strcpy_fn, &[result_ptr.into(), left.into()], "strcpy_left")
-            .map_err(|e| self.error("string_concat", format!("failed to call strcpy: {}", e)))?;
-
-        // Concatenate right string to result
-        self.backend.builder.build_call(strcat_fn, &[result_ptr.into(), right.into()], "strcat_right")
-            .map_err(|e| self.error("string_concat", format!("failed to call strcat: {}", e)))?;
-
-        Ok(result_ptr.into())
+        self.emit_str_concat(&[(left, false), (right, false)])
     }
 
     pub(crate) fn build_string_constant(&mut self, s: &str) -> Result<BasicValueEnum<'ctx>, String> {

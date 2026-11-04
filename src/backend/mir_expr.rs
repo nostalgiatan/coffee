@@ -15,6 +15,10 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         match &expr.kind {
             HirExprKind::Literal(lit) => self.compile_hir_literal_typed(&expr.ty, lit),
             HirExprKind::Variable(name) => self.compile_variable_ref(name),
+            HirExprKind::Binary { op, .. } if op == "+" && matches!(expr.ty, Type::String) => {
+                self.compile_hir_str_concat(expr)
+            }
+            HirExprKind::Binary { left, op, right } if op == "=" => self.compile_hir_store(left, right),
             HirExprKind::Binary { left, op, right } => {
                 if op == "&&" || op == "||" {
                     let l = self.compile_hir_expr_typed(left)?;
@@ -211,6 +215,36 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
     }
 
     /// Typed RHS then the same store path as `compile_assignment_from_ast`.
+    /// `a + b + c` over `str`, flattened so a chain allocates once.
+    fn compile_hir_str_concat(&mut self, expr: &HirExpr) -> Result<BasicValueEnum<'ctx>, String> {
+        fn operands<'e>(e: &'e HirExpr, out: &mut Vec<&'e HirExpr>) {
+            if let HirExprKind::Binary { left, op, right } = &e.kind {
+                if op == "+" && matches!(e.ty, Type::String) {
+                    operands(left, out);
+                    operands(right, out);
+                    return;
+                }
+            }
+            out.push(e);
+        }
+        let mut parts = Vec::new();
+        operands(expr, &mut parts);
+        let mut compiled = Vec::with_capacity(parts.len());
+        for part in parts {
+            let BasicValueEnum::PointerValue(ptr) = self.compile_hir_expr_typed(part)? else {
+                return Err(self.error("str_concat", "str operand is not a pointer"));
+            };
+            // A call result or f-string is a fresh owned string; a variable, field or
+            // literal is only borrowed.
+            let temporary = matches!(
+                part.kind,
+                HirExprKind::Call { .. } | HirExprKind::FString { .. }
+            );
+            compiled.push((ptr, temporary));
+        }
+        self.emit_str_concat(&compiled)
+    }
+
     /// Compile `expr` for a slot that takes ownership of the value. A `str` literal is
     /// static data, so an owning slot gets a heap copy it can free.
     pub(crate) fn compile_hir_expr_owned(
@@ -623,7 +657,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             HirExprKind::Unary { op, operand: inner } if op == "&" || op == "&mut" => {
                 self.compile_hir_expr_typed(inner)
             }
-            HirExprKind::Variable(name) => {
+            HirExprKind::Variable(name) if self.ref_pointee_types.contains_key(name) => {
                 let (alloca, var_type) = *self.variables.get(name).ok_or_else(|| {
                     self.error(
                         "compile_expression",
@@ -692,6 +726,34 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                     })
             }
         }
+    }
+
+    /// `a[i] = v` / `*r = v`: write the value to the element or the referenced slot.
+    fn compile_hir_store(
+        &mut self,
+        target: &HirExpr,
+        value: &HirExpr,
+    ) -> Result<BasicValueEnum<'ctx>, String> {
+        let ptr = match &target.kind {
+            HirExprKind::Index { array, index } => {
+                let array_name = self.hir_index_array_name(array)?;
+                let index_val = self.compile_hir_expr_typed(index)?;
+                self.compile_array_element_ptr_from_value(&array_name, index_val)?
+            }
+            HirExprKind::Unary { op, operand } if op == "*" => {
+                let BasicValueEnum::PointerValue(p) = self.compile_hir_expr_typed(operand)? else {
+                    return Err(self.error("compile_expression", "can only assign through a pointer"));
+                };
+                p
+            }
+            _ => return Err(self.error("compile_expression", "invalid assignment target")),
+        };
+        let val = self.compile_hir_expr_typed(value)?;
+        self.backend
+            .builder
+            .build_store(ptr, val)
+            .map_err(|e| self.error("compile_expression", format!("failed to store: {}", e)))?;
+        Ok(val)
     }
 
     fn compile_hir_assign_typed(
@@ -1037,14 +1099,13 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 }
             })
             .collect::<Result<Vec<_>, _>>()?;
-        self.mark_moved_owned_resource_args(args);
-        Ok(compiled)
-    }
-
-    fn mark_moved_owned_resource_args(&mut self, args: &[HirExpr]) {
         for arg in args {
-            self.mark_moved_owned_resource_var(arg);
+            // A `str` lent to C stays owned by this scope; `buf` and the rest may be freed by C.
+            if owned || arg.ty != Type::String {
+                self.mark_moved_owned_resource_var(arg);
+            }
         }
+        Ok(compiled)
     }
 
     /// A last-use resource variable handed to a call or stored into a new value is moved:

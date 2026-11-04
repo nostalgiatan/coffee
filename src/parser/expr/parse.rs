@@ -41,6 +41,32 @@ fn parse_expression_kind(input: &str, start: usize) -> Result<Expression, String
         return result;
     }
 
+    // Binary operators bind looser than every prefix and postfix form, so split first:
+    // `a[0] + a[2]` and `*r + 1` must not be read as one index / one deref.
+    let mut in_string = false;
+    for (i, c) in input.char_indices() {
+        if c == '"' && (i == 0 || input.chars().nth(i - 1) != Some('\\')) {
+            in_string = !in_string;
+        }
+    }
+    if !in_string {
+        if let Some((pos, op)) = find_lowest_prec_split(input) {
+            if pos > 0 {
+                let left_raw = &input[..pos];
+                let right_raw = &input[pos + op.len()..];
+                if !left_raw.trim().is_empty() && !right_raw.trim().is_empty() {
+                    let left = parse_expression_at(left_raw, start)?;
+                    let right = parse_expression_at(right_raw, start + pos + op.len())?;
+                    return Ok(Expression::Binary {
+                        left: Box::new(left),
+                        op: op.to_string(),
+                        right: Box::new(right),
+                    });
+                }
+            }
+        }
+    }
+
     if let Some(expr) = unary::try_unary(input, start)? {
         return Ok(expr);
     }
@@ -71,30 +97,6 @@ fn parse_expression_kind(input: &str, start: usize) -> Result<Expression, String
 
     if let Some(expr) = postfix::try_as_cast(input, start)? {
         return Ok(expr);
-    }
-
-    let mut in_string = false;
-    for (i, c) in input.char_indices() {
-        if c == '"' && (i == 0 || input.chars().nth(i - 1) != Some('\\')) {
-            in_string = !in_string;
-        }
-    }
-    if !in_string {
-        if let Some((pos, op)) = find_lowest_prec_split(input) {
-            if pos > 0 {
-                let left_raw = &input[..pos];
-                let right_raw = &input[pos + op.len()..];
-                if !left_raw.trim().is_empty() && !right_raw.trim().is_empty() {
-                    let left = parse_expression_at(left_raw, start)?;
-                    let right = parse_expression_at(right_raw, start + pos + op.len())?;
-                    return Ok(Expression::Binary {
-                        left: Box::new(left),
-                        op: op.to_string(),
-                        right: Box::new(right),
-                    });
-                }
-            }
-        }
     }
 
     primary::parse_atom(input)

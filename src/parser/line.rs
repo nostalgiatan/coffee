@@ -103,6 +103,32 @@ fn try_parse_assignment_at(
     Some((var_name, rhs))
 }
 
+/// `a[i] = v` / `*r = v`, parsed as the expression statement `target = value`.
+pub(super) fn try_parse_store_at(trimmed: &str, base: usize) -> Option<crate::parser::expr::Expression> {
+    use crate::parser::expr::Expression;
+    if trimmed.starts_with("if ")
+        || trimmed.starts_with("for ")
+        || trimmed.starts_with("while ")
+        || trimmed.starts_with("let ")
+    {
+        return None;
+    }
+    let (lhs_src, rhs_src) = split_assignment(trimmed)?;
+    let rhs_off = trimmed.len() - rhs_src.len();
+    let lhs = crate::parser::expr::parse_expression_at(lhs_src, base).ok()?;
+    if !matches!(lhs.kind(), Expression::Index { .. })
+        && !matches!(lhs.kind(), Expression::Unary { op, .. } if op == "*")
+    {
+        return None;
+    }
+    let rhs = crate::parser::expr::parse_expression_at(rhs_src, base + rhs_off).ok()?;
+    Some(Expression::Binary {
+        left: Box::new(lhs),
+        op: "=".to_string(),
+        right: Box::new(rhs),
+    })
+}
+
 pub(super) fn is_broken_statement_keyword(trimmed: &str) -> bool {
     let word = trimmed
         .split(|c: char| c.is_whitespace() || c == '(')
@@ -246,6 +272,9 @@ pub(super) fn parse_single_line_statement_at(line: &str, expr_base: usize) -> Op
 
     if let Some((var_name, value_expr)) = try_parse_assignment_at(trimmed, expr_base) {
         return Some(Statement::Assignment(var_name, value_expr));
+    }
+    if let Some(store) = try_parse_store_at(trimmed, expr_base) {
+        return Some(Statement::Expr(Box::new(store)));
     }
 
     // Return statement: return value

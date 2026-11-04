@@ -272,6 +272,54 @@ impl super::TypeChecker {
         Ok(())
     }
 
+    /// `a[i] = v` / `*r = v`: store through an element or a `&mut` reference.
+    /// Only value types are stored this way; overwriting a resource would have to drop the
+    /// old one first, which is not supported yet.
+    pub(super) fn check_store(
+        &mut self,
+        target: &crate::parser::expr::Expression,
+        value: &crate::parser::expr::Expression,
+    ) -> Result<(), TypeSystemError> {
+        use crate::parser::expr::Expression;
+        let span = Span::new(0, 1);
+        let fail = |this: &mut Self, reason: String| -> Result<(), TypeSystemError> {
+            let error = TypeSystemError::OwnershipError { reason, span: span.clone() };
+            this.add_error(error.clone());
+            Err(error)
+        };
+        let target_type = self.check_expression(target)?;
+        match target.kind() {
+            Expression::Index { array, .. } => {
+                if let Some(root) = crate::types::last_use::simple_var_name(array) {
+                    if let Err(e) = self.borrow.deny_mutate(root) {
+                        self.add_error(e.clone());
+                        return Err(e);
+                    }
+                }
+            }
+            Expression::Unary { op, operand } if op == "*" => {
+                let ref_ty = self.check_expression(operand)?;
+                if !matches!(ref_ty, Type::Ref { mutable: true, .. }) {
+                    return fail(self, "can only assign through a `&mut` reference".to_string());
+                }
+            }
+            _ => return fail(self, "invalid assignment target".to_string()),
+        }
+        if self.ty_is_owned_resource(&target_type) {
+            return fail(
+                self,
+                "assigning a resource through an index or reference is not supported; use a field or variable".to_string(),
+            );
+        }
+        let value_type = self.check_expression_hint(value, Some(&target_type))?;
+        if !self.types_compatible(&value_type, &target_type)? && !self.numeric_literal_fits(value, &target_type) {
+            let error = TypeSystemError::type_mismatch(target_type, value_type, span);
+            self.add_error(error.clone());
+            return Err(error);
+        }
+        Ok(())
+    }
+
     pub(super) fn is_last_use(&self, name: &str) -> bool {
         self.last_uses
             .contains(&(self.current_stmt_id, name.to_string()))
@@ -296,10 +344,14 @@ impl super::TypeChecker {
         &mut self,
         param_types: &[Type],
         args: &[crate::parser::expr::Expression],
+        borrow_str: bool,
     ) -> Result<(), TypeSystemError> {
         let n = param_types.len().min(args.len());
         for i in 0..n {
             if !self.ty_is_owned_resource(&param_types[i]) {
+                continue;
+            }
+            if borrow_str && param_types[i] == Type::String {
                 continue;
             }
             let Some(src) = crate::types::last_use::simple_var_name(&args[i]) else {
@@ -331,6 +383,7 @@ impl super::TypeChecker {
             Type::NamedType { name } => {
                 name != "buf" && self.ty_is_owned_resource(ty) && !self.is_exception_type(name)
             }
+            Type::String => true,
             _ => false,
         }
     }

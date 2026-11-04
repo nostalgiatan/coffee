@@ -429,6 +429,9 @@ pub fn parse_multiline_statement_at(lines: &[&str], base: usize) -> Option<(Stat
     if let Some((var_name, value_expr)) = try_parse_assignment(first_line) {
         return Some((Statement::Assignment(var_name, value_expr), 1));
     }
+    if let Some(store) = super::line::try_parse_store_at(first_line, 0) {
+        return Some((Statement::Expr(Box::new(store)), 1));
+    }
 
     // Check if first line contains '{' and ends with '}'
     if first_line.contains('{') && first_line.ends_with('}') {

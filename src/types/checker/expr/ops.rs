@@ -90,6 +90,9 @@ impl super::super::TypeChecker {
             "+" | "-" | "*" | "/" | "%" => {
                 if left_type.is_numeric() && right_type.is_numeric() {
                     Ok(self.promote_numeric_types(left_type, right_type))
+                } else if op == "+" && *left_type == Type::String && *right_type == Type::String {
+                    // Concatenation: a fresh owned `str`; the operands are only borrowed.
+                    Ok(Type::String)
                 } else if op == "+"
                     && left_type.is_ptr_offset_base()
                     && right_type.is_int()
