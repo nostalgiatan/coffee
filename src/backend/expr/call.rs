@@ -20,10 +20,9 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         let field_types: Vec<BasicTypeEnum<'ctx>> = field_values.iter().map(|v| v.get_type()).collect();
         let variant_type = self.backend.context.struct_type(&field_types, false);
         // Runtime payloads (literals, nested variants) are not LLVM constants, so
-        // build via alloca + insertvalue rather than const_named_struct.
-        let variant_ptr = self.backend.builder.build_alloca(variant_type, &format!("{}_{}", scope_str, variant_name))
-            .map_err(|e| self.error("compile_expression",
-                format!("failed to allocate space for enum variant: {}", e)))?;
+        // build via insertvalue and store. The value is an owning pointer that can be
+        // returned, so it lives on the heap, not in this frame.
+        let variant_ptr = self.emit_heap_alloc(variant_type.into(), &format!("{}_{}", scope_str, variant_name))?;
         let mut current_value = variant_type.const_zero();
         for (i, field) in field_values.iter().enumerate() {
             let inserted = self.backend.builder.build_insert_value(

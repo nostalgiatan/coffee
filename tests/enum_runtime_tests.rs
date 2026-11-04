@@ -46,11 +46,7 @@ fn test_enum_mixed_variants_in_one_function() {
     assert_exit_code(&with_main(body), 12).unwrap();
 }
 
-// 已知缺陷：带 payload 的枚举值是指向 `alloca` 的指针（`emit_enum_variant_call`），
-// 从函数返回它就是返回已失效的栈地址，每次运行结果不同。修复需要决定枚举的存储与
-// 所有权方案（堆分配 + drop，还是按值传递），见 docs/superpowers/specs/2026-11-04-embedded-vm-direction.md。
 #[test]
-#[ignore = "payload enum returned from a fn is a dangling stack pointer; needs a storage design decision"]
 fn test_enum_returned_from_function() {
     let source = format!(
         r#"{SHAPE}

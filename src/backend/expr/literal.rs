@@ -224,6 +224,28 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             .map_err(|e| self.error("compile_expression", format!("failed to load tuple: {}", e)))
     }
 
+    /// `malloc` a block for one value of `ty` (ABI size). The result is an owning pointer.
+    pub(crate) fn emit_heap_alloc(
+        &mut self,
+        ty: BasicTypeEnum<'ctx>,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, String> {
+        let malloc_fn = self.functions.get("malloc").copied().ok_or_else(|| {
+            self.error("emit_heap_alloc", "malloc function not found for heap allocation")
+        })?;
+        let size = self.llvm_target_data().get_abi_size(&ty);
+        let size_value = self.backend.context.i64_type().const_int(size, false);
+        let call = self
+            .backend
+            .builder
+            .build_call(malloc_fn, &[size_value.into()], name)
+            .map_err(|e| self.error("emit_heap_alloc", format!("failed to call malloc: {}", e)))?;
+        match call.try_as_basic_value() {
+            inkwell::values::ValueKind::Basic(BasicValueEnum::PointerValue(ptr)) => Ok(ptr),
+            _ => Err(self.error("emit_heap_alloc", "malloc did not return a pointer")),
+        }
+    }
+
     pub(crate) fn emit_struct_literal(
         &mut self,
         struct_name: &str,
@@ -235,30 +257,9 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             .clone();
         let struct_type = self.type_mapper.get_or_create_struct_type_from_class(struct_name, &class_def, &self.classes)
             .map_err(|e| self.error("compile_struct_literal", e))?;
-        // `fn new` returns this pointer; a stack alloca would dangle after return.
-        let alloca = if class_def.has_constructor {
-            let malloc_fn = self.functions.get("malloc").copied().ok_or_else(|| {
-                self.error("compile_struct_literal", "malloc function not found for heap allocation")
-            })?;
-            let size = self.llvm_target_data().get_store_size(&BasicTypeEnum::StructType(struct_type));
-            let size_value = self.backend.context.i64_type().const_int(size, false);
-            let heap_ptr = self.backend.builder.build_call(
-                malloc_fn,
-                &[size_value.into()],
-                &format!("{}_malloc", struct_name),
-            ).map_err(|e| self.error("compile_struct_literal",
-                format!("failed to call malloc: {}", e)))?;
-            match heap_ptr.try_as_basic_value() {
-                inkwell::values::ValueKind::Basic(BasicValueEnum::PointerValue(ptr)) => ptr,
-                _ => {
-                    return Err(self.error("compile_struct_literal", "malloc did not return a pointer"));
-                }
-            }
-        } else {
-            self.backend.builder.build_alloca(struct_type, &format!("{}_literal", struct_name))
-                .map_err(|e| self.error("compile_struct_literal",
-                    format!("failed to allocate struct '{}': {}", struct_name, e)))?
-        };
+        // An instance is an owning pointer that outlives the building function, so it
+        // lives on the heap; a stack alloca would dangle once the function returns.
+        let alloca = self.emit_heap_alloc(struct_type.into(), &format!("{}_malloc", struct_name))?;
         for (field_name, field_value) in fields {
             let field_index = self.type_mapper.get_field_index(struct_name, &field_name)
                 .ok_or_else(|| self.error("compile_struct_literal",
