@@ -197,7 +197,7 @@ fn first_unparsable_statement(line_num: usize, lines: &[&str]) -> Option<(usize,
         if t.ends_with(':') || is_block_starter(t) || matches!(t, "else" | "break" | "continue") {
             continue;
         }
-        if t.starts_with("elif ") || t.starts_with("else ") || t.starts_with("return") {
+        if t.starts_with("elif ") || t.starts_with("else ") || t == "return" || t.contains("=>") {
             continue;
         }
         if crate::parser::line::parse_single_line_statement(t).is_none() {
@@ -208,8 +208,40 @@ fn first_unparsable_statement(line_num: usize, lines: &[&str]) -> Option<(usize,
     opened_at
 }
 
+/// A `fn` header parameter that has no `: Type`.
+fn untyped_parameter(header: &str) -> Option<String> {
+    let open = header.find('(')?;
+    let mut depth = 0i32;
+    let mut current = String::new();
+    let mut params = Vec::new();
+    for c in header[open + 1..].chars() {
+        match c {
+            '(' | '[' | '<' => depth += 1,
+            ')' | ']' | '>' if depth > 0 => depth -= 1,
+            ')' => {
+                params.push(std::mem::take(&mut current));
+                break;
+            }
+            ',' if depth == 0 => params.push(std::mem::take(&mut current)),
+            _ => {}
+        }
+        if !(c == ',' && depth == 0) && !(c == ')' && depth == 0) {
+            current.push(c);
+        }
+    }
+    params
+        .into_iter()
+        .map(|p| p.trim().to_string())
+        .find(|p| !p.is_empty() && p != "self" && !p.contains(':') && !p.starts_with("..."))
+}
+
 pub(super) fn block_parse_error(line_num: usize, lines: &[&str]) -> ParseError {
     let first = lines.first().map(|s| s.trim()).unwrap_or("");
+    if first.starts_with("fn ") || first.starts_with("c fn ") {
+        if let Some(parameter_name) = untyped_parameter(first) {
+            return ParseError::MissingTypeAnnotation { line: line_num, parameter_name };
+        }
+    }
     let detected = ParseError::detect_error_in_block(line_num, lines);
     if matches!(
         detected,

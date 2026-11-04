@@ -100,6 +100,13 @@ fn span_for_consumed_lines(
 /// * `Ok(Program)` - Successfully parsed program if no errors occurred
 /// * `Err(Vec<ParseError>)` - List of parsing errors if any syntax errors were found
 pub fn parse_program(input: &str) -> Result<Program, Vec<ParseError>> {
+    if let Some(rewritten) = super::charlit::rewrite_char_literals(input) {
+        return parse_program_joined(&rewritten);
+    }
+    parse_program_joined(input)
+}
+
+fn parse_program_joined(input: &str) -> Result<Program, Vec<ParseError>> {
     match super::indent::join_continuation_lines(input) {
         None => with_source_origin(input, || parse_program_inner(input)),
         // Same bytes, fewer lines: parse the joined text, then report errors against the

@@ -305,6 +305,11 @@ pub(super) fn parse_atom(input: &str) -> Result<Expression, String> {
         return Ok(Expression::literal(input));
     }
 
+    // `0xFF`, `0b1010`, `0o17`, `1_000` are written in decimal from here on.
+    if let Some(decimal) = normalize_integer_literal(input) {
+        return Ok(Expression::literal(decimal));
+    }
+
     // Check if it's a number
     if input.parse::<i64>().is_ok() || input.parse::<f64>().is_ok() {
         return Ok(Expression::literal(input));
@@ -313,7 +318,40 @@ pub(super) fn parse_atom(input: &str) -> Result<Expression, String> {
     // Otherwise, treat as variable - but validate it's a valid identifier
     if is_valid_identifier(input) {
         Ok(Expression::var(input))
+    } else if let Some((base, index)) = input.split_once('.') {
+        if is_valid_identifier(base) && !index.is_empty() && index.chars().all(|c| c.is_ascii_digit()) {
+            Err(format!(
+                "tuple element access '{}.{}' is not supported; use a class with named fields",
+                base, index
+            ))
+        } else {
+            Err(format!("Invalid identifier '{}': contains invalid characters", input))
+        }
     } else {
         Err(format!("Invalid identifier '{}': contains invalid characters", input))
     }
+}
+
+/// Decimal text for a hex / binary / octal literal or one with `_` digit separators.
+fn normalize_integer_literal(input: &str) -> Option<String> {
+    let first = input.chars().next()?;
+    if !first.is_ascii_digit() {
+        return None;
+    }
+    let radix_body = |prefixes: [&str; 2], radix: u32| -> Option<Option<u64>> {
+        let rest = prefixes.iter().find_map(|p| input.strip_prefix(p))?;
+        Some(u64::from_str_radix(&rest.replace('_', ""), radix).ok())
+    };
+    let value = if let Some(v) = radix_body(["0x", "0X"], 16) {
+        v
+    } else if let Some(v) = radix_body(["0b", "0B"], 2) {
+        v
+    } else if let Some(v) = radix_body(["0o", "0O"], 8) {
+        v
+    } else if input.contains('_') && !input.contains('.') && !input.ends_with('_') && !input.contains("__") {
+        input.replace('_', "").parse::<u64>().ok()
+    } else {
+        return None;
+    };
+    value.map(|v| v.to_string())
 }

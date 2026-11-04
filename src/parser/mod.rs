@@ -40,6 +40,7 @@ pub mod expr;
 pub mod error;
 pub mod tracker;
 pub mod indent;
+mod charlit;
 pub mod raise;
 pub mod type_decl;
 

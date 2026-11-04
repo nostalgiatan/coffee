@@ -508,7 +508,58 @@ impl ParseError {
     }
 
     /// Generate helpful hint based on line content
+    /// Why the expression part of a simple statement does not parse, if it is that.
+    fn expression_failure(stmt: &str) -> Option<String> {
+        let t = stmt.trim();
+        let mut in_str = false;
+        for c in t.chars() {
+            if c == '"' {
+                in_str = !in_str;
+            } else if !in_str && matches!(c, '$' | '@' | '?' | '`') {
+                return Some(format!("unexpected character '{}'", c));
+            }
+        }
+        let value = if let Some(rest) = t.strip_prefix("let ") {
+            let eq = rest.find('=')?;
+            &rest[eq + 1..]
+        } else if let Some(rest) = t.strip_prefix("return ") {
+            rest
+        } else if let Some(eq) = t.find('=').filter(|&i| {
+            let b = t.as_bytes();
+            !matches!(b.get(i + 1), Some(b'=')) && (i == 0 || !matches!(b[i - 1], b'=' | b'!' | b'<' | b'>'))
+        }) {
+            &t[eq + 1..]
+        } else {
+            t
+        };
+        let mut depth = 0i32;
+        let mut quoted = false;
+        for c in value.chars() {
+            match c {
+                '"' => quoted = !quoted,
+                '(' | '[' | '{' if !quoted => depth += 1,
+                ')' | ']' | '}' if !quoted => depth -= 1,
+                _ => {}
+            }
+        }
+        if depth > 0 {
+            return Some("unclosed bracket".to_string());
+        }
+        if depth < 0 {
+            return Some("unmatched closing bracket".to_string());
+        }
+        crate::parser::expr::parse_expression(value).err()
+    }
+
     pub(super) fn generate_hint(line: &str) -> String {
+        let hint = Self::syntax_hint(line);
+        match Self::expression_failure(line) {
+            Some(reason) => format!("{}. {}", reason, hint),
+            None => hint,
+        }
+    }
+
+    fn syntax_hint(line: &str) -> String {
         if line.contains("fn ") {
             "Function syntax: fn name(params: Types) => ReturnType:".to_string()
         } else if line.contains("class ") {

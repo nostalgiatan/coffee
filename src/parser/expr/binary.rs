@@ -1,15 +1,16 @@
 //! Binary-operator scanning helpers for the expression parser.
 
-/// SYNTAX.md, low → high. Smaller number is lower precedence (split first).
+/// SYNTAX.md, low → high. Smaller number is lower precedence (split first). Bitwise
+/// operators bind tighter than comparison (as in Rust), so `x & 1 == 1` is `(x & 1) == 1`.
 fn op_prec(op: &str) -> Option<u8> {
     Some(match op {
         "||" => 0,
         "&&" => 1,
-        "|" => 2,
-        "^" => 3,
-        "&" => 4,
-        "==" | "!=" => 5,
-        "<" | ">" | "<=" | ">=" => 6,
+        "==" | "!=" => 2,
+        "<" | ">" | "<=" | ">=" => 3,
+        "|" => 4,
+        "^" => 5,
+        "&" => 6,
         "<<" | ">>" => 7,
         "+" | "-" => 8,
         "*" | "/" | "//" | "%" => 9,

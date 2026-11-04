@@ -150,3 +150,43 @@ fn test_error_after_joined_lines_keeps_original_line_number() {
 fn test_sized_integer_type_suffix_is_not_a_continuation() {
     assert_compiles("class P:\n    x: int(4)+\n    y: int(4)-\n\nfn main() => int:\n    return 0\n").unwrap();
 }
+
+#[test]
+fn test_bitwise_and_binds_tighter_than_equality() {
+    assert_exit_code("fn main() => int:\n    let x: int = 5\n    if x & 1 == 1:\n        return 1\n    return 0\n", 1).unwrap();
+}
+
+#[test]
+fn test_hex_binary_octal_and_underscore_literals() {
+    assert_exit_code("fn main() => int:\n    return 0xF + 0b11 + 0o7 + 1_0\n", 35).unwrap();
+}
+
+#[test]
+fn test_character_literals_are_integers() {
+    assert_exit_code("fn is_digit(c: int) => bool:\n    return c >= '0' && c <= '9'\n\nfn main() => int:\n    let n: int = 'a' + '\\n'\n    if is_digit('7'):\n        return n\n    return 0\n", 107).unwrap();
+}
+
+#[test]
+fn test_character_literal_fits_a_byte() {
+    assert_exit_code("fn main() => int:\n    let b: int(1)- = 'A'\n    return int(b)\n", 65).unwrap();
+}
+
+#[test]
+fn test_syntax_error_names_the_unexpected_character() {
+    assert_compile_error("fn main() => int:\n    let x: int = 1 $ 2\n    return 0\n", "unexpected character '$'").unwrap();
+}
+
+#[test]
+fn test_tuple_index_error_says_what_is_unsupported() {
+    assert_compile_error("fn main() => int:\n    let t: (int, int) = (1, 2)\n    return t.0\n", "tuple element access").unwrap();
+}
+
+#[test]
+fn test_untyped_parameter_is_reported_as_such() {
+    assert_compile_error("fn f(a, b: int) => int:\n    return 0\n\nfn main() => int:\n    return 0\n", "Missing type annotation for parameter 'a'").unwrap();
+}
+
+#[test]
+fn test_unclosed_bracket_is_reported_as_such() {
+    assert_compile_error("fn main() => int:\n    let x: int = (1 + 2\n    return 0\n", "unclosed bracket").unwrap();
+}
