@@ -166,7 +166,9 @@ impl super::TypeChecker {
             },
         };
         coffee_debug!("[DEBUG] check_variable_decl: inferred value type as {:?}", value_type);
-        if !self.types_compatible(&value_type, &ty)? && !self.numeric_literal_fits(&decl.value, &ty) {
+        if Self::object_binds_to_owned_str(&value_type, &ty)
+            || (!self.types_compatible(&value_type, &ty)? && !self.numeric_literal_fits(&decl.value, &ty))
+        {
             coffee_debug!("[DEBUG] check_variable_decl: types NOT compatible: {:?} vs {:?}", value_type, ty);
             let error = TypeSystemError::TypeMismatch {
                 expected: ty.clone(),
@@ -234,7 +236,9 @@ impl super::TypeChecker {
             }
         };
 
-        if !self.types_compatible(&value_type, &target_type)? && !self.numeric_literal_fits(value, &target_type) {
+        if Self::object_binds_to_owned_str(&value_type, &target_type)
+            || (!self.types_compatible(&value_type, &target_type)? && !self.numeric_literal_fits(value, &target_type))
+        {
             let error = TypeSystemError::type_mismatch(target_type, value_type, Span::new(0, name.len()));
             self.add_error(error.clone());
             return Err(error);
@@ -318,6 +322,12 @@ impl super::TypeChecker {
             return Err(error);
         }
         Ok(())
+    }
+
+    /// A C `char*` (`object`) is not an owned `str`: the scope would `free` memory C still
+    /// owns (`getenv`, `strerror`). Keep it as `object` and hand it back to C.
+    fn object_binds_to_owned_str(value: &Type, target: &Type) -> bool {
+        matches!(value, Type::Variadic) && *target == Type::String
     }
 
     pub(super) fn is_last_use(&self, name: &str) -> bool {

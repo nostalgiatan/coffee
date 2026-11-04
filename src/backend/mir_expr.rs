@@ -173,6 +173,21 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                     })?;
             }
             inkwell::types::BasicTypeEnum::PointerType(t) => {
+                // Also null at function entry: a block-scoped drop can run on a path that
+                // never reached the declaration (zero-iteration loop).
+                let insert_block = self.backend.builder.get_insert_block();
+                if let Some(entry) = insert_block
+                    .and_then(|b| b.get_parent())
+                    .and_then(|f| f.get_first_basic_block())
+                {
+                    if let Some(term) = entry.get_terminator() {
+                        self.backend.builder.position_before(&term);
+                        let _ = self.backend.builder.build_store(alloca, t.const_zero());
+                        if let Some(b) = insert_block {
+                            self.backend.builder.position_at_end(b);
+                        }
+                    }
+                }
                 self.backend
                     .builder
                     .build_store(alloca, t.const_zero())
@@ -280,6 +295,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             }
         }
 
+        let hir_value_ty = value.ty.clone();
         let value = self.compile_hir_expr_owned(value).map_err(|e| {
             self.error(
                 "compile_assignment_from_ast",
@@ -291,6 +307,11 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         })?;
 
         self.used_variables.insert(var_name.to_string());
+
+        if std::mem::take(&mut self.reassign_slot) {
+            let ty = hir_value_ty.clone();
+            self.drop_old_slot_value(var_name, &ty)?;
+        }
 
         if let Some(&(ptr, var_type)) = self.variables.get(var_name) {
             let converted_value = self.convert_value_to_type(value, var_type, var_name)?;

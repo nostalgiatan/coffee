@@ -123,7 +123,10 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                         let push_let = !already_stored
                             && !name.contains('.')
                             && scope_enter_at.last() == Some(&i);
-                        self.compile_mir_assign(name, value)?;
+                        self.reassign_slot = already_stored;
+                        let assigned = self.compile_mir_assign(name, value);
+                        self.reassign_slot = false;
+                        assigned?;
                         if push_let {
                             if let Some(scope) = mir_scopes.last_mut() {
                                 if !scope.iter().any(|n| n == name) {
@@ -268,6 +271,26 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                     continue;
                 }
             }
+            // Block-scoped `str` locals (loop bodies) are freed every pass; the slot is
+            // nulled by the drop, so the function-end pass cannot free it twice.
+            if self.memory_ctx.get_variable_type(var_name).is_some_and(|t| t == "str") {
+                if let Some(&(ptr, llvm_ty)) = self.variables.get(var_name) {
+                    super::memory_ops::drop_coffee_place(
+                        self.backend.context,
+                        &self.backend.builder,
+                        &self.functions,
+                        &crate::types::Type::String,
+                        ptr,
+                        llvm_ty,
+                    )?;
+                    self.backend
+                        .builder
+                        .build_store(ptr, llvm_ty.into_pointer_type().const_zero())
+                        .map_err(|e| self.error("emit_mir_scope_drops", e.to_string()))?;
+                }
+                self.memory_ctx.mark_dropped(var_name.clone());
+                continue;
+            }
             super::memory_ops::compile_remove(
                 self.backend.context,
                 &self.backend.builder,
@@ -307,9 +330,30 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             }
         }
         if let Some(src) = self.hir_owned_resource_var(value) {
+            if std::mem::take(&mut self.reassign_slot) {
+                self.drop_old_slot_value(name, &value.ty)?;
+            }
             return self.compile_last_use_move(src, name);
         }
         self.store_hir_assign(name, value)
+    }
+
+    /// Free what `name` currently owns before a new value replaces it.
+    pub(crate) fn drop_old_slot_value(&mut self, name: &str, ty: &crate::types::Type) -> Result<(), String> {
+        if !self.ty_is_owned_resource(ty) || self.memory_ctx.is_moved(name) {
+            return Ok(());
+        }
+        if let Some(&(ptr, llvm_ty)) = self.variables.get(name) {
+            super::memory_ops::drop_coffee_place(
+                self.backend.context,
+                &self.backend.builder,
+                &self.functions,
+                ty,
+                ptr,
+                llvm_ty,
+            )?;
+        }
+        Ok(())
     }
 
     fn compile_last_use_move(&mut self, source: &str, target: &str) -> Result<(), String> {
@@ -445,6 +489,18 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 format!("failed to compile value for field '{}': {}", name, e),
             )
         })?;
+        if self.ty_is_owned_resource(&value.ty) && !hir_passes_place_to_call(value, &parts) {
+            // The field's old value is replaced, so it must be freed first. (A call that was
+            // handed the field itself, `self.p = grow(self.p)`, took it over.)
+            super::memory_ops::drop_coffee_place(
+                self.backend.context,
+                &self.backend.builder,
+                &self.functions,
+                &value.ty,
+                field_ptr,
+                compiled.get_type(),
+            )?;
+        }
         self.backend
             .builder
             .build_store(field_ptr, compiled)
@@ -666,5 +722,40 @@ fn count_hir_name_uses(expr: &HirExpr, counts: &mut HashMap<String, usize>) {
         }
         HirExprKind::TypeCast { value, .. } => count_hir_name_uses(value, counts),
         HirExprKind::Literal(_) | HirExprKind::AnonymousFunction { .. } => {}
+    }
+}
+
+/// True if `expr` hands the field place `parts` (`self.p`) to a call by value.
+fn hir_passes_place_to_call(expr: &HirExpr, parts: &[&str]) -> bool {
+    fn is_place(e: &HirExpr, parts: &[&str]) -> bool {
+        match (&e.kind, parts.split_last()) {
+            (HirExprKind::Member { object, field, args }, Some((last, rest))) if args.is_empty() => {
+                field == last
+                    && match (&object.kind, rest) {
+                        (HirExprKind::Variable(v), [root]) => v == root,
+                        (_, [_, ..]) => is_place(object, rest),
+                        _ => false,
+                    }
+            }
+            _ => false,
+        }
+    }
+    match &expr.kind {
+        HirExprKind::Call { function, args } => {
+            args.iter().any(|a| is_place(a, parts) || hir_passes_place_to_call(a, parts))
+                || hir_passes_place_to_call(function, parts)
+        }
+        HirExprKind::ConstructorCall { args, .. } => {
+            args.iter().any(|a| is_place(a, parts) || hir_passes_place_to_call(a, parts))
+        }
+        HirExprKind::Member { object, args, .. } => {
+            args.iter().any(|a| is_place(a, parts) || hir_passes_place_to_call(a, parts))
+                || hir_passes_place_to_call(object, parts)
+        }
+        HirExprKind::Binary { left, right, .. } => {
+            hir_passes_place_to_call(left, parts) || hir_passes_place_to_call(right, parts)
+        }
+        HirExprKind::Unary { operand, .. } => hir_passes_place_to_call(operand, parts),
+        _ => false,
     }
 }

@@ -241,6 +241,8 @@ pub fn declare_external_function<'ctx>(
 ) -> Result<FunctionValue<'ctx>, String> {
     if let Some(existing) = module.get_function(qualified_name) {
         if existing.get_name().to_str().ok() == Some(qualified_name) {
+            // Declared by another path (class clone/drop helpers): make it callable by name.
+            functions.entry(qualified_name.to_string()).or_insert(existing);
             return Ok(existing);
         }
     }

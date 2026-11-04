@@ -167,9 +167,63 @@ fn block_starter_name(trimmed: &str) -> &'static str {
     }
 }
 
+/// First simple statement inside a failed block that does not parse on its own.
+/// Lines that open a block, continue an expression, or leave brackets open are skipped:
+/// they cannot be judged one line at a time.
+fn first_unparsable_statement(line_num: usize, lines: &[&str]) -> Option<(usize, String)> {
+    let mut depth: i32 = 0;
+    let mut opened_at: Option<(usize, String)> = None;
+    for (i, raw) in lines.iter().enumerate().skip(1) {
+        let t = raw.trim();
+        let balance: i32 = t
+            .chars()
+            .map(|c| match c {
+                '(' | '[' | '{' => 1,
+                ')' | ']' | '}' => -1,
+                _ => 0,
+            })
+            .sum();
+        let in_continuation = depth > 0;
+        if depth == 0 && balance > 0 && !t.ends_with(':') && !t.starts_with("/#") {
+            opened_at = Some((line_num + i, t.to_string()));
+        }
+        depth += balance;
+        if depth <= 0 {
+            opened_at = None;
+        }
+        if t.is_empty() || t.starts_with("/#") || in_continuation || balance != 0 {
+            continue;
+        }
+        if t.ends_with(':') || is_block_starter(t) || matches!(t, "else" | "break" | "continue") {
+            continue;
+        }
+        if t.starts_with("elif ") || t.starts_with("else ") || t.starts_with("return") {
+            continue;
+        }
+        if crate::parser::line::parse_single_line_statement(t).is_none() {
+            return Some((line_num + i, t.to_string()));
+        }
+    }
+    // A bracket that is never closed.
+    opened_at
+}
+
 pub(super) fn block_parse_error(line_num: usize, lines: &[&str]) -> ParseError {
     let first = lines.first().map(|s| s.trim()).unwrap_or("");
     let detected = ParseError::detect_error_in_block(line_num, lines);
+    if matches!(
+        detected,
+        ParseError::GenericSyntaxError { .. } | ParseError::MissingBlockBody { .. }
+    ) && detected.line() == line_num
+    {
+        if let Some((line, context)) = first_unparsable_statement(line_num, lines) {
+            return ParseError::GenericSyntaxError {
+                line,
+                hint: ParseError::generate_hint(&context),
+                context,
+            };
+        }
+    }
     if detected.line() == line_num {
         if matches!(detected, ParseError::GenericSyntaxError { .. }) {
             return ParseError::MissingBlockBody {

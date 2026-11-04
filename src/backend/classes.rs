@@ -172,6 +172,26 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 })?
                 .into_pointer_value();
 
+            // A block-scoped drop can run on a path where the slot was already dropped
+            // and nulled; dropping a null instance is a no-op.
+            let body_block = self.backend.context.append_basic_block(fn_value, "drop_body");
+            let done_block = self.backend.context.append_basic_block(fn_value, "drop_done");
+            let is_null = self
+                .backend
+                .builder
+                .build_is_null(self_ptr, "drop_is_null")
+                .map_err(|e| self.error("compile_class", e.to_string()))?;
+            self.backend
+                .builder
+                .build_conditional_branch(is_null, done_block, body_block)
+                .map_err(|e| self.error("compile_class", e.to_string()))?;
+            self.backend.builder.position_at_end(done_block);
+            self.backend
+                .builder
+                .build_return(None)
+                .map_err(|e| self.error("compile_class", e.to_string()))?;
+            self.backend.builder.position_at_end(body_block);
+
             let struct_type = *self.type_mapper.struct_types.get(&class.name).ok_or_else(|| {
                 self.error(
                     "compile_class",

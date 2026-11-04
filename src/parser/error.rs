@@ -508,7 +508,7 @@ impl ParseError {
     }
 
     /// Generate helpful hint based on line content
-    fn generate_hint(line: &str) -> String {
+    pub(super) fn generate_hint(line: &str) -> String {
         if line.contains("fn ") {
             "Function syntax: fn name(params: Types) => ReturnType:".to_string()
         } else if line.contains("class ") {

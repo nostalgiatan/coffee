@@ -795,6 +795,8 @@ let b: T = clone a
 
 创建 `source` 的独立副本。类的 `clone` 不是只 memcpy 对象字节：嵌套的 `str`、class、资源数组、元组字段会再 clone（见 `src/backend/memory_ops/clone.rs`）。`object`、引用、切片字段仍是浅拷贝（不 clone 所指对象）。`buf` 不能 `clone`（没有长度）。不是最后一次使用时，资源仍须写 `mv` 或 `clone`（见上文 last-use）。
 
+循环体内声明的局部变量按每次迭代计算 last-use：在循环体内 `let a`、随后最后一次使用 `a`（传参、`let b = a`、结构体字段）会隐式移动，每轮结束释放。循环外声明的变量在循环内移动仍是 E302。C 返回的 `object`（如 `char*`）不能直接绑定到 `str`（类型错误），否则会被 Coffee 当作堆内存释放。
+
 ### 删除操作
 
 ```coffee

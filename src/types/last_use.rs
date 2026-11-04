@@ -41,6 +41,7 @@ pub fn analyze_stmts(stmts: &[Statement]) -> LastUseSites {
     let mut a = Analyzer {
         next_id: 0,
         sites: LastUseSites::new(),
+        loop_locals: Vec::new(),
     };
     a.walk_seq(stmts, &HashSet::new(), false);
     a.sites
@@ -50,6 +51,7 @@ fn analyze_expr_body(expr: &Expression) -> LastUseSites {
     let mut a = Analyzer {
         next_id: 0,
         sites: LastUseSites::new(),
+        loop_locals: Vec::new(),
     };
     let uses = expr_uses(expr);
     let mut counts = HashMap::new();
@@ -67,6 +69,41 @@ fn analyze_expr_body(expr: &Expression) -> LastUseSites {
 struct Analyzer {
     next_id: usize,
     sites: LastUseSites,
+    /// For each enclosing loop, innermost last: names declared inside its body. Such a name is
+    /// a fresh value every iteration, so its last use within one iteration may move it.
+    loop_locals: Vec<HashSet<String>>,
+}
+
+/// Names a `let` (or `mv`/`clone` target) declares anywhere in `stmts`, not inside nested fns.
+fn declared_names(stmts: &[Statement], out: &mut HashSet<String>) {
+    for stmt in stmts {
+        match stmt {
+            Statement::VariableDecl(d) => {
+                out.insert(d.name.clone());
+            }
+            Statement::MemoryOp(MemoryOp::Move { target, .. })
+            | Statement::MemoryOp(MemoryOp::Clone { target, .. }) => {
+                out.insert(target.clone());
+            }
+            Statement::If(i) => {
+                declared_names(&i.body, out);
+                for e in &i.elifs {
+                    declared_names(&e.body, out);
+                }
+                if let Some(b) = &i.else_body {
+                    declared_names(b, out);
+                }
+            }
+            Statement::While(w) => declared_names(&w.body, out),
+            Statement::For(f) => declared_names(&f.body, out),
+            Statement::Match(m) => {
+                for arm in &m.arms {
+                    declared_names(&arm.body, out);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 impl Analyzer {
@@ -147,10 +184,18 @@ impl Analyzer {
                 }
             }
             Statement::While(w) => {
+                let mut locals = HashSet::new();
+                declared_names(&w.body, &mut locals);
+                self.loop_locals.push(locals);
                 self.walk_seq(&w.body, used_after, true);
+                self.loop_locals.pop();
             }
             Statement::For(f) => {
+                let mut locals = HashSet::new();
+                declared_names(&f.body, &mut locals);
+                self.loop_locals.push(locals);
                 self.walk_seq(&f.body, used_after, true);
+                self.loop_locals.pop();
             }
             Statement::Match(m) => {
                 let arm_uses: Vec<HashSet<String>> = m
@@ -192,7 +237,17 @@ impl Analyzer {
     ) {
         let mut counts = HashMap::new();
         count_stmt_simple_vars(stmt, &mut counts);
-        let cands = stmt_move_candidates(stmt);
+        let mut cands = stmt_move_candidates(stmt);
+        if in_loop && !is_return {
+            // Only names born inside the innermost loop body are fresh each iteration. A loop
+            // statement's own header (condition, iterator) re-runs, so it keeps no candidates.
+            let own_header = matches!(stmt, Statement::While(_) | Statement::For(_));
+            match self.loop_locals.last() {
+                Some(locals) if !own_header => cands.retain(|n| locals.contains(n)),
+                _ => cands.clear(),
+            }
+        }
+        let in_loop = false; // loop candidates were filtered above
         record_candidates(
             id,
             &cands,
