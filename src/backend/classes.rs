@@ -372,27 +372,87 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             global.set_constant(true);
         }
 
-        // A value of an enum with payload variants is a heap block owned by one pointer
-        // (`Enum__drop` frees it). Payload fields that are themselves resources are not
-        // dropped yet, so they leak rather than dangle.
+        // A value of an enum with payload variants is a heap block owned by one pointer.
+        // `Enum__drop` drops the active variant's resource payload fields, then frees it.
+        // Match bindings only borrow the payload, so this is the single owner.
+        self.enums.insert(enum_def.name.clone(), enum_def.clone());
         let has_payload = enum_def.variants.iter().any(|v| !v.fields.is_empty());
         if has_payload {
             if let Some(&free_fn) = self.functions.get("free") {
+                let ctx = self.backend.context;
                 let drop_name = format!("{}__drop", enum_def.name);
-                let ptr_type = self.backend.context.ptr_type(inkwell::AddressSpace::default());
-                let fn_type = self.backend.context.void_type().fn_type(&[ptr_type.into()], false);
+                let ptr_type = ctx.ptr_type(inkwell::AddressSpace::default());
+                let fn_type = ctx.void_type().fn_type(&[ptr_type.into()], false);
                 let drop_fn = self.backend.module.add_function(&drop_name, fn_type, None);
-                let entry = self.backend.context.append_basic_block(drop_fn, "entry");
-                self.backend.builder.position_at_end(entry);
+                // Registered first so a recursive payload can call its own drop.
+                self.functions.insert(drop_name, drop_fn);
+                let entry = ctx.append_basic_block(drop_fn, "entry");
+                let body = ctx.append_basic_block(drop_fn, "drop_body");
+                let done = ctx.append_basic_block(drop_fn, "drop_done");
+                let free_block = ctx.append_basic_block(drop_fn, "drop_free");
+                let b = &self.backend.builder;
+                b.position_at_end(entry);
                 let self_ptr = drop_fn
                     .get_nth_param(0)
                     .ok_or_else(|| self.error("compile_enum", "enum drop is missing its parameter"))?
                     .into_pointer_value();
-                self.backend.builder.build_call(free_fn, &[self_ptr.into()], "drop_free_self")
+                let is_null = b.build_is_null(self_ptr, "drop_is_null")
+                    .map_err(|e| self.error("compile_enum", e.to_string()))?;
+                b.build_conditional_branch(is_null, done, body)
+                    .map_err(|e| self.error("compile_enum", e.to_string()))?;
+                b.position_at_end(done);
+                b.build_return(None).map_err(|e| self.error("compile_enum", e.to_string()))?;
+
+                b.position_at_end(body);
+                let i64_type = ctx.i64_type();
+                let tag = b.build_load(i64_type, self_ptr, "drop_tag")
+                    .map_err(|e| self.error("compile_enum", e.to_string()))?
+                    .into_int_value();
+                let mut cases = Vec::new();
+                for (index, variant) in enum_def.variants.iter().enumerate() {
+                    let field_tys: Vec<Option<crate::types::Type>> = variant
+                        .fields
+                        .iter()
+                        .map(|f| {
+                            let t = match f {
+                                crate::parser::class::VariantField::Type(t) => t.as_str(),
+                                crate::parser::class::VariantField::Named { field_type, .. } => field_type.as_str(),
+                            };
+                            crate::types::type_from_str(t).ok().filter(|t| self.ty_is_owned_resource(t))
+                        })
+                        .collect();
+                    if field_tys.iter().all(Option::is_none) {
+                        continue;
+                    }
+                    let st = self.enum_variant_llvm_struct(&enum_def.name, &variant.name)?;
+                    let block = ctx.append_basic_block(drop_fn, &format!("drop_{}", variant.name));
+                    cases.push((i64_type.const_int(index as u64, false), block));
+                    let b = &self.backend.builder;
+                    b.position_at_end(block);
+                    for (fi, fty) in field_tys.iter().enumerate() {
+                        let Some(fty) = fty else { continue };
+                        let fp = b.build_struct_gep(st, self_ptr, (fi + 1) as u32, "drop_payload_ptr")
+                            .map_err(|e| self.error("compile_enum", e.to_string()))?;
+                        let llvm_ty = st.get_field_type_at_index((fi + 1) as u32).ok_or_else(|| {
+                            self.error("compile_enum", "enum drop: missing payload field type")
+                        })?;
+                        crate::backend::memory_ops::drop_coffee_place(
+                            ctx, b, &self.functions, fty, fp, llvm_ty,
+                        )
+                        .map_err(|e| self.error("compile_enum", e))?;
+                    }
+                    b.build_unconditional_branch(free_block)
+                        .map_err(|e| self.error("compile_enum", e.to_string()))?;
+                }
+                let b = &self.backend.builder;
+                b.position_at_end(body);
+                b.build_switch(tag, free_block, &cases)
+                    .map_err(|e| self.error("compile_enum", e.to_string()))?;
+                b.position_at_end(free_block);
+                b.build_call(free_fn, &[self_ptr.into()], "drop_free_self")
                     .map_err(|e| self.error("compile_enum", format!("failed to free enum in drop: {}", e)))?;
-                self.backend.builder.build_return(None)
+                b.build_return(None)
                     .map_err(|e| self.error("compile_enum", format!("failed to build return in enum drop: {}", e)))?;
-                self.functions.insert(drop_name, drop_fn);
             }
         }
 

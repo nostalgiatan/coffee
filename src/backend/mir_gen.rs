@@ -120,6 +120,8 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                         let already_stored = !name.contains('.')
                             && self.variables.contains_key(name)
                             && !self.memory_ctx.is_moved(name);
+                        let moves_payload = matches!(value.kind, HirExprKind::EnumPayload { .. })
+                            && self.ty_is_owned_resource(&value.ty);
                         let push_let = !already_stored
                             && !name.contains('.')
                             && scope_enter_at.last() == Some(&i);
@@ -127,6 +129,9 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                         let assigned = self.compile_mir_assign(name, value);
                         self.reassign_slot = false;
                         assigned?;
+                        if moves_payload {
+                            self.null_moved_out_payload(value)?;
+                        }
                         if push_let {
                             if let Some(scope) = mir_scopes.last_mut() {
                                 if !scope.iter().any(|n| n == name) {
@@ -352,6 +357,32 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 ptr,
                 llvm_ty,
             )?;
+        }
+        Ok(())
+    }
+
+    /// A match binding owns its payload (the hidden scrutinee copy is the enum's owner and
+    /// is dropped at match end). Zero the field it was moved out of so `Enum__drop` does
+    /// not free it a second time.
+    fn null_moved_out_payload(&mut self, value: &HirExpr) -> Result<(), String> {
+        let HirExprKind::EnumPayload { value: inner, enum_name, variant, index } = &value.kind else {
+            return Ok(());
+        };
+        let BasicValueEnum::PointerValue(ptr) = self.compile_hir_expr_typed(inner)? else {
+            return Ok(());
+        };
+        let st = self.enum_variant_llvm_struct(enum_name, variant)?;
+        let field = self
+            .backend
+            .builder
+            .build_struct_gep(st, ptr, (*index + 1) as u32, "payload_moved_out")
+            .map_err(|e| self.error("null_moved_out_payload", e.to_string()))?;
+        if let Some(field_ty) = st.get_field_type_at_index((*index + 1) as u32) {
+            let zero = field_ty.const_zero();
+            self.backend
+                .builder
+                .build_store(field, zero)
+                .map_err(|e| self.error("null_moved_out_payload", e.to_string()))?;
         }
         Ok(())
     }

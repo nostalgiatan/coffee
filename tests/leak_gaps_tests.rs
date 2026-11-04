@@ -12,18 +12,14 @@ enum E:
     B(b: Box)
 "#;
 
-// 未解决：match 绑定把载荷当借用传给按值参数（`len(rest)`），被调用方会 drop 它；
-// 若 Enum__drop 也释放载荷就会 double free。需要先定“match 绑定的所有权”规则。
+// match 绑定只借用载荷，Enum__drop 是载荷的唯一所有者。
 #[test]
-#[ignore = "needs a match-binding ownership rule"]
 fn test_enum_str_payload_is_balanced() {
     assert_balanced(&format!("{ENUMS}\nfn main() => int:\n    let e: E = E.S(\"hi\")\n    return 0\n"));
 }
 
-// 未解决：match 绑定把载荷当借用传给按值参数（`len(rest)`），被调用方会 drop 它；
-// 若 Enum__drop 也释放载荷就会 double free。需要先定“match 绑定的所有权”规则。
+// match 绑定只借用载荷，Enum__drop 是载荷的唯一所有者。
 #[test]
-#[ignore = "needs a match-binding ownership rule"]
 fn test_enum_class_payload_is_balanced() {
     assert_balanced(&format!("{ENUMS}\nfn main() => int:\n    let b: Box = Box {{ n: 1 }}\n    let e: E = E.B(b)\n    return 0\n"));
 }
@@ -63,4 +59,18 @@ fn test_reassign_class_field_frees_old_value() {
 #[test]
 fn test_reassign_str_field_frees_old_value() {
     assert_balanced("class N:\n    s: str\n\nfn main() => int:\n    let n: N = N { s: \"a\" }\n    n.s = \"b\"\n    return 0\n");
+}
+
+#[test]
+fn test_enum_payload_dropped_when_arm_does_not_bind_it() {
+    assert_balanced(&format!(
+        "{ENUMS}\nfn f(e: E) => int:\n    match e:\n        E.S(s) => 1\n        _ => 0\n\nfn main() => int:\n    let a: E = E.S(\"x\")\n    let n: int = f(a)\n    let b: Box = Box {{ n: 2 }}\n    let c: E = E.B(b)\n    return f(c) + n\n"
+    ));
+}
+
+#[test]
+fn test_enum_payload_moved_out_by_binding_into_callee() {
+    assert_balanced(&format!(
+        "{ENUMS}\nfn eat(s: str) => int:\n    return 1\n\nfn f(e: E) => int:\n    match e:\n        E.S(s) => eat(s)\n        _ => 0\n\nfn main() => int:\n    let a: E = E.S(\"x\")\n    return f(a)\n"
+    ));
 }
