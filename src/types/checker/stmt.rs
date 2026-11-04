@@ -271,9 +271,32 @@ impl super::TypeChecker {
             };
             if self.is_last_use(src) {
                 self.implicit_move_source(src)?;
+            } else if !self.type_query && self.callee_drops_param(&param_types[i]) {
+                // The callee frees this parameter, so a later use (or a second call) would
+                // read or free a value this scope no longer owns.
+                let error = TypeSystemError::OwnershipError {
+                    reason: format!(
+                        "cannot copy resource '{}' as a call argument; use mv or clone",
+                        src
+                    ),
+                    span: Span::new(0, src.len()),
+                };
+                self.add_error(error.clone());
+                return Err(error);
             }
         }
         Ok(())
+    }
+
+    /// By-value class / enum parameters are dropped by the callee (mirrors
+    /// `CodeGenerator::is_owned_aggregate_type`): `buf` and the exception family are not.
+    fn callee_drops_param(&self, ty: &Type) -> bool {
+        match ty {
+            Type::NamedType { name } => {
+                name != "buf" && self.ty_is_owned_resource(ty) && !self.is_exception_type(name)
+            }
+            _ => false,
+        }
     }
     pub fn check_class(&mut self, class: &parser::class::ClassDef) -> Result<(), TypeSystemError> {
         if !class.type_params.is_empty() {
@@ -815,17 +838,65 @@ impl super::TypeChecker {
         self.registry.read().ok().and_then(|reg| reg.get_type(name)).is_some()
     }
 
+    /// Each branch starts from the ownership state before the `if`. A branch that ends in
+    /// `return` / `raise` never reaches the code after the `if`, so what it moved or
+    /// dropped does not count there; otherwise a move or `rm` in any fall-through branch
+    /// (or in the implicit empty `else`) is visible afterwards.
     pub(super) fn check_if(&mut self, if_expr: &parser::IfExpr) -> Result<(), TypeSystemError> {
         self.require_bool_condition(&if_expr.condition)?;
-        self.check_scoped_stmts(&if_expr.body)?;
+        let before = self.values.clone();
+        let mut exits: Vec<HashMap<String, ValueInfo>> = Vec::new();
+        self.check_if_branch(&before, &if_expr.body, &mut exits)?;
         for elif in &if_expr.elifs {
+            self.values = before.clone();
             self.require_bool_condition(&elif.condition)?;
-            self.check_scoped_stmts(&elif.body)?;
+            self.check_if_branch(&before, &elif.body, &mut exits)?;
         }
-        if let Some(else_body) = &if_expr.else_body {
-            self.check_scoped_stmts(else_body)?;
+        match &if_expr.else_body {
+            Some(else_body) => self.check_if_branch(&before, else_body, &mut exits)?,
+            None => exits.push(before.clone()),
+        }
+        self.values = Self::merge_branch_states(before, &exits);
+        Ok(())
+    }
+
+    fn check_if_branch(
+        &mut self,
+        before: &HashMap<String, ValueInfo>,
+        body: &[parser::Statement],
+        exits: &mut Vec<HashMap<String, ValueInfo>>,
+    ) -> Result<(), TypeSystemError> {
+        self.values = before.clone();
+        self.check_scoped_stmts(body)?;
+        if !super::flow::always_returns(body) {
+            exits.push(self.values.clone());
         }
         Ok(())
+    }
+
+    /// Moved beats dropped beats the state before the `if`. With no fall-through branch
+    /// the code after the `if` is unreachable and keeps the state before it.
+    fn merge_branch_states(
+        mut merged: HashMap<String, ValueInfo>,
+        exits: &[HashMap<String, ValueInfo>],
+    ) -> HashMap<String, ValueInfo> {
+        for (name, info) in merged.iter_mut() {
+            for post in exits {
+                let Some(post_info) = post.get(name) else {
+                    continue;
+                };
+                match (&info.state, &post_info.state) {
+                    (ValueState::Moved, _) => {}
+                    (_, ValueState::Moved) => info.state = ValueState::Moved,
+                    (ValueState::Dropped { .. }, _) => {}
+                    (_, ValueState::Dropped { location }) => {
+                        info.state = ValueState::Dropped { location: location.clone() };
+                    }
+                    _ => {}
+                }
+            }
+        }
+        merged
     }
 
     pub(super) fn check_while(&mut self, while_loop: &parser::WhileLoop) -> Result<(), TypeSystemError> {

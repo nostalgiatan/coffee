@@ -107,7 +107,13 @@ impl Analyzer {
                         u
                     })
                     .collect();
-                let then_after = union3(used_after, &else_uses, &elif_uses);
+                // A branch that ends in `return` / `raise` never reaches the code after the
+                // `if` or the sibling branches, so none of their uses come after it.
+                let then_after = if super::checker::flow::always_returns(&if_expr.body) {
+                    HashSet::new()
+                } else {
+                    union3(used_after, &else_uses, &elif_uses)
+                };
                 self.walk_seq(&if_expr.body, &then_after, in_loop);
 
                 let then_uses = stmts_uses(&if_expr.body);
@@ -123,12 +129,20 @@ impl Analyzer {
                             u
                         })
                         .collect();
-                    let elif_after = union3(used_after, &then_uses, &else_uses);
-                    let elif_after = union_owned(elif_after, other_elifs);
+                    let elif_after = if super::checker::flow::always_returns(&elif.body) {
+                        HashSet::new()
+                    } else {
+                        let elif_after = union3(used_after, &then_uses, &else_uses);
+                        union_owned(elif_after, other_elifs)
+                    };
                     self.walk_seq(&elif.body, &elif_after, in_loop);
                 }
                 if let Some(else_body) = &if_expr.else_body {
-                    let else_after = union_owned(union_ref(used_after, &then_uses), elif_uses);
+                    let else_after = if super::checker::flow::always_returns(else_body) {
+                        HashSet::new()
+                    } else {
+                        union_owned(union_ref(used_after, &then_uses), elif_uses)
+                    };
                     self.walk_seq(else_body, &else_after, in_loop);
                 }
             }

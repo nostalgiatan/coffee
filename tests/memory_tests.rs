@@ -139,7 +139,6 @@ fn process(p: Point) => int:
 fn main() => int:
     let p: Point = Point { x: 42, y: 100 }
     let x_val: int = process(p)
-    rm p
     rm x_val
     return 0
 
@@ -609,7 +608,27 @@ fn main() => int:
     return 0
 
 "#;
-    // This test should fail because p is removed twice (once in if, once after if)
+    // Each path drops `p` once: the branch returns right after its `rm`, so the `rm`
+    // after the `if` is a different path.
+    assert_compiles(source).unwrap();
+}
+
+#[test]
+fn test_rm_in_fallthrough_branch_then_rm_again_is_error() {
+    let source = r#"
+class Point:
+    x: int
+    y: int
+
+fn main() => int:
+    let p: Point = Point { x: 10, y: 20 }
+    let flag: int = 0
+    if flag > 0:
+        rm p
+    rm p
+    return 0
+
+"#;
     assert!(assert_compiles(source).is_err());
 }
 

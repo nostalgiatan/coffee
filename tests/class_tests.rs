@@ -194,7 +194,6 @@ fn print_point(p: Point) => ():
 fn main() => int:
     let p: Point = Point { x: 10, y: 20 }
     print_point(p)
-    rm p
     return 0
 
 "#;

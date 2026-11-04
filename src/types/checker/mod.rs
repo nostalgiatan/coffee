@@ -13,7 +13,7 @@ mod stmt;
 mod expr;
 mod call;
 mod match_check;
-mod flow;
+pub(crate) mod flow;
 mod memory;
 mod import_main;
 mod compat;
@@ -59,6 +59,9 @@ pub struct TypeChecker {
     stmt_cursor: usize,
     /// Id of the statement `check_statement` is currently visiting.
     current_stmt_id: usize,
+    /// HIR lowering asks for expression types outside any statement: no last-use
+    /// information exists, so ownership rules that need it must not fire.
+    type_query: bool,
     /// Known same-module functions: result of a `Ref` return aliases this param index.
     ref_return_alias: HashMap<String, usize>,
     /// Enclosing locals/params forbidden inside an anonymous `fn` body.
@@ -91,6 +94,7 @@ impl TypeChecker {
             last_uses: crate::types::last_use::LastUseSites::new(),
             stmt_cursor: 0,
             current_stmt_id: 0,
+            type_query: false,
             ref_return_alias: HashMap::new(),
             capture_forbidden: HashSet::new(),
             module_value_names: HashSet::new(),
@@ -121,6 +125,11 @@ impl TypeChecker {
             }
         }
         crate::types::last_use::is_owned_resource(ty)
+    }
+
+    /// While set, `check_expression` is a pure type query (used by HIR lowering).
+    pub fn set_type_query(&mut self, on: bool) {
+        self.type_query = on;
     }
 
     /// Get collected errors

@@ -366,6 +366,7 @@ impl CompilationPipeline {
         }
         // Types from bind; states are Alive after revive so Member/Call infer.
         let bound = type_checker.snapshot_values();
+        type_checker.set_type_query(true);
         let mir = {
             let mut lower = crate::hir::HirLower::new(|expr| {
                 match type_checker.check_expression(expr) {
@@ -413,6 +414,7 @@ impl CompilationPipeline {
                 }
             }
         };
+        type_checker.set_type_query(false);
         type_checker.unbind_function_locals(saved);
         mir
     }

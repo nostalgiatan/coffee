@@ -8,7 +8,7 @@ use crate::parser::Statement;
 /// `match` is exhaustive by the time this runs (`check_match_exhaustiveness`), so a
 /// `match` whose arms all end the path ends it too. `while true` with no `break` never
 /// falls through.
-pub(super) fn always_returns(stmts: &[Statement]) -> bool {
+pub(crate) fn always_returns(stmts: &[Statement]) -> bool {
     stmts.iter().any(ends_path)
 }
 
