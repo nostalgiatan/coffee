@@ -273,7 +273,9 @@ pub fn compile_remove<'ctx>(
                 .as_ref()
                 .and_then(|class_name| functions.get(&format!("{}__drop", class_name)).copied());
             // Only free if the pointer is heap-allocated
-            let should_free = memory_ctx.lifetimes.get(target)
+            // A `Class__drop` / `Enum__drop` frees its own block; freeing again would be a
+            // double free.
+            let should_free = drop_func.is_none() && memory_ctx.lifetimes.get(target)
                 .map(|info| info.is_heap_allocated)
                 .unwrap_or(false);
             

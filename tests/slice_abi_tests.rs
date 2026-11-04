@@ -97,9 +97,9 @@ fn main() => int:
         holder_drop
     );
     assert!(
-        !holder_drop.contains("call void @free(ptr %0)")
-            && !holder_drop.contains("call void @free(ptr noundef %0)"),
-        "Holder__drop must not free(self):\n{}",
+        holder_drop.contains("call void @free(ptr %0)")
+            || holder_drop.contains("call void @free(ptr noundef %0)"),
+        "Holder__drop must free(self) after dropping its fields:\n{}",
         holder_drop
     );
 }

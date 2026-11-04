@@ -164,6 +164,8 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             }
         }
 
+        self.drop_owned_aggregate_params()?;
+
         let arrays: Vec<String> = self
             .array_allocas
             .keys()
@@ -183,6 +185,58 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                     self.drop_array_local(&var_name)?;
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// True for a bare class or payload-enum type name: values that are owning heap
+    /// pointers. Excludes C value structs and the `Error` family, whose raised instance
+    /// is built by `raise` and handed to a listener, not allocated for the callee.
+    pub(crate) fn is_owned_aggregate_type(&self, type_name: &str) -> bool {
+        if self.c_value_names.contains(type_name) {
+            return false;
+        }
+        if let Some(class) = self.classes.get(type_name) {
+            let mut cur = Some(class);
+            let mut hops = 0;
+            while let Some(c) = cur {
+                if c.name == "Error" {
+                    return false;
+                }
+                cur = c.parent.as_ref().and_then(|p| self.classes.get(p));
+                hops += 1;
+                if hops > 64 {
+                    return false;
+                }
+            }
+            return true;
+        }
+        self.enums
+            .get(type_name)
+            .is_some_and(|e| e.variants.iter().any(|v| !v.fields.is_empty()))
+    }
+
+    /// Drop by-value class / enum parameters that this function still owns. A parameter
+    /// that was moved on (`return p`, passed to another call, stored in a new value) is
+    /// the new owner's problem.
+    fn drop_owned_aggregate_params(&mut self) -> Result<(), String> {
+        let params = self.owned_aggregate_params.clone();
+        for (name, type_name) in params {
+            if self.memory_ctx.is_moved(&name) || self.memory_ctx.is_dropped(&name) {
+                continue;
+            }
+            let Some(&(ptr, llvm_ty)) = self.variables.get(&name) else {
+                continue;
+            };
+            let ty = crate::types::Type::NamedType { name: type_name };
+            super::memory_ops::drop_coffee_place(
+                self.backend.context,
+                &self.backend.builder,
+                &self.functions,
+                &ty,
+                ptr,
+                llvm_ty,
+            )?;
         }
         Ok(())
     }

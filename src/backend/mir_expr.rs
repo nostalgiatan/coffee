@@ -938,6 +938,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 self.compile_hir_expr_typed(field_expr)?
             };
             compiled.push((field_name.clone(), field_value));
+            self.mark_moved_owned_resource_var(field_expr);
         }
         self.emit_struct_literal(struct_name, compiled)
     }
@@ -1013,12 +1014,18 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
 
     fn mark_moved_owned_resource_args(&mut self, args: &[HirExpr]) {
         for arg in args {
-            if self.ty_is_owned_resource(&arg.ty) {
-                if let HirExprKind::Variable(n) = &arg.kind {
-                    let left = self.mir_name_uses_left.get(n).copied().unwrap_or(0);
-                    if left == 0 {
-                        self.memory_ctx.mark_moved(n.clone());
-                    }
+            self.mark_moved_owned_resource_var(arg);
+        }
+    }
+
+    /// A last-use resource variable handed to a call or stored into a new value is moved:
+    /// the receiver owns it, so this scope must not drop it again.
+    fn mark_moved_owned_resource_var(&mut self, arg: &HirExpr) {
+        if self.ty_is_owned_resource(&arg.ty) {
+            if let HirExprKind::Variable(n) = &arg.kind {
+                let left = self.mir_name_uses_left.get(n).copied().unwrap_or(0);
+                if left == 0 {
+                    self.memory_ctx.mark_moved(n.clone());
                 }
             }
         }

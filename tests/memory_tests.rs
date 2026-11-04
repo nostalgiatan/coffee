@@ -836,9 +836,10 @@ fn main() => int:
         "Outer__drop should call Inner__drop:\n{}",
         outer_drop
     );
-    assert!(
-        !outer_drop.contains("@free"),
-        "Outer__drop must not free(self):\n{}",
+    assert_eq!(
+        count_free_calls(outer_drop),
+        1,
+        "Outer__drop frees only its own block; Inner__drop frees the inner one:\n{}",
         outer_drop
     );
 }
@@ -949,9 +950,9 @@ fn main() => int:
         holder_drop
     );
     assert!(
-        !holder_drop.contains("call void @free(ptr %0)")
-            && !holder_drop.contains("call void @free(ptr noundef %0)"),
-        "Holder__drop must not free(self):\n{}",
+        holder_drop.contains("call void @free(ptr %0)")
+            || holder_drop.contains("call void @free(ptr noundef %0)"),
+        "Holder__drop must free(self) after dropping its fields:\n{}",
         holder_drop
     );
 }
@@ -982,9 +983,9 @@ fn main() => int:
         holder_drop
     );
     assert!(
-        !holder_drop.contains("call void @free(ptr %0)")
-            && !holder_drop.contains("call void @free(ptr noundef %0)"),
-        "Holder__drop must not free(self):\n{}",
+        holder_drop.contains("call void @free(ptr %0)")
+            || holder_drop.contains("call void @free(ptr noundef %0)"),
+        "Holder__drop must free(self) after dropping its fields:\n{}",
         holder_drop
     );
 }
@@ -1036,9 +1037,10 @@ fn main() => int:
     let ll = format!("test_object_drop_{}.ll", pid);
     let ir = emit_llvm_ir(source, &ll);
     let box_drop = llvm_fn_body(&ir, "Box__drop");
-    assert!(
-        !box_drop.contains("@free"),
-        "Box__drop must not free(object) pointee:\n{}",
+    assert_eq!(
+        count_free_calls(box_drop),
+        1,
+        "Box__drop frees only its own block, never the object pointee:\n{}",
         box_drop
     );
 }

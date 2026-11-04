@@ -35,6 +35,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         let parent_errh = std::mem::take(&mut self.current_error_handler);
         let parent_fn_name = std::mem::take(&mut self.current_function_name);
         let parent_params = std::mem::take(&mut self.current_function_params);
+        let parent_owned_params = std::mem::take(&mut self.owned_aggregate_params);
 
         let result = (|| -> Result<(), String> {
         self.current_function = Some(function);
@@ -87,6 +88,10 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             coffee_debug!("DEBUG: compile_function: variables after inserting parameter '{}': {:?}", param.name, self.variables.keys().collect::<Vec<_>>());
             if self.classes.contains_key(&param.param_type) {
                 self.variable_types.insert(param.name.clone(), param.param_type.clone());
+            }
+            if param.name != "self" && self.is_owned_aggregate_type(&param.param_type) {
+                self.owned_aggregate_params
+                    .push((param.name.clone(), param.param_type.clone()));
             }
             match crate::types::type_from_str(&param.param_type) {
                 Ok(Type::Array { elem, size }) => {
@@ -200,6 +205,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         self.current_error_handler = parent_errh;
         self.current_function_name = parent_fn_name;
         self.current_function_params = parent_params;
+        self.owned_aggregate_params = parent_owned_params;
         result
     }
 }

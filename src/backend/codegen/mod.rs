@@ -115,6 +115,9 @@ pub struct CodeGenerator<'a, 'ctx> {
     pub current_function_name: Option<String>,
     /// Current function's parameter names for error context
     pub current_function_params: Vec<String>,
+    /// By-value parameters of class / payload-enum type: the callee owns them and drops
+    /// them at exit unless they were moved on. `(param name, Coffee type name)`.
+    pub owned_aggregate_params: Vec<(String, String)>,
     /// Memory layout collector for reporting
     pub layout_collector: LayoutCollector,
     /// C library imports (for external symbol resolution)
@@ -198,6 +201,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             current_error_handler: None,
             current_function_name: None,
             current_function_params: Vec::new(),
+            owned_aggregate_params: Vec::new(),
             layout_collector: LayoutCollector::new(),
             c_imports: Vec::new(),
             cfc_symbols: crate::c::load_bundled_c_tables(),

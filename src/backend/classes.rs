@@ -116,18 +116,13 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         for func in &method_fns {
             self.declare_function(func)?;
         }
-        for func in &method_fns {
-            self.compile_function(func)?;
-        }
-
-        // Generate drop function for classes with constructor (full classes)
-        if class.has_constructor {
+        // Declare `Class__drop` before any method body is compiled: a method that owns a
+        // parameter or local of its own class must be able to call it.
+        {
             let drop_func_name = format!("{}__drop", class.name);
-            
-            // Create drop function signature: void ClassName__drop(struct ClassName* self)
             let drop_func = crate::parser::Function {
                 type_params: vec![],
-                name: drop_func_name.clone(),
+                name: drop_func_name,
                 parameters: vec![
                     crate::parser::function::Parameter {
                         name: "self".to_string(),
@@ -140,8 +135,6 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 is_c: false,
                 body: crate::parser::function::FunctionBody::Expression(crate::parser::expr::Expression::Literal(String::new())),
             };
-
-            // Declare the drop function
             crate::backend::functions::declare_function(
                 &drop_func,
                 &self.backend.module,
@@ -149,6 +142,16 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 &self.type_mapper,
                 &mut self.functions,
             )?;
+        }
+
+        for func in &method_fns {
+            self.compile_function(func)?;
+        }
+
+        // Every class instance is a heap block owned by one pointer, so every class
+        // gets a drop function: drop the fields, then free the block.
+        {
+            let drop_func_name = format!("{}__drop", class.name);
 
             // Compile drop function body: reverse-order nested class `__drop` calls.
             let fn_value = self.functions.get(&drop_func_name).copied()
@@ -229,6 +232,10 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 .map_err(|e| self.error("compile_class", e))?;
             }
 
+            if let Some(&free_fn) = self.functions.get("free") {
+                self.backend.builder.build_call(free_fn, &[self_ptr.into()], "drop_free_self")
+                    .map_err(|e| self.error("compile_class", format!("failed to free '{}' in drop: {}", class.name, e)))?;
+            }
             self.backend.builder.build_return(None)
                 .map_err(|e| self.error("compile_class", format!("failed to build return in drop function: {}", e)))?;
 
@@ -343,6 +350,30 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             );
             global.set_initializer(&i64_type.const_int(index as u64, false));
             global.set_constant(true);
+        }
+
+        // A value of an enum with payload variants is a heap block owned by one pointer
+        // (`Enum__drop` frees it). Payload fields that are themselves resources are not
+        // dropped yet, so they leak rather than dangle.
+        let has_payload = enum_def.variants.iter().any(|v| !v.fields.is_empty());
+        if has_payload {
+            if let Some(&free_fn) = self.functions.get("free") {
+                let drop_name = format!("{}__drop", enum_def.name);
+                let ptr_type = self.backend.context.ptr_type(inkwell::AddressSpace::default());
+                let fn_type = self.backend.context.void_type().fn_type(&[ptr_type.into()], false);
+                let drop_fn = self.backend.module.add_function(&drop_name, fn_type, None);
+                let entry = self.backend.context.append_basic_block(drop_fn, "entry");
+                self.backend.builder.position_at_end(entry);
+                let self_ptr = drop_fn
+                    .get_nth_param(0)
+                    .ok_or_else(|| self.error("compile_enum", "enum drop is missing its parameter"))?
+                    .into_pointer_value();
+                self.backend.builder.build_call(free_fn, &[self_ptr.into()], "drop_free_self")
+                    .map_err(|e| self.error("compile_enum", format!("failed to free enum in drop: {}", e)))?;
+                self.backend.builder.build_return(None)
+                    .map_err(|e| self.error("compile_enum", format!("failed to build return in enum drop: {}", e)))?;
+                self.functions.insert(drop_name, drop_fn);
+            }
         }
 
         // Store enum definition for later use

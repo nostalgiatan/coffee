@@ -1,6 +1,6 @@
 # 聚合值的存储：class 与枚举都是堆上的拥有指针（2026-11-04）
 
-状态：**提案，未实现。** 与 [embedded-vm-direction](2026-11-04-embedded-vm-direction.md) 的 D4/D5 一致。
+状态：**已实现第 1–4 步，第 5 步和下面的"已知缺口"未做。** 与 [embedded-vm-direction](2026-11-04-embedded-vm-direction.md) 的 D4/D5 一致。
 
 ## 问题（2026-11-04 实测）
 
@@ -62,3 +62,24 @@ fn main() => int:
 - class 字段里的聚合是内嵌值还是指针。本文默认**指针**（与"聚合都是拥有指针"一致），内嵌是以后的优化。
 - 带 payload 的枚举，每个变体按各自大小分配，还是统一按最大变体分配。默认按各自大小。
 - `clone` 对枚举的深拷贝规则，沿用 `src/backend/memory_ops/clone.rs` 的 class 路径，需要确认。
+
+## 实现状态（2026-11-04）
+
+已落地，并由 [aggregate_storage_tests.rs](../../../tests/aggregate_storage_tests.rs) 覆盖（返回值稳定性 + 用 `LD_PRELOAD` 计数的 malloc/free 配平）：
+
+- class 实例和带 payload 的枚举值一律 `malloc`（`emit_heap_alloc`），不再有 `alloca` 指针逃出函数。
+- `Class__drop` 对**所有** class 生成（不再只限有 `fn new` 的），先递归 drop 字段，最后 `free(self)`；`Enum__drop` 对带 payload 的枚举生成，只 `free` 本体。`__drop` 在方法体编译之前声明，类自己的方法也能 drop 自己类型的参数和局部。
+- `compile_remove` 在有 `__drop` 时不再额外 `free`，避免重复释放。
+- 按值传入的 class / 枚举参数由被调用者在函数出口 drop（未被 `return p`、转交给其它调用、存入新值移走时）。`self`、引用参数、C 值结构体、`Error` 家族不在此列。
+- 结构体字面量里"最后一次使用"的变量字段视为移动，不会再被作用域出口 drop。
+
+旧契约"`__drop` 不 free(self)"已改成"`__drop` 最后 free(self) 恰好一次"，`memory_tests`、`buf_type_tests`、`slice_abi_tests` 里相应断言已更新。
+
+## 已知缺口（泄漏，不会悬空或重复释放）
+
+- `raise` 构造的错误对象仍在栈上构造并泄漏（`mir_raise.rs`）；监听器的 `err` 参数因此被排除在参数 drop 之外。
+- 带 payload 的枚举，payload 里的 class / `str` 等资源不会被 drop，只释放枚举本体。
+- 局部变量被重新赋值时，旧值不会被释放。
+- 递归 drop 对很深的递归结构仍可能栈溢出（未验证）。
+- 对象的 `str` 字面量等非堆 `str` 的释放规则不在本文范围内。
+- `clone` 对枚举的深拷贝规则尚未确认。
