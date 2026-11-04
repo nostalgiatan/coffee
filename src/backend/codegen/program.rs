@@ -30,6 +30,8 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             .into_iter()
             .map(|f| (f.name.clone(), f))
             .collect();
+        // Listeners read fields of the builtin `Error` before any `raise` is compiled.
+        crate::backend::error::generate_error_class(self.backend.context, &mut self.type_mapper)?;
         self.compile_program_with_imports(program, c_imports, cfc_symbols, &std::collections::HashMap::new(), &std::collections::HashMap::new())
     }
 

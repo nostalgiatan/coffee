@@ -86,7 +86,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             coffee_debug!("DEBUG: compile_function: inserting parameter '{}' into variables", param.name);
             self.variables.insert(param.name.clone(), (alloca, param_type));
             coffee_debug!("DEBUG: compile_function: variables after inserting parameter '{}': {:?}", param.name, self.variables.keys().collect::<Vec<_>>());
-            if self.classes.contains_key(&param.param_type) {
+            if self.classes.contains_key(&param.param_type) || param.param_type == "Error" {
                 self.variable_types.insert(param.name.clone(), param.param_type.clone());
             }
             if param.name != "self"

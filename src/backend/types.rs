@@ -369,6 +369,11 @@ impl<'ctx> TypeMapper<'ctx> {
     /// 
     /// * `Some(usize)` - The index of the field
     /// * `None` - If the field is not found
+    pub fn register_struct_fields(&mut self, struct_name: &str, fields: &[&str]) {
+        self.struct_fields
+            .insert(struct_name.to_string(), fields.iter().map(|f| f.to_string()).collect());
+    }
+
     pub fn get_field_index(&self, struct_name: &str, field_name: &str) -> Option<usize> {
         coffee_debug!("DEBUG: get_field_index: struct_name='{}', field_name='{}'", struct_name, field_name);
         coffee_debug!("DEBUG: get_field_index: struct_fields.keys()={:?}", self.struct_fields.keys().collect::<Vec<_>>());

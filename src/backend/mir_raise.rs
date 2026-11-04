@@ -2,7 +2,8 @@
 
 use crate::backend::codegen::CodeGenerator;
 use crate::hir::{HirExpr, HirExprKind};
-use inkwell::values::{BasicValueEnum, PointerValue};
+use crate::types::Type;
+use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
 use inkwell::AddressSpace;
 
 impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
@@ -21,15 +22,38 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         self.compile_raise_abort(&error_type, &args)
     }
 
+    /// `raise` without a listener prints and exits. Declare the two libc functions it needs
+    /// on demand so a program does not have to import them just to be able to `raise`.
+    fn ensure_abort_runtime(&mut self) -> (FunctionValue<'ctx>, FunctionValue<'ctx>) {
+        let ctx = self.backend.context;
+        let ptr_ty = ctx.ptr_type(AddressSpace::default());
+        let fprintf = match self.functions.get("fprintf") {
+            Some(f) => *f,
+            None => {
+                let ty = ctx.i32_type().fn_type(&[ptr_ty.into(), ptr_ty.into()], true);
+                let f = self.backend.module.add_function("fprintf", ty, None);
+                self.functions.insert("fprintf".to_string(), f);
+                f
+            }
+        };
+        let exit = match self.functions.get("exit") {
+            Some(f) => *f,
+            None => {
+                let ty = ctx.void_type().fn_type(&[ctx.i32_type().into()], false);
+                let f = self.backend.module.add_function("exit", ty, None);
+                self.functions.insert("exit".to_string(), f);
+                f
+            }
+        };
+        (fprintf, exit)
+    }
+
     fn compile_raise_abort(&mut self, error_type: &str, args: &[HirExpr]) -> Result<(), String> {
         let error_msg = abort_error_message(error_type, args);
 
         let i8_ptr_type = self.backend.context.ptr_type(AddressSpace::default());
 
-        let fprintf_func = *self.functions.get("fprintf")
-            .ok_or("fprintf function not declared - use 'fprintf in libc of c'")?;
-        let exit_func = *self.functions.get("exit")
-            .ok_or("exit function not declared - use 'exit in libc of c'")?;
+        let (fprintf_func, exit_func) = self.ensure_abort_runtime();
 
         let message_ptr = self.backend.builder.build_global_string_ptr(&error_msg, "error_msg")
             .map_err(|e| self.error("compile_raise", format!("failed to build error message string: {}", e)))?
@@ -80,13 +104,23 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             )
         })?;
 
-        let err_ptr = if raise_listen_uses_instance(expr) {
+        // The builtin `Error` has no class definition to build an instance from; pack it.
+        let has_class = self.classes.contains_key(&error_type)
+            || matches!(expr.kind, HirExprKind::Variable(_));
+        let mut owned_temps: Vec<PointerValue<'ctx>> = Vec::new();
+        let err_ptr = if raise_listen_uses_instance(expr) && has_class {
             match self.compile_hir_expr(expr) {
                 Ok(val) => self.raise_value_as_ptr(val)?,
-                Err(_) => self.pack_listen_error_ptr(&error_type, &args)?,
+                Err(_) => {
+                    let (p, t) = self.pack_listen_error_ptr(&error_type, &args)?;
+                    owned_temps = t;
+                    p
+                }
             }
         } else {
-            self.pack_listen_error_ptr(&error_type, &args)?
+            let (p, t) = self.pack_listen_error_ptr(&error_type, &args)?;
+            owned_temps = t;
+            p
         };
 
         let call = self.backend.builder.build_call(
@@ -99,6 +133,10 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             inkwell::values::ValueKind::Basic(val) => Some(val),
             inkwell::values::ValueKind::Instruction(_) => None,
         };
+        // Strings built just for the raised `Error` are lent to the listener; free them here.
+        for tmp in owned_temps {
+            self.emit_free(tmp)?;
+        }
         self.return_listener_value(ret_value)
     }
 
@@ -118,11 +156,31 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         Ok(())
     }
 
+    fn emit_free(&mut self, ptr: PointerValue<'ctx>) -> Result<(), String> {
+        let ctx = self.backend.context;
+        let free = match self.functions.get("free") {
+            Some(f) => *f,
+            None => {
+                let ty = ctx.void_type().fn_type(&[ctx.ptr_type(AddressSpace::default()).into()], false);
+                let f = self.backend.module.add_function("free", ty, None);
+                self.functions.insert("free".to_string(), f);
+                f
+            }
+        };
+        self.backend
+            .builder
+            .build_call(free, &[ptr.into()], "raise_tmp_free")
+            .map_err(|e| self.error("compile_raise", format!("failed to free raise temporary: {}", e)))?;
+        Ok(())
+    }
+
+    /// Packs `code` / `note` / `e` into a stack `Error`. Runtime values are stored as they
+    /// are; the returned pointers are heap temporaries the caller must free after the listener.
     fn pack_listen_error_ptr(
         &mut self,
         error_type: &str,
         args: &[HirExpr],
-    ) -> Result<PointerValue<'ctx>, String> {
+    ) -> Result<(PointerValue<'ctx>, Vec<PointerValue<'ctx>>), String> {
         self.ensure_exception_llvm_type(error_type)?;
         let error_struct = listen_pack_struct_type(&self.type_mapper, error_type).ok_or_else(|| {
             self.error("compile_raise", "Error class was not generated")
@@ -133,15 +191,44 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             .map_err(|e| self.error("compile_raise", format!("failed to allocate Error: {}", e)))?;
 
         let i64_type = self.backend.context.i64_type();
-        let code_val = i64_type.const_int(pack.code as u64, true);
-        self.store_error_field(error_struct, err_ptr, 0, "code", code_val.into())?;
+        let mut owned = Vec::new();
 
-        let note_ptr = self.raise_field_string_ptr(&pack.note, "err_note")?;
+        let code_val: BasicValueEnum<'ctx> = match args.first() {
+            Some(first) if raise_int_literal(first).is_none() && first.ty.is_int() => {
+                let v = self.compile_hir_expr_typed(first)?;
+                match v {
+                    BasicValueEnum::IntValue(iv) => self
+                        .backend
+                        .builder
+                        .build_int_s_extend_or_bit_cast(iv, i64_type, "err_code")
+                        .map_err(|e| self.error("compile_raise", e.to_string()))?
+                        .into(),
+                    _ => i64_type.const_int(pack.code as u64, true).into(),
+                }
+            }
+            _ => i64_type.const_int(pack.code as u64, true).into(),
+        };
+        self.store_error_field(error_struct, err_ptr, 0, "code", code_val)?;
+
+        let note_ptr = match args.get(1) {
+            Some(arg) if arg.ty == Type::String && !matches!(arg.kind, HirExprKind::Literal(_)) => {
+                let v = self.compile_hir_expr_typed(arg)?;
+                let BasicValueEnum::PointerValue(p) = v else {
+                    return Err(self.error("compile_raise", "Error note must be a string"));
+                };
+                // A named local stays owned by its scope; anything else was built for this raise.
+                if !matches!(arg.kind, HirExprKind::Variable(_)) {
+                    owned.push(p);
+                }
+                p
+            }
+            _ => self.raise_field_string_ptr(&pack.note, "err_note")?,
+        };
         self.store_error_field(error_struct, err_ptr, 1, "note", note_ptr.into())?;
 
         let extra_ptr = self.raise_field_string_ptr(&pack.extra, "err_extra")?;
         self.store_error_field(error_struct, err_ptr, 2, "e", extra_ptr.into())?;
-        Ok(err_ptr)
+        Ok((err_ptr, owned))
     }
 
     fn raise_value_as_ptr(

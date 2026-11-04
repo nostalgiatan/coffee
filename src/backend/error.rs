@@ -91,5 +91,7 @@ pub fn generate_error_class<'ctx>(
     };
 
     type_mapper.struct_types.insert("Error".to_string(), error_type);
+    // A listener reads `err.code` / `err.note`, so the fields must be addressable by name.
+    type_mapper.register_struct_fields("Error", &["code", "note", "e"]);
     Ok(())
 }
