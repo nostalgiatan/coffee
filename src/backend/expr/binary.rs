@@ -112,7 +112,10 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             BasicValueEnum::PointerValue(ptr) => {
                 use inkwell::types::BasicTypeEnum;
                 let load_name = ptr.get_name().to_string_lossy().into_owned();
-                let type_hint = self.clone_type_hint_for_name(&load_name);
+                let type_hint = self
+                    .clone_operand_type
+                    .take()
+                    .or_else(|| self.clone_type_hint_for_name(&load_name));
                 let n = self.variables.len();
                 let src = format!("__clone_src_{}", n);
                 let dst = format!("__clone_dst_{}", n);
@@ -195,6 +198,28 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             }
             (BasicValueEnum::IntValue(off), BasicValueEnum::PointerValue(ptr)) if op == "+" => {
                 return self.build_pointer_byte_offset(ptr, off);
+            }
+            // A payload-free enum value is its tag stored as a pointer; comparing it with the
+            // variant's integer constant compares tags.
+            (BasicValueEnum::PointerValue(ptr), BasicValueEnum::IntValue(tag))
+                if op == "==" || op == "!=" =>
+            {
+                let as_int = self
+                    .backend
+                    .builder
+                    .build_ptr_to_int(ptr, tag.get_type(), "enum_tag_cmp")
+                    .map_err(|e| self.error("binary_operation", e.to_string()))?;
+                return self.build_binary_op(op, as_int.into(), tag.into());
+            }
+            (BasicValueEnum::IntValue(tag), BasicValueEnum::PointerValue(ptr))
+                if op == "==" || op == "!=" =>
+            {
+                let as_int = self
+                    .backend
+                    .builder
+                    .build_ptr_to_int(ptr, tag.get_type(), "enum_tag_cmp")
+                    .map_err(|e| self.error("binary_operation", e.to_string()))?;
+                return self.build_binary_op(op, tag.into(), as_int.into());
             }
             (BasicValueEnum::IntValue(l), BasicValueEnum::IntValue(r)) => {
                 let signed = self.coffee_int_is_signed(l) && self.coffee_int_is_signed(r);

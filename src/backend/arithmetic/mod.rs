@@ -7,6 +7,24 @@
 //! both integer and floating-point operations with appropriate error handling.
 
 
+/// Crash before the `unreachable`: a bare `unreachable` is undefined behaviour and at -O0
+/// simply falls through, so division by zero would silently produce garbage. A volatile
+/// load through null cannot be optimised away and faults deterministically.
+pub(super) fn trap_unreachable<'ctx>(
+    builder: &inkwell::builder::Builder<'ctx>,
+) -> Result<inkwell::values::InstructionValue<'ctx>, inkwell::builder::BuilderError> {
+    use inkwell::values::BasicValue;
+    if let Some(block) = builder.get_insert_block() {
+        let ctx = block.get_context();
+        let null = ctx.ptr_type(inkwell::AddressSpace::default()).const_null();
+        let load = builder.build_load(ctx.i8_type(), null, "trap")?;
+        if let Some(inst) = load.as_instruction_value() {
+            let _ = inst.set_volatile(true);
+        }
+    }
+    builder.build_unreachable()
+}
+
 /// Structure to hold arithmetic operation context
 /// 
 /// The ArithmeticContext manages settings and state for arithmetic operations

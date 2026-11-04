@@ -114,6 +114,8 @@ pub struct CodeGenerator<'a, 'ctx> {
     /// Set by `MirStmt::Assign` for a store into a slot that already holds a value: the old
     /// value is dropped once the new one is computed.
     pub reassign_slot: bool,
+    /// Coffee type of the operand of the `clone` being compiled (from the typed HIR).
+    pub clone_operand_type: Option<String>,
     /// Coffee name of the function being compiled (for listener-vs-self).
     pub current_function_name: Option<String>,
     /// Current function's parameter names for error context
@@ -203,6 +205,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             max_expression_depth: 1000,  // Safety limit to prevent stack overflow
             current_error_handler: None,
             reassign_slot: false,
+            clone_operand_type: None,
             current_function_name: None,
             current_function_params: Vec::new(),
             owned_aggregate_params: Vec::new(),

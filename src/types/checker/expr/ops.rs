@@ -100,6 +100,10 @@ impl super::super::TypeChecker {
             }
             "+" | "-" | "*" | "/" | "%" => {
                 if left_type.is_numeric() && right_type.is_numeric() {
+                    if left_type.is_int() != right_type.is_int() {
+                        // No implicit int <-> float conversion: write `float(n)` or `int(x)`.
+                        return Err(TypeSystemError::invalid_operation(op, left_type.clone(), right_type.clone(), location));
+                    }
                     Ok(self.promote_numeric_types(left_type, right_type))
                 } else if op == "+" && *left_type == Type::String && *right_type == Type::String {
                     // Concatenation: a fresh owned `str`; the operands are only borrowed.

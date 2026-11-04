@@ -39,6 +39,7 @@ impl super::super::TypeChecker {
         for (field_name, value) in fields {
             let expected = self.lookup_field_type(struct_name, field_name)?;
             let found = self.check_expression_hint(value, Some(&expected))?;
+            self.reject_place_copy(value, &expected, "struct field")?;
             if !self.types_compatible(&found, &expected)? {
                 let error = TypeSystemError::type_mismatch(
                     expected,

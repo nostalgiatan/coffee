@@ -512,7 +512,7 @@ fn main() => int:
         name: "Alice",
         age: 30
     }
-    let name: str = p.name
+    let name: str = clone p.name
     let age: int = p.age
     rm p, name, age
     return 0

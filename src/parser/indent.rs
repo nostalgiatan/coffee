@@ -141,6 +141,71 @@ impl Default for IndentCache {
     }
 }
 
+/// First line whose indentation falls between two open block levels (a dedent that matches no
+/// enclosing block). Without this the parser silently drops or reparents the line.
+/// Returns the 1-based line number. Lines inside brackets and comments are continuations.
+pub fn first_inconsistent_dedent(source: &str) -> Option<usize> {
+    let mut levels: Vec<usize> = vec![0];
+    let mut depth: i32 = 0;
+    let mut in_block_comment = false;
+    for (idx, line) in source.lines().enumerate() {
+        let trimmed = line.trim_start();
+        let starts_inside = depth > 0 || in_block_comment;
+        let blank = trimmed.is_empty() || (trimmed.starts_with("/#/") && !in_block_comment);
+        if !starts_inside && !blank && !trimmed.starts_with("/#*") {
+            let indent = line.len() - trimmed.len();
+            let top = *levels.last().unwrap_or(&0);
+            if indent > top {
+                levels.push(indent);
+            } else if indent < top {
+                while levels.last().is_some_and(|&l| l > indent) {
+                    levels.pop();
+                }
+                if levels.last() != Some(&indent) {
+                    return Some(idx + 1);
+                }
+            }
+        }
+        let bytes = line.as_bytes();
+        let mut i = 0;
+        let mut in_str = false;
+        while i < bytes.len() {
+            if in_block_comment {
+                if bytes[i..].starts_with(b"*#/") {
+                    in_block_comment = false;
+                    i += 3;
+                } else {
+                    i += 1;
+                }
+                continue;
+            }
+            let c = bytes[i];
+            if in_str {
+                if c == b'\\' {
+                    i += 1;
+                } else if c == b'"' {
+                    in_str = false;
+                }
+            } else if bytes[i..].starts_with(b"/#*") {
+                in_block_comment = true;
+                i += 3;
+                continue;
+            } else if bytes[i..].starts_with(b"/#/") {
+                break;
+            } else {
+                match c {
+                    b'"' => in_str = true,
+                    b'(' | b'[' | b'{' => depth += 1,
+                    b')' | b']' | b'}' => depth = (depth - 1).max(0),
+                    _ => {}
+                }
+            }
+            i += 1;
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

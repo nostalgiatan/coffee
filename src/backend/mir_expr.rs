@@ -38,6 +38,9 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                     return self.compile_hir_deref(operand, expr);
                 }
                 let operand_val = self.compile_hir_expr_typed(operand)?;
+                if op == "clone" {
+                    self.clone_operand_type = Some(operand.ty.to_string());
+                }
                 self.compile_unary_op(op, operand_val)
             }
             HirExprKind::FString {
@@ -50,14 +53,14 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             HirExprKind::ArrayLiteral { elements } => {
                 let compiled: Vec<BasicValueEnum<'ctx>> = elements
                     .iter()
-                    .map(|e| self.compile_hir_expr_typed(e))
+                    .map(|e| self.compile_hir_expr_owned(e))
                     .collect::<Result<Vec<_>, _>>()?;
                 self.emit_array_literal(compiled)
             }
             HirExprKind::TupleLiteral { elements } => {
                 let compiled: Vec<BasicValueEnum<'ctx>> = elements
                     .iter()
-                    .map(|e| self.compile_hir_expr_typed(e))
+                    .map(|e| self.compile_hir_expr_owned(e))
                     .collect::<Result<Vec<_>, _>>()?;
                 self.emit_tuple_literal(compiled)
             }

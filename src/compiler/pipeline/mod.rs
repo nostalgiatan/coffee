@@ -67,6 +67,13 @@ impl CompilationPipeline {
         let program = match parser::parse_program(source) {
             Ok(program) => {
                 stats.statements_parsed = program.statements.len();
+                let duplicates = Self::duplicate_functions(&program);
+                if !duplicates.is_empty() {
+                    parse_ok = false;
+                    for d in duplicates {
+                        self.session.emitter.emit(d);
+                    }
+                }
                 program
             }
             Err(parse_errors) => {

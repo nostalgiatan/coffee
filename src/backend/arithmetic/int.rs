@@ -56,8 +56,7 @@ impl<'ctx> ArithmeticContext<'ctx> {
             .build_conditional_branch(overflow, overflow_block, continue_block)
             .map_err(|e| format!("failed to build branch: {}", e))?;
         builder.position_at_end(overflow_block);
-        builder
-            .build_unreachable()
+        super::trap_unreachable(builder)
             .map_err(|e| format!("failed to build unreachable on signed div overflow: {}", e))?;
         builder.position_at_end(continue_block);
         Ok(())
@@ -164,7 +163,7 @@ impl<'ctx> ArithmeticContext<'ctx> {
             // Security: Panic on overflow instead of returning unsafe value
             // Use LLVM's unreachable instruction to trap
             // This will trigger undefined behavior sanitizers at runtime
-            builder.build_unreachable()
+            super::trap_unreachable(builder)
                 .map_err(|e| format!("failed to build unreachable on overflow: {}", e))?;
 
             // Normal block: return the result
@@ -284,7 +283,7 @@ impl<'ctx> ArithmeticContext<'ctx> {
 
             // Overflow block: panic instead of returning 0
             builder.position_at_end(overflow_block);
-            builder.build_unreachable()
+            super::trap_unreachable(builder)
                 .map_err(|e| format!("failed to build unreachable on overflow: {}", e))?;
 
             // Normal block: return the result
@@ -424,7 +423,7 @@ impl<'ctx> ArithmeticContext<'ctx> {
 
             // Overflow block: panic instead of returning 0
             builder.position_at_end(overflow_block);
-            builder.build_unreachable()
+            super::trap_unreachable(builder)
                 .map_err(|e| format!("failed to build unreachable on overflow: {}", e))?;
 
             // Normal block: return the result
@@ -497,7 +496,7 @@ impl<'ctx> ArithmeticContext<'ctx> {
                 .map_err(|e| format!("failed to build branch: {}", e))?;
 
             builder.position_at_end(panic_block);
-            builder.build_unreachable()
+            super::trap_unreachable(builder)
                 .map_err(|e| format!("failed to build unreachable: {}", e))?;
 
             builder.position_at_end(after_zero_block);
@@ -596,7 +595,7 @@ impl<'ctx> ArithmeticContext<'ctx> {
                 .map_err(|e| format!("failed to build branch: {}", e))?;
 
             builder.position_at_end(panic_block);
-            builder.build_unreachable()
+            super::trap_unreachable(builder)
                 .map_err(|e| format!("failed to build unreachable: {}", e))?;
 
             builder.position_at_end(after_zero_block);
@@ -727,7 +726,7 @@ impl<'ctx> ArithmeticContext<'ctx> {
 
             // Overflow block: panic on INT_MIN negation
             builder.position_at_end(overflow_block);
-            builder.build_unreachable()
+            super::trap_unreachable(builder)
                 .map_err(|e| format!("failed to build unreachable on negation overflow: {}", e))?;
 
             // Normal block: perform negation and store

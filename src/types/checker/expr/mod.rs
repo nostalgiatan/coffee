@@ -170,6 +170,7 @@ impl super::TypeChecker {
                         }
                         for (arg, expected) in args.iter().zip(payload_tys.iter()) {
                             let arg_type = self.check_expression(arg)?;
+                            self.reject_place_copy(arg, expected, "variant payload")?;
                             if !self.types_compatible(&arg_type, expected)? {
                                 let error = TypeSystemError::type_mismatch(
                                     expected.clone(),
@@ -274,10 +275,12 @@ impl super::TypeChecker {
 
                 // Infer type from first element
                 let first_type = self.check_expression(&elements[0])?;
+                self.reject_place_copy(&elements[0], &first_type, "array element")?;
 
                 // Check all other elements have the same type
                 for element in &elements[1..] {
                     let elem_type = self.check_expression(element)?;
+                    self.reject_place_copy(element, &elem_type, "array element")?;
                     if elem_type != first_type {
                         return Err(TypeSystemError::TypeMismatch {
                             expected: first_type.clone(),
@@ -298,6 +301,7 @@ impl super::TypeChecker {
                 let mut elem_types = Vec::new();
                 for element in elements {
                     let elem_type = self.check_expression(element)?;
+                    self.reject_place_copy(element, &elem_type, "tuple element")?;
                     elem_types.push(elem_type);
                 }
 

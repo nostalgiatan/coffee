@@ -31,6 +31,9 @@ impl super::TypeChecker {
                     self.add_error(e.clone());
                     return Err(e);
                 }
+                let expected_type = expected_type.clone();
+                self.reject_place_copy(expr, &expected_type, "return")?;
+                let expected_type = &expected_type;
                 if self.ty_is_owned_resource(expected_type) {
                     if let Some(src) = crate::types::last_use::simple_var_name(expr) {
                         if self.is_last_use(src) {
@@ -183,6 +186,7 @@ impl super::TypeChecker {
         self.borrow.note_binding(&decl.name);
         self.claim_ref_binding(&decl.name, &decl.value)?;
 
+        self.reject_place_copy(&decl.value, &ty, "let")?;
         if self.ty_is_owned_resource(&ty) {
             if let Some(src) = crate::types::last_use::simple_var_name(&decl.value) {
                 if self.is_last_use(src) {
@@ -256,6 +260,7 @@ impl super::TypeChecker {
             }
         }
 
+        self.reject_place_copy(value, &target_type, "assignment")?;
         if self.ty_is_owned_resource(&target_type) {
             if let Some(src) = crate::types::last_use::simple_var_name(value) {
                 if src != name && self.is_last_use(src) {
@@ -330,6 +335,58 @@ impl super::TypeChecker {
         matches!(value, Type::Variadic) && *target == Type::String
     }
 
+    /// Text of `expr` when it names a stored place (field, element, dereference) rather than
+    /// a value: copying a resource out of one would leave two owners.
+    pub(super) fn resource_place_text(&mut self, expr: &crate::parser::expr::Expression) -> Option<String> {
+        use crate::parser::expr::Expression;
+        match expr.kind() {
+            Expression::Index { .. } => Some(expr.to_string()),
+            Expression::Unary { op, .. } if op == "*" => Some(expr.to_string()),
+            Expression::Member { object, field, args } if args.is_empty() => {
+                if let Expression::Variable(name) = object.kind() {
+                    let is_enum = self
+                        .registry
+                        .read()
+                        .ok()
+                        .is_some_and(|reg| matches!(reg.get_type(name), Some(super::super::definition::TypeDef::Enum { .. })));
+                    if is_enum {
+                        return None;
+                    }
+                }
+                let Ok(Type::NamedType { name: class }) = self.check_expression(object) else {
+                    return Some(expr.to_string());
+                };
+                if self.lookup_method(&class, field).is_some() {
+                    None
+                } else {
+                    Some(expr.to_string())
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Reject moving an owned resource out of a field / element / dereference.
+    pub(super) fn reject_place_copy(
+        &mut self,
+        expr: &crate::parser::expr::Expression,
+        ty: &Type,
+        what: &str,
+    ) -> Result<(), TypeSystemError> {
+        if !self.ty_is_owned_resource(ty) {
+            return Ok(());
+        }
+        let Some(place) = self.resource_place_text(expr) else {
+            return Ok(());
+        };
+        let error = TypeSystemError::OwnershipError {
+            reason: format!("cannot move resource out of '{}' ({}); use clone", place, what),
+            span: Span::new(0, place.len()),
+        };
+        self.add_error(error.clone());
+        Err(error)
+    }
+
     pub(super) fn is_last_use(&self, name: &str) -> bool {
         self.last_uses
             .contains(&(self.current_stmt_id, name.to_string()))
@@ -365,6 +422,9 @@ impl super::TypeChecker {
                 continue;
             }
             let Some(src) = crate::types::last_use::simple_var_name(&args[i]) else {
+                if self.callee_drops_param(&param_types[i]) {
+                    self.reject_place_copy(&args[i], &param_types[i], "call argument")?;
+                }
                 continue;
             };
             if self.is_last_use(src) {

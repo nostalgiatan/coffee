@@ -104,6 +104,13 @@ pub fn parse_program(input: &str) -> Result<Program, Vec<ParseError>> {
 }
 
 fn parse_program_inner(input: &str) -> Result<Program, Vec<ParseError>> {
+    if let Some(line) = super::indent::first_inconsistent_dedent(input) {
+        return Err(vec![ParseError::GenericSyntaxError {
+            line,
+            context: input.lines().nth(line - 1).unwrap_or("").trim().to_string(),
+            hint: "inconsistent indentation: this line dedents to a level that matches no enclosing block".to_string(),
+        }]);
+    }
     let mut statements = Vec::new();
     let mut stmt_spans = Vec::new();
     let mut errors = Vec::new();
