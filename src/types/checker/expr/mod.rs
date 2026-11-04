@@ -190,6 +190,10 @@ impl super::TypeChecker {
                 }
 
                 let object_type = self.check_expression(object)?;
+                let object_type = match object_type {
+                    Type::Ref { elem, .. } if matches!(*elem, Type::NamedType { .. }) => *elem,
+                    other => other,
+                };
                 let class_name = match &object_type {
                     Type::NamedType { name } => name.clone(),
                     _ => {
@@ -417,7 +421,10 @@ impl super::TypeChecker {
         field_name: &str,
         value: &crate::parser::expr::Expression,
     ) -> Result<Type, TypeSystemError> {
-        let object_type = self.check_expression(object)?;
+        let object_type = match self.check_expression(object)? {
+            Type::Ref { elem, .. } if matches!(*elem, Type::NamedType { .. }) => *elem,
+            other => other,
+        };
         let class_name = match object_type {
             Type::NamedType { name } => name,
             other => {

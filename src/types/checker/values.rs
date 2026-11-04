@@ -75,7 +75,10 @@ impl super::TypeChecker {
                 _ => {
                     let error = TypeSystemError::ParseError {
                         type_str: "assignment".to_string(),
-                        reason: format!("Cannot assign field '{}' on non-class type {:?}", field, ty),
+                        reason: match &ty {
+                            Type::Ref { .. } => format!("assigning field '{}' through a reference is not supported; use a method on the class", field),
+                            _ => format!("Cannot assign field '{}' on non-class type {:?}", field, ty),
+                        },
                     };
                     self.add_error(error.clone());
                     return Err(error);

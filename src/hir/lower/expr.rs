@@ -100,6 +100,17 @@ fn map_exprs(
 }
 
 /// Never invent `int`/`void` via `Expression::infer_type()`.
+/// `c.x` where `c: &C` / `&mut C` reads through the reference: `(*c).x`.
+fn auto_deref_object(object: HirExpr) -> HirExpr {
+    match &object.ty {
+        Type::Ref { elem, .. } if matches!(**elem, Type::NamedType { .. }) => HirExpr {
+            ty: (**elem).clone(),
+            kind: HirExprKind::Unary { op: "*".to_string(), operand: Box::new(object) },
+        },
+        _ => object,
+    }
+}
+
 fn recover_nonvar_type(_expr: &Expression, err: String) -> Result<Type, String> {
     Err(err)
 }
@@ -254,7 +265,7 @@ where
                 field,
                 args,
             } => {
-                let object = self.lower_expr(object)?;
+                let object = auto_deref_object(self.lower_expr(object)?);
                 let args = self.lower_expr_list(args)?;
                 Ok(HirExpr {
                     ty,
@@ -311,7 +322,7 @@ where
                 field_name,
                 value,
             } => {
-                let object = self.lower_expr(object)?;
+                let object = auto_deref_object(self.lower_expr(object)?);
                 let value = self.lower_expr(value)?;
                 Ok(HirExpr {
                     ty,

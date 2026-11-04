@@ -40,7 +40,7 @@ impl super::super::TypeChecker {
             let expected = self.lookup_field_type(struct_name, field_name)?;
             let found = self.check_expression_hint(value, Some(&expected))?;
             self.reject_place_copy(value, &expected, "struct field")?;
-            if !self.types_compatible(&found, &expected)? {
+            if !self.types_compatible(&found, &expected)? && !self.numeric_literal_fits(value, &expected) {
                 let error = TypeSystemError::type_mismatch(
                     expected,
                     found,

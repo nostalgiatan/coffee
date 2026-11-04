@@ -222,3 +222,32 @@ fn test_sizeof_primitive_and_class() {
 fn test_sizeof_rejects_non_types() {
     assert_compile_error("fn main() => int:\n    return sizeof(nothing)\n", "sizeof()").unwrap();
 }
+
+#[test]
+fn test_field_read_through_reference() {
+    let src = "class C:\n    x: int\n\nfn get(c: &C) => int:\n    return c.x\n\nfn main() => int:\n    let c = C { x: 7 }\n    return get(&c)\n";
+    assert_exit_code(src, 7).unwrap();
+}
+
+#[test]
+fn test_field_assign_through_reference_is_a_clear_error() {
+    let src = "class C:\n    x: int\n\nfn set(c: &mut C) => void:\n    c.x = 9\n\nfn main() => int:\n    let c = C { x: 7 }\n    set(&mut c)\n    return 0\n";
+    assert_compile_error(src, "through a reference is not supported").unwrap();
+}
+
+#[test]
+fn test_struct_literal_accepts_narrow_int_literal() {
+    let src = "class P:\n    x: int(4)+\n\nfn main() => int:\n    let p = P { x: 3 }\n    return int(p.x)\n";
+    assert_exit_code(src, 3).unwrap();
+}
+
+#[test]
+fn test_else_if_is_elif() {
+    let src = "fn main() => int:\n    let a = 5\n    if a == 1:\n        return 1\n    else if a == 5:\n        return 2\n    else:\n        return 3\n";
+    assert_exit_code(src, 2).unwrap();
+}
+
+#[test]
+fn test_void_main_exits_zero() {
+    assert_exit_code("fn main() => void:\n    let a = 1\n    return\n", 0).unwrap();
+}

@@ -100,6 +100,9 @@ fn span_for_consumed_lines(
 /// * `Ok(Program)` - Successfully parsed program if no errors occurred
 /// * `Err(Vec<ParseError>)` - List of parsing errors if any syntax errors were found
 pub fn parse_program(input: &str) -> Result<Program, Vec<ParseError>> {
+    if let Some(rewritten) = super::indent::rewrite_else_if(input) {
+        return parse_program(&rewritten);
+    }
     if let Some(rewritten) = super::charlit::rewrite_char_literals(input) {
         return parse_program_joined(&rewritten);
     }

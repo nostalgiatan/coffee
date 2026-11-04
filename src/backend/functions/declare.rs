@@ -64,7 +64,10 @@ pub fn declare_function<'ctx>(
     // Special handling for void return type
     let is_void = func.return_type == "void" || func.return_type == "()";
 
-    let fn_type = if is_void {
+    let fn_type = if is_void && func.name == "main" {
+        // The process exit status comes from main's return value; `=> void` exits 0.
+        context.i64_type().fn_type(&param_types_ref, has_variadic)
+    } else if is_void {
         // Void return type - use void_type().fn_type()
         context.void_type().fn_type(&param_types_ref, has_variadic)
     } else {

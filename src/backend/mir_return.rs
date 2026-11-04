@@ -49,8 +49,17 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             }
         } else {
             self.emit_local_drops()?;
-            self.backend.builder.build_return(None)
-                .map_err(|e| e.to_string())?;
+            let function = self
+                .backend
+                .builder
+                .get_insert_block()
+                .and_then(|b| b.get_parent());
+            match function {
+                Some(f) => crate::backend::functions::build_implicit_return(&self.backend.builder, f)?,
+                None => {
+                    self.backend.builder.build_return(None).map_err(|e| e.to_string())?;
+                }
+            }
         }
         Ok(())
     }

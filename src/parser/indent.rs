@@ -418,3 +418,24 @@ mod tests {
         assert_eq!(cache.indented_block_end(&lines, 3), 5);
     }
 }
+
+/// `else if cond:` at the start of a line is `elif cond:`; same byte length, so offsets hold.
+pub(crate) fn rewrite_else_if(input: &str) -> Option<String> {
+    let mut changed = false;
+    let mut out = String::with_capacity(input.len());
+    for line in input.split_inclusive('\n') {
+        let body = line.trim_start_matches([' ', '\t']);
+        let indent = line.len() - body.len();
+        let is_else_if = body.starts_with("else if")
+            && matches!(body.as_bytes().get(7), Some(b' ') | Some(b'('));
+        if is_else_if {
+            changed = true;
+            out.push_str(&line[..indent]);
+            out.push_str("elif   ");
+            out.push_str(&body[7..]);
+        } else {
+            out.push_str(line);
+        }
+    }
+    changed.then_some(out)
+}
