@@ -754,6 +754,7 @@ mod tests {
 
     #[test]
     fn load_cfc_file_searches_target_cfc() {
+        let _global = crate::GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let module = unique_mod();
         let dir = std::env::temp_dir().join(format!("coffee_load_cfc_{}", module));
         let cfc_dir = dir.join("target").join("cfc");
@@ -778,6 +779,7 @@ mod tests {
 
     #[test]
     fn load_cfc_file_dot_wins_over_target_cfc() {
+        let _global = crate::GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let module = unique_mod();
         let dir = std::env::temp_dir().join(format!("coffee_load_cfc_dot_{}", module));
         fs::create_dir_all(dir.join("target").join("cfc")).unwrap();

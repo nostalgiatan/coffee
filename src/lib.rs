@@ -14,3 +14,7 @@ pub mod library_finder;
 pub mod hir;
 #[macro_use]
 pub mod debug_log;
+
+/// Serializes lib tests that mutate process-global state (cwd, env vars).
+#[cfg(test)]
+pub(crate) static GLOBAL_STATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

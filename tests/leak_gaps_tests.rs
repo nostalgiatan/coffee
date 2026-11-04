@@ -74,3 +74,26 @@ fn test_enum_payload_moved_out_by_binding_into_callee() {
         "{ENUMS}\nfn eat(s: str) => int:\n    return 1\n\nfn f(e: E) => int:\n    match e:\n        E.S(s) => eat(s)\n        _ => 0\n\nfn main() => int:\n    let a: E = E.S(\"x\")\n    return f(a)\n"
     ));
 }
+
+#[test]
+fn test_guard_failure_keeps_payload_for_next_arm() {
+    assert_balanced(&format!(
+        "{ENUMS}\nfn f(e: E, k: int) => int:\n    match e:\n        E.S(s) if k == 1 => 1\n        E.S(t) => 2\n        _ => 0\n\nfn main() => int:\n    let a: E = E.S(\"x\")\n    return f(a, 5)\n"
+    ));
+}
+
+#[test]
+fn test_temp_scrutinee_is_freed() {
+    assert_balanced(&format!(
+        "{ENUMS}\nfn mk() => E:\n    return E.S(\"hi\")\n\nfn main() => int:\n    match mk():\n        E.S(s) => 1\n        _ => 0\n    return 0\n"
+    ));
+}
+
+#[test]
+fn test_guard_failure_next_arm_reads_payload() {
+    let src = format!(
+        "{ENUMS}\nfn f(e: E, k: int) => int:\n    match e:\n        E.B(b) if k == 1 => 100\n        E.B(c) => c.n\n        _ => 0\n\nfn main() => int:\n    let x: Box = Box {{ n: 7 }}\n    let a: E = E.B(x)\n    return f(a, 5)\n"
+    );
+    assert_exit_code(&src, 7).unwrap();
+    assert_balanced(&src);
+}

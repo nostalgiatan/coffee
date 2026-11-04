@@ -337,6 +337,7 @@ mod tests {
 
     #[test]
     fn file_url_fetch_matches_hash() {
+        let _global = crate::GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let cache = unique_cache();
         set_cache(&cache);
         let src = unique_cache().join("srcpkg");
@@ -355,6 +356,7 @@ mod tests {
 
     #[test]
     fn wrong_hash_leaves_no_cache_dir() {
+        let _global = crate::GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let cache = unique_cache();
         set_cache(&cache);
         let src = unique_cache().join("srcpkg2");

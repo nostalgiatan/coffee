@@ -176,6 +176,7 @@ mod tests {
 
     #[test]
     fn test_search_paths_skip_empty_and_dedupe() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let paths = get_standard_search_paths();
         assert!(!paths.iter().any(|p| p.is_empty()));
         let mut seen = std::collections::HashSet::new();
@@ -297,6 +298,7 @@ mod tests {
 
     #[test]
     fn test_searched_locations_note_uses_live_paths() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let note = searched_locations_note();
         let paths = get_standard_search_paths();
         assert_eq!(note, paths.join(", "));
