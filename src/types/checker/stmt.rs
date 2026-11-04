@@ -340,7 +340,30 @@ impl super::TypeChecker {
                     .iter()
                     .map(|p| p.name.clone()),
             );
-            if let Err(e) = self.check_stmt_list(&method.body) {
+            let body_result = self.check_stmt_list(&method.body);
+            let body_result = match body_result {
+                // Same view codegen compiles: a trailing value expression is the return.
+                Ok(()) if !matches!(method.return_type.trim(), "void" | "()") => {
+                    let standalone = method.to_standalone_function(&class.name);
+                    match &standalone.body {
+                        parser::FunctionBody::Block(stmts) if !super::flow::always_returns(stmts) => {
+                            let error = TypeSystemError::ConstraintViolation {
+                                constraint: "missing return".to_string(),
+                                reason: format!(
+                                    "method '{}.{}' returns '{}' but not every path ends in `return` or `raise`",
+                                    class.name, method.name, method.return_type
+                                ),
+                                span: Span::new(0, method.name.len()),
+                            };
+                            self.add_error(error.clone());
+                            Err(error)
+                        }
+                        _ => Ok(()),
+                    }
+                }
+                other => other,
+            };
+            if let Err(e) = body_result {
                 if first_err.is_none() {
                     first_err = Some(e);
                 }
@@ -524,7 +547,26 @@ impl super::TypeChecker {
             });
         }
         let result = match &func.body {
-            parser::FunctionBody::Block(stmts) => self.check_stmt_list(stmts),
+            parser::FunctionBody::Block(stmts) => {
+                let checked = self.check_stmt_list(stmts);
+                if checked.is_ok()
+                    && !matches!(func.return_type.trim(), "void" | "()")
+                    && !super::flow::always_returns(stmts)
+                {
+                    let error = TypeSystemError::ConstraintViolation {
+                        constraint: "missing return".to_string(),
+                        reason: format!(
+                            "function '{}' returns '{}' but not every path ends in `return` or `raise`",
+                            func.name, func.return_type
+                        ),
+                        span: Span::new(0, func.name.len()),
+                    };
+                    self.add_error(error.clone());
+                    Err(error)
+                } else {
+                    checked
+                }
+            }
             parser::FunctionBody::Expression(expr) => {
                 self.current_stmt_id = 0;
                 self.check_expr_stmt(expr)

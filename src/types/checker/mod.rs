@@ -13,6 +13,7 @@ mod stmt;
 mod expr;
 mod call;
 mod match_check;
+mod flow;
 mod memory;
 mod import_main;
 mod compat;

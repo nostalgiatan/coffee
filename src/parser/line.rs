@@ -249,7 +249,7 @@ pub(super) fn parse_single_line_statement_at(line: &str, expr_base: usize) -> Op
     }
 
     // Return statement: return value
-    if trimmed.starts_with("return ") {
+    if trimmed == "return" || trimmed.starts_with("return ") {
         coffee_debug!("DEBUG: parse_single_line_statement: found return statement, line='{}'", line);
         if let Ok((remaining, return_stmt)) = crate::parser::var::parse_return(line) {
             coffee_debug!("DEBUG: parse_single_line_statement: parse_return succeeded, remaining='{}'", remaining);

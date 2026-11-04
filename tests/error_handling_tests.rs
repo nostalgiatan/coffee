@@ -68,7 +68,7 @@ fn risky_operation() => int:
     raise TestError("Something went wrong")
 
 fn main() => int:
-    risky_operation()
+    return risky_operation()
 
 "#;
     assert_compiles(source).unwrap();
@@ -86,6 +86,7 @@ fn main() => int:
     let flag: bool = true
     if flag:
         raise TestError("Flag is true")
+    return 0
 
 "#;
     assert_compiles(source).unwrap();
@@ -105,6 +106,7 @@ fn main() => int:
         if i == 5:
             raise TestError("Found 5")
         i = i + 1
+    return 0
 
 "#;
     assert_compiles(source).unwrap();
@@ -201,7 +203,7 @@ fn risky_operation() #on_err => int:
     raise TestError("Something went wrong")
 
 fn main() => int:
-    risky_operation()
+    return risky_operation()
 
 "#;
     assert_compiles(source).unwrap();
@@ -218,6 +220,7 @@ fn on_err(err: Error) => int:
 fn divide(a: int, b: int) #on_err => int:
     if b == 0:
         raise TestError(400)
+    return a / b
 
 fn main() => int:
     let result: int = divide(10, 2)
@@ -241,8 +244,8 @@ fn factorial(n: int) #on_err => int:
     if n < 0:
         raise TestError("Negative factorial")
     if n <= 1:
-        rm n
         return 1
+    return n * factorial(n - 1)
 
 fn main() => int:
     let result: int = factorial(5)
@@ -268,7 +271,7 @@ fn risky_operation() #on_err => int:
     raise TestError("in marked function")
 
 fn main() => int:
-    risky_operation()
+    return risky_operation()
 
 "#;
     assert_compiles(source).unwrap();
@@ -307,10 +310,10 @@ fn inner_function() => int:
     raise TestError("Inner error")
 
 fn outer_function() => int:
-    inner_function()
+    return inner_function()
 
 fn main() => int:
-    outer_function()
+    return outer_function()
 
 "#;
     assert_compiles(source).unwrap();
@@ -327,9 +330,10 @@ class TestError of Error:
 fn check_value(x: int) => int:
     if x < 0:
         raise TestError("Negative value")
+    return x
 
 fn main() => int:
-    check_value(50)
+    return check_value(50)
 
 "#;
     assert_compiles(source).unwrap();
@@ -373,7 +377,7 @@ class Container:
 
 fn main() => int:
     let c: Container = Container { value: 10 }
-    c.validate()
+    return c.validate()
 
 "#;
     assert_compiles(source).unwrap();
@@ -487,7 +491,7 @@ fn function2() => int:
     raise TestError("Error in function2")
 
 fn main() => int:
-    function1()
+    return function1()
 
 "#;
     assert_compiles(source).unwrap();
@@ -522,6 +526,7 @@ fn main() => int:
         if i == 5:
             raise TestError("Found 5")
         i = i + 1
+    return 0
 
 "#;
     assert_compiles(source).unwrap();
@@ -541,6 +546,7 @@ fn main() => int:
     if a > 5:
         if b > 15:
             raise TestError("Both conditions true")
+    return 0
 
 "#;
     assert_compiles(source).unwrap();
@@ -563,6 +569,7 @@ fn main() => int:
         raise ValueError("Negative value")
     elif x > 10:
         raise TypeError("Value too large")
+    return 0
 
 "#;
     assert_compiles(source).unwrap();
@@ -609,6 +616,7 @@ fn validate_age(age: int) => int:
 fn main() => int:
     let age: int = validate_age(25)
     rm age
+    return 0
 
 "#;
     assert_compiles(source).unwrap();
@@ -629,6 +637,7 @@ fn main() => int:
         if i == 7:
             raise ProcessError { step: i, message: "Failed at step 7", code: 1, note: "n", e: 0 }
         i = i + 1
+    return 0
 
 "#;
     assert_compiles(source).unwrap();
@@ -675,6 +684,7 @@ fn main() => int:
         can_retry: true
     }
     rm error
+    return 0
 
 "#;
     assert_compiles(source).unwrap();
@@ -744,7 +754,7 @@ fn risky() #on_err => int:
     raise AppError { kind: 7, code: 1, note: "n", e: 0 }
 
 fn main() => int:
-    risky()
+    return risky()
 
 "#;
     assert_compiles(source).unwrap();
@@ -764,7 +774,7 @@ fn risky() #on_err => int:
     raise err
 
 fn main() => int:
-    risky()
+    return risky()
 
 "#;
     let ll = format!("test_listen_app_error_var_{}.ll", unique_temp_id());

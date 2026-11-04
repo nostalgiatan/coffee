@@ -112,6 +112,8 @@ pub(super) fn parse_method(input: &str) -> IResult<&str, MethodDef> {
             };
             (input, body)
         };
+    let mut body = body;
+    crate::parser::function::return_tail_match_stmts(&mut body, return_type);
 
     Ok((
         input,

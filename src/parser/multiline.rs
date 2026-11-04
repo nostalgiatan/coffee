@@ -350,7 +350,7 @@ pub fn parse_multiline_statement_at(lines: &[&str], base: usize) -> Option<(Stat
     }
 
     // Try to parse return statement: return value
-    if first_line.starts_with("return ") {
+    if first_line.trim() == "return" || first_line.starts_with("return ") {
         coffee_debug!("DEBUG: parse_multiline_statement: found return statement, first_line='{}'", first_line);
         if let Ok((remaining, return_stmt)) =
             crate::parser::var::parse_return_at(first_line, slice_base(first_line, stmt_base))

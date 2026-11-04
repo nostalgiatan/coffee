@@ -417,7 +417,8 @@ pub fn parse_function(input: &str) -> IResult<&str, Function> {
     let (input, _) = space0(input)?;
     let (input, return_type) = parse_type(input)?;
     let (input, _) = space0(input)?;
-    let (input, body) = parse_function_body(input, is_c)?;
+    let (input, mut body) = parse_function_body(input, is_c)?;
+    return_tail_match_values(&mut body, return_type);
 
     Ok((
         input,
@@ -433,6 +434,31 @@ pub fn parse_function(input: &str) -> IResult<&str, Function> {
     ))
 }
 
+/// A `match` that ends a non-void function yields the function's value: each arm that is a
+/// bare expression becomes `return <expr>`. Arms are single statements, so nothing else
+/// needs rewriting; a tail `match` in a void function keeps its statement meaning.
+fn return_tail_match_values(body: &mut FunctionBody, return_type: &str) {
+    if let FunctionBody::Block(stmts) = body {
+        return_tail_match_stmts(stmts, return_type);
+    }
+}
+
+/// Same rewrite for a statement list (class methods share it with free functions).
+pub(crate) fn return_tail_match_stmts(stmts: &mut [Statement], return_type: &str) {
+    if matches!(return_type.trim(), "void" | "()") {
+        return;
+    }
+    let Some(Statement::Match(match_expr)) = stmts.last_mut() else {
+        return;
+    };
+    for arm in &mut match_expr.arms {
+        if let [Statement::Expr(expr)] = arm.body.as_mut_slice() {
+            let value = (**expr).clone();
+            arm.body = vec![Statement::Return(crate::parser::var::ReturnStmt { value: Some(value) })];
+        }
+    }
+}
+
 /// `fn(params) => R:` with an indented body. Synthetic LLVM name `__anon_N`.
 pub fn parse_anonymous_function(input: &str) -> IResult<&str, Function> {
     let (input, _) = space0(input)?;
@@ -444,7 +470,8 @@ pub fn parse_anonymous_function(input: &str) -> IResult<&str, Function> {
     let (input, _) = space0(input)?;
     let (input, return_type) = parse_type(input)?;
     let (input, _) = space0(input)?;
-    let (input, body) = parse_function_body(input, false)?;
+    let (input, mut body) = parse_function_body(input, false)?;
+    return_tail_match_values(&mut body, return_type);
     Ok((
         input,
         Function {
