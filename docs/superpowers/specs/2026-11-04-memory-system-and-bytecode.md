@@ -151,7 +151,7 @@ free(ptr, size)                  // size 由编译器按类型布局传入
 
 - `-O0` 下，循环里每个 `+ - *` 都在循环体里建一个 `alloca`，栈随迭代增长，约 10 万次迭代后段错误。原因是入口块已有终结指令时 `create_entry_block_alloca` 退回到"在当前块建"。已修，回归测试 `tests/stack_growth_tests.rs`。
 - 带 `str` 字段并用字面量初始化的 class，drop 时 `free` 静态数据，abort（valgrind：`Invalid free ... inside data symbol "str"`）。`Class__drop` 现在对所有 class 生成，暴露面比之前大。**已修，见"`str` 的所有权"。**
-- 递归枚举的 payload 绑定被当成 `int`：`Tree.Node(l, r) => count(l)` 报 `expected 'Tree', found 'int'`，非递归枚举正常。会挡住用枚举写 AST。**待修。**
+- 递归枚举的 payload 绑定被当成 `int`：`Tree.Node(l, r) => count(l)` 报 `expected 'Tree', found 'int'`，非递归枚举正常。会挡住用枚举写 AST。**已修：语义分析按 scrutinee 类型逐层解析绑定类型（`pattern_bindings_typed`），不再一律声明为 `int`。**
 - 循环体内声明的局部变量也被判为"非最后一次使用"，传参必须写成函数再调用；这是文档写明的保守规则，但对循环里的小对象很别扭。
 - 用户函数名 `round` 与 libm 冲突，报参数个数不符。
 

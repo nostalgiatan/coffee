@@ -61,6 +61,14 @@ impl SemanticAnalyzer {
     }
 
     pub(super) fn bind_ephemeral_var(&mut self, name: &str) -> Result<(), TypeSystemError> {
+        self.bind_ephemeral_var_typed(name, Type::int())
+    }
+
+    pub(super) fn bind_ephemeral_var_typed(
+        &mut self,
+        name: &str,
+        ty: Type,
+    ) -> Result<(), TypeSystemError> {
         let symbol_name = if let Some(ref func_name) = self.current_function_name {
             format!("{}::{}", func_name, name)
         } else {
@@ -73,7 +81,7 @@ impl SemanticAnalyzer {
             let binding = Binding {
                 name: symbol_name.clone(),
                 entity: Entity::Variable {
-                    ty: Type::int(),
+                    ty,
                     initialized: true,
                 },
                 span: Span::new(0, name.len()),
@@ -92,6 +100,87 @@ impl SemanticAnalyzer {
             }
             symbols.remove(name);
         }
+    }
+
+    /// Names bound by `pattern` with the type each one takes when matched against
+    /// `expected`. A binding whose type cannot be resolved (unknown scrutinee, missing
+    /// payload) keeps the legacy `int`; the type checker reports real mismatches.
+    pub(super) fn pattern_bindings_typed(
+        &self,
+        pattern: &crate::parser::Pattern,
+        expected: Option<&Type>,
+    ) -> Vec<(String, Type)> {
+        let mut out = Vec::new();
+        self.collect_typed_bindings(pattern, expected, &mut out);
+        out
+    }
+
+    fn collect_typed_bindings(
+        &self,
+        pattern: &crate::parser::Pattern,
+        expected: Option<&Type>,
+        out: &mut Vec<(String, Type)>,
+    ) {
+        use crate::parser::Pattern;
+        match pattern {
+            Pattern::Ident(name) => {
+                out.push((name.clone(), expected.cloned().unwrap_or_else(Type::int)));
+            }
+            Pattern::Tuple(elems) => {
+                let tys = match expected {
+                    Some(Type::Tuple(tys)) if tys.len() == elems.len() => Some(tys),
+                    _ => None,
+                };
+                for (i, el) in elems.iter().enumerate() {
+                    self.collect_typed_bindings(el, tys.map(|t| &t[i]), out);
+                }
+            }
+            Pattern::Or(alts) => {
+                // Alternatives bind the same names; the first alternative fixes the types.
+                if let Some(first) = alts.first() {
+                    self.collect_typed_bindings(first, expected, out);
+                }
+            }
+            Pattern::Struct { name, fields } => {
+                for (field, pat) in fields {
+                    let ty = crate::hir::match_cfg::class_field_type(Some(&self.type_registry), name, field).ok();
+                    self.collect_typed_bindings(pat, ty.as_ref(), out);
+                }
+            }
+            Pattern::EnumVariant { enum_name, variant, args } => {
+                let enum_name = if !enum_name.is_empty() {
+                    enum_name.clone()
+                } else if let Some(Type::NamedType { name }) = expected {
+                    name.clone()
+                } else {
+                    String::new()
+                };
+                let payload = self.enum_payload_types(&enum_name, variant);
+                for (i, arg) in args.iter().enumerate() {
+                    let ty = payload.as_ref().and_then(|p| p.get(i));
+                    self.collect_typed_bindings(arg, ty, out);
+                }
+            }
+            Pattern::Wildcard | Pattern::Literal(_) => {}
+        }
+    }
+
+    fn enum_payload_types(&self, enum_name: &str, variant: &str) -> Option<Vec<Type>> {
+        let reg = self.type_registry.read().ok()?;
+        let Some(TypeDef::Enum { variants, .. }) = reg.get_type(enum_name) else {
+            return None;
+        };
+        let v = variants.iter().find(|v| v.name == variant)?;
+        v.fields
+            .iter()
+            .map(|field| {
+                let type_str = match field {
+                    VariantField::Positional(t) => t.as_str(),
+                    VariantField::Named { ty, .. } => ty.as_str(),
+                };
+                reg.resolve_type(type_str).ok()
+            })
+            .collect()
     }
 
     pub(super) fn pattern_binding_names(pattern: &crate::parser::Pattern) -> Vec<String> {

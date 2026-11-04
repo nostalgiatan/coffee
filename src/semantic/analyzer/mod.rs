@@ -338,10 +338,12 @@ impl SemanticAnalyzer {
             }
             crate::parser::Statement::Match(match_expr) => {
                 self.analyze_expression(&match_expr.value)?;
+                let scrutinee_ty = self.infer_expression_type(&match_expr.value).ok();
                 for arm in &match_expr.arms {
-                    let bound = Self::pattern_binding_names(&arm.pattern);
-                    for name in &bound {
-                        self.bind_ephemeral_var(name)?;
+                    let typed = self.pattern_bindings_typed(&arm.pattern, scrutinee_ty.as_ref());
+                    let bound: Vec<String> = typed.iter().map(|(n, _)| n.clone()).collect();
+                    for (name, ty) in typed {
+                        self.bind_ephemeral_var_typed(&name, ty)?;
                     }
                     if let Some(guard) = &arm.guard {
                         self.analyze_expression(guard)?;
