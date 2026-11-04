@@ -230,10 +230,19 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         ty: BasicTypeEnum<'ctx>,
         name: &str,
     ) -> Result<PointerValue<'ctx>, String> {
+        let size = self.llvm_target_data().get_abi_size(&ty);
+        self.emit_heap_alloc_bytes(size, name)
+    }
+
+    /// `malloc` a block of `size` bytes. The result is an owning pointer.
+    pub(crate) fn emit_heap_alloc_bytes(
+        &mut self,
+        size: u64,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, String> {
         let malloc_fn = self.functions.get("malloc").copied().ok_or_else(|| {
             self.error("emit_heap_alloc", "malloc function not found for heap allocation")
         })?;
-        let size = self.llvm_target_data().get_abi_size(&ty);
         let size_value = self.backend.context.i64_type().const_int(size, false);
         let call = self
             .backend
@@ -244,6 +253,22 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             inkwell::values::ValueKind::Basic(BasicValueEnum::PointerValue(ptr)) => Ok(ptr),
             _ => Err(self.error("emit_heap_alloc", "malloc did not return a pointer")),
         }
+    }
+
+    /// Heap copy of a string literal. A `str` that owns its bytes can be freed; the
+    /// literal itself is static data.
+    pub(crate) fn emit_heap_str_copy(&mut self, content: &str) -> Result<BasicValueEnum<'ctx>, String> {
+        let len = Self::process_escape_sequences(content).len() as u64 + 1;
+        let BasicValueEnum::PointerValue(src) = self.build_string_constant(content)? else {
+            return Err(self.error("emit_heap_str_copy", "string constant is not a pointer"));
+        };
+        let dst = self.emit_heap_alloc_bytes(len, "str_copy")?;
+        let len_value = self.backend.context.i64_type().const_int(len, false);
+        self.backend
+            .builder
+            .build_memcpy(dst, 1, src, 1, len_value)
+            .map_err(|e| self.error("emit_heap_str_copy", format!("failed to copy string: {}", e)))?;
+        Ok(dst.into())
     }
 
     pub(crate) fn emit_struct_literal(

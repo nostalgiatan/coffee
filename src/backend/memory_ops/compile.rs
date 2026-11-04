@@ -233,7 +233,11 @@ pub fn compile_remove<'ctx>(
         );
         let is_buf = parsed.as_ref().is_some_and(|t| t.is_buf());
 
-        if is_buf {
+        // Owned `str` bytes are heap copies. Explicit `rm` frees them; scope-end drops come
+        // from `drop_owned_str_locals`, which runs before this function zeroes the slot.
+        let is_str = track_lifetime && matches!(parsed, Some(crate::types::Type::String));
+
+        if is_buf || is_str {
             if let Some(ty) = parsed.as_ref() {
                 super::drop::drop_coffee_place(context, builder, functions, ty, ptr, var_type)?;
             }

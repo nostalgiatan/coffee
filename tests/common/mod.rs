@@ -377,3 +377,85 @@ impl Drop for TestProject {
         let _ = fs::remove_dir_all(&self.dir);
     }
 }
+
+// 分配计数：LD_PRELOAD 垫片统计 malloc/free，用于断言所有权契约（每个分配恰好释放一次）。
+#[allow(dead_code)]
+const COUNT_SHIM: &str = r#"
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <stdio.h>
+#include <stdlib.h>
+static long m, f;
+static void *(*real_malloc)(size_t);
+static void (*real_free)(void *);
+static void report(void) { fprintf(stderr, "COUNT malloc=%ld free=%ld\n", m, f); }
+__attribute__((constructor)) static void init(void) {
+    real_malloc = dlsym(RTLD_NEXT, "malloc");
+    real_free = dlsym(RTLD_NEXT, "free");
+    atexit(report);
+}
+void *malloc(size_t n) { if (!real_malloc) real_malloc = dlsym(RTLD_NEXT, "malloc"); m++; return real_malloc(n); }
+void free(void *p) { if (!real_free) real_free = dlsym(RTLD_NEXT, "free"); if (p) f++; real_free(p); }
+"#;
+
+/// 编译并带计数垫片运行，返回 (malloc, free)。垫片或编译器不可用时返回 None。
+#[allow(dead_code)]
+fn count_allocations(source: &str) -> Option<(i64, i64)> {
+    use std::process::Command;
+    let id = unique_temp_id();
+    let dir = std::env::temp_dir().join(format!("coffee_count_{id}"));
+    fs::create_dir_all(&dir).ok()?;
+    let shim_c = dir.join("count.c");
+    let shim_so = dir.join("count.so");
+    fs::write(&shim_c, COUNT_SHIM).ok()?;
+    let built = Command::new("clang")
+        .args(["-shared", "-fPIC", "-O1", "-o"])
+        .arg(&shim_so)
+        .arg(&shim_c)
+        .arg("-ldl")
+        .output()
+        .ok()?;
+    if !built.status.success() {
+        eprintln!("skipping allocation count: cannot build the LD_PRELOAD shim");
+        let _ = fs::remove_dir_all(&dir);
+        return None;
+    }
+    // The compiler only accepts paths inside the working directory.
+    let src = format!("test_count_{id}.cf");
+    let exe = format!("test_count_{id}");
+    fs::write(&src, source).ok()?;
+    let current_dir = std::env::current_dir().ok()?;
+    let compiled = Command::new(coffee_bin(&current_dir))
+        .args(["--test-mode", "-b", "-o"])
+        .arg(&exe)
+        .arg(&src)
+        .output()
+        .ok()?;
+    let _ = fs::remove_file(&src);
+    if !compiled.status.success() {
+        remove_exe_and_object(&exe);
+        let _ = fs::remove_dir_all(&dir);
+        panic!("compile failed:\n{}", String::from_utf8_lossy(&compiled.stderr));
+    }
+    let run = Command::new(format!("./{exe}")).env("LD_PRELOAD", &shim_so).output();
+    remove_exe_and_object(&exe);
+    let _ = fs::remove_dir_all(&dir);
+    let stderr = String::from_utf8_lossy(&run.ok()?.stderr).to_string();
+    let line = stderr.lines().find(|l| l.starts_with("COUNT "));
+    let Some(line) = line else {
+        panic!("program did not report counts (crashed or double free?):\n{stderr}");
+    };
+    let num = |key: &str| -> i64 {
+        line.split(key).nth(1).and_then(|s| s.split_whitespace().next()).and_then(|s| s.parse().ok()).unwrap_or(-1)
+    };
+    Some((num("malloc="), num("free=")))
+}
+
+#[allow(dead_code)]
+fn assert_balanced(source: &str) {
+    if let Some((m, f)) = count_allocations(source) {
+        assert!(m > 0, "program allocated nothing; the test is not exercising the heap");
+        assert_eq!(m, f, "malloc={m} free={f}: every allocation must be freed exactly once");
+    }
+}
+

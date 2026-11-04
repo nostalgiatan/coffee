@@ -138,6 +138,8 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
 
     /// Drop remaining locals at a terminator. Skips parameters and `self`.
     pub(crate) fn emit_local_drops(&mut self) -> Result<(), String> {
+        // Before `compile_remove` below zeroes the slots.
+        self.drop_owned_str_locals()?;
         let vars_to_clean: Vec<String> = self.variables.keys()
             .filter(|name| {
                 let n = name.as_str();
@@ -228,12 +230,55 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             let Some(&(ptr, llvm_ty)) = self.variables.get(&name) else {
                 continue;
             };
-            let ty = crate::types::Type::NamedType { name: type_name };
+            let ty = if type_name == "str" {
+                crate::types::Type::String
+            } else {
+                crate::types::Type::NamedType { name: type_name }
+            };
             super::memory_ops::drop_coffee_place(
                 self.backend.context,
                 &self.backend.builder,
                 &self.functions,
                 &ty,
+                ptr,
+                llvm_ty,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Free `str` locals still owned at a terminator. Owned `str` bytes live on the heap
+    /// (literals are copied in), so one `free` per live binding is exact.
+    fn drop_owned_str_locals(&mut self) -> Result<(), String> {
+        let names: Vec<String> = self
+            .variables
+            .keys()
+            .filter(|n| {
+                let n = n.as_str();
+                n != "self"
+                    && !self.current_function_params.iter().any(|p| p == n)
+                    && self.memory_ctx.is_in_live_scope(n)
+                    && !self.memory_ctx.is_dropped(n)
+                    && !self.memory_ctx.is_moved(n)
+                    && self.memory_ctx.get_variable_type(n).is_some_and(|t| t == "str")
+            })
+            .cloned()
+            .collect();
+        for name in names {
+            let initialized = self.memory_ctx.lifetimes.get(&name).is_some_and(|info| {
+                matches!(info.state, crate::backend::memory_ops::VariableState::Initialized)
+            });
+            let Some(&(ptr, llvm_ty)) = self.variables.get(&name) else {
+                continue;
+            };
+            if !initialized {
+                continue;
+            }
+            super::memory_ops::drop_coffee_place(
+                self.backend.context,
+                &self.backend.builder,
+                &self.functions,
+                &crate::types::Type::String,
                 ptr,
                 llvm_ty,
             )?;

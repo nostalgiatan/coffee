@@ -211,6 +211,20 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
     }
 
     /// Typed RHS then the same store path as `compile_assignment_from_ast`.
+    /// Compile `expr` for a slot that takes ownership of the value. A `str` literal is
+    /// static data, so an owning slot gets a heap copy it can free.
+    pub(crate) fn compile_hir_expr_owned(
+        &mut self,
+        expr: &HirExpr,
+    ) -> Result<BasicValueEnum<'ctx>, String> {
+        if matches!(expr.ty, Type::String) {
+            if let HirExprKind::Literal(lit) = &expr.kind {
+                return self.emit_heap_str_copy(strip_string_quotes(lit.trim()));
+            }
+        }
+        self.compile_hir_expr_typed(expr)
+    }
+
     pub(crate) fn store_hir_assign(&mut self, var_name: &str, value: &HirExpr) -> Result<(), String> {
         use crate::backend::memory_ops::VariableState;
 
@@ -232,7 +246,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             }
         }
 
-        let value = self.compile_hir_expr_typed(value).map_err(|e| {
+        let value = self.compile_hir_expr_owned(value).map_err(|e| {
             self.error(
                 "compile_assignment_from_ast",
                 format!(
@@ -935,7 +949,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             let field_value = if hir_struct_field_is_wildcard(field_name, field_expr) {
                 self.backend.context.i64_type().const_int(0, false).into()
             } else {
-                self.compile_hir_expr_typed(field_expr)?
+                self.compile_hir_expr_owned(field_expr)?
             };
             compiled.push((field_name.clone(), field_value));
             self.mark_moved_owned_resource_var(field_expr);
@@ -1004,9 +1018,24 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         &mut self,
         args: &[HirExpr],
     ) -> Result<Vec<BasicValueEnum<'ctx>>, String> {
+        self.compile_hir_call_args_for(args, true)
+    }
+
+    /// `owned` is false for C callees: a string literal is lent to C, not handed over.
+    fn compile_hir_call_args_for(
+        &mut self,
+        args: &[HirExpr],
+        owned: bool,
+    ) -> Result<Vec<BasicValueEnum<'ctx>>, String> {
         let compiled = args
             .iter()
-            .map(|a| self.compile_hir_expr_typed(a))
+            .map(|a| {
+                if owned {
+                    self.compile_hir_expr_owned(a)
+                } else {
+                    self.compile_hir_expr_typed(a)
+                }
+            })
             .collect::<Result<Vec<_>, _>>()?;
         self.mark_moved_owned_resource_args(args);
         Ok(compiled)
@@ -1109,7 +1138,8 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 }
             }
         }
-        let compiled_args = self.compile_hir_call_args(args)?;
+        let owned = !self.is_c_library_function(func_name);
+        let compiled_args = self.compile_hir_call_args_for(args, owned)?;
         self.emit_named_function_call(func_name, compiled_args)
     }
 

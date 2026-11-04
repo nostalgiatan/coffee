@@ -89,7 +89,9 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             if self.classes.contains_key(&param.param_type) {
                 self.variable_types.insert(param.name.clone(), param.param_type.clone());
             }
-            if param.name != "self" && self.is_owned_aggregate_type(&param.param_type) {
+            if param.name != "self"
+                && (param.param_type == "str" || self.is_owned_aggregate_type(&param.param_type))
+            {
                 self.owned_aggregate_params
                     .push((param.name.clone(), param.param_type.clone()));
             }

@@ -13,7 +13,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 }
             }
 
-            let value = self.compile_hir_expr(expr)?;
+            let value = self.compile_hir_expr_owned(expr)?;
 
             if let HirExprKind::Variable(var_name) = &expr.kind {
                 if self.ty_is_owned_resource(&expr.ty) {

@@ -425,7 +425,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         if parts.len() == 2 {
             if let Some(info) = self.packed_bitfield_info(parts[0], parts[1]) {
                 if info.bit_width > 0 {
-                    let compiled = self.compile_hir_expr_typed(value).map_err(|e| {
+                    let compiled = self.compile_hir_expr_owned(value).map_err(|e| {
                         self.error(
                             "compile_mir_assign",
                             format!("failed to compile value for field '{}': {}", name, e),
@@ -439,7 +439,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         }
 
         let field_ptr = self.mir_field_assign_ptr(&parts)?;
-        let compiled = self.compile_hir_expr_typed(value).map_err(|e| {
+        let compiled = self.compile_hir_expr_owned(value).map_err(|e| {
             self.error(
                 "compile_mir_assign",
                 format!("failed to compile value for field '{}': {}", name, e),
