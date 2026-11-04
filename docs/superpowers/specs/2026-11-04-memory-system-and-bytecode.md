@@ -55,11 +55,11 @@ free(ptr, size)                  // size 由编译器按类型布局传入
 - 省掉每块 8 字节的头；小对象越多收益越大。
 - 这也是 D4 要求 `buf` 带长度的又一个理由。
 
-### M4 枚举：先按最大变体统一分配
+### M4 枚举：按变体各自的大小分配（实测后改）
 
-- 枚举每个变体的大小不同，带大小的释放需要知道当前变体的大小。
-- **v1 按最大变体统一分配**：块大小固定，`free(ptr, size)` 简单；代价是小变体浪费空间。
-- 以后要省空间，可以让 `Enum__drop` 按 tag 分发各变体的大小，不改分配器接口。
+- 当前实现已经按变体分配：`Tree.Leaf` 8 字节，`Tree.Node(l, r)` 24 字节。
+- 带大小的释放要求 `Enum__drop` 读 tag，按 tag 选出该变体的大小再 `free(ptr, size)`。
+- 原先写的"v1 按最大变体统一分配"被实测否定：叶子占一半，统一成 24 字节会让叶子涨到 3 倍。见"实测"一节。
 
 ### M5 分配器算法：大小类空闲链表 + 顶部指针
 
@@ -81,6 +81,8 @@ free(ptr, size)                  // size 由编译器按类型布局传入
 - 传缓冲区给宿主函数：宿主收到 `(offset, len)`，先校验范围，再用 `base + offset` 访问。校验是导入函数边界的一部分。
 
 ### M8 原生后端也走同一套接口
+
+**硬性要求：声明必须带 LLVM 分配属性**（`allockind("alloc,uninitialized") allocsize(0) "alloc-family"="coffee"`，释放侧 `allockind("free")` 加 `allocptr`）。只改名不带属性，优化器就认不出这是分配，不能再消掉不逃逸的分配。数据见"实测"。
 
 - 现在 `emit_heap_alloc` 直接调用 libc 的 `malloc`，`__drop` 直接调用 `free`。
 - 改成调用运行时函数 `__coffee_alloc(size)` / `__coffee_free(ptr, size)`。原生实现可以映射到 `malloc` / `free` 并忽略 `size`。
@@ -130,6 +132,28 @@ free(ptr, size)                  // size 由编译器按类型布局传入
 | Arena / 区域分配 | 整体释放，不递归 drop；适合 AST | 见下，需要先解决引用问题 |
 
 **Arena 的难点要先说清楚：** 区域里的对象互相引用，用的是非拥有引用，而 Coffee 没有生命周期参数。可行方案是**下标式 arena**：`Id<T>` 是 `u32` 下标，没有生命周期问题，类似 Zig 和 Rust 里常见的写法。这对自举编译器的 AST 很有价值，但它是一个独立的类型设计，不放进 v1。
+
+## 实测（2026-11-04，x86_64，glibc，clang 21）
+
+用 `valgrind` / `heaptrack` / `LD_PRELOAD` 计数垫片 / `/usr/bin/time` 测；程序和脚本不入库，结论如下。
+
+| 问题 | 结果 | 结论 |
+|---|---|---|
+| 不逃逸的分配会被优化掉吗 | 20M 次 `class` 构造 + 传参 + drop，`-O1`/`-O2` 下 `malloc=0` | 直接 `malloc`/`free` 时 LLVM 已在做逃逸消除 |
+| 换成不透明 `__coffee_alloc` | 同一程序 2000 万次分配，91ms，而不是 1ms | 只改名会丢掉这个优化 |
+| 加 `allockind`/`allocsize`/`alloc-family` 属性 | 又回到 0 次分配，1ms | M8 必须带属性 |
+| 小对象的 glibc 开销 | 209 万个节点共请求 33.5MB，RSS 66.7MB | 16 字节请求占 32 字节 chunk，无头带大小释放理论上省一半 |
+| 枚举各变体大小 | `Leaf` 8 字节、`Node` 24 字节，平均 16 | 按变体分配（见 M4） |
+| heaptrack | 全部分配都是 *temporary*（分配后立即释放） | 逃逸分析在 VM 后端也值得做 |
+| valgrind memcheck | 小 N 下 0 错误、全部释放 | 当前 drop 路径无重复释放、无越界 |
+
+**测量中发现的问题**（与分配器设计无关，但会让测量失真）：
+
+- `-O0` 下，循环里每个 `+ - *` 都在循环体里建一个 `alloca`，栈随迭代增长，约 10 万次迭代后段错误。原因是入口块已有终结指令时 `create_entry_block_alloca` 退回到"在当前块建"。已修，回归测试 `tests/stack_growth_tests.rs`。
+- 带 `str` 字段并用字面量初始化的 class，drop 时 `free` 静态数据，abort（valgrind：`Invalid free ... inside data symbol "str"`）。`Class__drop` 现在对所有 class 生成，暴露面比之前大。**待定，见未决。**
+- 递归枚举的 payload 绑定被当成 `int`：`Tree.Node(l, r) => count(l)` 报 `expected 'Tree', found 'int'`，非递归枚举正常。会挡住用枚举写 AST。**待修。**
+- 循环体内声明的局部变量也被判为"非最后一次使用"，传参必须写成函数再调用；这是文档写明的保守规则，但对循环里的小对象很别扭。
+- 用户函数名 `round` 与 libm 冲突，报参数个数不符。
 
 ## 与已知问题的关系
 

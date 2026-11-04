@@ -62,12 +62,17 @@ impl<'ctx> ArithmeticContext<'ctx> {
         let function = insert_block.get_parent().unwrap();
         let entry_block = function.get_first_basic_block().unwrap();
 
-        // Check if entry block has a terminator
-        if entry_block.get_terminator().is_some() {
-            // Entry has terminator - create alloca in current block instead
-            // This happens when overflow checking blocks have been created
+        if let Some(terminator) = entry_block.get_terminator() {
+            // MIR lowering terminates the entry block before arithmetic is emitted. An alloca
+            // in the current block would grow the stack on every loop iteration, so insert
+            // before the entry terminator instead.
+            let current_pos = builder.get_insert_block();
+            builder.position_before(&terminator);
             let alloca = builder.build_alloca(type_, name)
                 .map_err(|e| format!("failed to build alloca '{}': {}", name, e))?;
+            if let Some(pos) = current_pos {
+                builder.position_at_end(pos);
+            }
             Ok(alloca)
         } else {
             // No terminator - position at end of entry block
