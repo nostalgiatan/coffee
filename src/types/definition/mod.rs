@@ -57,6 +57,19 @@ pub enum Type {
 }
 
 impl Type {
+    /// Byte size of a value of this type as stored in a variable, field or buffer slot
+    /// (`sizeof(T)`). Class instances, strings and references are pointers.
+    pub fn byte_size(&self) -> Option<u64> {
+        match self {
+            Type::Int { bits, .. } | Type::Float { bits } => Some(u64::from(*bits) / 8),
+            Type::Bool => Some(1),
+            Type::String | Type::Ref { .. } | Type::NamedType { .. } | Type::Variadic => Some(8),
+            Type::Slice(_) => Some(16),
+            Type::Array { elem, size } => elem.byte_size().map(|e| e * *size as u64),
+            _ => None,
+        }
+    }
+
     /// Placeholder for a `let` whose type the type checker infers; never a real type.
     pub fn infer_hole() -> Self {
         Type::NamedType { name: "_".to_string() }

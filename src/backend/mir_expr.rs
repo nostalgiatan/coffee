@@ -354,6 +354,27 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         &mut self,
         collection: &HirExpr,
     ) -> Result<BasicValueEnum<'ctx>, String> {
+        if matches!(collection.ty, Type::String) {
+            let i64_type = self.backend.context.i64_type();
+            let ptr = self.compile_hir_expr_typed(collection)?.into_pointer_value();
+            let strlen_fn = self.ensure_fstring_builtin("strlen")?;
+            let len = self
+                .backend
+                .builder
+                .build_call(strlen_fn, &[ptr.into()], "str_len")
+                .map_err(|e| self.error("compile_hir_expr", format!("strlen: {}", e)))?
+                .try_as_basic_value();
+            let len = match len {
+                inkwell::values::ValueKind::Basic(BasicValueEnum::IntValue(v)) => v,
+                _ => return Err(self.error("compile_hir_expr", "strlen did not return an integer")),
+            };
+            return self
+                .backend
+                .builder
+                .build_int_z_extend(len, i64_type, "str_len64")
+                .map(Into::into)
+                .map_err(|e| self.error("compile_hir_expr", format!("zext: {}", e)));
+        }
         let Some(name) = hir_variable_name(collection) else {
             return Err(self.error(
                 "compile_hir_expr",
@@ -629,6 +650,23 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         index: &HirExpr,
         _full: &HirExpr,
     ) -> Result<BasicValueEnum<'ctx>, String> {
+        if matches!(array.ty, Type::String) {
+            let base = self.compile_hir_expr_typed(array)?.into_pointer_value();
+            let idx = self.compile_hir_expr_typed(index)?.into_int_value();
+            let i8_type = self.backend.context.i8_type();
+            // SAFETY: byte access is unchecked, like C `s[i]`.
+            let at = unsafe {
+                self.backend
+                    .builder
+                    .build_gep(i8_type, base, &[idx], "str_byte_ptr")
+            }
+            .map_err(|e| self.error("compile_expression", format!("str index: {}", e)))?;
+            return self
+                .backend
+                .builder
+                .build_load(i8_type, at, "str_byte")
+                .map_err(|e| self.error("compile_expression", format!("str index: {}", e)));
+        }
         let array_name = self.hir_index_array_name(array)?;
         let index_val = self.compile_hir_expr_typed(index)?;
         self.compile_array_index_from_value(&array_name, index_val)

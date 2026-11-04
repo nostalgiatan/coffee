@@ -202,7 +202,34 @@ where
                     }
                     return Ok(ctor);
                 }
-                let function = self.lower_expr(function)?;
+                if let (Expression::Variable(f), [Expression::Variable(t)]) =
+                    (function.kind(), args.iter().map(|a| a.kind()).collect::<Vec<_>>().as_slice())
+                {
+                    if f == "sizeof" && self.lower_expr(function).is_err() {
+                        let size = self
+                            .registry
+                            .as_ref()
+                            .and_then(|r| r.read().ok())
+                            .and_then(|r| r.resolve_type(t).ok())
+                            .and_then(|t| t.byte_size())
+                            .ok_or_else(|| format!("sizeof: unknown type '{}'", t))?;
+                        return Ok(HirExpr { ty, kind: HirExprKind::Literal(size.to_string()) });
+                    }
+                }
+                let function_hir = match self.lower_expr(function) {
+                    Ok(f) => f,
+                    Err(_) if args.len() == 1
+                        && matches!(function.kind(), Expression::Variable(n) if n == "len") =>
+                    {
+                        let collection = self.lower_expr(&args[0])?;
+                        return Ok(HirExpr {
+                            ty,
+                            kind: HirExprKind::Len { collection: Box::new(collection) },
+                        });
+                    }
+                    Err(e) => return Err(e),
+                };
+                let function = function_hir;
                 let args = self.lower_expr_list(args)?;
                 Ok(HirExpr {
                     ty,
@@ -437,6 +464,24 @@ where
                     },
                 }))
             }
+            Expression::TypeCast { target_type, value } => {
+                let Some(ty) = self
+                    .registry
+                    .as_ref()
+                    .and_then(|r| r.read().ok())
+                    .and_then(|r| r.resolve_type(target_type).ok())
+                else {
+                    return Ok(None);
+                };
+                let value = self.lower_expr(value)?;
+                Ok(Some(HirExpr {
+                    ty,
+                    kind: HirExprKind::TypeCast {
+                        target_type: target_type.clone(),
+                        value: Box::new(value),
+                    },
+                }))
+            }
             Expression::Unary { op, operand } => {
                 let operand = self.lower_expr(operand)?;
                 Ok(Some(HirExpr {
@@ -452,6 +497,7 @@ where
                 let index = self.lower_expr(index)?;
                 let ty = match &array.ty {
                     Type::Array { elem, .. } | Type::Slice(elem) => (**elem).clone(),
+                    Type::String => Type::Int { bits: 8, signed: false },
                     Type::Tuple(elems) => match elems.first() {
                         Some(e) => e.clone(),
                         None => return Ok(None),

@@ -208,6 +208,10 @@ impl super::TypeChecker {
         self.borrow.pin_unheld_temps();
     }
 
+    fn user_defines(&self, name: &str) -> bool {
+        self.registry.read().map(|r| r.resolve_type(name).is_ok()).unwrap_or(false)
+    }
+
     /// Check function call
     pub fn check_function_call(
         &mut self,
@@ -215,6 +219,39 @@ impl super::TypeChecker {
         args: &[crate::parser::expr::Expression],
     ) -> Result<Type, TypeSystemError> {
         let location = Span::new(0, name.len());
+
+        if name == "len" && args.len() == 1 && !self.user_defines(name) {
+            let arg_type = self.check_expression(&args[0])?;
+            return match arg_type {
+                Type::String | Type::Slice(_) | Type::Array { .. } => Ok(Type::int()),
+                other => {
+                    let error = TypeSystemError::ParseError {
+                        type_str: "len".to_string(),
+                        reason: format!("len() takes a str, slice or array, found {}", other),
+                    };
+                    self.add_error(error.clone());
+                    Err(error)
+                }
+            };
+        }
+
+        if name == "sizeof" && args.len() == 1 && !self.user_defines(name) {
+            let resolved = match args[0].kind() {
+                crate::parser::expr::Expression::Variable(t) => {
+                    self.registry.read().ok().and_then(|r| r.resolve_type(t).ok())
+                }
+                _ => None,
+            };
+            if resolved.as_ref().and_then(|t| t.byte_size()).is_some() {
+                return Ok(Type::int());
+            }
+            let error = TypeSystemError::ParseError {
+                type_str: "sizeof".to_string(),
+                reason: "sizeof() takes a plain type name such as int, float, bool, str or a class".to_string(),
+            };
+            self.add_error(error.clone());
+            return Err(error);
+        }
 
         if matches!(name, "malloc" | "free" | "calloc" | "realloc") {
             let imported = self.analyzer.as_ref().and_then(|a| a.read().ok())

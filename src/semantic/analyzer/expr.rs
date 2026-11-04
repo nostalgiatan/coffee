@@ -324,7 +324,16 @@ impl SemanticAnalyzer {
                 // A generic function has no symbol of its own until the checker instantiates it.
                 let generic_callee = matches!(function.kind(), Expression::Variable(n)
                     if self.type_registry.read().map(|r| r.is_generic_fn(n)).unwrap_or(false));
-                if generic_callee {
+                let len_intrinsic = args.len() == 1
+                    && matches!(function.kind(), Expression::Variable(n) if n == "len" || n == "sizeof")
+                    && self.analyze_expression(function).is_err();
+                if matches!(function.kind(), Expression::Variable(n) if n == "sizeof")
+                    && args.len() == 1
+                    && self.analyze_expression(function).is_err()
+                {
+                    return Ok(());
+                }
+                if generic_callee || len_intrinsic {
                     for arg in args {
                         self.analyze_expression(arg)?;
                     }

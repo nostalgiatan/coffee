@@ -190,3 +190,35 @@ fn test_untyped_parameter_is_reported_as_such() {
 fn test_unclosed_bracket_is_reported_as_such() {
     assert_compile_error("fn main() => int:\n    let x: int = (1 + 2\n    return 0\n", "unclosed bracket").unwrap();
 }
+
+#[test]
+fn test_len_of_str_and_array() {
+    assert_exit_code("fn main() => int:\n    let s = \"hello\"\n    let a = [1, 2, 3]\n    return len(s) + len(a)\n", 8).unwrap();
+}
+
+#[test]
+fn test_len_rejects_other_types() {
+    assert_compile_error("fn main() => int:\n    let x = 5\n    return len(x)\n", "len() takes").unwrap();
+}
+
+#[test]
+fn test_str_byte_index() {
+    assert_exit_code("fn main() => int:\n    let s = \"hello\"\n    return int(s[1])\n", 101).unwrap();
+}
+
+#[test]
+fn test_str_byte_loop_counts_letters() {
+    let src = "fn main() => int:\n    let s = \"banana\"\n    let n = 0\n    for i in 0..len(s):\n        if int(s[i]) == 97:\n            n = n + 1\n    return n\n";
+    assert_exit_code(src, 3).unwrap();
+}
+
+#[test]
+fn test_sizeof_primitive_and_class() {
+    let src = "class P:\n    x: int\n\nfn main() => int:\n    return sizeof(int) + sizeof(bool) + sizeof(P)\n";
+    assert_exit_code(src, 17).unwrap();
+}
+
+#[test]
+fn test_sizeof_rejects_non_types() {
+    assert_compile_error("fn main() => int:\n    return sizeof(nothing)\n", "sizeof()").unwrap();
+}
