@@ -394,6 +394,34 @@ fn emit_phis(o: &Txt, f: &Fun, rs: &Reps, b: int) => void:
         p = f.nx[p]
         k = k + 1
 
+/#/ What the optimizer proved about a function, as bits of `Fun.attrs`.
+fn fa_nounwind() => int:
+    return 1
+
+fn fa_memory_none() => int:
+    return 2
+
+fn fa_memory_read() => int:
+    return 4
+
+fn fa_noreturn() => int:
+    return 8
+
+fn fa_willreturn() => int:
+    return 16
+
+fn put_fn_attrs(o: &Txt, attrs: int) => void:
+    if (attrs & fa_nounwind()) != 0:
+        o.put(" nounwind")
+    if (attrs & fa_memory_none()) != 0:
+        o.put(" memory(none)")
+    elif (attrs & fa_memory_read()) != 0:
+        o.put(" memory(read)")
+    if (attrs & fa_noreturn()) != 0:
+        o.put(" noreturn")
+    if (attrs & fa_willreturn()) != 0:
+        o.put(" willreturn")
+
 fn emit_fun(o: &Txt, f: &Fun, rs: &Reps, sy: &Names) => void:
     o.put("define ")
     if f.ret == int(Rp.Void):
@@ -412,7 +440,9 @@ fn emit_fun(o: &Txt, f: &Fun, rs: &Reps, sy: &Names) => void:
         o.put(" ")
         put_name(o, f, p)
         p = f.nx[p]
-    o.put(") {\n")
+    o.put(")")
+    put_fn_attrs(o, f.attrs)
+    o.put(" {\n")
     for b in 0..f.nb:
         o.put("bb")
         o.put_int(b)

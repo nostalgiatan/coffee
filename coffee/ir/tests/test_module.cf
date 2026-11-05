@@ -1,0 +1,66 @@
+use * in drive
+use printf, fflush in libc of c
+
+fn expect(what: int, got: int, want: int) => int:
+    if got != want:
+        printf("MISS #%d: got %d, want %d\n", what, got, want)
+        fflush(0)
+        return 1
+    return 0
+
+/#/ How many times `w` is in the text.
+fn occurrences(m: &Txt, w: str) => int:
+    let n = 0
+    for i in 0..m.n:
+        let k = 0
+        while k < len(w) && i + k < m.n && m.b[i + k] == int(w[k]):
+            k = k + 1
+        if k == len(w):
+            n = n + 1
+    return n
+
+fn calls_of(src: str, opt: int, w: str) => int:
+    let m = build_src(src, opt)
+    return occurrences(&m, w)
+
+fn squares() => str:
+    return "fn sq(x: int) => int:\n    return x * x\n\nfn main() => int:\n    return sq(3) + sq(4)\n"
+
+fn branchy() => str:
+    return "fn ab(x: int) => int:\n    if x < 0:\n        return 0 - x\n    return x\n\nfn main() => int:\n    let t = 0\n    for i in 0..5:\n        t = t + ab(i - 3)\n    return t\n"
+
+fn owner() => str:
+    return "class P:\n    a: int\n\nfn id(p: P) => P:\n    return p\n\nfn twice(p: P) => P:\n    return id(id(p))\n\nfn main() => int:\n    let q = twice(P { a: 5 })\n    return q.a\n"
+
+fn unused() => str:
+    return "fn inc(x: int) => int:\n    return x + 1\n\nfn main() => int:\n    let u = inc(3)\n    return 7\n"
+
+fn recursive() => str:
+    return "fn fib(n: int) => int:\n    if n < 2:\n        return n\n    return fib(n - 1) + fib(n - 2)\n\nfn main() => int:\n    return fib(10)\n"
+
+fn spins() => str:
+    return "fn spin(n: int) => int:\n    while n > 0:\n        n = n - 1\n    return n\n\nfn main() => int:\n    return spin(3)\n"
+
+fn main() => int:
+    let m = 0
+    /#/ a small callee is inlined: the call is gone from main, the result is the same
+    m = m + expect(1, run_src(squares(), true), 25)
+    m = m + expect(2, calls_of(squares(), 1, "call i64 @sq"), 0)
+    m = m + expect(3, calls_of(squares(), 0, "call i64 @sq"), 2)
+    /#/ a callee with branches, inlined in a loop
+    m = m + expect(4, run_src(branchy(), true), 7)
+    m = m + expect(5, calls_of(branchy(), 1, "call i64 @ab"), 0)
+    /#/ ownership goes through inlined calls: no leak, no double free
+    m = m + expect(6, run_src(owner(), true), 5)
+    /#/ a call whose result nobody uses is not made
+    m = m + expect(7, run_src(unused(), true), 7)
+    m = m + expect(8, calls_of(unused(), 1, "@inc("), 1)
+    /#/ recursion stays a call
+    m = m + expect(9, run_src(recursive(), true), 55)
+    /#/ attributes: a pure function says so, a loop does not promise to return
+    let a = build_src(squares(), 1)
+    m = m + expect(10, occurrences(&a, "memory(none) willreturn"), 2)
+    let s = build_src(spins(), 1)
+    m = m + expect(11, occurrences(&s, "willreturn"), 0)
+    m = m + expect(12, run_src(spins(), true), 0)
+    return m

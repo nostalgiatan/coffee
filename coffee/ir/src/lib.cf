@@ -1,0 +1,214 @@
+/#/ The functions of a module, kept side by side as columns so the optimizer can look into one
+/#/ while it works on another (inlining) and so each function can be summarized.
+/#/
+/#/ `save` appends the columns of a function to the store, `restore` puts them back into a `Fun`.
+/#/ Indices inside a function are its own (from 0); the store only remembers where the rows are.
+use * in opt
+
+class Lib:
+    op: buf<int>
+    rep: buf<int>
+    ty: buf<int>
+    a: buf<int>
+    b: buf<int>
+    c: buf<int>
+    aux: buf<int>
+    nx: buf<int>
+    pv: buf<int>
+    uses: buf<int>
+    fwd: buf<int>
+    blk: buf<int>
+    ni: int
+    bfirst: buf<int>
+    blast: buf<int>
+    pfirst: buf<int>
+    plast: buf<int>
+    npar: buf<int>
+    nb: int
+    efrom: buf<int>
+    eto: buf<int>
+    eargs: buf<int>
+    eargn: buf<int>
+    ne: int
+    pool: buf<int>
+    np: int
+    nm: buf<int>
+    nmn: int
+    /#/ the function table: where each function's rows are
+    nf: int
+    f_i0: buf<int>
+    f_ni: buf<int>
+    f_b0: buf<int>
+    f_nb: buf<int>
+    f_e0: buf<int>
+    f_ne: buf<int>
+    f_p0: buf<int>
+    f_np: buf<int>
+    f_n0: buf<int>
+    f_nn: buf<int>
+    f_ret: buf<int>
+    /#/ the name number of the function (the callee number of a call), -1 if unknown
+    f_id: buf<int>
+    /#/ the effect summary and the order the passes visit it
+    f_fx: buf<int>
+    f_done: buf<int>
+
+    fn grow_cols(self, extra_i: int, extra_b: int, extra_e: int, extra_p: int, extra_n: int) => void:
+        if self.ni + extra_i > len(self.op):
+            let cap = (self.ni + extra_i) * 2
+            self.op = buf_resize(self.op, cap)
+            self.rep = buf_resize(self.rep, cap)
+            self.ty = buf_resize(self.ty, cap)
+            self.a = buf_resize(self.a, cap)
+            self.b = buf_resize(self.b, cap)
+            self.c = buf_resize(self.c, cap)
+            self.aux = buf_resize(self.aux, cap)
+            self.nx = buf_resize(self.nx, cap)
+            self.pv = buf_resize(self.pv, cap)
+            self.uses = buf_resize(self.uses, cap)
+            self.fwd = buf_resize(self.fwd, cap)
+            self.blk = buf_resize(self.blk, cap)
+        if self.nb + extra_b > len(self.bfirst):
+            let cap = (self.nb + extra_b) * 2
+            self.bfirst = buf_resize(self.bfirst, cap)
+            self.blast = buf_resize(self.blast, cap)
+            self.pfirst = buf_resize(self.pfirst, cap)
+            self.plast = buf_resize(self.plast, cap)
+            self.npar = buf_resize(self.npar, cap)
+        if self.ne + extra_e > len(self.eto):
+            let cap = (self.ne + extra_e) * 2
+            self.efrom = buf_resize(self.efrom, cap)
+            self.eto = buf_resize(self.eto, cap)
+            self.eargs = buf_resize(self.eargs, cap)
+            self.eargn = buf_resize(self.eargn, cap)
+        if self.np + extra_p > len(self.pool):
+            self.pool = buf_resize(self.pool, (self.np + extra_p) * 2)
+        if self.nmn + extra_n > len(self.nm):
+            self.nm = buf_resize(self.nm, (self.nmn + extra_n) * 2)
+
+    fn grow_table(self) => void:
+        if self.nf >= len(self.f_i0):
+            let cap = (self.nf + 1) * 2
+            self.f_i0 = buf_resize(self.f_i0, cap)
+            self.f_ni = buf_resize(self.f_ni, cap)
+            self.f_b0 = buf_resize(self.f_b0, cap)
+            self.f_nb = buf_resize(self.f_nb, cap)
+            self.f_e0 = buf_resize(self.f_e0, cap)
+            self.f_ne = buf_resize(self.f_ne, cap)
+            self.f_p0 = buf_resize(self.f_p0, cap)
+            self.f_np = buf_resize(self.f_np, cap)
+            self.f_n0 = buf_resize(self.f_n0, cap)
+            self.f_nn = buf_resize(self.f_nn, cap)
+            self.f_ret = buf_resize(self.f_ret, cap)
+            self.f_id = buf_resize(self.f_id, cap)
+            self.f_fx = buf_resize(self.f_fx, cap)
+            self.f_done = buf_resize(self.f_done, cap)
+
+    /#/ Stores the columns of `f` as function number `at`, a new one when `at` is the count
+    /#/ of functions. `id` is its name number. Returns the number.
+    fn save(self, f: &Fun, at: int, id: int) => int:
+        self.grow_cols(f.ni, f.nb, f.ne, f.np, len(f.nm))
+        let n = at
+        if at >= self.nf:
+            self.grow_table()
+            n = self.nf
+            self.nf = self.nf + 1
+            self.f_fx[n] = 0
+            self.f_done[n] = 0
+        self.f_i0[n] = self.ni
+        self.f_ni[n] = f.ni
+        self.f_b0[n] = self.nb
+        self.f_nb[n] = f.nb
+        self.f_e0[n] = self.ne
+        self.f_ne[n] = f.ne
+        self.f_p0[n] = self.np
+        self.f_np[n] = f.np
+        self.f_n0[n] = self.nmn
+        self.f_nn[n] = len(f.nm)
+        self.f_ret[n] = f.ret
+        self.f_id[n] = id
+        for k in 0..f.ni:
+            self.op[self.ni + k] = f.op[k]
+            self.rep[self.ni + k] = f.rep[k]
+            self.ty[self.ni + k] = f.ty[k]
+            self.a[self.ni + k] = f.a[k]
+            self.b[self.ni + k] = f.b[k]
+            self.c[self.ni + k] = f.c[k]
+            self.aux[self.ni + k] = f.aux[k]
+            self.nx[self.ni + k] = f.nx[k]
+            self.pv[self.ni + k] = f.pv[k]
+            self.uses[self.ni + k] = f.uses[k]
+            self.fwd[self.ni + k] = f.fwd[k]
+            self.blk[self.ni + k] = f.blk[k]
+        for k in 0..f.nb:
+            self.bfirst[self.nb + k] = f.bfirst[k]
+            self.blast[self.nb + k] = f.blast[k]
+            self.pfirst[self.nb + k] = f.pfirst[k]
+            self.plast[self.nb + k] = f.plast[k]
+            self.npar[self.nb + k] = f.npar[k]
+        for k in 0..f.ne:
+            self.efrom[self.ne + k] = f.efrom[k]
+            self.eto[self.ne + k] = f.eto[k]
+            self.eargs[self.ne + k] = f.eargs[k]
+            self.eargn[self.ne + k] = f.eargn[k]
+        for k in 0..f.np:
+            self.pool[self.np + k] = f.pool[k]
+        for k in 0..len(f.nm):
+            self.nm[self.nmn + k] = f.nm[k]
+        self.ni = self.ni + f.ni
+        self.nb = self.nb + f.nb
+        self.ne = self.ne + f.ne
+        self.np = self.np + f.np
+        self.nmn = self.nmn + len(f.nm)
+        return n
+
+    /#/ Puts function `n` into `f`.
+    fn restore(self, n: int, f: &Fun) => void:
+        let name = new_txt()
+        for k in 0..self.f_nn[n]:
+            name.put_byte(self.nm[self.f_n0[n] + k])
+        f.reset(&name, self.f_ret[n])
+        f.ensure(self.f_ni[n], self.f_nb[n], self.f_ne[n], self.f_np[n])
+        let i0 = self.f_i0[n]
+        for k in 0..self.f_ni[n]:
+            f.op[k] = self.op[i0 + k]
+            f.rep[k] = self.rep[i0 + k]
+            f.ty[k] = self.ty[i0 + k]
+            f.a[k] = self.a[i0 + k]
+            f.b[k] = self.b[i0 + k]
+            f.c[k] = self.c[i0 + k]
+            f.aux[k] = self.aux[i0 + k]
+            f.nx[k] = self.nx[i0 + k]
+            f.pv[k] = self.pv[i0 + k]
+            f.uses[k] = self.uses[i0 + k]
+            f.fwd[k] = self.fwd[i0 + k]
+            f.blk[k] = self.blk[i0 + k]
+        let b0 = self.f_b0[n]
+        for k in 0..self.f_nb[n]:
+            f.bfirst[k] = self.bfirst[b0 + k]
+            f.blast[k] = self.blast[b0 + k]
+            f.pfirst[k] = self.pfirst[b0 + k]
+            f.plast[k] = self.plast[b0 + k]
+            f.npar[k] = self.npar[b0 + k]
+        let e0 = self.f_e0[n]
+        for k in 0..self.f_ne[n]:
+            f.efrom[k] = self.efrom[e0 + k]
+            f.eto[k] = self.eto[e0 + k]
+            f.eargs[k] = self.eargs[e0 + k]
+            f.eargn[k] = self.eargn[e0 + k]
+        let p0 = self.f_p0[n]
+        for k in 0..self.f_np[n]:
+            f.pool[k] = self.pool[p0 + k]
+        f.set_counts(self.f_ni[n], self.f_nb[n], self.f_ne[n], self.f_np[n])
+        f.reset_vn()
+        f.set_attrs(0)
+
+    /#/ The function whose name number is `id`, -1 when the module does not define it.
+    fn find(self, id: int) => int:
+        for n in 0..self.nf:
+            if self.f_id[n] == id:
+                return n
+        return -1
+
+fn new_lib() => Lib:
+    return Lib { op: new_buf(int, 64), rep: new_buf(int, 64), ty: new_buf(int, 64), a: new_buf(int, 64), b: new_buf(int, 64), c: new_buf(int, 64), aux: new_buf(int, 64), nx: new_buf(int, 64), pv: new_buf(int, 64), uses: new_buf(int, 64), fwd: new_buf(int, 64), blk: new_buf(int, 64), ni: 0, bfirst: new_buf(int, 16), blast: new_buf(int, 16), pfirst: new_buf(int, 16), plast: new_buf(int, 16), npar: new_buf(int, 16), nb: 0, efrom: new_buf(int, 16), eto: new_buf(int, 16), eargs: new_buf(int, 16), eargn: new_buf(int, 16), ne: 0, pool: new_buf(int, 64), np: 0, nm: new_buf(int, 64), nmn: 0, nf: 0, f_i0: new_buf(int, 8), f_ni: new_buf(int, 8), f_b0: new_buf(int, 8), f_nb: new_buf(int, 8), f_e0: new_buf(int, 8), f_ne: new_buf(int, 8), f_p0: new_buf(int, 8), f_np: new_buf(int, 8), f_n0: new_buf(int, 8), f_nn: new_buf(int, 8), f_ret: new_buf(int, 8), f_id: new_buf(int, 8), f_fx: new_buf(int, 8), f_done: new_buf(int, 8) }

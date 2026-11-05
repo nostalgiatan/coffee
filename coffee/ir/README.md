@@ -13,6 +13,14 @@ in columns. See `DESIGN.md` for the design and the order of work.
   with one predecessor joins it, unused instructions and block parameters (also those only
   passed back to themselves) go, an `alloc` that is only freed goes, `clone x` whose original is
   dropped at once is `x`; every pass keeps the use counts right, and the verifier runs after
+- `src/lib.cf` — `Lib`: the functions of a module kept side by side as columns (`save` / `restore`), so
+  one function can be read while another is optimized
+- `src/modopt.cf` — whole-module passes, all on the IR columns (never on LLVM text), callees first:
+  inlining (a small finished callee is copied into the caller, the block split at the call, each
+  `ret` a jump with the result as a block parameter), the effect summary of each function
+  (reads / writes / allocates / unknown / never returns / may not end), calls whose value nobody uses
+  and that only read and end are dropped, and the attributes the summary proves
+  (`nounwind`, `memory(none|read)`, `willreturn`, `noreturn`) that the emitter prints
 - `src/lower.cf` — typed tree to IR, SSA built directly (Braun et al.): scalars, locals, `if`, `while`,
   `for` over a range, `break`/`continue`/`return`, calls of functions and C functions; locals
   whose address is taken live in a slot; classes (literal, fields, methods, parents), `buf<T>`,
@@ -29,7 +37,7 @@ in columns. See `DESIGN.md` for the design and the order of work.
 - `src/drive.cf` — test support: source text through the front end, IR and clang, then run
 - `src/emit.cf` — LLVM text: phis for block parameters, slots in the entry block, `Syms` for callee names
 
-Steps 1 to 7 are done, the optimizer without effect summaries, inlining and attributes (builder, printer, verifier; emitter; scalars,
+Steps 1 to 7 are done, the optimizer with effect summaries, inlining and attributes (builder, printer, verifier; emitter; scalars,
 control flow and calls; slots, classes, `buf<T>`, arrays; ownership; enums, `match`, `for`, `raise`, generics). Lowering reads the typed tree of `coffee/types`, so
 the tests need its paths:
 

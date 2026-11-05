@@ -27,7 +27,7 @@ fn build_src(src: str, opt: int) => Txt:
             if lw.bad > 0:
                 printf("unsupported: node kind %d at line %d\n", a.kind[lw.bad_node], a.toks.line[a.tok[lw.bad_node]])
                 return new_txt()
-            lw.emit_current(&body)
+            lw.keep_current()
         elif a.kind[it] == int(Nk.Class) && type_param_count(&a, it) == 0:
             let row = g.find_in_module(&a, a.pa[it], ty.cur)
             let c = a.child[it]
@@ -37,13 +37,14 @@ fn build_src(src: str, opt: int) => Txt:
                     if lw.bad > 0:
                         printf("unsupported: node kind %d at line %d\n", a.kind[lw.bad_node], a.toks.line[a.tok[lw.bad_node]])
                         return new_txt()
-                    lw.emit_current(&body)
+                    lw.keep_current()
                 c = a.next[c]
         it = a.next[it]
     lw.run_instances(&t, &g, &ty, &a, &body)
     if lw.bad > 0:
         printf("unsupported: node kind %d at line %d\n", a.kind[lw.bad_node], a.toks.line[a.tok[lw.bad_node]])
         return new_txt()
+    lw.finish(&body)
     o.put_all(&lw.globals)
     lw.emit_decls(&o, &t, &g)
     lw.emit_glue(&body, &t, &g)

@@ -1,0 +1,361 @@
+/#/ The passes that look at the whole module: a summary of the effects of each function,
+/#/ calls that need not be made, and the attributes the summary proves. They work on the IR in
+/#/ the `Lib`; nothing here reads or writes LLVM text.
+/#/
+/#/ Effect bits of a function: it reads memory it does not own (1), writes memory (2),
+/#/ allocates (4), calls C or something unknown (8), never returns (16), may not terminate (32).
+use * in lib
+
+fn fx_reads() => int:
+    return 1
+
+fn fx_writes() => int:
+    return 2
+
+fn fx_allocs() => int:
+    return 4
+
+fn fx_unknown() => int:
+    return 8
+
+fn fx_noreturn() => int:
+    return 16
+
+fn fx_loops() => int:
+    return 32
+
+/#/ Is the memory `p` points into one of the function's own slots?
+fn is_local(f: &Fun, p: int) => bool:
+    let x = f.follow(p)
+    while f.op[x] == int(Op.Field) || f.op[x] == int(Op.Index):
+        x = f.follow(f.a[x])
+    return f.op[x] == int(Op.Slot)
+
+/#/ Does a path of edges lead from a block back to itself?
+fn has_cycle(f: &Fun) => bool:
+    let state: buf<int> = new_buf(int, f.nb + 1)
+    let stack: buf<int> = new_buf(int, f.nb + 1)
+    let next: buf<int> = new_buf(int, f.nb + 1)
+    let sp = 1
+    stack[0] = 0
+    state[0] = 1
+    next[0] = 0
+    while sp > 0:
+        let b = stack[sp - 1]
+        if next[sp - 1] < f.nsucc(b):
+            let e = f.succ_edge(b, next[sp - 1])
+            next[sp - 1] = next[sp - 1] + 1
+            let to = f.eto[e]
+            if to >= 0:
+                if state[to] == 1:
+                    return true
+                if state[to] == 0:
+                    state[to] = 1
+                    stack[sp] = to
+                    next[sp] = 0
+                    sp = sp + 1
+        else:
+            state[b] = 2
+            sp = sp - 1
+    return false
+
+/#/ The effects of `f`, a function of the module `lib`; a callee that is not summarized yet
+/#/ (recursion) or not in the module counts as anything.
+fn summarize(f: &Fun, lib: &Lib) => int:
+    let fx = 0
+    let returns = false
+    for b in 0..f.nb:
+        let i = f.bfirst[b]
+        while i >= 0:
+            let o = f.op[i]
+            if o == int(Op.Load):
+                if !is_local(f, f.a[i]):
+                    fx = fx | fx_reads()
+            elif o == int(Op.Store):
+                if !is_local(f, f.a[i]):
+                    fx = fx | fx_writes()
+            elif o == int(Op.Alloc):
+                fx = fx | fx_allocs()
+            elif o == int(Op.Clone):
+                fx = fx | fx_reads() | fx_allocs()
+            elif o == int(Op.Free) || o == int(Op.Drop):
+                fx = fx | fx_writes()
+            elif o == int(Op.CCall) || o == int(Op.CallI):
+                fx = fx | fx_reads() | fx_writes() | fx_allocs() | fx_unknown() | fx_loops()
+            elif o == int(Op.Call):
+                let n = lib.find(f.aux[i])
+                if n >= 0 && lib.f_done[n] == 1:
+                    fx = fx | (lib.f_fx[n] & 47)
+                else:
+                    fx = fx | fx_reads() | fx_writes() | fx_allocs() | fx_unknown() | fx_loops()
+            elif o == int(Op.Ret):
+                returns = true
+            i = f.nx[i]
+    if !returns:
+        fx = fx | fx_noreturn()
+    if has_cycle(f):
+        fx = fx | fx_loops()
+    return fx
+
+/#/ The attributes `fx` proves.
+fn attrs_of(fx: int) => int:
+    let at = fa_nounwind()
+    let touches = fx_reads() | fx_writes() | fx_allocs() | fx_unknown()
+    if (fx & touches) == 0:
+        at = at | fa_memory_none()
+    elif (fx & (fx_writes() | fx_allocs() | fx_unknown())) == 0:
+        at = at | fa_memory_read()
+    if (fx & fx_noreturn()) != 0:
+        at = at | fa_noreturn()
+    elif (fx & fx_loops()) == 0:
+        at = at | fa_willreturn()
+    return at
+
+/#/ A call whose value nobody uses, of a function that only reads, always returns and ends,
+/#/ is not made.
+fn dead_calls(f: &Fun, lib: &Lib) => bool:
+    let changed = false
+    for b in 0..f.nb:
+        let i = f.blast[b]
+        while i >= 0:
+            let p = f.pv[i]
+            if f.op[i] == int(Op.Call) && f.uses[i] == 0 && f.fwd[i] < 0:
+                let n = lib.find(f.aux[i])
+                if n >= 0 && lib.f_done[n] == 1:
+                    if (lib.f_fx[n] & (fx_writes() | fx_allocs() | fx_unknown() | fx_noreturn() | fx_loops())) == 0:
+                        delete_inst(f, i)
+                        changed = true
+            i = p
+    return changed
+
+/#/ The functions in an order where callees come first (a cycle is cut where it is found).
+fn call_order(lib: &Lib) => buf<int>:
+    let seen: buf<int> = new_buf(int, lib.nf + 1)
+    let out: buf<int> = new_buf(int, lib.nf + 1)
+    let stack: buf<int> = new_buf(int, lib.nf + 1)
+    let pos: buf<int> = new_buf(int, lib.nf + 1)
+    let on = 0
+    for root in 0..lib.nf:
+        if seen[root] == 0:
+            seen[root] = 1
+            stack[0] = root
+            pos[0] = lib.f_i0[root]
+            let sp = 1
+            while sp > 0:
+                let n = stack[sp - 1]
+                let end = lib.f_i0[n] + lib.f_ni[n]
+                let descended = false
+                while pos[sp - 1] < end && !descended:
+                    let k = pos[sp - 1]
+                    pos[sp - 1] = k + 1
+                    if lib.op[k] == int(Op.Call):
+                        let c = lib.find(lib.aux[k])
+                        if c >= 0 && seen[c] == 0:
+                            seen[c] = 1
+                            stack[sp] = c
+                            pos[sp] = lib.f_i0[c]
+                            sp = sp + 1
+                            descended = true
+                if !descended:
+                    out[on] = n
+                    on = on + 1
+                    sp = sp - 1
+    return out
+
+/#/ ---- inlining ------------------------------------------------------------
+
+/#/ How many instructions function `n` of the module has in its blocks.
+fn live_count(lib: &Lib, n: int) => int:
+    let k = 0
+    let i0 = lib.f_i0[n]
+    for b in 0..lib.f_nb[n]:
+        let i = lib.bfirst[lib.f_b0[n] + b]
+        while i >= 0:
+            k = k + 1
+            i = lib.nx[i0 + i]
+    return k
+
+/#/ Is the call `c` of `f` to one that may be inlined: a finished function of the module, small,
+/#/ other than `f`, taking as many arguments as the call passes?
+fn inlinable(f: &Fun, lib: &Lib, c: int, cur: int) => int:
+    if f.op[c] != int(Op.Call) || f.fwd[c] >= 0:
+        return -1
+    let n = lib.find(f.aux[c])
+    if n < 0 || lib.f_done[n] == 0 || f.aux[c] == cur:
+        return -1
+    if lib.f_nb[n] == 0 || lib.npar[lib.f_b0[n]] != f.b[c] || lib.f_ret[n] != f.rep[c]:
+        return -1
+    if live_count(lib, n) > 40:
+        return -1
+    return n
+
+/#/ Replaces the call `c` (in block `B`) by the body of function `n`: the block is split at the
+/#/ call, the callee's blocks are copied in with their numbers shifted, its entry parameters are
+/#/ the call's arguments and each `ret` jumps to the rest of the block, passing the result.
+fn inline_call(f: &Fun, lib: &Lib, c: int, n: int) => void:
+    let bb = f.blk[c]
+    let nargs = f.b[c]
+    let args: buf<int> = new_buf(int, nargs + 1)
+    for k in 0..nargs:
+        args[k] = f.follow(f.val_at(c, k))
+    /#/ split: what follows the call goes to a new block
+    let after = f.new_block()
+    let t = f.nx[c]
+    if t >= 0:
+        f.pv[t] = -1
+        f.bfirst[after] = t
+        f.blast[after] = f.blast[bb]
+        f.nx[c] = -1
+        f.blast[bb] = c
+        let i = t
+        while i >= 0:
+            f.blk[i] = after
+            i = f.nx[i]
+    for e in 0..f.ne:
+        if f.efrom[e] == bb:
+            f.efrom[e] = after
+    unlink(f, c)
+    let res = -1
+    if f.rep[c] != int(Rp.Void):
+        res = f.param(after, f.rep[c], f.ty[c])
+        f.uses[res] = f.uses[c]
+        f.fwd[c] = res
+    unuse(f, c)
+    /#/ copy
+    let bi = f.ni
+    let bblk = f.nb
+    let be = f.ne
+    let bp = f.np
+    let ni = lib.f_ni[n]
+    let nb = lib.f_nb[n]
+    let ne = lib.f_ne[n]
+    let np = lib.f_np[n]
+    f.ensure(bi + ni, bblk + nb, be + ne + nb + 2, bp + np + nb + 2)
+    let i0 = lib.f_i0[n]
+    for k in 0..ni:
+        let d = bi + k
+        f.op[d] = lib.op[i0 + k]
+        f.rep[d] = lib.rep[i0 + k]
+        f.ty[d] = lib.ty[i0 + k]
+        f.a[d] = lib.a[i0 + k]
+        f.b[d] = lib.b[i0 + k]
+        f.c[d] = lib.c[i0 + k]
+        f.aux[d] = lib.aux[i0 + k]
+        f.nx[d] = shift(lib.nx[i0 + k], bi)
+        f.pv[d] = shift(lib.pv[i0 + k], bi)
+        f.uses[d] = lib.uses[i0 + k]
+        f.fwd[d] = shift(lib.fwd[i0 + k], bi)
+        f.blk[d] = shift(lib.blk[i0 + k], bblk)
+    let b0 = lib.f_b0[n]
+    for k in 0..nb:
+        f.bfirst[bblk + k] = shift(lib.bfirst[b0 + k], bi)
+        f.blast[bblk + k] = shift(lib.blast[b0 + k], bi)
+        f.pfirst[bblk + k] = shift(lib.pfirst[b0 + k], bi)
+        f.plast[bblk + k] = shift(lib.plast[b0 + k], bi)
+        f.npar[bblk + k] = lib.npar[b0 + k]
+    let e0 = lib.f_e0[n]
+    for k in 0..ne:
+        f.efrom[be + k] = shift(lib.efrom[e0 + k], bblk)
+        f.eto[be + k] = shift(lib.eto[e0 + k], bblk)
+        f.eargs[be + k] = lib.eargs[e0 + k] + bp
+        f.eargn[be + k] = lib.eargn[e0 + k]
+    let p0 = lib.f_p0[n]
+    for k in 0..np:
+        f.pool[bp + k] = lib.pool[p0 + k]
+    f.set_counts(bi + ni, bblk + nb, be + ne, bp + np)
+    /#/ what the copied instructions refer to moves with them
+    for k in 0..ni:
+        let d = bi + k
+        let o = f.op[d]
+        if o == int(Op.Call) || o == int(Op.CCall) || o == int(Op.CallI):
+            f.a[d] = f.a[d] + bp
+        if o == int(Op.Br):
+            f.aux[d] = f.aux[d] + be
+        if o == int(Op.CondBr):
+            f.b[d] = f.b[d] + be
+            f.c[d] = f.c[d] + be
+        if o == int(Op.Switch):
+            f.c[d] = f.c[d] + be
+            f.aux[d] = f.aux[d] + bp
+            for q in 0..f.b[d]:
+                f.pool[f.aux[d] + q * 2 + 1] = f.pool[f.aux[d] + q * 2 + 1] + be
+        if f.blk[d] >= 0 || o == int(Op.Param):
+            for q in 0..f.nval(d):
+                f.set_val_at(d, q, shift(f.val_at(d, q), bi))
+    for e in 0..ne:
+        for q in 0..f.eargn[be + e]:
+            let at = f.eargs[be + e] + q
+            f.pool[at] = shift(f.pool[at], bi)
+    /#/ the entry's parameters are the arguments
+    let p = f.pfirst[bblk]
+    let q = 0
+    while p >= 0:
+        let x = args[q]
+        f.fwd[p] = x
+        f.uses[x] = f.uses[x] + f.uses[p]
+        p = f.nx[p]
+        q = q + 1
+    f.pfirst[bblk] = -1
+    f.plast[bblk] = -1
+    f.npar[bblk] = 0
+    f.set_block(bb)
+    f.br(bblk)
+    /#/ each return jumps to the rest, with the value
+    for k in 0..nb:
+        let r = f.blast[bblk + k]
+        if r >= 0 && f.op[r] == int(Op.Ret):
+            f.set_block(bblk + k)
+            if f.a[r] >= 0:
+                let v = f.follow(f.a[r])
+                f.arg(v)
+                let e = f.mk_edge(after)
+                f.uses[v] = f.uses[v] - 1
+                f.a[r] = -1
+                f.aux[r] = e
+            else:
+                f.aux[r] = f.mk_edge(after)
+            f.op[r] = int(Op.Br)
+            f.rep[r] = int(Rp.Void)
+            f.b[r] = -1
+            f.c[r] = -1
+
+fn shift(v: int, by: int) => int:
+    if v < 0:
+        return v
+    return v + by
+
+/#/ Inlines the calls of `f` the policy accepts; returns whether it did any.
+fn inline_calls(f: &Fun, lib: &Lib, cur: int) => bool:
+    let any = false
+    let budget = 16
+    let again = true
+    while again && budget > 0 && f.ni < 3000:
+        again = false
+        for b in 0..f.nb:
+            let i = f.bfirst[b]
+            while i >= 0 && !again:
+                let n = inlinable(f, lib, i, cur)
+                if n >= 0:
+                    inline_call(f, lib, i, n)
+                    again = true
+                    any = true
+                    budget = budget - 1
+                i = f.nx[i]
+            if again:
+                break
+    return any
+
+/#/ Optimizes every function of `lib`, callees first. `f` is the working function.
+fn module_opt(lib: &Lib, f: &Fun) => void:
+    let order = call_order(lib)
+    for k in 0..lib.nf:
+        let n = order[k]
+        lib.restore(n, f)
+        inline_calls(f, lib, lib.f_id[n])
+        optimize(f)
+        if dead_calls(f, lib):
+            optimize(f)
+        let id = lib.f_id[n]
+        lib.save(f, n, id)
+        lib.f_fx[n] = summarize(f, lib)
+        lib.f_done[n] = 1
