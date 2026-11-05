@@ -541,6 +541,8 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                     format!("failed to store field '{}': {}", name, e),
                 )
             })?;
+        // A last-use resource variable stored into a field now belongs to the field.
+        self.mark_moved_owned_resource_var(value);
         self.used_variables.insert(parts[0].to_string());
         Ok(())
     }

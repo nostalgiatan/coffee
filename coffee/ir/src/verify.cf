@@ -2,7 +2,7 @@
 /#/ mistake in one is found where it was made. It checks the shape (one terminator, last),
 /#/ the edges (target, number and type of arguments), the types the operation needs, and that
 /#/ every use is dominated by its definition.
-use * in fun
+use * in print
 
 enum Ve:
     NoTerminator

@@ -1,0 +1,70 @@
+use * in lower
+use fopen, fputc, fclose, system, putchar in libc of c
+
+/#/ Compiles `src` through our front end and IR, with clang, and runs it: the exit code,
+/#/ or -1 when something did not compile.
+fn run_src(src: str) => int:
+    let t = new_tys()
+    let g = new_globals()
+    let a = parse(src)
+    let m = declare_module(&g, &a, "t")
+    declare_types(&t, &g, &a, m)
+    let ty = check_types(&t, &g, &a, m)
+    if ty.diags.n > 0 || a.err_count > 0:
+        return -2
+    let lw = new_lower()
+    let o = new_txt()
+    emit_prelude(&o)
+    let body = new_txt()
+    let it = a.child[a.root]
+    while it >= 0:
+        if a.kind[it] == int(Nk.Fn):
+            lw.function(&t, &g, &ty, &a, it)
+            if lw.bad > 0:
+                putchar(63)
+                return -3
+            lw.emit_current(&body)
+        it = a.next[it]
+    o.put_all(&lw.globals)
+    lw.emit_decls(&o, &t, &g)
+    o.put_all(&body)
+    return compile_and_run(&o)
+
+fn compile_and_run(m: &Txt) => int:
+    let fp = fopen("/tmp/ir_lower_test.ll", "w")
+    for k in 0..m.n:
+        fputc(m.b[k], fp)
+    fclose(fp)
+    if system("clang -w -o /tmp/ir_lower_test /tmp/ir_lower_test.ll") != 0:
+        return -1
+    let st = system("/tmp/ir_lower_test")
+    return (st >> 8) & 255
+
+fn expect_exit(src: str, want: int) => int:
+    let r = run_src(src)
+    if r != want:
+        putchar(35)
+        putchar(48 + (r + 10) % 10)
+        putchar(10)
+        return 1
+    return 0
+
+fn main() => int:
+    let m = 0
+    m = m + expect_exit("fn main() => int:\n    return 7\n", 7)
+    m = m + expect_exit("fn add(a: int, b: int) => int:\n    return a + b * 2\n\nfn main() => int:\n    return add(3, 4)\n", 11)
+    m = m + expect_exit("fn main() => int:\n    let s = 0\n    let i = 0\n    while i < 10:\n        s = s + i\n        i = i + 1\n    return s\n", 45)
+    /#/ if / elif / else, recursion
+    m = m + expect_exit("fn fib(n: int) => int:\n    if n < 2:\n        return n\n    return fib(n - 1) + fib(n - 2)\n\nfn main() => int:\n    return fib(10)\n", 55)
+    m = m + expect_exit("fn sign(x: int) => int:\n    if x < 0:\n        return 1\n    elif x == 0:\n        return 2\n    else:\n        return 3\n\nfn main() => int:\n    return sign(-5) * 100 // 100 + sign(0) * 10 + sign(9) * 5 - 2\n", 34)
+    /#/ for over a range with break and continue, a nested loop
+    m = m + expect_exit("fn main() => int:\n    let s = 0\n    for i in 0..20:\n        if i == 3:\n            continue\n        if i == 8:\n            break\n        for j in 0..i:\n            s = s + 1\n    return s\n", 25)
+    /#/ short-circuit operators
+    m = m + expect_exit("fn boom(x: int) => bool:\n    return 1 // x == 1\n\nfn main() => int:\n    let a = 0\n    if a != 0 && boom(a):\n        return 1\n    if a == 0 || boom(a):\n        return 9\n    return 2\n", 9)
+    /#/ casts and floats
+    m = m + expect_exit("fn half(x: int) => float:\n    return float(x) / 2.0\n\nfn main() => int:\n    return int(float(7) * 2.0)\n", 14)
+    /#/ float literals are exact where a double can be
+    m = m + expect_exit("fn main() => int:\n    let r = 0\n    if 0.1 * 10.0 == 1.0:\n        r = r + 3\n    if 0.1 + 0.2 != 0.3:\n        r = r + 4\n    return r + int(100.0) - 100 + int(2.5 * 2.0) - 5\n", 7)
+    /#/ a call of a C function with a variadic tail
+    m = m + expect_exit("use printf in libc of c\n\nfn main() => int:\n    printf(\"hello %ld\\n\", 3)\n    return 4\n", 4)
+    return m

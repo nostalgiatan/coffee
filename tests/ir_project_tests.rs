@@ -9,7 +9,7 @@ fn test_coffee_ir_project_tests_pass() {
     let project = root.join("coffee").join("ir");
     let out = Command::new(coffee_bin(&root))
         .current_dir(&project)
-        .args(["test", "--test-mode", "-I", "src"])
+        .args(["test", "--test-mode", "-I", "../types/src", "-I", "../sema/src", "-I", "../parser/src", "-I", "../lexer/src", "-I", "src"])
         .output()
         .expect("run coffee test");
     let text = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);

@@ -594,3 +594,8 @@ fn test_early_return_of_a_class_does_not_move_it_for_later_code() {
 fn test_early_return_of_a_string_is_balanced() {
     assert_balanced("fn pick(n: int) => str:\n    let s = \"a\" + \"b\"\n    if n == 0:\n        return s\n    let t = s + \"c\"\n    return t\n\nfn main() => int:\n    let x = pick(0)\n    let y = pick(1)\n    return len(&x) + len(&y) - 5\n");
 }
+
+#[test]
+fn test_buf_stored_into_a_field_is_moved_not_freed_twice() {
+    assert_balanced("class H:\n    nm: buf<int>\n\n    fn set(self, k: int) => void:\n        let b: buf<int> = new_buf(int, k)\n        for i in 0..k:\n            b[i] = i\n        self.nm = b\n\nfn main() => int:\n    let h = H { nm: new_buf(int, 2) }\n    h.set(5)\n    return len(h.nm) - 5\n");
+}

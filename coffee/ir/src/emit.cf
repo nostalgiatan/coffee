@@ -1,12 +1,12 @@
 /#/ LLVM text from a function: one block of text per IR block, block parameters as `phi`.
 /#/
-/#/ Names: value `%vN` is IR value N; block `bbN`. Callees are `@name` from a `Syms` table, a
+/#/ Names: value `%vN` is IR value N; block `bbN`. Callees are `@name` from a `Names` table, a
 /#/ string literal `#N` is the global `@sN`. A `slot`'s `ty` is its size in bytes for now; the
 /#/ storage table of the types stage replaces that when lowering exists.
-use * in print
+use * in verify
 
 /#/ Names of functions, by number.
-class Syms:
+class Names:
     b: buf<int>
     n: int
     off: buf<int>
@@ -29,8 +29,30 @@ class Syms:
         for k in self.off[id]..self.off[id + 1]:
             o.put_byte(self.b[k])
 
-fn new_syms() => Syms:
-    return Syms { b: new_buf(int, 64), n: 0, off: new_buf(int, 16), cnt: 0 }
+    /#/ The number of the name spelled by `w`; added when new.
+    fn intern(self, w: &Txt) => int:
+        for id in 0..self.cnt:
+            if self.off[id + 1] - self.off[id] == w.n:
+                let same = true
+                for k in 0..w.n:
+                    if self.b[self.off[id] + k] != w.b[k]:
+                        same = false
+                if same:
+                    return id
+        if self.cnt + 1 >= len(self.off):
+            self.off = buf_resize(self.off, (self.cnt + 2) * 2)
+        self.off[self.cnt] = self.n
+        for k in 0..w.n:
+            if self.n >= len(self.b):
+                self.b = buf_resize(self.b, (self.n + 1) * 2)
+            self.b[self.n] = w.b[k]
+            self.n = self.n + 1
+        self.off[self.cnt + 1] = self.n
+        self.cnt = self.cnt + 1
+        return self.cnt - 1
+
+fn new_names() => Names:
+    return Names { b: new_buf(int, 64), n: 0, off: new_buf(int, 16), cnt: 0 }
 
 /#/ `malloc` and `free`, which `alloc` and `free` use.
 fn emit_prelude(o: &Txt) => void:
@@ -133,7 +155,7 @@ fn put_call_args(o: &Txt, f: &Fun, rs: &Reps, start: int, n: int) => void:
         put_typed(o, f, rs, f.pool[start + k])
     o.put(")")
 
-fn emit_inst(o: &Txt, f: &Fun, rs: &Reps, sy: &Syms, i: int) => void:
+fn emit_inst(o: &Txt, f: &Fun, rs: &Reps, sy: &Names, i: int) => void:
     let op = f.op[i]
     let r = f.rep[i]
     if op == int(Op.Param) || op == int(Op.Slot) || op == int(Op.OwnMove):
@@ -242,7 +264,12 @@ fn emit_inst(o: &Txt, f: &Fun, rs: &Reps, sy: &Syms, i: int) => void:
         else:
             put_ty(o, rs, r)
         if op == int(Op.CCall) && f.c[i] != 0:
-            o.put(" (ptr, ...)")
+            /#/ a variadic C call: `ty` is the number of fixed parameters
+            o.put(" (")
+            for k in 0..f.ty[i]:
+                put_ty(o, rs, f.rep[f.follow(f.pool[f.a[i] + k])])
+                o.put(", ")
+            o.put("...)")
         o.put(" ")
         if op == int(Op.CallI):
             put_opnd(o, f, f.c[i])
@@ -346,7 +373,7 @@ fn emit_phis(o: &Txt, f: &Fun, rs: &Reps, b: int) => void:
         p = f.nx[p]
         k = k + 1
 
-fn emit_fun(o: &Txt, f: &Fun, rs: &Reps, sy: &Syms) => void:
+fn emit_fun(o: &Txt, f: &Fun, rs: &Reps, sy: &Names) => void:
     o.put("define ")
     if f.ret == int(Rp.Void):
         o.put("void")

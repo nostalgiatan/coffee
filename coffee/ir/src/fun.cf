@@ -115,6 +115,24 @@ class Fun:
 
     /#/ ---- storage -----------------------------------------------------------
 
+    /#/ Starts a new function in the same columns: the buffers keep their size.
+    fn reset(self, name: &Txt, ret: int) => void:
+        let nm: buf<int> = new_buf(int, name.n)
+        for k in 0..name.n:
+            nm[k] = name.b[k]
+        self.nm = nm
+        self.ret = ret
+        self.ni = 0
+        self.nb = 0
+        self.ne = 0
+        self.np = 0
+        self.pn = 0
+        self.cn = 0
+        self.cur = -1
+        self.vn_n = 0
+        for k in 0..len(self.vn):
+            self.vn[k] = -1
+
     fn follow(self, v: int) => int:
         let x = v
         while x >= 0 && self.fwd[x] >= 0:

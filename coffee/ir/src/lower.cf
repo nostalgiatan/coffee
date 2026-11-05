@@ -1,0 +1,979 @@
+/#/ Lowering: the typed tree of a function to IR, in SSA, in one pass.
+/#/
+/#/ Variables are not slots: each assignment names a new value, and a read looks the value up
+/#/ where the variable was last written, adding block parameters where paths join (Braun et
+/#/ al., "Simple and Efficient Construction of SSA Form"). A block is *sealed* when all the
+/#/ edges into it exist; a read in an unsealed block makes a parameter that is filled in when
+/#/ the block is sealed. Edges are made without arguments and get them as parameters appear
+/#/ (`edge_push`); `simplify_params` removes the parameters that were one value all along.
+/#/
+/#/ What is lowered: scalars (`int`, `bool`, `float`, strings as pointers), locals, `if`/`elif`/
+/#/ `else`, `while`, `for` over a range, `break`/`continue`/`return`, calls of plain functions
+/#/ and C functions. Anything else sets `bad` and the function is not emitted.
+use * in ssa
+use * in typer
+
+/#/ The IR representation of a type; -1 when it has none yet.
+fn rep_of(t: &Tys, g: &Syms, x: int) => int:
+    let k = t.kind[x]
+    if k == int(Ty.Void):
+        return int(Rp.Void)
+    if k == int(Ty.Bool):
+        return int(Rp.I8)
+    if k == int(Ty.Int):
+        if t.a[x] == 1:
+            return int(Rp.I8)
+        if t.a[x] == 2:
+            return int(Rp.I16)
+        if t.a[x] == 4:
+            return int(Rp.I32)
+        if t.a[x] == 8:
+            return int(Rp.I64)
+        return -1
+    if k == int(Ty.Float):
+        if t.a[x] == 4:
+            return int(Rp.F32)
+        if t.a[x] == 8:
+            return int(Rp.F64)
+        return -1
+    if k == int(Ty.Str) || k == int(Ty.Object) || k == int(Ty.Ref) || k == int(Ty.Fn):
+        return int(Rp.Ptr)
+    if k == int(Ty.Buf) && t.a[x] < 0:
+        return int(Rp.Ptr)
+    if k == int(Ty.Named):
+        if g.kind[t.a[x]] == int(Sk.Class):
+            return int(Rp.Ptr)
+        if g.kind[t.a[x]] == int(Sk.Enum) && !has_payload(t, g, t.a[x]):
+            return int(Rp.I64)
+    return -1
+
+/#/ Is `x` an integer type that is signed?
+fn is_signed(t: &Tys, x: int) => bool:
+    return t.kind[x] == int(Ty.Int) && t.b[x] == 1
+
+fn bytes_of_rep(r: int) => int:
+    if r == int(Rp.I8):
+        return 1
+    if r == int(Rp.I16):
+        return 2
+    if r == int(Rp.I32) || r == int(Rp.F32):
+        return 4
+    return 8
+
+/#/ The bits of the float literal at `tok`, as a double or (`single`) as a float; -1 when
+/#/ the literal is not one this can convert exactly (more than 15 digits, a huge exponent).
+fn float_bits(a: &Ast, tok: int, single: bool) => int:
+    let s = a.toks.start[tok]
+    let e = a.toks.end[tok]
+    let m = 0
+    let digits = 0
+    let scale = 0
+    let seen_dot = false
+    let k = s
+    while k < e:
+        let c = a.byte_at(k)
+        if c >= '0' && c <= '9':
+            m = m * 10 + (c - '0')
+            digits = digits + 1
+            if seen_dot:
+                scale = scale - 1
+        elif c == '.':
+            seen_dot = true
+        elif c == 'e' || c == 'E':
+            break
+        elif c != '_':
+            return -1
+        k = k + 1
+    if k < e:
+        k = k + 1
+        let neg = false
+        if k < e && (a.byte_at(k) == '-' || a.byte_at(k) == '+'):
+            neg = a.byte_at(k) == '-'
+            k = k + 1
+        let x = 0
+        while k < e:
+            x = x * 10 + (a.byte_at(k) - '0')
+            k = k + 1
+        if neg:
+            x = 0 - x
+        scale = scale + x
+    if digits > 15 || scale > 22 || scale < -22:
+        return -1
+    if m == 0:
+        return 0
+    let v = float(m)
+    let p = 1.0
+    let q = scale
+    if q < 0:
+        q = 0 - q
+    for i in 0..q:
+        p = p * 10.0
+    if scale < 0:
+        v = v / p
+    else:
+        v = v * p
+    let ex = 0
+    while v >= 2.0:
+        v = v / 2.0
+        ex = ex + 1
+    while v < 1.0:
+        v = v * 2.0
+        ex = ex - 1
+    if single:
+        let frac = int((v - 1.0) * 8388608.0 + 0.5)
+        if frac >= 8388608:
+            frac = 0
+            ex = ex + 1
+        if ex < -126 || ex > 127:
+            return -1
+        return ((ex + 127) << 23) | frac
+    if ex < -1022 || ex > 1023:
+        return -1
+    let frac = int((v - 1.0) * 4503599627370496.0)
+    return ((ex + 1023) << 52) | frac
+
+class Lower:
+    f: Fun
+    rs: Reps
+    names: Names
+    globals: Txt
+    nstr: int
+    /#/ C functions called: name, signature type, variadic
+    cd_name: buf<int>
+    cd_sig: buf<int>
+    cd_var: buf<int>
+    cd_n: int
+    /#/ variables
+    sc: Syms
+    v_rep: buf<int>
+    v_ty: buf<int>
+    nv: int
+    /#/ the value of a variable at the end of a block, by (variable, block)
+    dk: buf<int>
+    dv: buf<int>
+    dn: int
+    /#/ blocks: sealed, the parameters waiting for their arguments, the edges that reach it
+    sealed: buf<int>
+    inc_head: buf<int>
+    inc_var: buf<int>
+    inc_par: buf<int>
+    inc_next: buf<int>
+    inc_n: int
+    pe_head: buf<int>
+    pe_next: buf<int>
+    /#/ loops: where `continue` and `break` go
+    lc: buf<int>
+    lb: buf<int>
+    nloops: int
+    /#/ the return type of the function
+    ret_ty: int
+    bad: int
+    bad_node: int
+
+    fn unsupported(self, n: int) => void:
+        if self.bad == 0:
+            self.bad_node = n
+        self.bad = self.bad + 1
+
+    /#/ ---- blocks and edges ----------------------------------------------------
+
+    fn new_block(self) => int:
+        let b = self.f.new_block()
+        if b >= len(self.sealed):
+            let cap = (b + 1) * 2
+            self.sealed = buf_resize(self.sealed, cap)
+            self.inc_head = buf_resize(self.inc_head, cap)
+            self.pe_head = buf_resize(self.pe_head, cap)
+        self.sealed[b] = 0
+        self.inc_head[b] = -1
+        self.pe_head[b] = -1
+        return b
+
+    /#/ Remembers that edge `e` reaches `target`.
+    fn note_edge(self, e: int, target: int) => void:
+        if e >= len(self.pe_next):
+            self.pe_next = buf_resize(self.pe_next, (e + 1) * 2)
+        self.pe_next[e] = self.pe_head[target]
+        self.pe_head[target] = e
+
+    /#/ Ends the current block with a jump.
+    fn jump(self, target: int) => void:
+        if self.f.terminated(self.f.cur):
+            return
+        let t = self.f.br(target)
+        self.note_edge(self.f.aux[t], target)
+
+    fn branch(self, cond: int, yes: int, no: int) => void:
+        if self.f.terminated(self.f.cur):
+            return
+        let e1 = self.f.mk_edge(yes)
+        let e2 = self.f.mk_edge(no)
+        self.note_edge(e1, yes)
+        self.note_edge(e2, no)
+        self.f.condbr(cond, e1, e2)
+
+    /#/ Moves on to a block nothing reaches: the code after a `return` or `break`.
+    fn dead_block(self) => void:
+        let b = self.new_block()
+        self.sealed[b] = 1
+        self.f.set_block(b)
+
+    /#/ ---- variables -----------------------------------------------------------
+
+    fn d_find(self, v: int, b: int) => int:
+        let key = v * 4194304 + b + 1
+        let m = len(self.dk) - 1
+        let h = (key * 40503) & m
+        while self.dk[h] != 0:
+            if self.dk[h] == key:
+                return self.dv[h]
+            h = (h + 1) & m
+        return -1
+
+    fn d_set(self, v: int, b: int, val: int) => void:
+        if (self.dn + 1) * 2 > len(self.dk):
+            let cap = len(self.dk) * 2
+            let nk: buf<int> = new_buf(int, cap)
+            let nv: buf<int> = new_buf(int, cap)
+            for i in 0..cap:
+                nk[i] = 0
+            for i in 0..len(self.dk):
+                let key = self.dk[i]
+                if key != 0:
+                    let h = (key * 40503) & (cap - 1)
+                    while nk[h] != 0:
+                        h = (h + 1) & (cap - 1)
+                    nk[h] = key
+                    nv[h] = self.dv[i]
+            self.dk = nk
+            self.dv = nv
+        let key = v * 4194304 + b + 1
+        self.d_put(key, val)
+
+    fn d_put(self, key: int, val: int) => void:
+        let m = len(self.dk) - 1
+        let h = (key * 40503) & m
+        while self.dk[h] != 0 && self.dk[h] != key:
+            h = (h + 1) & m
+        if self.dk[h] == 0:
+            self.dn = self.dn + 1
+        self.dk[h] = key
+        self.dv[h] = val
+
+    fn write_var(self, v: int, b: int, val: int) => void:
+        self.d_set(v, b, val)
+
+    fn read_var(self, v: int, b: int) => int:
+        let x = self.d_find(v, b)
+        if x >= 0:
+            return self.f.follow(x)
+        return self.read_rec(v, b)
+
+    fn read_rec(self, v: int, b: int) => int:
+        let rep = self.v_rep[v]
+        if self.sealed[b] == 0:
+            let p = self.f.param(b, rep, -1)
+            if self.inc_n >= len(self.inc_var):
+                let cap = (self.inc_n + 1) * 2
+                self.inc_var = buf_resize(self.inc_var, cap)
+                self.inc_par = buf_resize(self.inc_par, cap)
+                self.inc_next = buf_resize(self.inc_next, cap)
+            /#/ kept in creation order: a list with a tail would do; the lists are short
+            self.inc_var[self.inc_n] = v
+            self.inc_par[self.inc_n] = p
+            self.inc_next[self.inc_n] = -1
+            let last = self.inc_head[b]
+            if last < 0:
+                self.inc_head[b] = self.inc_n
+            else:
+                while self.inc_next[last] >= 0:
+                    last = self.inc_next[last]
+                self.inc_next[last] = self.inc_n
+            self.inc_n = self.inc_n + 1
+            self.write_var(v, b, p)
+            return p
+        let n = 0
+        let only = -1
+        let e = self.pe_head[b]
+        while e >= 0:
+            if self.f.eto[e] == b:
+                n = n + 1
+                only = e
+            e = self.pe_next[e]
+        let val = -1
+        if n == 0:
+            val = self.f.undef(rep)
+        elif n == 1:
+            val = self.read_var(v, self.f.efrom[only])
+        else:
+            let p = self.f.param(b, rep, -1)
+            self.write_var(v, b, p)
+            self.fill(v, b)
+            val = p
+        self.write_var(v, b, val)
+        return val
+
+    /#/ Passes the value of `v` along every edge into `b`, for the parameter just made.
+    fn fill(self, v: int, b: int) => void:
+        /#/ the edges in the order they were made
+        let es: buf<int> = new_buf(int, 8)
+        let n = 0
+        let e = self.pe_head[b]
+        while e >= 0:
+            if self.f.eto[e] == b:
+                if n >= len(es):
+                    es = buf_resize(es, n * 2)
+                es[n] = e
+                n = n + 1
+            e = self.pe_next[e]
+        let k = n - 1
+        while k >= 0:
+            let x = self.read_var(v, self.f.efrom[es[k]])
+            edge_push(&self.f, es[k], x)
+            k = k - 1
+
+    /#/ All the edges into `b` exist now.
+    fn seal(self, b: int) => void:
+        let i = self.inc_head[b]
+        while i >= 0:
+            self.fill(self.inc_var[i], b)
+            i = self.inc_next[i]
+        self.inc_head[b] = -1
+        self.sealed[b] = 1
+
+    fn new_var(self, a: &Ast, tok: int, rep: int, ty: int) => int:
+        if self.nv >= len(self.v_rep):
+            self.v_rep = buf_resize(self.v_rep, (self.nv + 1) * 2)
+            self.v_ty = buf_resize(self.v_ty, (self.nv + 1) * 2)
+        let id = self.nv
+        self.v_rep[id] = rep
+        self.v_ty[id] = ty
+        self.nv = id + 1
+        if tok >= 0:
+            self.sc.add_tok(a, tok, int(Sk.Local), id, 0)
+        return id
+
+    /#/ ---- conversions ---------------------------------------------------------
+
+    /#/ `x`, of type `from`, as a value of type `to`.
+    fn coerce(self, t: &Tys, g: &Syms, x: int, from: int, to: int) => int:
+        return self.coerce_rep(t, x, from, rep_of(t, g, to), to)
+
+    fn coerce_rep(self, t: &Tys, x: int, from: int, tr: int, to: int) => int:
+        let fr = self.f.rep[x]
+        if fr == tr || tr < 0:
+            return x
+        let ti = rp_is_int(tr)
+        let fi = rp_is_int(fr)
+        if t.kind[to] == int(Ty.Bool):
+            if fi:
+                return self.f.cmp(int(Pr.Ne), x, self.f.cint(fr, 0))
+            if rp_is_float(fr):
+                return self.f.fcmp(int(Pr.ONe), x, self.f.cfloat(fr, 0))
+            return x
+        if fi && ti:
+            if rp_bits(tr) > rp_bits(fr):
+                if is_signed(t, from):
+                    return self.f.conv(int(Op.SExt), tr, x)
+                return self.f.conv(int(Op.ZExt), tr, x)
+            return self.f.conv(int(Op.Trunc), tr, x)
+        if fi && rp_is_float(tr):
+            if is_signed(t, from):
+                return self.f.conv(int(Op.SiToFp), tr, x)
+            return self.f.conv(int(Op.UiToFp), tr, x)
+        if rp_is_float(fr) && ti:
+            if is_signed(t, to):
+                return self.f.conv(int(Op.FpToSi), tr, x)
+            return self.f.conv(int(Op.FpToUi), tr, x)
+        if rp_is_float(fr) && rp_is_float(tr):
+            if rp_bits(tr) > rp_bits(fr):
+                return self.f.conv(int(Op.FpExt), tr, x)
+            return self.f.conv(int(Op.FpTrunc), tr, x)
+        if fr == int(Rp.Ptr) && ti:
+            return self.f.conv(int(Op.PtrToInt), tr, x)
+        if fi && tr == int(Rp.Ptr):
+            return self.f.conv(int(Op.IntToPtr), tr, x)
+        return x
+
+    /#/ ---- expressions ---------------------------------------------------------
+
+    /#/ The bytes of string literal token `tok`, escapes resolved, as a global `@sN`.
+    fn string(self, a: &Ast, tok: int) => int:
+        let s = a.toks.start[tok] + 1
+        let e = a.toks.end[tok] - 1
+        let body = new_txt()
+        let k = s
+        while k < e:
+            let c = a.byte_at(k)
+            if c == '\\' && k + 1 < e:
+                k = k + 1
+                let d = a.byte_at(k)
+                if d == 'n':
+                    c = 10
+                elif d == 't':
+                    c = 9
+                elif d == 'r':
+                    c = 13
+                elif d == '0':
+                    c = 0
+                else:
+                    c = d
+            body.put_byte(c)
+            k = k + 1
+        let id = self.nstr
+        self.nstr = id + 1
+        let o = &self.globals
+        o.put("@s")
+        o.put_int(id)
+        o.put(" = private unnamed_addr constant [")
+        o.put_int(body.n + 1)
+        o.put(" x i8] c\"")
+        for i in 0..body.n:
+            put_hex_byte(o, body.b[i])
+        o.put("\\00\"\n")
+        return id
+
+    fn binary(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => int:
+        let op = op_of(a.pc[n])
+        let l = a.pa[n]
+        let r = a.pb[n]
+        if op == int(Bop.And) || op == int(Bop.Or):
+            return self.logic(t, g, ty, a, n, op == int(Bop.And))
+        let lt = ty.node[l]
+        let rt = ty.node[r]
+        if rep_of(t, g, lt) < 0 || rep_of(t, g, rt) < 0 || t.kind[lt] == int(Ty.Str) || t.kind[rt] == int(Ty.Str):
+            self.unsupported(n)
+            return self.f.undef(int(Rp.I8))
+        let x = self.ex(t, g, ty, a, l)
+        let y = self.ex(t, g, ty, a, r)
+        if op >= int(Bop.Eq) && op <= int(Bop.Ge):
+            return self.compare(t, g, op, x, y, lt, rt)
+        let res = ty.node[n]
+        let rr = rep_of(t, g, res)
+        if rr < 0 || t.kind[res] == int(Ty.Object):
+            self.unsupported(n)
+            return self.f.undef(int(Rp.I64))
+        let float = rp_is_float(rr)
+        if op == int(Bop.Shl) || op == int(Bop.Shr):
+            let amount = self.coerce(t, g, y, rt, res)
+            let v = self.coerce(t, g, x, lt, res)
+            if op == int(Bop.Shl):
+                return self.f.bin(int(Op.Shl), v, amount)
+            if is_signed(t, res):
+                return self.f.bin(int(Op.AShr), v, amount)
+            return self.f.bin(int(Op.LShr), v, amount)
+        let v = self.coerce(t, g, x, lt, res)
+        let w = self.coerce(t, g, y, rt, res)
+        let sg = is_signed(t, res)
+        if op == int(Bop.Add):
+            if float:
+                return self.f.bin(int(Op.FAdd), v, w)
+            return self.f.bin(int(Op.Add), v, w)
+        if op == int(Bop.Sub):
+            if float:
+                return self.f.bin(int(Op.FSub), v, w)
+            return self.f.bin(int(Op.Sub), v, w)
+        if op == int(Bop.Mul):
+            if float:
+                return self.f.bin(int(Op.FMul), v, w)
+            return self.f.bin(int(Op.Mul), v, w)
+        if op == int(Bop.Div):
+            return self.f.bin(int(Op.FDiv), v, w)
+        if op == int(Bop.IDiv):
+            if sg:
+                return self.f.bin(int(Op.SDiv), v, w)
+            return self.f.bin(int(Op.UDiv), v, w)
+        if op == int(Bop.Rem):
+            if float:
+                return self.f.bin(int(Op.FRem), v, w)
+            if sg:
+                return self.f.bin(int(Op.SRem), v, w)
+            return self.f.bin(int(Op.URem), v, w)
+        if op == int(Bop.BitAnd):
+            return self.f.bin(int(Op.And), v, w)
+        if op == int(Bop.BitOr):
+            return self.f.bin(int(Op.Or), v, w)
+        return self.f.bin(int(Op.Xor), v, w)
+
+    /#/ A comparison of two values of types `lt` and `rt`, as a `bool`.
+    fn compare(self, t: &Tys, g: &Syms, op: int, x: int, y: int, lt: int, rt: int) => int:
+        let fx = self.f.rep[x]
+        let fy = self.f.rep[y]
+        let wide = lt
+        if rp_is_float(fy) && !rp_is_float(fx):
+            wide = rt
+        elif bytes_of_rep(fy) > bytes_of_rep(fx) && rp_is_float(fx) == rp_is_float(fy):
+            wide = rt
+        let v = self.coerce(t, g, x, lt, wide)
+        let w = self.coerce(t, g, y, rt, wide)
+        let wr = rep_of(t, g, wide)
+        if rp_is_float(wr):
+            let p = int(Pr.OEq)
+            if op == int(Bop.Ne):
+                p = int(Pr.ONe)
+            elif op == int(Bop.Lt):
+                p = int(Pr.OLt)
+            elif op == int(Bop.Le):
+                p = int(Pr.OLe)
+            elif op == int(Bop.Gt):
+                p = int(Pr.OGt)
+            elif op == int(Bop.Ge):
+                p = int(Pr.OGe)
+            return self.f.fcmp(p, v, w)
+        let sg = is_signed(t, wide)
+        let p = int(Pr.Eq)
+        if op == int(Bop.Ne):
+            p = int(Pr.Ne)
+        elif op == int(Bop.Lt):
+            p = int(Pr.SLt)
+            if !sg:
+                p = int(Pr.ULt)
+        elif op == int(Bop.Le):
+            p = int(Pr.SLe)
+            if !sg:
+                p = int(Pr.ULe)
+        elif op == int(Bop.Gt):
+            p = int(Pr.SGt)
+            if !sg:
+                p = int(Pr.UGt)
+        elif op == int(Bop.Ge):
+            p = int(Pr.SGe)
+            if !sg:
+                p = int(Pr.UGe)
+        return self.f.cmp(p, v, w)
+
+    /#/ `l && r` and `l || r`: the right side runs only when the left does not decide. The
+    /#/ result is a variable written on both paths and read where they meet.
+    fn logic(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int, is_and: bool) => int:
+        let res = self.new_var(a, -1, int(Rp.I8), -1)
+        let l = self.ex(t, g, ty, a, a.pa[n])
+        let rhs = self.new_block()
+        let join = self.new_block()
+        self.write_var(res, self.f.cur, self.f.cint(int(Rp.I8), 0))
+        if !is_and:
+            self.write_var(res, self.f.cur, self.f.cint(int(Rp.I8), 1))
+        if is_and:
+            self.branch(l, rhs, join)
+        else:
+            self.branch(l, join, rhs)
+        self.seal(rhs)
+        self.f.set_block(rhs)
+        let r = self.ex(t, g, ty, a, a.pb[n])
+        self.write_var(res, self.f.cur, r)
+        self.jump(join)
+        self.seal(join)
+        self.f.set_block(join)
+        return self.read_var(res, join)
+
+    fn call(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => int:
+        let callee = a.pa[n]
+        let res = ty.node[n]
+        if callee < 0 || a.kind[callee] != int(Nk.Name):
+            self.unsupported(n)
+            return self.f.undef(int(Rp.I64))
+        let r = ty.lookup(a, a.tok[callee])
+        if r < 0:
+            self.unsupported(n)
+            return self.f.undef(int(Rp.I64))
+        let k = ty.rd.sc.loc.kind[r]
+        if k == int(Sk.Builtin):
+            return self.cast_call(t, g, ty, a, n)
+        if k != int(Sk.Fn) && k != int(Sk.Extern):
+            self.unsupported(n)
+            return self.f.undef(int(Rp.I64))
+        let sig = ty.rd.sc.loc.ty[r]
+        if sig < 0 || t.kind[sig] != int(Ty.Fn):
+            self.unsupported(n)
+            return self.f.undef(int(Rp.I64))
+        let variadic = 0
+        if k == int(Sk.Extern) && ty.rd.sc.loc.info[r] == 1:
+            variadic = 1
+        let fixed = t.count_of(sig)
+        if variadic == 1:
+            fixed = fixed - 1
+        let ret = t.c[sig]
+        let rr = rep_of(t, g, ret)
+        if rr < 0:
+            self.unsupported(n)
+            return self.f.undef(int(Rp.I64))
+        let vals: buf<int> = new_buf(int, 8)
+        let i = 0
+        let c = a.child[n]
+        while c >= 0:
+            if i >= len(vals):
+                vals = buf_resize(vals, i * 2)
+            let at = ty.node[c]
+            let v = self.ex(t, g, ty, a, c)
+            if i < fixed:
+                v = self.coerce(t, g, v, at, t.arg(sig, i))
+            vals[i] = v
+            i = i + 1
+            c = a.next[c]
+        for j in 0..i:
+            self.f.arg(vals[j])
+        let name = new_txt()
+        for q in a.toks.start[a.tok[callee]]..a.toks.end[a.tok[callee]]:
+            name.put_byte(a.byte_at(q))
+        let id = self.names.intern(&name)
+        if k == int(Sk.Extern):
+            self.note_c(id, sig, variadic)
+            return self.f.ccall(rr, fixed, id, variadic)
+        return self.f.call(rr, -1, id)
+
+    fn note_c(self, id: int, sig: int, variadic: int) => void:
+        for i in 0..self.cd_n:
+            if self.cd_name[i] == id:
+                return
+        if self.cd_n >= len(self.cd_name):
+            let cap = (self.cd_n + 1) * 2
+            self.cd_name = buf_resize(self.cd_name, cap)
+            self.cd_sig = buf_resize(self.cd_sig, cap)
+            self.cd_var = buf_resize(self.cd_var, cap)
+        self.cd_name[self.cd_n] = id
+        self.cd_sig[self.cd_n] = sig
+        self.cd_var[self.cd_n] = variadic
+        self.cd_n = self.cd_n + 1
+
+    /#/ `int(x)`, `float(x)`, `bool(x)`, `u8(x)`: the sized casts.
+    fn cast_call(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => int:
+        let first = a.child[n]
+        let res = ty.node[n]
+        if first < 0 || a.next[first] >= 0 || rep_of(t, g, res) < 0 || rep_of(t, g, ty.node[first]) < 0 || t.kind[res] == int(Ty.Str):
+            self.unsupported(n)
+            return self.f.undef(int(Rp.I64))
+        let x = self.ex(t, g, ty, a, first)
+        return self.coerce(t, g, x, ty.node[first], res)
+
+    fn ex(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => int:
+        let k = a.kind[n]
+        let x = ty.node[n]
+        let r = rep_of(t, g, x)
+        if k == int(Nk.Int) || k == int(Nk.Char):
+            if r < 0 || r == int(Rp.Ptr):
+                self.unsupported(n)
+                return self.f.undef(int(Rp.I64))
+            if k == int(Nk.Char):
+                return self.f.cint(r, char_value(a, a.tok[n]))
+            return self.f.cint(r, lit_digits(a, a.tok[n]))
+        if k == int(Nk.Float):
+            if r != int(Rp.F64) && r != int(Rp.F32):
+                self.unsupported(n)
+                return self.f.undef(int(Rp.F64))
+            let bits = float_bits(a, a.tok[n], r == int(Rp.F32))
+            if bits < 0:
+                self.unsupported(n)
+                return self.f.undef(r)
+            return self.f.cfloat(r, bits)
+        if k == int(Nk.Bool):
+            let v = 0
+            if a.byte_at(a.toks.start[a.tok[n]]) == 't':
+                v = 1
+            return self.f.cint(int(Rp.I8), v)
+        if k == int(Nk.Str):
+            return self.f.strlit(self.string(a, a.tok[n]))
+        if k == int(Nk.Name):
+            let v = self.lookup(a, a.tok[n])
+            if v < 0:
+                self.unsupported(n)
+                return self.f.undef(int(Rp.I64))
+            return self.read_var(v, self.f.cur)
+        if k == int(Nk.Binary):
+            return self.binary(t, g, ty, a, n)
+        if k == int(Nk.Unary):
+            return self.unary(t, g, ty, a, n)
+        if k == int(Nk.Call):
+            return self.call(t, g, ty, a, n)
+        if k == int(Nk.Cast):
+            let v = self.ex(t, g, ty, a, a.pa[n])
+            if rep_of(t, g, ty.node[a.pa[n]]) < 0 || r < 0:
+                self.unsupported(n)
+                return v
+            return self.coerce(t, g, v, ty.node[a.pa[n]], x)
+        self.unsupported(n)
+        return self.f.undef(int(Rp.I64))
+
+    fn lookup(self, a: &Ast, tok: int) => int:
+        let r = self.sc.find_tok(a, tok, 0)
+        if r >= 0 && self.sc.kind[r] == int(Sk.Local):
+            return self.sc.info[r]
+        return -1
+
+    fn unary(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => int:
+        let k = a.pc[n]
+        let o = a.pa[n]
+        let x = ty.node[o]
+        if rep_of(t, g, x) < 0 || t.kind[x] == int(Ty.Ref) || k == int(Tk.Amp) || k == int(Tk.Star):
+            self.unsupported(n)
+            return self.f.undef(int(Rp.I64))
+        let v = self.ex(t, g, ty, a, o)
+        if k == int(Tk.Minus):
+            let res = ty.node[n]
+            v = self.coerce(t, g, v, x, res)
+            if t.kind[res] == int(Ty.Float):
+                return self.f.raw(int(Op.FNeg), self.f.rep[v], -1, v, -1, -1, 0)
+            return self.f.neg(v)
+        if k == int(Tk.Bang):
+            return self.f.bin(int(Op.Xor), v, self.f.cint(int(Rp.I8), 1))
+        if k == int(Tk.Tilde):
+            return self.f.bnot(v)
+        self.unsupported(n)
+        return v
+
+    /#/ ---- statements ----------------------------------------------------------
+
+    fn block(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, b: int) => void:
+        let mark = self.sc.n
+        let c = a.child[b]
+        while c >= 0:
+            self.stmt(t, g, ty, a, c)
+            c = a.next[c]
+        self.sc.truncate(mark)
+
+    fn stmt(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => void:
+        let k = a.kind[n]
+        if k == int(Nk.Let):
+            let vt = ty.node[n]
+            let vr = rep_of(t, g, vt)
+            if vr < 0 || vr == int(Rp.Void):
+                self.unsupported(n)
+                return
+            let val = -1
+            if a.pc[n] >= 0:
+                val = self.coerce(t, g, self.ex(t, g, ty, a, a.pc[n]), ty.node[a.pc[n]], vt)
+            else:
+                val = self.f.undef(vr)
+            let v = self.new_var(a, a.pa[n], vr, vt)
+            self.write_var(v, self.f.cur, val)
+        elif k == int(Nk.Assign):
+            let target = a.pa[n]
+            if a.kind[target] != int(Nk.Name):
+                self.unsupported(n)
+                return
+            let v = self.lookup(a, a.tok[target])
+            if v < 0:
+                self.unsupported(n)
+                return
+            let val = self.coerce(t, g, self.ex(t, g, ty, a, a.pb[n]), ty.node[a.pb[n]], self.v_ty[v])
+            self.write_var(v, self.f.cur, val)
+        elif k == int(Nk.ExprStmt):
+            self.ex(t, g, ty, a, a.pa[n])
+        elif k == int(Nk.Return):
+            if a.pa[n] >= 0 && t.kind[self.ret_ty] != int(Ty.Void):
+                let v = self.coerce(t, g, self.ex(t, g, ty, a, a.pa[n]), ty.node[a.pa[n]], self.ret_ty)
+                self.f.ret(v)
+            else:
+                if a.pa[n] >= 0:
+                    self.ex(t, g, ty, a, a.pa[n])
+                self.f.ret_void()
+            self.dead_block()
+        elif k == int(Nk.If):
+            self.if_stmt(t, g, ty, a, n)
+        elif k == int(Nk.While):
+            self.while_stmt(t, g, ty, a, n)
+        elif k == int(Nk.For):
+            self.for_stmt(t, g, ty, a, n)
+        elif k == int(Nk.Break) || k == int(Nk.Continue):
+            if self.nloops == 0:
+                self.unsupported(n)
+                return
+            if k == int(Nk.Break):
+                self.jump(self.lb[self.nloops - 1])
+            else:
+                self.jump(self.lc[self.nloops - 1])
+            self.dead_block()
+        else:
+            self.unsupported(n)
+
+    fn if_stmt(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => void:
+        let c = self.ex(t, g, ty, a, a.pa[n])
+        let yes = self.new_block()
+        let no = self.new_block()
+        let join = self.new_block()
+        self.branch(c, yes, no)
+        self.seal(yes)
+        self.seal(no)
+        self.f.set_block(yes)
+        self.block(t, g, ty, a, a.pb[n])
+        self.jump(join)
+        self.f.set_block(no)
+        let e = a.pc[n]
+        if e >= 0:
+            if a.kind[e] == int(Nk.If):
+                self.if_stmt(t, g, ty, a, e)
+            else:
+                self.block(t, g, ty, a, e)
+        self.jump(join)
+        self.seal(join)
+        self.f.set_block(join)
+
+    fn push_loop(self, cont: int, brk: int) => void:
+        if self.nloops >= len(self.lc):
+            self.lc = buf_resize(self.lc, (self.nloops + 1) * 2)
+            self.lb = buf_resize(self.lb, (self.nloops + 1) * 2)
+        self.lc[self.nloops] = cont
+        self.lb[self.nloops] = brk
+        self.nloops = self.nloops + 1
+
+    fn while_stmt(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => void:
+        let head = self.new_block()
+        let body = self.new_block()
+        let exit = self.new_block()
+        self.jump(head)
+        self.f.set_block(head)
+        let c = self.ex(t, g, ty, a, a.pa[n])
+        self.branch(c, body, exit)
+        self.seal(body)
+        self.f.set_block(body)
+        self.push_loop(head, exit)
+        self.block(t, g, ty, a, a.pb[n])
+        self.nloops = self.nloops - 1
+        self.jump(head)
+        self.seal(head)
+        self.seal(exit)
+        self.f.set_block(exit)
+
+    /#/ `for i in a..b`: a counter that runs from `a` to `b - 1`; `i` is its value each time.
+    fn for_stmt(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => void:
+        let it = a.pb[n]
+        if a.kind[it] != int(Nk.Range) || a.pa[n] < 0:
+            self.unsupported(n)
+            return
+        let vt = ty.node[n]
+        let vr = rep_of(t, g, vt)
+        if vr < 0 || !rp_is_int(vr):
+            self.unsupported(n)
+            return
+        let lo = self.coerce(t, g, self.ex(t, g, ty, a, a.pa[it]), ty.node[a.pa[it]], vt)
+        let hi = self.coerce(t, g, self.ex(t, g, ty, a, a.pb[it]), ty.node[a.pb[it]], vt)
+        let counter = self.new_var(a, -1, vr, vt)
+        self.write_var(counter, self.f.cur, lo)
+        let head = self.new_block()
+        let body = self.new_block()
+        let latch = self.new_block()
+        let exit = self.new_block()
+        self.jump(head)
+        self.f.set_block(head)
+        let i = self.read_var(counter, head)
+        let lt = int(Pr.SLt)
+        if !is_signed(t, vt):
+            lt = int(Pr.ULt)
+        self.branch(self.f.cmp(lt, i, hi), body, exit)
+        self.seal(body)
+        self.f.set_block(body)
+        let mark = self.sc.n
+        let user = self.new_var(a, a.pa[n], vr, vt)
+        self.write_var(user, body, self.read_var(counter, body))
+        self.push_loop(latch, exit)
+        self.block(t, g, ty, a, a.pc[n])
+        self.nloops = self.nloops - 1
+        self.sc.truncate(mark)
+        self.jump(latch)
+        self.seal(latch)
+        self.f.set_block(latch)
+        let cur = self.read_var(counter, latch)
+        self.write_var(counter, latch, self.f.bin(int(Op.Add), cur, self.f.cint(vr, 1)))
+        self.jump(head)
+        self.seal(head)
+        self.seal(exit)
+        self.f.set_block(exit)
+
+    /#/ ---- functions -----------------------------------------------------------
+
+    /#/ Lowers the function node `fn_node` into `self.f`; `bad` says whether it could not.
+    fn function(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, fn_node: int) => void:
+        self.bad = 0
+        let body = a.pc[fn_node]
+        let sig = ty.rd.fn_sig(t, a, fn_node, -1)
+        let rr = rep_of(t, g, t.c[sig])
+        let name = new_txt()
+        for q in a.toks.start[a.pa[fn_node]]..a.toks.end[a.pa[fn_node]]:
+            name.put_byte(a.byte_at(q))
+        self.f.reset(&name, rr)
+        self.sc.truncate(0)
+        self.dk = new_buf(int, 64)
+        for i in 0..64:
+            self.dk[i] = 0
+        self.dv = new_buf(int, 64)
+        self.dn = 0
+        self.nv = 0
+        self.inc_n = 0
+        self.nloops = 0
+        self.ret_ty = t.c[sig]
+        if rr < 0 || body < 0:
+            self.unsupported(fn_node)
+            return
+        let entry = self.new_block()
+        self.sealed[entry] = 1
+        self.f.set_block(entry)
+        let p = a.child[fn_node]
+        let i = 0
+        while p >= 0:
+            if a.kind[p] == int(Nk.SelfParam) || a.kind[p] == int(Nk.TypeParam):
+                self.unsupported(p)
+                return
+            if a.kind[p] == int(Nk.Param):
+                let pt = t.arg(sig, i)
+                let pr = rep_of(t, g, pt)
+                if pr < 0 || pr == int(Rp.Void):
+                    self.unsupported(p)
+                    return
+                let v = self.new_var(a, a.tok[p], pr, pt)
+                self.write_var(v, entry, self.f.param(entry, pr, -1))
+                i = i + 1
+            p = a.next[p]
+        self.block(t, g, ty, a, body)
+        if !self.f.terminated(self.f.cur):
+            if rr == int(Rp.Void):
+                self.f.ret_void()
+            else:
+                self.f.unreachable()
+        simplify_params(&self.f)
+
+    /#/ `declare` lines for the C functions the module called.
+    fn emit_decls(self, o: &Txt, t: &Tys, g: &Syms) => void:
+        for i in 0..self.cd_n:
+            let sig = self.cd_sig[i]
+            o.put("declare ")
+            let rr = rep_of(t, g, t.c[sig])
+            put_ty(o, &self.rs, rr)
+            o.put(" @")
+            self.names.put(o, self.cd_name[i])
+            o.put("(")
+            let fixed = t.count_of(sig)
+            if self.cd_var[i] == 1:
+                fixed = fixed - 1
+            for k in 0..fixed:
+                if k > 0:
+                    o.put(", ")
+                put_ty(o, &self.rs, rep_of(t, g, t.arg(sig, k)))
+            if self.cd_var[i] == 1:
+                if fixed > 0:
+                    o.put(", ")
+                o.put("...")
+            o.put(")\n")
+
+
+    /#/ The function in `self.f` as LLVM text; a verifier finding is marked in the text.
+    fn emit_current(self, o: &Txt) => void:
+        let d = verify(&self.f)
+        if d.n > 0:
+            o.put("; verifier: ")
+            o.put_int(d.code[0])
+            o.put("\n")
+        emit_fun(o, &self.f, &self.rs, &self.names)
+
+fn put_hex_byte(o: &Txt, c: int) => void:
+    o.put("\\")
+    let h = (c >> 4) & 15
+    let l = c & 15
+    if h < 10:
+        o.put_byte('0' + h)
+    else:
+        o.put_byte('A' + h - 10)
+    if l < 10:
+        o.put_byte('0' + l)
+    else:
+        o.put_byte('A' + l - 10)
+
+fn new_lower() => Lower:
+    return Lower { f: new_fun("", 0), rs: new_reps(), names: new_names(), globals: new_txt(), nstr: 0, cd_name: new_buf(int, 8), cd_sig: new_buf(int, 8), cd_var: new_buf(int, 8), cd_n: 0, sc: new_syms(), v_rep: new_buf(int, 16), v_ty: new_buf(int, 16), nv: 0, dk: new_buf(int, 64), dv: new_buf(int, 64), dn: 0, sealed: new_buf(int, 16), inc_head: new_buf(int, 16), inc_var: new_buf(int, 16), inc_par: new_buf(int, 16), inc_next: new_buf(int, 16), inc_n: 0, pe_head: new_buf(int, 16), pe_next: new_buf(int, 16), lc: new_buf(int, 8), lb: new_buf(int, 8), nloops: 0, ret_ty: 0, bad: 0, bad_node: -1 }

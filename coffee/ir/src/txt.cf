@@ -15,6 +15,10 @@ class Txt:
         for i in 0..len(s):
             self.put_byte(ch(s, i))
 
+    fn put_all(self, w: &Txt) => void:
+        for i in 0..w.n:
+            self.put_byte(w.b[i])
+
     fn put_int(self, v: int) => void:
         if v < 0:
             self.put_byte('-')

@@ -5,7 +5,7 @@
 /#/ with their types in `ty`. The rules are in RULES.md.
 use * in storage
 
-enum Op:
+enum Bop:
     Add
     Sub
     Mul
@@ -30,44 +30,44 @@ enum Op:
 /#/ The operator a binary operator token kind stands for.
 fn op_of(k: int) => int:
     if k == int(Tk.Plus):
-        return int(Op.Add)
+        return int(Bop.Add)
     if k == int(Tk.Minus):
-        return int(Op.Sub)
+        return int(Bop.Sub)
     if k == int(Tk.Star):
-        return int(Op.Mul)
+        return int(Bop.Mul)
     if k == int(Tk.Slash):
-        return int(Op.Div)
+        return int(Bop.Div)
     if k == int(Tk.SlashSlash):
-        return int(Op.IDiv)
+        return int(Bop.IDiv)
     if k == int(Tk.Percent):
-        return int(Op.Rem)
+        return int(Bop.Rem)
     if k == int(Tk.Amp):
-        return int(Op.BitAnd)
+        return int(Bop.BitAnd)
     if k == int(Tk.Pipe):
-        return int(Op.BitOr)
+        return int(Bop.BitOr)
     if k == int(Tk.Caret):
-        return int(Op.BitXor)
+        return int(Bop.BitXor)
     if k == int(Tk.Shl):
-        return int(Op.Shl)
+        return int(Bop.Shl)
     if k == int(Tk.Shr):
-        return int(Op.Shr)
+        return int(Bop.Shr)
     if k == int(Tk.AmpAmp):
-        return int(Op.And)
+        return int(Bop.And)
     if k == int(Tk.PipePipe):
-        return int(Op.Or)
+        return int(Bop.Or)
     if k == int(Tk.EqEq):
-        return int(Op.Eq)
+        return int(Bop.Eq)
     if k == int(Tk.NotEq):
-        return int(Op.Ne)
+        return int(Bop.Ne)
     if k == int(Tk.Lt):
-        return int(Op.Lt)
+        return int(Bop.Lt)
     if k == int(Tk.Le):
-        return int(Op.Le)
+        return int(Bop.Le)
     if k == int(Tk.Gt):
-        return int(Op.Gt)
+        return int(Bop.Gt)
     if k == int(Tk.Ge):
-        return int(Op.Ge)
-    return int(Op.Other)
+        return int(Bop.Ge)
+    return int(Bop.Other)
 
 /#/ The value of integer literal token `tok`. `big` is set when it does not fit an `int`.
 fn lit_digits(a: &Ast, tok: int) => int:
@@ -370,8 +370,8 @@ class Typer:
         let tok = a.pd[n]
         if tok < 0:
             tok = a.tok[n]
-        let compare = op >= int(Op.Eq) && op <= int(Op.Ge)
-        let logic = op == int(Op.And) || op == int(Op.Or)
+        let compare = op >= int(Bop.Eq) && op <= int(Bop.Ge)
+        let logic = op == int(Bop.And) || op == int(Bop.Or)
         let wl = -1
         if !compare && !logic && want >= 0 && t.kind[want] != int(Ty.Bool):
             wl = want
@@ -397,7 +397,7 @@ class Typer:
             return bool_ty
         if compare:
             let ok = false
-            if op == int(Op.Eq) || op == int(Op.Ne):
+            if op == int(Bop.Eq) || op == int(Bop.Ne):
                 ok = self.fits(t, g, lt, rt) || self.fits(t, g, rt, lt)
                 if t.kind[lt] == int(Ty.Void) || t.kind[lt] == int(Ty.Fn):
                     ok = false
@@ -411,21 +411,21 @@ class Typer:
             if !ok:
                 self.err(tok, int(Te.InvalidOperation), lt, rt)
             return bool_ty
-        if op == int(Op.Add):
+        if op == int(Bop.Add):
             let l2 = self.strip_refs(t, lt)
             let r2 = self.strip_refs(t, rt)
             if t.kind[l2] == int(Ty.Str) && t.kind[r2] == int(Ty.Str):
                 return t.simple(int(Ty.Str))
         /#/ pointer arithmetic: an `object` moves by bytes
-        if (op == int(Op.Add) || op == int(Op.Sub)) && t.kind[lt] == int(Ty.Object) && t.is_int(rt):
+        if (op == int(Bop.Add) || op == int(Bop.Sub)) && t.kind[lt] == int(Ty.Object) && t.is_int(rt):
             return lt
-        if op == int(Op.Add) && t.kind[rt] == int(Ty.Object) && t.is_int(lt):
+        if op == int(Bop.Add) && t.kind[rt] == int(Ty.Object) && t.is_int(lt):
             return rt
-        if op == int(Op.BitAnd) || op == int(Op.BitOr) || op == int(Op.BitXor) || op == int(Op.IDiv) || op == int(Op.Shl) || op == int(Op.Shr):
+        if op == int(Bop.BitAnd) || op == int(Bop.BitOr) || op == int(Bop.BitXor) || op == int(Bop.IDiv) || op == int(Bop.Shl) || op == int(Bop.Shr):
             if !t.is_int(lt) || !t.is_int(rt):
                 self.err(tok, int(Te.InvalidOperation), lt, rt)
                 return 0
-            if op == int(Op.Shl) || op == int(Op.Shr):
+            if op == int(Bop.Shl) || op == int(Bop.Shr):
                 return lt
             let j = self.join(t, g, lt, rt)
             if j < 0:
@@ -435,7 +435,7 @@ class Typer:
         if !t.is_numeric(lt) || !t.is_numeric(rt):
             self.err(tok, int(Te.InvalidOperation), lt, rt)
             return 0
-        if op == int(Op.Div) && (t.is_int(lt) || t.is_int(rt)):
+        if op == int(Bop.Div) && (t.is_int(lt) || t.is_int(rt)):
             self.err(tok, int(Te.InvalidOperation), lt, rt)
             return 0
         let j = self.join(t, g, lt, rt)

@@ -897,6 +897,8 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         value: &HirExpr,
     ) -> Result<BasicValueEnum<'ctx>, String> {
         let val = self.compile_hir_expr_typed(value)?;
+        // A last-use resource variable stored into a field now belongs to the field.
+        self.mark_moved_owned_resource_var(value);
         let name = self.hir_place_object_name(object)?;
         self.emit_field_store(&name, field_name, val)
     }

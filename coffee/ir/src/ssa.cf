@@ -1,0 +1,103 @@
+/#/ Block parameters made after the edges to their block exist: appending an argument to an
+/#/ edge, and the clean-up that removes the parameters that turned out to be one value.
+use * in emit
+
+/#/ Appends `v` to the arguments edge `e` passes. The arguments move to the end of the pool.
+fn edge_push(f: &Fun, e: int, v0: int) => void:
+    let v = f.follow(v0)
+    let n = f.eargn[e]
+    let old = f.eargs[e]
+    let start = f.np
+    for k in 0..n:
+        f.pool_put(f.pool[old + k])
+    f.pool_put(v)
+    f.eargs[e] = start
+    f.eargn[e] = n + 1
+    f.uses[v] = f.uses[v] + 1
+
+/#/ Gives the parameter `p` (the `k`-th of block `b`) the value it always has, if there is
+/#/ one: every edge into `b` passes the same value, or `p` itself around a loop.
+fn trivial_param(f: &Fun, b: int, p: int, k: int) => bool:
+    let same = -1
+    for e in 0..f.ne:
+        if f.eto[e] == b && k < f.eargn[e]:
+            let x = f.follow(f.pool[f.eargs[e] + k])
+            if x != p:
+                if same >= 0 && same != x:
+                    return false
+                same = x
+    if same < 0:
+        return false
+    f.fwd[p] = same
+    f.uses[same] = f.uses[same] + f.uses[p]
+    return true
+
+/#/ Removes every parameter that is one value, and the arguments passed to it.
+fn simplify_params(f: &Fun) => void:
+    let changed = true
+    while changed:
+        changed = false
+        for b in 1..f.nb:
+            let p = f.pfirst[b]
+            let k = 0
+            while p >= 0:
+                if f.fwd[p] < 0 && trivial_param(f, b, p, k):
+                    changed = true
+                p = f.nx[p]
+                k = k + 1
+    for b in 1..f.nb:
+        let dead = 0
+        let p = f.pfirst[b]
+        while p >= 0:
+            if f.fwd[p] >= 0:
+                dead = dead + 1
+            p = f.nx[p]
+        if dead > 0:
+            drop_params(f, b)
+
+/#/ Takes the forwarded parameters out of block `b` and their arguments off its edges.
+fn drop_params(f: &Fun, b: int) => void:
+    let n = f.npar[b]
+    let keep: buf<int> = new_buf(int, n + 1)
+    let p = f.pfirst[b]
+    let k = 0
+    while p >= 0:
+        keep[k] = 0
+        if f.fwd[p] < 0:
+            keep[k] = 1
+        p = f.nx[p]
+        k = k + 1
+    for e in 0..f.ne:
+        if f.eto[e] == b:
+            let m = f.eargn[e]
+            let start = f.np
+            let out = 0
+            for j in 0..m:
+                if j < n && keep[j] == 0:
+                    let x = f.pool[f.eargs[e] + j]
+                    f.uses[x] = f.uses[x] - 1
+                else:
+                    f.pool_put(f.pool[f.eargs[e] + j])
+                    out = out + 1
+            f.eargs[e] = start
+            f.eargn[e] = out
+    let first = -1
+    let last = -1
+    let q = f.pfirst[b]
+    let cnt = 0
+    while q >= 0:
+        let nxt = f.nx[q]
+        if f.fwd[q] < 0:
+            f.pv[q] = last
+            f.nx[q] = -1
+            if last >= 0:
+                f.nx[last] = q
+            else:
+                first = q
+            last = q
+            f.aux[q] = cnt
+            cnt = cnt + 1
+        q = nxt
+    f.pfirst[b] = first
+    f.plast[b] = last
+    f.npar[b] = cnt
