@@ -2,6 +2,10 @@
 /#/ an instruction loads its operands into registers, computes and stores the result. No register
 /#/ allocation yet; the point is a correct code generator that stands on its own.
 /#/
+/#/ Scalars may live in the callee-saved registers rbx, r12 to r15 instead of the frame: a linear
+/#/ scan over live ranges (from a dataflow over the blocks) gives the busiest values a register for
+/#/ their whole range; the rest stay in the frame. Nothing is saved around calls, the callee keeps them.
+/#/
 /#/ Frame (rbp-relative): [rbp-8] the pointer a function returning an aggregate was given, then one
 /#/ 8-byte-aligned place per value (the memory layout for an aggregate, 8 bytes for a scalar, whose
 /#/ upper bytes are not meaningful), the `slot` areas, and a scratch area for edge copies.
@@ -87,6 +91,20 @@ class Gen:
     sbase: int
     soff: buf<int>
     nstr: int
+    /#/ the register a value lives in, -1 for the frame; the registers used (saved in the prologue)
+    home: buf<int>
+    did: buf<int>
+    nsaved: int
+    saved: buf<int>
+    /#/ the edges leaving a block
+    ed: buf<int>
+    ned: int
+    ra_lo: buf<int>
+    ra_hi: buf<int>
+    ra_wt: buf<int>
+    ra_use: buf<int>
+    ra_def: buf<int>
+    ra_words: int
 
     fn add_str(self, off: int) => void:
         if self.nstr >= len(self.soff):
@@ -134,6 +152,9 @@ class Gen:
             self.a.lea_rip(reg, 1, self.sbase + self.so(f.aux[x]))
         elif k == int(Op.Slot):
             self.a.lea(reg, 5, 0 - self.voff[x])
+        elif self.home[x] >= 0:
+            if self.home[x] != reg:
+                self.a.mov_rr(reg, self.home[x])
         else:
             self.a.load(reg, 5, 0 - self.voff[x], 8)
 
@@ -150,7 +171,11 @@ class Gen:
 
     /#/ mov [rbp - place of i], reg
     fn st(self, i: int, reg: int) => void:
-        self.a.store(5, 0 - self.voff[i], reg, 8)
+        if self.home[i] >= 0:
+            if self.home[i] != reg:
+                self.a.mov_rr(self.home[i], reg)
+        else:
+            self.a.store(5, 0 - self.voff[i], reg, 8)
 
     /#/ For an aggregate value: the base register and displacement of its bytes.
     fn ab_reg(self, f: &Fun, v: int) => int:
@@ -196,6 +221,262 @@ class Gen:
             self.ld(0, f, x)
             self.a.store(db, dd, 0, 8)
 
+    /#/ ---- registers -----------------------------------------------------------
+
+    fn restore_saved(self) => void:
+        for k in 0..self.nsaved:
+            self.a.load(self.saved[k], 5, 0 - 16 - 8 * k, 8)
+
+    /#/ Can value `v` live in a register? Scalars made by instructions or block parameters.
+    fn wants_reg(self, f: &Fun, v: int) => bool:
+        if f.fwd[v] >= 0:
+            return false
+        let r = f.rep[v]
+        if r == int(Rp.Void) || r >= rp_first_agg():
+            return false
+        let op = f.op[v]
+        return !(op == int(Op.Slot) || op == int(Op.Const) || op == int(Op.StrLit) || op == int(Op.Undef) || op == int(Op.OwnMove))
+
+    /#/ The edges leaving block `b`, in `ed`.
+    fn term_edges(self, f: &Fun, b: int) => void:
+        self.ned = 0
+        let t = f.blast[b]
+        if t < 0:
+            return
+        let op = f.op[t]
+        if op == int(Op.Br):
+            self.add_edge(f.aux[t])
+        elif op == int(Op.CondBr):
+            self.add_edge(f.b[t])
+            self.add_edge(f.c[t])
+        elif op == int(Op.Switch):
+            for k in 0..f.b[t]:
+                self.add_edge(f.pool[f.aux[t] + k * 2 + 1])
+            self.add_edge(f.c[t])
+
+    fn add_edge(self, e: int) => void:
+        if self.ned >= len(self.ed):
+            self.ed = buf_resize(self.ed, (self.ned + 1) * 2)
+        self.ed[self.ned] = e
+        self.ned = self.ned + 1
+
+    /#/ Chooses a register for the values that deserve one: `home` of every value (-1 for the frame).
+    /#/ Live ranges are single intervals of the block order, made from the liveness of every block.
+    fn alloc_regs(self, f: &Fun, rs: &Reps) => void:
+        let n = f.ni
+        if len(self.home) < n + 1:
+            self.home = new_buf(int, n + 1)
+            self.did = new_buf(int, n + 1)
+        for v in 0..n:
+            self.home[v] = -1
+            self.did[v] = -1
+        self.nsaved = 0
+        /#/ dense numbers, positions: uses at even numbers, definitions after them
+        let nd = 0
+        for b in 0..f.nb:
+            let p = f.pfirst[b]
+            while p >= 0:
+                if self.wants_reg(f, p):
+                    self.did[p] = nd
+                    nd = nd + 1
+                p = f.nx[p]
+            let i = f.bfirst[b]
+            while i >= 0:
+                if self.wants_reg(f, i):
+                    self.did[i] = nd
+                    nd = nd + 1
+                i = f.nx[i]
+        if nd == 0:
+            return
+        let words = (nd + 31) // 32
+        if f.nb * words > 4000000:
+            return
+        let dv: buf<int> = new_buf(int, nd + 1)
+        self.ra_lo = new_buf(int, nd + 1)
+        self.ra_hi = new_buf(int, nd + 1)
+        self.ra_wt = new_buf(int, nd + 1)
+        self.ra_words = words
+        self.ra_use = new_buf(int, f.nb * words + 1)
+        self.ra_def = new_buf(int, f.nb * words + 1)
+        let bs: buf<int> = new_buf(int, f.nb + 1)
+        let be: buf<int> = new_buf(int, f.nb + 1)
+        let depth: buf<int> = new_buf(int, f.nb + 1)
+        for d in 0..nd:
+            self.ra_lo[d] = 1000000000
+            self.ra_hi[d] = -1
+        /#/ loop depth: a back edge (to a block not after its source) wraps the blocks between
+        for b in 0..f.nb:
+            self.term_edges(f, b)
+            for k in 0..self.ned:
+                let t = f.eto[self.ed[k]]
+                if t >= 0 && t <= b:
+                    for q in t..b + 1:
+                        depth[q] = depth[q] + 1
+        let pos = 0
+        for b in 0..f.nb:
+            bs[b] = pos + 1
+            let p = f.pfirst[b]
+            let w = 1
+            for q in 0..depth[b]:
+                if w < 4096:
+                    w = w * 8
+            while p >= 0:
+                let d = self.did[p]
+                if d >= 0:
+                    dv[d] = p
+                    self.ra_lo[d] = pos + 1
+                    self.ra_hi[d] = pos + 1
+                    self.ra_wt[d] = self.ra_wt[d] + w
+                p = f.nx[p]
+            pos = pos + 2
+            let i = f.bfirst[b]
+            be[b] = bs[b]
+            while i >= 0:
+                be[b] = pos
+                let d = self.did[i]
+                if d >= 0:
+                    dv[d] = i
+                    self.ra_lo[d] = pos + 1
+                    self.ra_hi[d] = pos + 1
+                    self.ra_wt[d] = self.ra_wt[d] + w
+                i = f.nx[i]
+                pos = pos + 2
+        let live_in: buf<int> = new_buf(int, f.nb * words + 1)
+        let live_out: buf<int> = new_buf(int, f.nb * words + 1)
+        for b in 0..f.nb:
+            let w = 1
+            for q in 0..depth[b]:
+                if w < 4096:
+                    w = w * 8
+            let p = f.pfirst[b]
+            while p >= 0:
+                if self.did[p] >= 0:
+                    let d = self.did[p]
+                    self.ra_def[b * words + (d >> 5)] = self.ra_def[b * words + (d >> 5)] | (1 << (d & 31))
+                p = f.nx[p]
+            let i = f.bfirst[b]
+            let ip = bs[b] + 1
+            while i >= 0:
+                for k in 0..f.nval(i):
+                    self.note_use(f, f.val_at(i, k), b, ip, w)
+                let d = self.did[i]
+                if d >= 0:
+                    self.ra_def[b * words + (d >> 5)] = self.ra_def[b * words + (d >> 5)] | (1 << (d & 31))
+                i = f.nx[i]
+                ip = ip + 2
+            self.term_edges(f, b)
+            for k in 0..self.ned:
+                let e = self.ed[k]
+                for j in 0..f.eargn[e]:
+                    self.note_use(f, f.pool[f.eargs[e] + j], b, be[b], w)
+        /#/ liveness, backwards until nothing changes
+        let changed = true
+        while changed:
+            changed = false
+            let b = f.nb - 1
+            while b >= 0:
+                self.term_edges(f, b)
+                for k in 0..self.ned:
+                    let t = f.eto[self.ed[k]]
+                    if t >= 0:
+                        for x in 0..words:
+                            live_out[b * words + x] = live_out[b * words + x] | live_in[t * words + x]
+                for x in 0..words:
+                    let nv = self.ra_use[b * words + x] | (live_out[b * words + x] & (self.ra_def[b * words + x] ^ 4294967295))
+                    if nv != live_in[b * words + x]:
+                        live_in[b * words + x] = nv
+                        changed = true
+                b = b - 1
+        /#/ ranges cover the blocks a value is live into or out of
+        for b in 0..f.nb:
+            for x in 0..words:
+                let wi = live_in[b * words + x]
+                let wo = live_out[b * words + x]
+                if wi != 0 || wo != 0:
+                    for k in 0..32:
+                        let d = x * 32 + k
+                        if d < nd:
+                            if ((wi >> k) & 1) == 1:
+                                if bs[b] < self.ra_lo[d]:
+                                    self.ra_lo[d] = bs[b]
+                                if bs[b] > self.ra_hi[d]:
+                                    self.ra_hi[d] = bs[b]
+                            if ((wo >> k) & 1) == 1:
+                                if be[b] + 1 > self.ra_hi[d]:
+                                    self.ra_hi[d] = be[b] + 1
+                                if be[b] + 1 < self.ra_lo[d]:
+                                    self.ra_lo[d] = be[b] + 1
+        /#/ linear scan, by start
+        let top = pos + 4
+        let first: buf<int> = new_buf(int, top + 1)
+        let link: buf<int> = new_buf(int, nd + 1)
+        for q in 0..top + 1:
+            first[q] = -1
+        let sd = nd - 1
+        while sd >= 0:
+            link[sd] = first[self.ra_lo[sd]]
+            first[self.ra_lo[sd]] = sd
+            sd = sd - 1
+        let regs: buf<int> = new_buf(int, 5)
+        regs[0] = 3
+        regs[1] = 12
+        regs[2] = 13
+        regs[3] = 14
+        regs[4] = 15
+        let occ: buf<int> = new_buf(int, 5)
+        for r in 0..5:
+            occ[r] = -1
+        let used: buf<int> = new_buf(int, 5)
+        for q in 0..top + 1:
+            let cd = first[q]
+            while cd >= 0:
+                let d = cd
+                let nxt = link[d]
+                for r in 0..5:
+                    if occ[r] >= 0 && self.ra_hi[occ[r]] < self.ra_lo[d]:
+                        occ[r] = -1
+                let fr = -1
+                for r in 0..5:
+                    if occ[r] < 0 && fr < 0:
+                        fr = r
+                if fr >= 0:
+                    occ[fr] = d
+                    self.home[dv[d]] = regs[fr]
+                    used[fr] = 1
+                else:
+                    /#/ the least wanted of the live ones and this one goes to the frame
+                    let worst = -1
+                    for r in 0..5:
+                        if worst < 0 || self.ra_wt[occ[r]] < self.ra_wt[occ[worst]]:
+                            worst = r
+                    if self.ra_wt[occ[worst]] < self.ra_wt[d]:
+                        self.home[dv[occ[worst]]] = -1
+                        self.home[dv[d]] = regs[worst]
+                        occ[worst] = d
+                cd = nxt
+        if len(self.saved) < 5:
+            self.saved = new_buf(int, 8)
+        for r in 0..5:
+            if used[r] == 1:
+                self.saved[self.nsaved] = regs[r]
+                self.nsaved = self.nsaved + 1
+
+    fn note_use(self, f: &Fun, v: int, b: int, p: int, w: int) => void:
+        if v < 0:
+            return
+        let x = self.res(f, v)
+        let d = self.did[x]
+        if d < 0:
+            return
+        self.ra_wt[d] = self.ra_wt[d] + w
+        if p < self.ra_lo[d]:
+            self.ra_lo[d] = p
+        if p > self.ra_hi[d]:
+            self.ra_hi[d] = p
+        let words = self.ra_words
+        if ((self.ra_def[b * words + (d >> 5)] >> (d & 31)) & 1) == 0:
+            self.ra_use[b * words + (d >> 5)] = self.ra_use[b * words + (d >> 5)] | (1 << (d & 31))
+
     /#/ ---- frame -------------------------------------------------------------
 
     fn place_size(self, rs: &Reps, r: int) => int:
@@ -208,13 +489,14 @@ class Gen:
     fn layout(self, f: &Fun, rs: &Reps) => void:
         if len(self.voff) < f.ni + 1:
             self.voff = new_buf(int, f.ni + 1)
-        let cur = 8
+        let cur = 8 + 8 * self.nsaved
         let tmp = 0
         for b in 0..f.nb:
             let p = f.pfirst[b]
             while p >= 0:
-                cur = cur + self.place_size(rs, f.rep[p])
-                self.voff[p] = cur
+                if self.home[p] < 0:
+                    cur = cur + self.place_size(rs, f.rep[p])
+                    self.voff[p] = cur
                 p = f.nx[p]
             let i = f.bfirst[b]
             while i >= 0:
@@ -224,7 +506,7 @@ class Gen:
                     if f.ty[i] < 1:
                         cur = cur + 8
                     self.voff[i] = cur
-                elif f.rep[i] != int(Rp.Void) && op != int(Op.OwnMove):
+                elif f.rep[i] != int(Rp.Void) && op != int(Op.OwnMove) && self.home[i] < 0:
                     cur = cur + self.place_size(rs, f.rep[i])
                     self.voff[i] = cur
                 i = f.nx[i]
@@ -249,14 +531,25 @@ class Gen:
         if n == 0:
             return
         let hazard = false
+        let pj = f.pfirst[to]
         for k in 0..n:
             let x = self.res(f, f.pool[f.eargs[e] + k])
             if f.op[x] == int(Op.Param) && f.blk[x] == to:
                 hazard = true
+            /#/ a parameter already written must not be what a later argument reads
+            if self.home[x] >= 0:
+                let q = f.pfirst[to]
+                for j in 0..k:
+                    if self.home[q] == self.home[x]:
+                        hazard = true
+                    q = f.nx[q]
         if !hazard:
             let p = f.pfirst[to]
             for k in 0..n:
-                self.val_to(f, rs, 5, 0 - self.voff[p], f.pool[f.eargs[e] + k])
+                if self.home[p] >= 0:
+                    self.ld(self.home[p], f, f.pool[f.eargs[e] + k])
+                else:
+                    self.val_to(f, rs, 5, 0 - self.voff[p], f.pool[f.eargs[e] + k])
                 p = f.nx[p]
             return
         let at = 0
@@ -268,7 +561,10 @@ class Gen:
         at = 0
         for k in 0..n:
             let sz = self.place_size(rs, f.rep[p])
-            self.copy_mem(5, 0 - self.voff[p], 5, 0 - self.tmp + at, sz)
+            if self.home[p] >= 0:
+                self.a.load(self.home[p], 5, 0 - self.tmp + at, 8)
+            else:
+                self.copy_mem(5, 0 - self.voff[p], 5, 0 - self.tmp + at, sz)
             at = at + sz
             p = f.nx[p]
 
@@ -742,6 +1038,7 @@ class Gen:
                 else:
                     self.ld(0, f, f.a[i])
                     self.a.movq_x(0, 0, vr == int(Rp.F32))
+            self.restore_saved()
             self.a.leave()
             self.a.ret()
             return
@@ -756,6 +1053,7 @@ class Gen:
     fn gen_fun(self, f: &Fun, rs: &Reps, sy: &Names) => bool:
         self.err = 0
         self.a.begin_fun()
+        self.alloc_regs(f, rs)
         self.layout(f, rs)
         let start = self.a.pos()
         for b in 0..f.nb:
@@ -763,6 +1061,8 @@ class Gen:
         self.a.push(5)
         self.a.mov_rr(5, 4)
         self.a.sub_ri(4, self.frame)
+        for k in 0..self.nsaved:
+            self.a.store(5, 0 - 16 - 8 * k, self.saved[k], 8)
         /#/ the parameters of the entry block
         let ci = 0
         let cx = 0
@@ -816,7 +1116,7 @@ class Gen:
         return ok && self.err == 0
 
 fn new_gen() => Gen:
-    return Gen { a: new_asm(), o: new_obj(), voff: new_buf(int, 64), tmp: 0, frame: 0, err: 0, av: new_buf(int, 16), nav: 0, sbase: 256, soff: new_buf(int, 16), nstr: 0 }
+    return Gen { a: new_asm(), o: new_obj(), voff: new_buf(int, 64), tmp: 0, frame: 0, err: 0, av: new_buf(int, 16), nav: 0, sbase: 256, soff: new_buf(int, 16), nstr: 0, home: new_buf(int, 64), did: new_buf(int, 64), nsaved: 0, saved: new_buf(int, 8), ed: new_buf(int, 16), ned: 0, ra_lo: new_buf(int, 1), ra_hi: new_buf(int, 1), ra_wt: new_buf(int, 1), ra_use: new_buf(int, 1), ra_def: new_buf(int, 1), ra_words: 0 }
 
 fn rsize_scalar(r: int) => int:
     if r == int(Rp.I8):

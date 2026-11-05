@@ -37,10 +37,10 @@ in columns. See `DESIGN.md` for the design and the order of work.
 - `src/drive.cf` — test support: source text through the front end, IR and clang, then run
 - `src/asm.cf`, `src/elf.cf`, `src/gen.cf` — the x86-64 machine-code backend: `Asm` encodes instructions
   (rel32 labels, relocations), `Obj`/`write_elf` write a relocatable ELF `.o` (`.text`, `.rodata`,
-  symbols), `Gen` turns each IR function into code. Plain codegen: every value lives in a frame slot,
+  symbols), `Gen` turns each IR function into code. Scalars live in rbx/r12-r15 when a linear scan over
+  their live ranges (block-level liveness, loop-depth weights) gives them one, else in a frame slot;
   operands go through rax/rcx/rdx/rsi/rdi/r8-r11; SysV calls (ints and pointers in registers, floats in
-  xmm, aggregates by pointer, sret returns, `al` for variadics), switches as compare chains. No register
-  allocation yet. `Lower.backend = 1` selects it; `Lower.object()` returns the file. Linked with
+  xmm, aggregates by pointer, sret returns, `al` for variadics), switches as compare chains. One range per value, no splitting; callee-saved registers only, so calls need no saves. `Lower.backend = 1` selects it; `Lower.object()` returns the file. Linked with
   `clang x.o -lm`. `tests/test_mc.cf` checks encodings and runs programs under AddressSanitizer; the
   whole compiler also builds itself this way (see `coffee/driver`).
 - `src/emit.cf` — LLVM text: phis for block parameters, slots in the entry block, `Syms` for callee names
