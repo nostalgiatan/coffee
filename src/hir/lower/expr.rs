@@ -1,6 +1,7 @@
 use crate::hir::expr::{HirExpr, HirExprKind};
 use crate::parser::expr::Expression;
 use crate::types::Type;
+use crate::types::definition::TypeDef;
 
 use super::HirLower;
 
@@ -275,12 +276,24 @@ where
                     }
                     Err(e) => return Err(e),
                 };
-                let function = function_hir;
-                let args = self.lower_expr_list(args)?;
+                let mut args = self.lower_expr_list(args)?;
+                // A string literal handed to a `&str` parameter is lent, not moved.
+                if let Ok(Type::Function { params, .. }) = (self.infer)(function) {
+                    for (arg, param) in args.iter_mut().zip(params.iter()) {
+                        let wants_ref = matches!(param, Type::Ref { elem, .. } if **elem == Type::String);
+                        if wants_ref && arg.ty == Type::String && matches!(arg.kind, HirExprKind::Literal(_)) {
+                            let literal = std::mem::replace(arg, HirExpr { ty: Type::Unit, kind: HirExprKind::Literal(String::new()) });
+                            *arg = HirExpr {
+                                ty: Type::Ref { elem: Box::new(Type::String), mutable: false },
+                                kind: HirExprKind::Unary { op: "&".to_string(), operand: Box::new(literal) },
+                            };
+                        }
+                    }
+                }
                 Ok(HirExpr {
                     ty,
                     kind: HirExprKind::Call {
-                        function: Box::new(function),
+                        function: Box::new(function_hir),
                         args,
                     },
                 })
@@ -543,7 +556,7 @@ where
                 let index = self.lower_expr(index)?;
                 let ty = match &array.ty {
                     Type::Array { elem, .. } | Type::Slice(elem) => (**elem).clone(),
-                    Type::String => Type::Int { bits: 8, signed: false },
+                    t if t.is_str_viewed() => Type::Int { bits: 8, signed: false },
                     t if t.buf_elem_viewed().is_some() => t.buf_elem_viewed().cloned().unwrap(),
                     Type::Tuple(elems) => match elems.first() {
                         Some(e) => e.clone(),
@@ -581,6 +594,41 @@ where
                         object: Box::new(object),
                         field: field.clone(),
                         args: Vec::new(),
+                    },
+                }))
+            }
+            // `t.push(a, s)` where an argument is a loop-body local the checker snapshot lacks:
+            // type the call from the method's declared return type.
+            Expression::Member { object, field, args } => {
+                let object = self.lower_expr(object)?;
+                let Type::NamedType { name } = &object.ty else {
+                    return Ok(None);
+                };
+                let ret = self.registry.as_ref().and_then(|r| r.read().ok()).and_then(|reg| {
+                    let mut current = Some(name.clone());
+                    while let Some(cname) = current {
+                        match reg.get_type(&cname) {
+                            Some(TypeDef::Class { methods, parent, .. }) => {
+                                if let Some(m) = methods.iter().find(|m| m.name == *field) {
+                                    return Some(m.return_type.clone());
+                                }
+                                current = parent;
+                            }
+                            _ => return None,
+                        }
+                    }
+                    None
+                });
+                let Some(ty) = ret else {
+                    return Ok(None);
+                };
+                let args = self.lower_expr_list(args)?;
+                Ok(Some(HirExpr {
+                    ty,
+                    kind: HirExprKind::Member {
+                        object: Box::new(object),
+                        field: field.clone(),
+                        args,
                     },
                 }))
             }

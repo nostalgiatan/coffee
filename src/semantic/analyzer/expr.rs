@@ -461,7 +461,9 @@ impl SemanticAnalyzer {
                                     (Type::Int { .. }, Type::Int { .. }) => true,
                                     _ => arg_type == *param_type
                                         || (matches!(param_type, Type::Slice(_))
-                                            && param_type.can_coerce_from(&arg_type)),
+                                            && param_type.can_coerce_from(&arg_type))
+                                        || (matches!(param_type, Type::Ref { elem, mutable: false } if **elem == Type::String)
+                                            && matches!(arg.kind(), Expression::Literal(l) if l.starts_with('"'))),
                                 };
                                 if !types_match {
                                     return Err(TypeSystemError::TypeMismatch {

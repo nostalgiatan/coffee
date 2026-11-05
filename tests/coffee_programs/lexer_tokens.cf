@@ -1,0 +1,81 @@
+class Tokens:
+    data: buf<int>
+    count: int
+
+    fn push(self, kind: int, start: int, end: int) => void:
+        let need = (self.count + 1) * 3
+        if need > len(self.data):
+            self.data = buf_resize(self.data, need * 2)
+        self.data[self.count * 3] = kind
+        self.data[self.count * 3 + 1] = start
+        self.data[self.count * 3 + 2] = end
+        self.count = self.count + 1
+
+fn is_digit(c: int) => bool:
+    return c >= 48 && c <= 57
+
+fn is_alpha(c: int) => bool:
+    return (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || c == 95
+
+fn matches_at(src: &str, at: int, word: &str) => bool:
+    let n = len(word)
+    if at + n > len(src):
+        return false
+    for k in 0..n:
+        if src[at + k] != word[k]:
+            return false
+    return true
+
+fn keyword_kind(src: &str, s: int, e: int) => int:
+    let n = e - s
+    if n == 2 && matches_at(src, s, "fn"):
+        return 10
+    if n == 3 && matches_at(src, s, "let"):
+        return 11
+    if n == 6 && matches_at(src, s, "return"):
+        return 12
+    return 2
+
+fn lex(src: &str) => Tokens:
+    let n = len(src)
+    let t = Tokens { data: new_buf(int, 6), count: 0 }
+    let i = 0
+    while i < n:
+        let c = int(src[i])
+        if c == 32 || c == 9 || c == 10:
+            i = i + 1
+        elif c == 35:
+            while i < n && int(src[i]) != 10:
+                i = i + 1
+        elif is_digit(c):
+            let s = i
+            while i < n && is_digit(int(src[i])):
+                i = i + 1
+            t.push(1, s, i)
+        elif is_alpha(c):
+            let s = i
+            while i < n && (is_alpha(int(src[i])) || is_digit(int(src[i]))):
+                i = i + 1
+            t.push(keyword_kind(src, s, i), s, i)
+        elif c == 61 && i + 1 < n && int(src[i + 1]) == 61:
+            t.push(20, i, i + 2)
+            i = i + 2
+        elif c == 34:
+            let s = i
+            i = i + 1
+            while i < n && int(src[i]) != 34:
+                i = i + 1
+            i = i + 1
+            t.push(4, s, i)
+        else:
+            t.push(3, i, i + 1)
+            i = i + 1
+    return t
+
+fn main() => int:
+    let text = "fn add(a, b)\n  # comment\n  return a == b\nlet s = \"hi\" + 12"
+    let t = lex(&text)
+    let sum = 0
+    for k in 0..t.count:
+        sum = sum + t.data[k * 3]
+    return sum

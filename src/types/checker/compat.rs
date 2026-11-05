@@ -28,6 +28,10 @@ impl super::TypeChecker {
                 .map(|f| f.is_finite() && f.abs() <= f32::MAX as f64)
                 .unwrap_or(false),
             Type::Float { bits: 64 } => Self::expr_as_f64(expr).map(|f| f.is_finite()).unwrap_or(false),
+            // A string literal is static text, so it can be lent where a `&str` is wanted.
+            Type::Ref { elem, mutable: false } if **elem == Type::String => {
+                matches!(expr.kind(), crate::parser::expr::Expression::Literal(l) if l.starts_with('"'))
+            }
             // The literal `0` is the null pointer; no other integer becomes an `object`.
             Type::Variadic => Self::expr_as_i128(expr) == Some(0),
             _ => false,

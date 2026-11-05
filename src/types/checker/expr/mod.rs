@@ -332,7 +332,7 @@ impl super::TypeChecker {
                 match array_type {
                     Type::Array { ref elem, .. } => Ok(*elem.clone()),
                     Type::Slice(ref elem) => Ok(*elem.clone()),
-                    Type::String => Ok(Type::Int { bits: 8, signed: false }),
+                    ref t if t.is_str_viewed() => Ok(Type::Int { bits: 8, signed: false }),
                     ref t if t.buf_elem_viewed().is_some() => Ok(t.buf_elem_viewed().cloned().unwrap()),
                     _ => Err(TypeSystemError::ParseError {
                         type_str: format!("array indexing"),

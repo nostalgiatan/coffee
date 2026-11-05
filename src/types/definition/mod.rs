@@ -156,6 +156,15 @@ impl Type {
         }
     }
 
+    /// `str`, or a `&str` / `&mut str` borrow of one: reading bytes and `len` see through it.
+    pub fn is_str_viewed(&self) -> bool {
+        match self {
+            Type::String => true,
+            Type::Ref { elem, .. } => **elem == Type::String,
+            _ => false,
+        }
+    }
+
     pub fn is_buf(&self) -> bool {
         matches!(self, Type::NamedType { name } if name == "buf")
     }

@@ -364,9 +364,9 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             let value = self.compile_hir_expr_typed(collection)?;
             return Ok(self.buf_split(value)?.1.into());
         }
-        if matches!(collection.ty, Type::String) {
+        if collection.ty.is_str_viewed() {
             let i64_type = self.backend.context.i64_type();
-            let ptr = self.compile_hir_expr_typed(collection)?.into_pointer_value();
+            let ptr = self.compile_str_bytes_ptr(collection)?;
             let strlen_fn = self.ensure_fstring_builtin("strlen")?;
             let len = self
                 .backend
@@ -663,8 +663,8 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         if array.ty.buf_elem_viewed().is_some() {
             return self.compile_hir_buf_index(array, index);
         }
-        if matches!(array.ty, Type::String) {
-            let base = self.compile_hir_expr_typed(array)?.into_pointer_value();
+        if array.ty.is_str_viewed() {
+            let base = self.compile_str_bytes_ptr(array)?;
             let idx = self.compile_hir_expr_typed(index)?.into_int_value();
             let i8_type = self.backend.context.i8_type();
             let i64_type = self.backend.context.i64_type();
@@ -737,6 +737,18 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 let index_val = self.compile_hir_expr_typed(index)?;
                 let ptr = self.compile_array_element_ptr_from_value(&array_name, index_val)?;
                 Ok(ptr.into())
+            }
+            // A static string lent to a `&str`: give the borrow a slot holding the pointer.
+            HirExprKind::Literal(_) if operand.ty == Type::String => {
+                let value = self.compile_hir_expr_typed(operand)?;
+                let slot = self
+                    .create_entry_alloca_preserving_terminator(value.get_type(), "str_lit_slot")
+                    .map_err(|e| self.error("compile_expression", e))?;
+                self.backend
+                    .builder
+                    .build_store(slot, value)
+                    .map_err(|e| self.error("compile_expression", e.to_string()))?;
+                Ok(slot.into())
             }
             _ => Err(self.error(
                 "compile_expression",
@@ -2102,6 +2114,21 @@ mod tests {
 
 
 impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
+    /// Address of a string's bytes, whether `expr` is the `str` itself or a `&str` to it.
+    fn compile_str_bytes_ptr(&mut self, expr: &HirExpr) -> Result<inkwell::values::PointerValue<'ctx>, String> {
+        let value = self.compile_hir_expr_typed(expr)?.into_pointer_value();
+        if matches!(expr.ty, Type::Ref { .. }) {
+            let ptr_ty = self.backend.context.ptr_type(inkwell::AddressSpace::default());
+            return Ok(self
+                .backend
+                .builder
+                .build_load(ptr_ty, value, "str_through_ref")
+                .map_err(|e| self.error("compile_expression", e.to_string()))?
+                .into_pointer_value());
+        }
+        Ok(value)
+    }
+
     /// `x = f(x)` with a Coffee `f`: see [`hir_call_consumes_var`]. A C callee only borrows a
     /// `str`, so the old value is still this scope's to drop.
     fn call_consumes_var(&self, value: &HirExpr, name: &str) -> bool {

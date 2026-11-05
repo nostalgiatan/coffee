@@ -418,3 +418,24 @@ fn test_lexer_written_in_coffee() {
     assert_exit_code(src, 13).unwrap();
     assert_balanced(src);
 }
+
+/// Keywords, `==`, strings, comments and a token class that grows its own `buf<int>`:
+/// `&str` parameters, string literals lent to them, and methods that resize a buffer field.
+#[test]
+fn test_token_lexer_written_in_coffee() {
+    let src = include_str!("coffee_programs/lexer_tokens.cf");
+    assert_exit_code(src, 85).unwrap();
+    assert_balanced(src);
+}
+
+#[test]
+fn test_str_borrow_reads_bytes_and_length() {
+    let src = "fn at(s: &str, i: int) => int:\n    return int(s[i]) + len(s)\n\nfn main() => int:\n    let s: str = \"hel\" + \"lo\"\n    let a = at(&s, 1)\n    let b = at(&s, 0)\n    return b - a\n";
+    assert_exit_code(src, 3).unwrap();
+    assert_balanced(src);
+}
+
+#[test]
+fn test_string_literal_can_be_lent_to_a_str_borrow() {
+    assert_exit_code("fn n(s: &str) => int:\n    return len(s)\n\nfn main() => int:\n    return n(\"hello\")\n", 5).unwrap();
+}

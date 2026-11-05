@@ -283,7 +283,8 @@ impl super::TypeChecker {
         if name == "len" && args.len() == 1 && !self.user_defines(name) {
             let arg_type = self.check_expression(&args[0])?;
             return match arg_type {
-                Type::String | Type::Slice(_) | Type::Array { .. } => Ok(Type::int()),
+                Type::Slice(_) | Type::Array { .. } => Ok(Type::int()),
+                ref t if t.is_str_viewed() => Ok(Type::int()),
                 ref t if t.buf_elem_viewed().is_some() => Ok(Type::int()),
                 other => {
                     let error = TypeSystemError::ParseError {
