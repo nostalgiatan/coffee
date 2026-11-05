@@ -80,7 +80,7 @@ impl<'ctx> ArithmeticContext<'ctx> {
             .map_err(|e| format!("failed to build overflow branch: {}", e))?;
 
         builder.position_at_end(overflow_block);
-        super::trap_unreachable(builder)
+        self.trap(builder, "floating-point overflow")
             .map_err(|e| format!("failed to build unreachable on float overflow: {}", e))?;
 
         builder.position_at_end(normal_block);
@@ -181,7 +181,7 @@ impl<'ctx> ArithmeticContext<'ctx> {
                 .map_err(|e| format!("failed to build branch: {}", e))?;
 
             builder.position_at_end(panic_block);
-            super::trap_unreachable(builder)
+            self.trap(builder, "floating-point division by zero")
                 .map_err(|e| format!("failed to build unreachable: {}", e))?;
 
             builder.position_at_end(normal_block);

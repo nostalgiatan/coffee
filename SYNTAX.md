@@ -282,7 +282,7 @@ variable_name
 
 位运算优先级高于比较（同 Rust），所以 `x & 1 == 0` 就是 `(x & 1) == 0`。
 
-**算术是带检查的**：整数溢出、除以零、对零取模会直接崩溃（SIGSEGV），不会回绕；需要回绕时显式写 `wrapping_add(a, b)` / `wrapping_sub` / `wrapping_mul`（两个同类型整数，二补数回绕）。`int` 与 `float` 不能混算，需要显式 `float(x)` / `int(x)`。
+**算术是带检查的**：整数溢出、除以零、对零取模会打印原因（如 `division by zero`、`integer overflow in addition`）并以退出码 1 终止，不会回绕；需要回绕时显式写 `wrapping_add(a, b)` / `wrapping_sub` / `wrapping_mul`（两个同类型整数，二补数回绕）。`int` 与 `float` 不能混算，需要显式 `float(x)` / `int(x)`。
 
 **注意**: `/` 只用于浮点（任一侧为浮点）；两个整数相除必须写 `//`（向零截断，同 C），`//` 不接受浮点。`//` 不是注释，注释是 `/#/`。
 

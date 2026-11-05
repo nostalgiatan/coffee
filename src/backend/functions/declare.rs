@@ -346,6 +346,9 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             &self.cfc_symbols,
             &self.type_mapper,
         );
+        if let (Some(&puts), Some(&exit)) = (self.functions.get("puts"), self.functions.get("exit")) {
+            self.arithmetic_ctx.set_runtime(puts, exit);
+        }
     }
 
     pub(crate) fn declare_used_c_functions(&mut self) -> Result<(), String> {

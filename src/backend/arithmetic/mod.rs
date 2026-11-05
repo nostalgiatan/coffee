@@ -7,24 +7,6 @@
 //! both integer and floating-point operations with appropriate error handling.
 
 
-/// Crash before the `unreachable`: a bare `unreachable` is undefined behaviour and at -O0
-/// simply falls through, so division by zero would silently produce garbage. A volatile
-/// load through null cannot be optimised away and faults deterministically.
-pub(super) fn trap_unreachable<'ctx>(
-    builder: &inkwell::builder::Builder<'ctx>,
-) -> Result<inkwell::values::InstructionValue<'ctx>, inkwell::builder::BuilderError> {
-    use inkwell::values::BasicValue;
-    if let Some(block) = builder.get_insert_block() {
-        let ctx = block.get_context();
-        let null = ctx.ptr_type(inkwell::AddressSpace::default()).const_null();
-        let load = builder.build_load(ctx.i8_type(), null, "trap")?;
-        if let Some(inst) = load.as_instruction_value() {
-            let _ = inst.set_volatile(true);
-        }
-    }
-    builder.build_unreachable()
-}
-
 /// Structure to hold arithmetic operation context
 /// 
 /// The ArithmeticContext manages settings and state for arithmetic operations
@@ -42,7 +24,8 @@ pub struct ArithmeticContext<'ctx> {
     pub check_div_by_zero: bool,
     /// Check for modulo by zero
     pub check_mod_by_zero: bool,
-    _phantom: std::marker::PhantomData<&'ctx ()>,
+    /// `puts` / `exit` for the message printed before a failed check stops the program.
+    runtime: Option<(inkwell::values::FunctionValue<'ctx>, inkwell::values::FunctionValue<'ctx>)>,
 }
 
 impl<'ctx> ArithmeticContext<'ctx> {
@@ -61,8 +44,48 @@ impl<'ctx> ArithmeticContext<'ctx> {
             check_overflow: true,  // Enable overflow checking for security
             check_div_by_zero: true,
             check_mod_by_zero: true,
-            _phantom: std::marker::PhantomData,
+            runtime: None,
         }
+    }
+
+    pub fn set_runtime(
+        &mut self,
+        puts: inkwell::values::FunctionValue<'ctx>,
+        exit: inkwell::values::FunctionValue<'ctx>,
+    ) {
+        self.runtime = Some((puts, exit));
+    }
+
+    /// Stop the program at a failed runtime check: print `reason`, `exit(1)` (the same as an
+    /// out-of-bounds index). Without `puts`/`exit` in the module it falls back to a volatile
+    /// load through null, which faults deterministically (a bare `unreachable` is undefined
+    /// behaviour and at -O0 simply falls through).
+    pub(super) fn trap(
+        &self,
+        builder: &inkwell::builder::Builder<'ctx>,
+        reason: &str,
+    ) -> Result<inkwell::values::InstructionValue<'ctx>, inkwell::builder::BuilderError> {
+        use inkwell::values::BasicValue;
+        if let Some((puts, exit)) = self.runtime {
+            let msg = builder.build_global_string_ptr(reason, "trap_msg")?;
+            builder.build_call(puts, &[msg.as_pointer_value().into()], "trap_puts")?;
+            let code = match exit.get_type().get_param_types().first() {
+                Some(inkwell::types::BasicMetadataTypeEnum::IntType(t)) => t.const_int(1, false),
+                _ => builder
+                    .get_insert_block()
+                    .map(|b| b.get_context().i32_type().const_int(1, false))
+                    .unwrap_or_else(|| exit.get_type().get_context().i32_type().const_int(1, false)),
+            };
+            builder.build_call(exit, &[code.into()], "trap_exit")?;
+        } else if let Some(block) = builder.get_insert_block() {
+            let ctx = block.get_context();
+            let null = ctx.ptr_type(inkwell::AddressSpace::default()).const_null();
+            let load = builder.build_load(ctx.i8_type(), null, "trap")?;
+            if let Some(inst) = load.as_instruction_value() {
+                let _ = inst.set_volatile(true);
+            }
+        }
+        builder.build_unreachable()
     }
 
 

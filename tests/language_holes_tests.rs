@@ -50,7 +50,12 @@ fn test_str_tuple_of_literals_is_balanced() {
 }
 
 fn assert_crashes(source: &str) {
+    assert_crashes_with(source, "");
+}
+
+fn assert_crashes_with(source: &str, message: &str) {
     let r = compile_and_run_coffee(source).unwrap();
+    assert!(r.stdout.contains(message), "expected {:?} in stdout, got {:?}", message, r.stdout);
     assert!(
         r.exit_code != 9 && r.exit_code != 0,
         "expected a crash, got exit {} stdout {:?}",
@@ -61,17 +66,17 @@ fn assert_crashes(source: &str) {
 
 #[test]
 fn test_integer_division_by_zero_traps() {
-    assert_crashes("fn main() => int:\n    let z: int = 0\n    let r: int = 7 // z\n    return 9\n");
+    assert_crashes_with("fn main() => int:\n    let z: int = 0\n    let r: int = 7 // z\n    return 9\n", "division by zero");
 }
 
 #[test]
 fn test_modulo_by_zero_traps() {
-    assert_crashes("fn main() => int:\n    let z: int = 0\n    let r: int = 7 % z\n    return 9\n");
+    assert_crashes_with("fn main() => int:\n    let z: int = 0\n    let r: int = 7 % z\n    return 9\n", "modulo by zero");
 }
 
 #[test]
 fn test_signed_overflow_traps() {
-    assert_crashes("fn main() => int:\n    let a: int = 9223372036854775807\n    let b: int = a + 1\n    return 9\n");
+    assert_crashes_with("fn main() => int:\n    let a: int = 9223372036854775807\n    let b: int = a + 1\n    return 9\n", "integer overflow in addition");
 }
 
 #[test]
