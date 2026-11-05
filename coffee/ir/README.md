@@ -10,13 +10,20 @@ in columns. See `DESIGN.md` for the design and the order of work.
 - `src/verify.cf` — well-formedness: terminators, edge arity/types, op types, dominance
 - `src/ssa.cf` — block parameters added after the edges exist; removing the trivial ones
 - `src/lower.cf` — typed tree to IR, SSA built directly (Braun et al.): scalars, locals, `if`, `while`,
-  `for` over a range, `break`/`continue`/`return`, calls of functions and C functions
+  `for` over a range, `break`/`continue`/`return`, calls of functions and C functions; locals
+  whose address is taken live in a slot; classes (literal, fields, methods, parents), `buf<T>`,
+  arrays and `len`, with bounds checks
+- `src/drive.cf` — test support: source text through the front end, IR and clang, then run
 - `src/emit.cf` — LLVM text: phis for block parameters, slots in the entry block, `Syms` for callee names
 
-Steps 1 (builder, printer, verifier), 2 (emitter) and 3 (lowering of scalars, control flow and
-calls) are done. Lowering reads the typed tree of `coffee/types`, so the tests need its paths:
+Steps 1 to 4 are done (builder, printer, verifier; emitter; lowering of scalars, control flow and
+calls; slots, classes, `buf<T>`, arrays). Lowering reads the typed tree of `coffee/types`, so the
+tests need its paths:
 
     coffee test --test-mode -I ../types/src -I ../sema/src -I ../parser/src -I ../lexer/src -I src
 
-Not lowered yet (a function that uses one is reported as `bad`, not emitted): classes, fields,
-indexing, tuples, `buf`, strings beyond literals, enums, `match`, `raise`, ownership.
+Field offsets and sizes come from the storage table of `coffee/types`; `test_layout.cf` pins them.
+Memory is not freed yet (step 5), so programs leak until ownership is lowered.
+
+Not lowered yet (a function that uses one is reported as `bad`, not emitted): strings beyond
+literals and `len`, enums, `match`, `raise`, generics, `for` over collections, ownership.

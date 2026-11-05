@@ -29,8 +29,8 @@ class Names:
         for k in self.off[id]..self.off[id + 1]:
             o.put_byte(self.b[k])
 
-    /#/ The number of the name spelled by `w`; added when new.
-    fn intern(self, w: &Txt) => int:
+    /#/ The number of the name spelled by `w`; -1 when there is none.
+    fn find(self, w: &Txt) => int:
         for id in 0..self.cnt:
             if self.off[id + 1] - self.off[id] == w.n:
                 let same = true
@@ -39,6 +39,13 @@ class Names:
                         same = false
                 if same:
                     return id
+        return -1
+
+    /#/ The number of the name spelled by `w`; added when new.
+    fn intern(self, w: &Txt) => int:
+        let found = self.find(w)
+        if found >= 0:
+            return found
         if self.cnt + 1 >= len(self.off):
             self.off = buf_resize(self.off, (self.cnt + 2) * 2)
         self.off[self.cnt] = self.n
@@ -54,9 +61,9 @@ class Names:
 fn new_names() => Names:
     return Names { b: new_buf(int, 64), n: 0, off: new_buf(int, 16), cnt: 0 }
 
-/#/ `malloc` and `free`, which `alloc` and `free` use.
+/#/ What the generated code calls on its own: `alloc` and `free`, buffers, bounds failures, `len`.
 fn emit_prelude(o: &Txt) => void:
-    o.put("declare ptr @malloc(i64)\ndeclare void @free(ptr)\n")
+    o.put("declare ptr @malloc(i64)\ndeclare void @free(ptr)\ndeclare ptr @calloc(i64, i64)\ndeclare void @exit(i32)\ndeclare i64 @strlen(ptr)\n")
 
 /#/ An LLVM type.
 fn put_ty(o: &Txt, rs: &Reps, r: int) => void:

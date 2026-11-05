@@ -1,53 +1,5 @@
-use * in lower
-use fopen, fputc, fclose, system, putchar in libc of c
-
-/#/ Compiles `src` through our front end and IR, with clang, and runs it: the exit code,
-/#/ or -1 when something did not compile.
-fn run_src(src: str) => int:
-    let t = new_tys()
-    let g = new_globals()
-    let a = parse(src)
-    let m = declare_module(&g, &a, "t")
-    declare_types(&t, &g, &a, m)
-    let ty = check_types(&t, &g, &a, m)
-    if ty.diags.n > 0 || a.err_count > 0:
-        return -2
-    let lw = new_lower()
-    let o = new_txt()
-    emit_prelude(&o)
-    let body = new_txt()
-    let it = a.child[a.root]
-    while it >= 0:
-        if a.kind[it] == int(Nk.Fn):
-            lw.function(&t, &g, &ty, &a, it)
-            if lw.bad > 0:
-                putchar(63)
-                return -3
-            lw.emit_current(&body)
-        it = a.next[it]
-    o.put_all(&lw.globals)
-    lw.emit_decls(&o, &t, &g)
-    o.put_all(&body)
-    return compile_and_run(&o)
-
-fn compile_and_run(m: &Txt) => int:
-    let fp = fopen("/tmp/ir_lower_test.ll", "w")
-    for k in 0..m.n:
-        fputc(m.b[k], fp)
-    fclose(fp)
-    if system("clang -w -o /tmp/ir_lower_test /tmp/ir_lower_test.ll") != 0:
-        return -1
-    let st = system("/tmp/ir_lower_test")
-    return (st >> 8) & 255
-
-fn expect_exit(src: str, want: int) => int:
-    let r = run_src(src)
-    if r != want:
-        putchar(35)
-        putchar(48 + (r + 10) % 10)
-        putchar(10)
-        return 1
-    return 0
+use * in drive
+use putchar in libc of c
 
 fn main() => int:
     let m = 0

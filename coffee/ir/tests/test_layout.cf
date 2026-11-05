@@ -1,0 +1,41 @@
+use * in drive
+use putchar, printf, fflush in libc of c
+
+/#/ The offsets lowering uses for the fields of the first class of `src`, in order, as
+/#/ `o0 + 100 * o1 + ...` would hide errors: they are returned one at a time.
+fn offset_of(src: str, k: int) => int:
+    let t = new_tys()
+    let g = new_globals()
+    let a = parse(src)
+    let m = declare_module(&g, &a, "t")
+    declare_types(&t, &g, &a, m)
+    let ty = check_types(&t, &g, &a, m)
+    let lw = new_lower()
+    let cls = a.child[a.root]
+    let row = g.find_in_module(&a, a.pa[cls], m)
+    let f = a.child[cls]
+    let i = 0
+    while f >= 0:
+        if a.kind[f] == int(Nk.Field):
+            if i == k:
+                return lw.find_field(&t, &g, &a, t.named(row), a.tok[f])
+            i = i + 1
+        f = a.next[f]
+    return -1
+
+fn main() => int:
+    let m = 0
+    let q = "class Q:\n    a: int(1)+\n    b: int\n    c: int(2)+\n    d: int(4)+\n    e: bool\n"
+    let want: buf<int> = new_buf(int, 5)
+    want[0] = 0
+    want[1] = 8
+    want[2] = 16
+    want[3] = 20
+    want[4] = 24
+    for k in 0..5:
+        let got = offset_of(clone q, k)
+        if got != want[k]:
+            printf("field %d at %d, want %d\n", k, got, want[k])
+            fflush(0)
+            m = m + 1
+    return m

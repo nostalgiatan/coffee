@@ -40,6 +40,8 @@ fn rep_of(t: &Tys, g: &Syms, x: int) => int:
         return int(Rp.Ptr)
     if k == int(Ty.Buf) && t.a[x] < 0:
         return int(Rp.Ptr)
+    if k == int(Ty.Array):
+        return int(Rp.Ptr)
     if k == int(Ty.Named):
         if g.kind[t.a[x]] == int(Sk.Class):
             return int(Rp.Ptr)
@@ -165,6 +167,18 @@ class Lower:
     lc: buf<int>
     lb: buf<int>
     nloops: int
+    /#/ variables that live in a slot: its value, or -1; the names `&` is applied to
+    v_slot: buf<int>
+    addr: Names
+    scanned: int
+    /#/ the type of the field or element the last lookup found
+    fty: int
+    /#/ names of what generated code calls
+    rt_exit: int
+    rt_calloc: int
+    rt_strlen: int
+    rt_malloc: int
+    rt_free: int
     /#/ the return type of the function
     ret_ty: int
     bad: int
@@ -345,9 +359,11 @@ class Lower:
         if self.nv >= len(self.v_rep):
             self.v_rep = buf_resize(self.v_rep, (self.nv + 1) * 2)
             self.v_ty = buf_resize(self.v_ty, (self.nv + 1) * 2)
+            self.v_slot = buf_resize(self.v_slot, (self.nv + 1) * 2)
         let id = self.nv
         self.v_rep[id] = rep
         self.v_ty[id] = ty
+        self.v_slot[id] = -1
         self.nv = id + 1
         if tok >= 0:
             self.sc.add_tok(a, tok, int(Sk.Local), id, 0)
@@ -357,7 +373,7 @@ class Lower:
 
     /#/ `x`, of type `from`, as a value of type `to`.
     fn coerce(self, t: &Tys, g: &Syms, x: int, from: int, to: int) => int:
-        return self.coerce_rep(t, x, from, rep_of(t, g, to), to)
+        return self.coerce_rep(t, x, from, self.rep(t, g, to), to)
 
     fn coerce_rep(self, t: &Tys, x: int, from: int, tr: int, to: int) => int:
         let fr = self.f.rep[x]
@@ -441,7 +457,7 @@ class Lower:
             return self.logic(t, g, ty, a, n, op == int(Bop.And))
         let lt = ty.node[l]
         let rt = ty.node[r]
-        if rep_of(t, g, lt) < 0 || rep_of(t, g, rt) < 0 || t.kind[lt] == int(Ty.Str) || t.kind[rt] == int(Ty.Str):
+        if self.rep(t, g, lt) < 0 || self.rep(t, g, rt) < 0 || t.kind[lt] == int(Ty.Str) || t.kind[rt] == int(Ty.Str):
             self.unsupported(n)
             return self.f.undef(int(Rp.I8))
         let x = self.ex(t, g, ty, a, l)
@@ -449,7 +465,7 @@ class Lower:
         if op >= int(Bop.Eq) && op <= int(Bop.Ge):
             return self.compare(t, g, op, x, y, lt, rt)
         let res = ty.node[n]
-        let rr = rep_of(t, g, res)
+        let rr = self.rep(t, g, res)
         if rr < 0 || t.kind[res] == int(Ty.Object):
             self.unsupported(n)
             return self.f.undef(int(Rp.I64))
@@ -506,7 +522,7 @@ class Lower:
             wide = rt
         let v = self.coerce(t, g, x, lt, wide)
         let w = self.coerce(t, g, y, rt, wide)
-        let wr = rep_of(t, g, wide)
+        let wr = self.rep(t, g, wide)
         if rp_is_float(wr):
             let p = int(Pr.OEq)
             if op == int(Bop.Ne):
@@ -568,6 +584,8 @@ class Lower:
     fn call(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => int:
         let callee = a.pa[n]
         let res = ty.node[n]
+        if callee >= 0 && a.kind[callee] == int(Nk.Member):
+            return self.member_call(t, g, ty, a, n)
         if callee < 0 || a.kind[callee] != int(Nk.Name):
             self.unsupported(n)
             return self.f.undef(int(Rp.I64))
@@ -577,6 +595,10 @@ class Lower:
             return self.f.undef(int(Rp.I64))
         let k = ty.rd.sc.loc.kind[r]
         if k == int(Sk.Builtin):
+            if tok_is(a, a.tok[callee], "len"):
+                return self.len_call(t, g, ty, a, n)
+            if tok_is(a, a.tok[callee], "new_buf"):
+                return self.new_buf_call(t, g, ty, a, n)
             return self.cast_call(t, g, ty, a, n)
         if k != int(Sk.Fn) && k != int(Sk.Extern):
             self.unsupported(n)
@@ -592,7 +614,7 @@ class Lower:
         if variadic == 1:
             fixed = fixed - 1
         let ret = t.c[sig]
-        let rr = rep_of(t, g, ret)
+        let rr = self.rep(t, g, ret)
         if rr < 0:
             self.unsupported(n)
             return self.f.undef(int(Rp.I64))
@@ -621,6 +643,8 @@ class Lower:
         return self.f.call(rr, -1, id)
 
     fn note_c(self, id: int, sig: int, variadic: int) => void:
+        if id == self.rt_exit || id == self.rt_calloc || id == self.rt_strlen || id == self.rt_malloc || id == self.rt_free:
+            return
         for i in 0..self.cd_n:
             if self.cd_name[i] == id:
                 return
@@ -638,7 +662,7 @@ class Lower:
     fn cast_call(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => int:
         let first = a.child[n]
         let res = ty.node[n]
-        if first < 0 || a.next[first] >= 0 || rep_of(t, g, res) < 0 || rep_of(t, g, ty.node[first]) < 0 || t.kind[res] == int(Ty.Str):
+        if first < 0 || a.next[first] >= 0 || self.rep(t, g, res) < 0 || self.rep(t, g, ty.node[first]) < 0 || t.kind[res] == int(Ty.Str):
             self.unsupported(n)
             return self.f.undef(int(Rp.I64))
         let x = self.ex(t, g, ty, a, first)
@@ -647,7 +671,7 @@ class Lower:
     fn ex(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => int:
         let k = a.kind[n]
         let x = ty.node[n]
-        let r = rep_of(t, g, x)
+        let r = self.rep(t, g, x)
         if k == int(Nk.Int) || k == int(Nk.Char):
             if r < 0 || r == int(Rp.Ptr):
                 self.unsupported(n)
@@ -676,7 +700,7 @@ class Lower:
             if v < 0:
                 self.unsupported(n)
                 return self.f.undef(int(Rp.I64))
-            return self.read_var(v, self.f.cur)
+            return self.var_read(v)
         if k == int(Nk.Binary):
             return self.binary(t, g, ty, a, n)
         if k == int(Nk.Unary):
@@ -685,10 +709,21 @@ class Lower:
             return self.call(t, g, ty, a, n)
         if k == int(Nk.Cast):
             let v = self.ex(t, g, ty, a, a.pa[n])
-            if rep_of(t, g, ty.node[a.pa[n]]) < 0 || r < 0:
+            if self.rep(t, g, ty.node[a.pa[n]]) < 0 || r < 0:
                 self.unsupported(n)
                 return v
             return self.coerce(t, g, v, ty.node[a.pa[n]], x)
+        if k == int(Nk.Member):
+            return self.member(t, g, ty, a, n)
+        if k == int(Nk.Index):
+            let p = self.element_addr(t, g, ty, a, n)
+            return self.f.load(self.rep(t, g, self.fty), -1, p)
+        if k == int(Nk.StructLit):
+            return self.struct_lit(t, g, ty, a, n)
+        if k == int(Nk.Tuple):
+            return self.tuple_lit(t, g, ty, a, n)
+        if k == int(Nk.Array):
+            return self.array_lit(t, g, ty, a, n)
         self.unsupported(n)
         return self.f.undef(int(Rp.I64))
 
@@ -702,7 +737,22 @@ class Lower:
         let k = a.pc[n]
         let o = a.pa[n]
         let x = ty.node[o]
-        if rep_of(t, g, x) < 0 || t.kind[x] == int(Ty.Ref) || k == int(Tk.Amp) || k == int(Tk.Star):
+        if k == int(Tk.Amp):
+            return self.borrow(t, g, ty, a, n)
+        if k == int(Tk.Star):
+            if t.kind[x] != int(Ty.Ref):
+                self.unsupported(n)
+                return self.f.undef(int(Rp.I64))
+            let target = t.a[x]
+            let p = self.ex(t, g, ty, a, o)
+            if is_handle(t, g, target):
+                return p
+            let r = self.rep(t, g, target)
+            if r < 0:
+                self.unsupported(n)
+                return p
+            return self.f.load(r, -1, p)
+        if self.rep(t, g, x) < 0 || t.kind[x] == int(Ty.Ref):
             self.unsupported(n)
             return self.f.undef(int(Rp.I64))
         let v = self.ex(t, g, ty, a, o)
@@ -719,6 +769,19 @@ class Lower:
         self.unsupported(n)
         return v
 
+    /#/ `&x` and `&mut x`: the handle itself for a handle type, else the address of the slot.
+    fn borrow(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => int:
+        let o = a.pa[n]
+        let x = ty.node[o]
+        if is_handle(t, g, x):
+            return self.ex(t, g, ty, a, o)
+        if a.kind[o] == int(Nk.Name):
+            let v = self.lookup(a, a.tok[o])
+            if v >= 0 && self.v_slot[v] >= 0:
+                return self.v_slot[v]
+        self.unsupported(n)
+        return self.f.undef(int(Rp.Ptr))
+
     /#/ ---- statements ----------------------------------------------------------
 
     fn block(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, b: int) => void:
@@ -733,7 +796,7 @@ class Lower:
         let k = a.kind[n]
         if k == int(Nk.Let):
             let vt = ty.node[n]
-            let vr = rep_of(t, g, vt)
+            let vr = self.rep(t, g, vt)
             if vr < 0 || vr == int(Rp.Void):
                 self.unsupported(n)
                 return
@@ -742,19 +805,9 @@ class Lower:
                 val = self.coerce(t, g, self.ex(t, g, ty, a, a.pc[n]), ty.node[a.pc[n]], vt)
             else:
                 val = self.f.undef(vr)
-            let v = self.new_var(a, a.pa[n], vr, vt)
-            self.write_var(v, self.f.cur, val)
+            self.bind_var(t, g, a, a.pa[n], vt, val)
         elif k == int(Nk.Assign):
-            let target = a.pa[n]
-            if a.kind[target] != int(Nk.Name):
-                self.unsupported(n)
-                return
-            let v = self.lookup(a, a.tok[target])
-            if v < 0:
-                self.unsupported(n)
-                return
-            let val = self.coerce(t, g, self.ex(t, g, ty, a, a.pb[n]), ty.node[a.pb[n]], self.v_ty[v])
-            self.write_var(v, self.f.cur, val)
+            self.assign(t, g, ty, a, n)
         elif k == int(Nk.ExprStmt):
             self.ex(t, g, ty, a, a.pa[n])
         elif k == int(Nk.Return):
@@ -781,6 +834,33 @@ class Lower:
             else:
                 self.jump(self.lc[self.nloops - 1])
             self.dead_block()
+        else:
+            self.unsupported(n)
+
+    fn assign(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => void:
+        let target = a.pa[n]
+        let tk = a.kind[target]
+        if tk == int(Nk.Name):
+            let v = self.lookup(a, a.tok[target])
+            if v < 0:
+                self.unsupported(n)
+                return
+            let val = self.coerce(t, g, self.ex(t, g, ty, a, a.pb[n]), ty.node[a.pb[n]], self.v_ty[v])
+            self.var_write(v, val)
+        elif tk == int(Nk.Member) || tk == int(Nk.Index) || (tk == int(Nk.Unary) && a.pc[target] == int(Tk.Star)):
+            let tt = ty.node[target]
+            if self.rep(t, g, tt) < 0:
+                self.unsupported(n)
+                return
+            let val = self.coerce(t, g, self.ex(t, g, ty, a, a.pb[n]), ty.node[a.pb[n]], tt)
+            let p = -1
+            if tk == int(Nk.Member):
+                p = self.field_addr(t, g, ty, a, target)
+            elif tk == int(Nk.Index):
+                p = self.element_addr(t, g, ty, a, target)
+            else:
+                p = self.ex(t, g, ty, a, a.pa[target])
+            self.f.store(p, val)
         else:
             self.unsupported(n)
 
@@ -839,7 +919,7 @@ class Lower:
             self.unsupported(n)
             return
         let vt = ty.node[n]
-        let vr = rep_of(t, g, vt)
+        let vr = self.rep(t, g, vt)
         if vr < 0 || !rp_is_int(vr):
             self.unsupported(n)
             return
@@ -861,8 +941,7 @@ class Lower:
         self.seal(body)
         self.f.set_block(body)
         let mark = self.sc.n
-        let user = self.new_var(a, a.pa[n], vr, vt)
-        self.write_var(user, body, self.read_var(counter, body))
+        self.bind_var(t, g, a, a.pa[n], vt, self.read_var(counter, body))
         self.push_loop(latch, exit)
         self.block(t, g, ty, a, a.pc[n])
         self.nloops = self.nloops - 1
@@ -877,15 +956,340 @@ class Lower:
         self.seal(exit)
         self.f.set_block(exit)
 
+    /#/ ---- representations, slots, places ---------------------------------------
+
+    /#/ The representation of type `x`: a scalar, a pointer, or an aggregate (`buf<T>`, a
+    /#/ slice, a tuple); -1 when it has none.
+    fn rep(self, t: &Tys, g: &Syms, x: int) => int:
+        let r = rep_of(t, g, x)
+        if r >= 0:
+            return r
+        let k = t.kind[x]
+        if (k == int(Ty.Buf) && t.a[x] >= 0) || k == int(Ty.Slice):
+            let items: buf<int> = new_buf(int, 2)
+            items[0] = int(Rp.Ptr)
+            items[1] = int(Rp.I64)
+            return self.rs.agg(&items, 2)
+        if k == int(Ty.Tuple):
+            let n = t.count_of(x)
+            let items: buf<int> = new_buf(int, n + 1)
+            for i in 0..n:
+                let e = self.rep(t, g, t.arg(x, i))
+                if e <= 0:
+                    return -1
+                items[i] = e
+            return self.rs.agg(&items, n)
+        return -1
+
+    /#/ Every name `&` is applied to in the module: those variables live in a slot.
+    fn scan_addr(self, a: &Ast) => void:
+        if self.scanned == 1:
+            return
+        self.scanned = 1
+        for i in 0..a.count:
+            if a.kind[i] == int(Nk.Unary) && a.pc[i] == int(Tk.Amp) && a.pa[i] >= 0 && a.kind[a.pa[i]] == int(Nk.Name):
+                let w = new_txt()
+                for q in a.toks.start[a.tok[a.pa[i]]]..a.toks.end[a.tok[a.pa[i]]]:
+                    w.put_byte(a.byte_at(q))
+                self.addr.intern(&w)
+
+    fn is_addr(self, a: &Ast, tok: int) => bool:
+        let w = new_txt()
+        for q in a.toks.start[tok]..a.toks.end[tok]:
+            w.put_byte(a.byte_at(q))
+        return self.addr.find(&w) >= 0
+
+    /#/ A new variable named by `tok` holding `val`: in a slot when `&` is taken of it.
+    fn bind_var(self, t: &Tys, g: &Syms, a: &Ast, tok: int, vt: int, val: int) => int:
+        let vr = self.rep(t, g, vt)
+        let v = self.new_var(a, tok, vr, vt)
+        if tok >= 0 && !is_handle(t, g, vt) && self.is_addr(a, tok):
+            let s = self.f.slot(st_size(t, g, vt))
+            self.v_slot[v] = s
+            self.f.store(s, val)
+        else:
+            self.write_var(v, self.f.cur, val)
+        return v
+
+    fn var_read(self, v: int) => int:
+        if self.v_slot[v] >= 0:
+            return self.f.load(self.v_rep[v], -1, self.v_slot[v])
+        return self.read_var(v, self.f.cur)
+
+    fn var_write(self, v: int, val: int) => void:
+        if self.v_slot[v] >= 0:
+            self.f.store(self.v_slot[v], val)
+        else:
+            self.write_var(v, self.f.cur, val)
+
+    fn strip_refs(self, t: &Tys, x: int) => int:
+        let c = x
+        while t.kind[c] == int(Ty.Ref):
+            c = t.a[c]
+        return c
+
+    /#/ The offset of field `tok` in class type `cls` (ancestors' fields come first); the field's
+    /#/ type is left in `fty`. -1 when there is no such field.
+    fn find_field(self, t: &Tys, g: &Syms, a: &Ast, cls: int, tok: int) => int:
+        let chain: buf<int> = new_buf(int, 8)
+        let n = 0
+        let cur = t.a[cls]
+        while cur >= 0 && n < 8:
+            chain[n] = cur
+            n = n + 1
+            let next = -1
+            for i in 0..g.n:
+                if g.info[i] == cur && g.kind[i] == int(Sk.Parent):
+                    next = g.find_class_row(i)
+            cur = next
+        let s = a.toks.start[tok]
+        let e = a.toks.end[tok]
+        let h = g.span_hash(a, s, e)
+        let off = 0
+        let c = n - 1
+        while c >= 0:
+            for i in 0..g.n:
+                if g.info[i] == chain[c] && g.kind[i] == int(Sk.Field) && g.ty[i] >= 0:
+                    let ft = g.ty[i]
+                    off = align_up(off, st_align(t, g, ft))
+                    if g.same_span(i, a, s, e, h):
+                        self.fty = ft
+                        return off
+                    off = off + st_size(t, g, ft)
+            c = c - 1
+        return -1
+
+    /#/ The address of field `n` (a Member node) of a class value.
+    fn field_addr(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => int:
+        let o = a.pa[n]
+        let ot = self.strip_refs(t, ty.node[o])
+        if t.kind[ot] != int(Ty.Named) || g.kind[t.a[ot]] != int(Sk.Class):
+            self.unsupported(n)
+            return self.f.undef(int(Rp.Ptr))
+        let off = self.find_field(t, g, a, ot, a.tok[n])
+        if off < 0:
+            self.unsupported(n)
+            return self.f.undef(int(Rp.Ptr))
+        return self.f.field(self.ex(t, g, ty, a, o), off)
+
+    /#/ The value of an aggregate (`buf<T>`, slice, tuple) held by `o`, which may be a reference.
+    fn agg_of(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, o: int) => int:
+        let v = self.ex(t, g, ty, a, o)
+        let ot = ty.node[o]
+        if t.kind[ot] == int(Ty.Ref):
+            return self.f.load(self.rep(t, g, t.a[ot]), -1, v)
+        return v
+
+    fn trap(self) => void:
+        self.f.arg(self.f.cint(int(Rp.I32), 1))
+        self.f.ccall(int(Rp.Void), 1, self.rt_exit, 0)
+        self.f.unreachable()
+
+    /#/ The address of element `n` (an Index node), after a bounds check; the element type is
+    /#/ left in `fty`.
+    fn element_addr(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => int:
+        let o = a.pa[n]
+        let ot = self.strip_refs(t, ty.node[o])
+        let k = t.kind[ot]
+        if !((k == int(Ty.Buf) && t.a[ot] >= 0) || k == int(Ty.Slice) || k == int(Ty.Array)):
+            self.unsupported(n)
+            return self.f.undef(int(Rp.Ptr))
+        let it = ty.node[a.pb[n]]
+        if !t.is_int(it):
+            self.unsupported(n)
+            return self.f.undef(int(Rp.Ptr))
+        let data = -1
+        let count = -1
+        if k == int(Ty.Array):
+            data = self.ex(t, g, ty, a, o)
+            count = self.f.cint(int(Rp.I64), t.b[ot])
+        else:
+            let agg = self.agg_of(t, g, ty, a, o)
+            data = self.f.extract(int(Rp.Ptr), agg, 0)
+            count = self.f.extract(int(Rp.I64), agg, 1)
+        let i = self.coerce(t, g, self.ex(t, g, ty, a, a.pb[n]), it, t.int_ty(8, true))
+        let good = self.new_block()
+        let bad = self.new_block()
+        self.branch(self.f.cmp(int(Pr.ULt), i, count), good, bad)
+        self.seal(good)
+        self.seal(bad)
+        self.f.set_block(bad)
+        self.trap()
+        self.f.set_block(good)
+        let elem = t.a[ot]
+        self.fty = elem
+        return self.f.index(data, i, st_size(t, g, elem))
+
+    /#/ `Name { field: value, ... }`: a block of the class's size with every field stored.
+    fn struct_lit(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => int:
+        let x = ty.node[n]
+        if t.kind[x] != int(Ty.Named) || g.kind[t.a[x]] != int(Sk.Class):
+            self.unsupported(n)
+            return self.f.undef(int(Rp.Ptr))
+        let p = self.f.alloc(st_block(t, g, x))
+        let fi = a.child[n]
+        while fi >= 0:
+            let off = self.find_field(t, g, a, x, a.tok[fi])
+            if off < 0:
+                self.unsupported(fi)
+                return p
+            let ft = self.fty
+            let v = self.coerce(t, g, self.ex(t, g, ty, a, a.pa[fi]), ty.node[a.pa[fi]], ft)
+            self.f.store(self.f.field(p, off), v)
+            fi = a.next[fi]
+        return p
+
+    fn tuple_lit(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => int:
+        let x = ty.node[n]
+        let r = self.rep(t, g, x)
+        if r < 0 || t.kind[x] != int(Ty.Tuple):
+            self.unsupported(n)
+            return self.f.undef(int(Rp.I64))
+        let agg = self.f.undef(r)
+        let c = a.child[n]
+        let i = 0
+        while c >= 0:
+            let v = self.coerce(t, g, self.ex(t, g, ty, a, c), ty.node[c], t.arg(x, i))
+            agg = self.f.insert(agg, v, i)
+            i = i + 1
+            c = a.next[c]
+        return agg
+
+    fn array_lit(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => int:
+        let x = ty.node[n]
+        if t.kind[x] != int(Ty.Array) || self.rep(t, g, t.a[x]) < 0:
+            self.unsupported(n)
+            return self.f.undef(int(Rp.Ptr))
+        let size = st_size(t, g, t.a[x])
+        let p = self.f.alloc(size * t.b[x])
+        let c = a.child[n]
+        let i = 0
+        while c >= 0:
+            let v = self.coerce(t, g, self.ex(t, g, ty, a, c), ty.node[c], t.a[x])
+            self.f.store(self.f.index(p, self.f.cint(int(Rp.I64), i), size), v)
+            i = i + 1
+            c = a.next[c]
+        return p
+
+    /#/ `a.b`: a field of a class, or an element of a tuple.
+    fn member(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => int:
+        let o = a.pa[n]
+        let ot = self.strip_refs(t, ty.node[o])
+        let r = self.rep(t, g, ty.node[n])
+        if r < 0:
+            self.unsupported(n)
+            return self.f.undef(int(Rp.I64))
+        if t.kind[ot] == int(Ty.Tuple):
+            let agg = self.agg_of(t, g, ty, a, o)
+            return self.f.extract(r, agg, lit_digits(a, a.tok[n]))
+        return self.f.load(r, -1, self.field_addr(t, g, ty, a, n))
+
+    /#/ `len(x)` of a buffer, slice, array or string.
+    fn len_call(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => int:
+        let o = a.child[n]
+        let ot = self.strip_refs(t, ty.node[o])
+        let k = t.kind[ot]
+        if k == int(Ty.Array):
+            self.ex(t, g, ty, a, o)
+            return self.f.cint(int(Rp.I64), t.b[ot])
+        if (k == int(Ty.Buf) && t.a[ot] >= 0) || k == int(Ty.Slice):
+            return self.f.extract(int(Rp.I64), self.agg_of(t, g, ty, a, o), 1)
+        if k == int(Ty.Str):
+            self.f.arg(self.ex(t, g, ty, a, o))
+            return self.f.ccall(int(Rp.I64), 1, self.rt_strlen, 0)
+        self.unsupported(n)
+        return self.f.cint(int(Rp.I64), 0)
+
+    /#/ `new_buf(T, n)`: `n` zeroed elements.
+    fn new_buf_call(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => int:
+        let x = ty.node[n]
+        let r = self.rep(t, g, x)
+        let c = a.next[a.child[n]]
+        if r < 0 || t.kind[x] != int(Ty.Buf) || t.a[x] < 0 || c < 0 || self.rep(t, g, t.a[x]) < 0:
+            self.unsupported(n)
+            return self.f.undef(int(Rp.I64))
+        let cnt = self.coerce(t, g, self.ex(t, g, ty, a, c), ty.node[c], t.int_ty(8, true))
+        self.f.arg(cnt)
+        self.f.arg(self.f.cint(int(Rp.I64), st_size(t, g, t.a[x])))
+        let p = self.f.ccall(int(Rp.Ptr), 2, self.rt_calloc, 0)
+        let agg = self.f.insert(self.f.undef(r), p, 0)
+        return self.f.insert(agg, cnt, 1)
+
+    /#/ The mangled name of a method or static function `name` of the class `row`.
+    fn method_name(self, g: &Syms, a: &Ast, row: int, tok: int) => int:
+        let w = new_txt()
+        for q in g.off[row]..g.off[row] + g.size[row]:
+            w.put_byte(g.pool[q])
+        w.put_byte('_')
+        for q in a.toks.start[tok]..a.toks.end[tok]:
+            w.put_byte(a.byte_at(q))
+        return self.names.intern(&w)
+
+    /#/ `obj.m(args)` and `Class::f(args)`.
+    fn member_call(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => int:
+        let callee = a.pa[n]
+        let sig = ty.node[callee]
+        let o = a.pa[callee]
+        if sig < 0 || t.kind[sig] != int(Ty.Fn) || o < 0:
+            self.unsupported(n)
+            return self.f.undef(int(Rp.I64))
+        let rr = self.rep(t, g, t.c[sig])
+        if rr < 0:
+            self.unsupported(n)
+            return self.f.undef(int(Rp.I64))
+        let row = -1
+        let first = 0
+        let recv = -1
+        if a.pd[callee] == 1:
+            let sr = ty.lookup(a, a.tok[o])
+            if sr < 0 || ty.rd.sc.loc.kind[sr] != int(Sk.Class):
+                self.unsupported(n)
+                return self.f.undef(int(Rp.I64))
+            row = ty.rd.sc.loc.info[sr]
+        else:
+            let ot = self.strip_refs(t, ty.node[o])
+            if t.kind[ot] != int(Ty.Named) || g.kind[t.a[ot]] != int(Sk.Class):
+                self.unsupported(n)
+                return self.f.undef(int(Rp.I64))
+            row = t.a[ot]
+            recv = self.ex(t, g, ty, a, o)
+            first = 1
+        let vals: buf<int> = new_buf(int, 8)
+        let i = 0
+        if first == 1:
+            vals[0] = recv
+            i = 1
+        let c = a.child[n]
+        while c >= 0:
+            if i >= len(vals):
+                vals = buf_resize(vals, i * 2)
+            let v = self.ex(t, g, ty, a, c)
+            if i < t.count_of(sig):
+                v = self.coerce(t, g, v, ty.node[c], t.arg(sig, i))
+            vals[i] = v
+            i = i + 1
+            c = a.next[c]
+        for j in 0..i:
+            self.f.arg(vals[j])
+        return self.f.call(rr, -1, self.method_name(g, a, row, a.tok[callee]))
+
     /#/ ---- functions -----------------------------------------------------------
 
     /#/ Lowers the function node `fn_node` into `self.f`; `bad` says whether it could not.
-    fn function(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, fn_node: int) => void:
+    fn function(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, fn_node: int, cls: int) => void:
         self.bad = 0
+        self.scan_addr(a)
         let body = a.pc[fn_node]
-        let sig = ty.rd.fn_sig(t, a, fn_node, -1)
-        let rr = rep_of(t, g, t.c[sig])
+        let class_ty = -1
+        if cls >= 0:
+            class_ty = t.named(cls)
+        let sig = ty.rd.fn_sig(t, a, fn_node, class_ty)
+        let rr = self.rep(t, g, t.c[sig])
         let name = new_txt()
+        if cls >= 0:
+            for q in g.off[cls]..g.off[cls] + g.size[cls]:
+                name.put_byte(g.pool[q])
+            name.put_byte('_')
         for q in a.toks.start[a.pa[fn_node]]..a.toks.end[a.pa[fn_node]]:
             name.put_byte(a.byte_at(q))
         self.f.reset(&name, rr)
@@ -908,17 +1312,16 @@ class Lower:
         let p = a.child[fn_node]
         let i = 0
         while p >= 0:
-            if a.kind[p] == int(Nk.SelfParam) || a.kind[p] == int(Nk.TypeParam):
+            if a.kind[p] == int(Nk.TypeParam):
                 self.unsupported(p)
                 return
-            if a.kind[p] == int(Nk.Param):
+            if a.kind[p] == int(Nk.Param) || a.kind[p] == int(Nk.SelfParam):
                 let pt = t.arg(sig, i)
-                let pr = rep_of(t, g, pt)
+                let pr = self.rep(t, g, pt)
                 if pr < 0 || pr == int(Rp.Void):
                     self.unsupported(p)
                     return
-                let v = self.new_var(a, a.tok[p], pr, pt)
-                self.write_var(v, entry, self.f.param(entry, pr, -1))
+                self.bind_var(t, g, a, a.tok[p], pt, self.f.param(entry, pr, -1))
                 i = i + 1
             p = a.next[p]
         self.block(t, g, ty, a, body)
@@ -934,7 +1337,7 @@ class Lower:
         for i in 0..self.cd_n:
             let sig = self.cd_sig[i]
             o.put("declare ")
-            let rr = rep_of(t, g, t.c[sig])
+            let rr = self.rep(t, g, t.c[sig])
             put_ty(o, &self.rs, rr)
             o.put(" @")
             self.names.put(o, self.cd_name[i])
@@ -945,7 +1348,7 @@ class Lower:
             for k in 0..fixed:
                 if k > 0:
                     o.put(", ")
-                put_ty(o, &self.rs, rep_of(t, g, t.arg(sig, k)))
+                put_ty(o, &self.rs, self.rep(t, g, t.arg(sig, k)))
             if self.cd_var[i] == 1:
                 if fixed > 0:
                     o.put(", ")
@@ -976,4 +1379,13 @@ fn put_hex_byte(o: &Txt, c: int) => void:
         o.put_byte('A' + l - 10)
 
 fn new_lower() => Lower:
-    return Lower { f: new_fun("", 0), rs: new_reps(), names: new_names(), globals: new_txt(), nstr: 0, cd_name: new_buf(int, 8), cd_sig: new_buf(int, 8), cd_var: new_buf(int, 8), cd_n: 0, sc: new_syms(), v_rep: new_buf(int, 16), v_ty: new_buf(int, 16), nv: 0, dk: new_buf(int, 64), dv: new_buf(int, 64), dn: 0, sealed: new_buf(int, 16), inc_head: new_buf(int, 16), inc_var: new_buf(int, 16), inc_par: new_buf(int, 16), inc_next: new_buf(int, 16), inc_n: 0, pe_head: new_buf(int, 16), pe_next: new_buf(int, 16), lc: new_buf(int, 8), lb: new_buf(int, 8), nloops: 0, ret_ty: 0, bad: 0, bad_node: -1 }
+    let lw = make_lower()
+    lw.rt_exit = lw.names.add("exit")
+    lw.rt_calloc = lw.names.add("calloc")
+    lw.rt_strlen = lw.names.add("strlen")
+    lw.rt_malloc = lw.names.add("malloc")
+    lw.rt_free = lw.names.add("free")
+    return lw
+
+fn make_lower() => Lower:
+    return Lower { f: new_fun("", 0), rs: new_reps(), names: new_names(), globals: new_txt(), nstr: 0, cd_name: new_buf(int, 8), cd_sig: new_buf(int, 8), cd_var: new_buf(int, 8), cd_n: 0, sc: new_syms(), v_rep: new_buf(int, 16), v_ty: new_buf(int, 16), v_slot: new_buf(int, 16), addr: new_names(), scanned: 0, fty: 0, rt_exit: 0, rt_calloc: 0, rt_strlen: 0, rt_malloc: 0, rt_free: 0, nv: 0, dk: new_buf(int, 64), dv: new_buf(int, 64), dn: 0, sealed: new_buf(int, 16), inc_head: new_buf(int, 16), inc_var: new_buf(int, 16), inc_par: new_buf(int, 16), inc_next: new_buf(int, 16), inc_n: 0, pe_head: new_buf(int, 16), pe_next: new_buf(int, 16), lc: new_buf(int, 8), lb: new_buf(int, 8), nloops: 0, ret_ty: 0, bad: 0, bad_node: -1 }
