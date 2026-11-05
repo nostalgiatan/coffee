@@ -654,7 +654,29 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             let base = self.compile_hir_expr_typed(array)?.into_pointer_value();
             let idx = self.compile_hir_expr_typed(index)?.into_int_value();
             let i8_type = self.backend.context.i8_type();
-            // SAFETY: byte access is unchecked, like C `s[i]`.
+            let i64_type = self.backend.context.i64_type();
+            let idx = self
+                .backend
+                .builder
+                .build_int_s_extend_or_bit_cast(idx, i64_type, "str_idx64")
+                .map_err(|e| self.error("compile_expression", format!("str index: {}", e)))?;
+            let strlen_fn = self.ensure_fstring_builtin("strlen")?;
+            let len = match self
+                .backend
+                .builder
+                .build_call(strlen_fn, &[base.into()], "str_len")
+                .map_err(|e| self.error("compile_expression", format!("strlen: {}", e)))?
+                .try_as_basic_value()
+            {
+                inkwell::values::ValueKind::Basic(BasicValueEnum::IntValue(v)) => self
+                    .backend
+                    .builder
+                    .build_int_z_extend(v, i64_type, "str_len64")
+                    .map_err(|e| self.error("compile_expression", format!("zext: {}", e)))?,
+                _ => return Err(self.error("compile_expression", "strlen did not return an integer")),
+            };
+            self.check_array_bounds(idx, len, "str")?;
+            // SAFETY: `idx` was just checked against the string length.
             let at = unsafe {
                 self.backend
                     .builder

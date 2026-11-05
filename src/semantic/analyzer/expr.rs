@@ -324,6 +324,16 @@ impl SemanticAnalyzer {
                 // A generic function has no symbol of its own until the checker instantiates it.
                 let generic_callee = matches!(function.kind(), Expression::Variable(n)
                     if self.type_registry.read().map(|r| r.is_generic_fn(n)).unwrap_or(false));
+                let wrapping = args.len() == 2
+                    && matches!(function.kind(), Expression::Variable(n)
+                        if crate::types::checker::wrapping_op(n).is_some())
+                    && self.analyze_expression(function).is_err();
+                if wrapping {
+                    for arg in args {
+                        self.analyze_expression(arg)?;
+                    }
+                    return Ok(());
+                }
                 let len_intrinsic = args.len() == 1
                     && matches!(function.kind(), Expression::Variable(n) if n == "len" || n == "sizeof")
                     && self.analyze_expression(function).is_err();
@@ -380,6 +390,8 @@ impl SemanticAnalyzer {
                                     param_type == arg_type
                                 } else {
                                     param_type.can_coerce_from(&arg_type)
+                                        || (matches!(param_type, Type::Variadic)
+                                            && matches!(arg.kind(), Expression::Literal(l) if l == "0"))
                                         || matches!(
                                             (&arg_type, &param_type),
                                             (Type::Int { .. }, Type::Int { .. })

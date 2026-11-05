@@ -90,8 +90,8 @@ use super::*;
         let named = Type::NamedType { name: "Foo".to_string() };
         let r = Type::Ref { elem: Box::new(Type::int()), mutable: false };
 
-        assert!(object.can_coerce_from(&i64));
-        assert!(object.can_coerce_from(&i32));
+        assert!(!object.can_coerce_from(&i64));
+        assert!(!object.can_coerce_from(&i32));
         assert!(object.can_coerce_from(&s));
         assert!(object.can_coerce_from(&named));
         assert!(object.can_coerce_from(&r));
@@ -99,7 +99,7 @@ use super::*;
         assert!(!object.can_coerce_from(&Type::Bool));
         assert!(!Type::Bool.can_coerce_from(&object));
 
-        assert!(i64.can_coerce_from(&object));
+        assert!(!i64.can_coerce_from(&object));
         assert!(!i32.can_coerce_from(&object));
         assert!(s.can_coerce_from(&object));
 

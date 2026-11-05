@@ -28,6 +28,8 @@ impl super::TypeChecker {
                 .map(|f| f.is_finite() && f.abs() <= f32::MAX as f64)
                 .unwrap_or(false),
             Type::Float { bits: 64 } => Self::expr_as_f64(expr).map(|f| f.is_finite()).unwrap_or(false),
+            // The literal `0` is the null pointer; no other integer becomes an `object`.
+            Type::Variadic => Self::expr_as_i128(expr) == Some(0),
             _ => false,
         }
     }
@@ -80,13 +82,12 @@ impl super::TypeChecker {
         // C `object`: in-params use handle-shaped values (not bool). Out-params
         // only to pointer-sized int, string, ref, or object — never int(4)+.
         if matches!(expected, Type::Variadic) {
-            return Ok(found.is_c_handle_value());
+            return Ok(found.is_c_handle_value() && !found.is_int());
         }
         if matches!(found, Type::Variadic) {
             return Ok(
-                expected.is_pointer_sized_int()
-                    || expected.is_buf()
-                    || matches!(expected, Type::String | Type::Ref { .. } | Type::Variadic),
+                expected.is_buf()
+                    || matches!(expected, Type::String | Type::Variadic),
             );
         }
 

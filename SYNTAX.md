@@ -282,7 +282,7 @@ variable_name
 
 位运算优先级高于比较（同 Rust），所以 `x & 1 == 0` 就是 `(x & 1) == 0`。
 
-**算术是带检查的**：整数溢出、除以零、对零取模会直接崩溃（SIGSEGV），不会回绕；目前没有回绕算术。`int` 与 `float` 不能混算，需要显式 `float(x)` / `int(x)`。
+**算术是带检查的**：整数溢出、除以零、对零取模会直接崩溃（SIGSEGV），不会回绕；需要回绕时显式写 `wrapping_add(a, b)` / `wrapping_sub` / `wrapping_mul`（两个同类型整数，二补数回绕）。`int` 与 `float` 不能混算，需要显式 `float(x)` / `int(x)`。
 
 **注意**: `/` 只用于浮点（任一侧为浮点）；两个整数相除必须写 `//`（向零截断，同 C），`//` 不接受浮点。`//` 不是注释，注释是 `/#/`。
 
@@ -319,7 +319,7 @@ object.method(args)
 ```coffee
 array[index]
 array[expression]
-s[i]          /#/ str 的字节访问，类型是 int(1)-，不做边界检查
+s[i]          /#/ str 的字节访问，类型是 int(1)-；越界会终止程序（每次访问做一次 strlen，O(n)）
 ```
 
 ### 内建函数
@@ -483,6 +483,10 @@ match e:
 ---
 
 ## 函数
+
+### 指针与整数
+
+整数不会隐式变成指针，指针也不会隐式变成整数：`let n: int = malloc(8)` 和 `free(n)` 都是类型错误，要写 `malloc(8) as int`、`n as object`。字面量 `0` 是唯一能直接当 `object` 的整数（空指针）。`object` 可以隐式变成 `buf` / `str`（接收 C 返回的所有权指针）。
 
 ### 其他限制（目前）
 

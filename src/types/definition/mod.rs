@@ -291,9 +291,8 @@ impl Type {
             // Explicit casts should be required instead
             // (Type::Float { .. }, Type::Int { .. }) => true,  // REMOVED
             // C `object` parameter: accept ints, strings, named, refs, objects (not bool)
-            (Type::Variadic, from) if from.is_c_handle_value() => true,
-            // C `object` result: assign to pointer-sized int (`let p: int = malloc(...)`)
-            (to, Type::Variadic) if to.is_pointer_sized_int() => true,
+            // Integers never become pointers implicitly (`x as object` is the explicit form).
+            (Type::Variadic, from) if from.is_c_handle_value() && !from.is_int() => true,
             // Annotated owned buffer: `let p: buf = malloc(...)` (object → buf). Not buf → bool.
             (to, Type::Variadic) if to.is_buf() => true,
             // C `char *` / `object`: string ↔ object

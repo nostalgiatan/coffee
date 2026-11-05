@@ -19,6 +19,7 @@ mod import_main;
 mod compat;
 
 pub use values::{TypeBounds, ValueState, ValueInfo};
+pub(crate) use call::wrapping_op;
 use import_main::ImportStack;
 
 /// Checking mode for different levels of analysis

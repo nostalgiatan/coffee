@@ -492,17 +492,39 @@ fn main() => int:
 }
 
 #[test]
-fn test_malloc_pointer_as_int_compiles() {
-    let source = r#"
+fn test_malloc_pointer_as_int_needs_explicit_cast() {
+    let implicit = r#"
 use malloc in libc of c
 
 fn main() => int:
     let ptr: int = malloc(8)
-    rm ptr
     return 0
 
 "#;
-    assert_compiles(source).unwrap();
+    assert_compile_error(implicit, "expected 'int', found 'object'").unwrap();
+    let explicit = r#"
+use malloc in libc of c
+
+fn main() => int:
+    let ptr: int = malloc(8) as int
+    return 0
+
+"#;
+    assert_compiles(explicit).unwrap();
+}
+
+#[test]
+fn test_int_does_not_become_a_pointer_implicitly() {
+    let source = r#"
+use free in libc of c
+
+fn main() => int:
+    let n: int = 4096
+    free(n)
+    return 0
+
+"#;
+    assert_compile_error(source, "expected 'object', found 'int'").unwrap();
 }
 
 #[test]

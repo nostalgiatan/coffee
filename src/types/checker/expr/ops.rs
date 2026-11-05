@@ -34,6 +34,14 @@ impl super::super::TypeChecker {
         if from.is_numeric() && to.is_numeric() {
             return true;
         }
+        // Forging or inspecting a raw pointer is always spelled out: `n as object`, `p as int`.
+        if matches!(
+            (from, to),
+            (Type::Variadic, Type::Int { .. }) | (Type::Int { .. }, Type::Variadic)
+                | (Type::Variadic, Type::Ref { .. })
+        ) {
+            return true;
+        }
         matches!(
             (from, to),
             (Type::Int { .. }, Type::Bool) | (Type::Float { .. }, Type::Bool)

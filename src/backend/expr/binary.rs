@@ -236,6 +236,12 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                         .map_err(|e| self.error("binary_operation", format!("failed to build bitwise or operation: {}", e)))?.into(),
                     "^" => self.backend.builder.build_xor(l, r, "bitwise_xor")
                         .map_err(|e| self.error("binary_operation", format!("failed to build bitwise xor operation: {}", e)))?.into(),
+                    "+%" => self.backend.builder.build_int_add(l, r, "wrapping_add")
+                        .map_err(|e| self.error("binary_operation", e.to_string()))?.into(),
+                    "-%" => self.backend.builder.build_int_sub(l, r, "wrapping_sub")
+                        .map_err(|e| self.error("binary_operation", e.to_string()))?.into(),
+                    "*%" => self.backend.builder.build_int_mul(l, r, "wrapping_mul")
+                        .map_err(|e| self.error("binary_operation", e.to_string()))?.into(),
                     "+" => self.arithmetic_ctx.build_int_add(self.backend.context, &self.backend.builder, l, r, signed)?.into(),
                     "-" => self.arithmetic_ctx.build_int_sub(self.backend.context, &self.backend.builder, l, r, signed)?.into(),
                     "*" => self.arithmetic_ctx.build_int_mul(self.backend.context, &self.backend.builder, l, r, signed)?.into(),

@@ -227,6 +227,22 @@ where
                         return Ok(HirExpr { ty, kind: HirExprKind::Literal(size.to_string()) });
                     }
                 }
+                if let Expression::Variable(f) = function.kind() {
+                    if let (Some(op), 2) = (crate::types::checker::wrapping_op(f), args.len()) {
+                        if self.lower_expr(function).is_err() {
+                            let left = self.lower_expr(&args[0])?;
+                            let right = self.lower_expr(&args[1])?;
+                            return Ok(HirExpr {
+                                ty,
+                                kind: HirExprKind::Binary {
+                                    left: Box::new(left),
+                                    op: op.to_string(),
+                                    right: Box::new(right),
+                                },
+                            });
+                        }
+                    }
+                }
                 let function_hir = match self.lower_expr(function) {
                     Ok(f) => f,
                     Err(_) if args.len() == 1

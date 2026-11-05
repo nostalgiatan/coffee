@@ -456,7 +456,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
     }
 
     /// Check array bounds and panic if out of bounds
-    fn check_array_bounds(
+    pub(crate) fn check_array_bounds(
         &self,
         index: inkwell::values::IntValue<'ctx>,
         length: inkwell::values::IntValue<'ctx>,

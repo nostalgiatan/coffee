@@ -251,3 +251,34 @@ fn test_else_if_is_elif() {
 fn test_void_main_exits_zero() {
     assert_exit_code("fn main() => void:\n    let a = 1\n    return\n", 0).unwrap();
 }
+
+#[test]
+fn test_pointer_int_casts_are_explicit() {
+    let src = "use free in libc of c\nuse malloc in libc of c\n\nfn main() => int:\n    let p = malloc(8)\n    let n: int = p as int\n    let q: object = n as object\n    free(q)\n    return 0\n";
+    assert_exit_code(src, 0).unwrap();
+}
+
+#[test]
+fn test_null_literal_is_the_only_int_that_is_an_object() {
+    let ok = "use free in libc of c\n\nfn main() => int:\n    free(0)\n    return 0\n";
+    assert_exit_code(ok, 0).unwrap();
+    let bad = "use free in libc of c\n\nfn main() => int:\n    free(5)\n    return 0\n";
+    assert_compile_error(bad, "expected 'object', found 'int'").unwrap();
+}
+
+#[test]
+fn test_str_index_out_of_bounds_stops_the_program() {
+    let src = "fn main() => int:\n    let s = \"abc\"\n    let i = 9\n    return int(s[i])\n";
+    assert_exit_code(src, 1).unwrap();
+}
+
+#[test]
+fn test_wrapping_add_does_not_trap() {
+    let src = "fn main() => int:\n    let a: int = 9223372036854775807\n    let b = wrapping_add(a, 1)\n    if b < 0:\n        return 0\n    return 1\n";
+    assert_exit_code(src, 0).unwrap();
+}
+
+#[test]
+fn test_wrapping_op_rejects_mixed_types() {
+    assert_compile_error("fn main() => int:\n    return wrapping_add(1, 2.0)\n", "wrapping_add() takes two integers").unwrap();
+}

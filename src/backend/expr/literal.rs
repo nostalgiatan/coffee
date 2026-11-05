@@ -411,6 +411,12 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                     Ok(result.into())
                 }
                 BasicValueEnum::IntValue(i) => Ok(i.into()),
+                BasicValueEnum::PointerValue(p) => self
+                    .backend
+                    .builder
+                    .build_ptr_to_int(p, self.backend.context.i64_type(), "ptrtoint")
+                    .map(Into::into)
+                    .map_err(|e| self.error("compile_expression", format!("failed to cast pointer to int: {}", e))),
                 _ => Err(self.error("compile_expression", "cannot convert type to int: unsupported type".to_string())),
             },
             "float" => match value {

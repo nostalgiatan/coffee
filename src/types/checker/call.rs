@@ -58,7 +58,7 @@ impl super::TypeChecker {
         for i in 0..typed_count {
             let expected_type = &param_types[i];
             let arg_type = self.check_expression_hint(&args[i], Some(&expected_type))?;
-            if !self.types_compatible(&arg_type, expected_type)? {
+            if !self.types_compatible(&arg_type, expected_type)? && !self.numeric_literal_fits(&args[i], expected_type) {
                 let error = TypeSystemError::type_mismatch(
                     expected_type.clone(),
                     arg_type,
@@ -170,7 +170,7 @@ impl super::TypeChecker {
 
         for (arg, expected) in args.iter().zip(param_types.iter()) {
             let arg_type = self.check_expression(arg)?;
-            if !self.types_compatible(&arg_type, expected)? {
+            if !self.types_compatible(&arg_type, expected)? && !self.numeric_literal_fits(arg, expected) {
                 let error = TypeSystemError::type_mismatch(
                     expected.clone(),
                     arg_type,
@@ -233,6 +233,22 @@ impl super::TypeChecker {
                     Err(error)
                 }
             };
+        }
+
+        if let Some(_) = wrapping_op(name) {
+            if args.len() == 2 && !self.user_defines(name) {
+                let left = self.check_expression(&args[0])?;
+                let right = self.check_expression(&args[1])?;
+                if left.is_int() && left == right {
+                    return Ok(left);
+                }
+                let error = TypeSystemError::ParseError {
+                    type_str: name.to_string(),
+                    reason: format!("{}() takes two integers of the same type, found {} and {}", name, left, right),
+                };
+                self.add_error(error.clone());
+                return Err(error);
+            }
         }
 
         if name == "sizeof" && args.len() == 1 && !self.user_defines(name) {
@@ -344,7 +360,7 @@ impl super::TypeChecker {
 
                     for (i, (arg, expected_type)) in args.iter().zip(payload_types.iter()).enumerate() {
                         let arg_type = self.check_expression(arg)?;
-                        if !self.types_compatible(&arg_type, expected_type)? {
+                        if !self.types_compatible(&arg_type, expected_type)? && !self.numeric_literal_fits(&args[i], expected_type) {
                             let arg_location = Span::new(location.start + i * 10, location.start + (i + 1) * 10);
                             let error = TypeSystemError::type_mismatch(expected_type.clone(), arg_type, arg_location);
                             self.add_error(error.clone());
@@ -583,6 +599,18 @@ fn expr_place(expr: &crate::parser::expr::Expression) -> Option<crate::types::bo
             Some(expr_place(object.as_ref())?.field(field.clone()))
         }
         Expression::Index { array, .. } => Some(expr_place(array.as_ref())?.index()),
+        _ => None,
+    }
+}
+
+
+/// `wrapping_add` / `wrapping_sub` / `wrapping_mul`: the explicit two's-complement forms of
+/// `+ - *`, which otherwise trap on overflow. Returns the HIR operator spelling.
+pub(crate) fn wrapping_op(name: &str) -> Option<&'static str> {
+    match name {
+        "wrapping_add" => Some("+%"),
+        "wrapping_sub" => Some("-%"),
+        "wrapping_mul" => Some("*%"),
         _ => None,
     }
 }
