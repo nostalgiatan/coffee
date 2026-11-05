@@ -63,7 +63,7 @@ fn new_names() => Names:
 
 /#/ What the generated code calls on its own: `alloc` and `free`, buffers, bounds failures, `len`.
 fn emit_prelude(o: &Txt) => void:
-    o.put("declare ptr @malloc(i64)\ndeclare void @free(ptr)\ndeclare ptr @calloc(i64, i64)\ndeclare void @exit(i32)\ndeclare i64 @strlen(ptr)\n")
+    o.put("declare ptr @malloc(i64)\ndeclare void @free(ptr)\ndeclare ptr @calloc(i64, i64)\ndeclare void @exit(i32)\ndeclare i64 @strlen(ptr)\ndeclare ptr @strdup(ptr)\ndeclare ptr @memcpy(ptr, ptr, i64)\ndeclare i32 @strcmp(ptr, ptr)\n")
 
 /#/ An LLVM type.
 fn put_ty(o: &Txt, rs: &Reps, r: int) => void:
@@ -214,8 +214,22 @@ fn emit_inst(o: &Txt, f: &Fun, rs: &Reps, sy: &Names, i: int) => void:
         put_opnd(o, f, f.a[i])
         o.put(")\n")
         return
-    if op == int(Op.Drop) || op == int(Op.Clone):
-        o.put("; ownership glue not expanded yet\n")
+    if op == int(Op.Drop):
+        o.put("call void @")
+        sy.put(o, f.aux[i])
+        o.put("(")
+        put_typed(o, f, rs, f.a[i])
+        o.put(")\n")
+        return
+    if op == int(Op.Clone):
+        put_name(o, f, i)
+        o.put(" = call ")
+        put_ty(o, rs, r)
+        o.put(" @")
+        sy.put(o, f.aux[i])
+        o.put("(")
+        put_typed(o, f, rs, f.a[i])
+        o.put(")\n")
         return
     if op == int(Op.Br):
         o.put("br ")

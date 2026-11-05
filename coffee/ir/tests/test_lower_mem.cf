@@ -16,8 +16,8 @@ fn main() => int:
     /#/ arrays
     m = m + expect_exit("fn main() => int:\n    let a = [4, 5, 6]\n    let s = 0\n    for i in 0..len(a):\n        s = s + a[i]\n    a[1] = 10\n    return s + a[1]\n", 25)
     /#/ an index out of range stops the program with exit code 1
-    m = m + expect_exit("fn main() => int:\n    let b: buf<int> = new_buf(int, 3)\n    let i = 3\n    return b[i] + 7\n", 1)
-    m = m + expect_exit("fn main() => int:\n    let a = [1, 2]\n    let i = 0 - 1\n    return a[i]\n", 1)
+    m = m + expect_exit_early("fn main() => int:\n    let b: buf<int> = new_buf(int, 3)\n    let i = 3\n    return b[i] + 7\n", 1)
+    m = m + expect_exit_early("fn main() => int:\n    let a = [1, 2]\n    let i = 0 - 1\n    return a[i]\n", 1)
     /#/ the length of a string
     m = m + expect_exit("fn main() => int:\n    return len(\"hello\")\n", 5)
     /#/ a child class: the parent's fields come first

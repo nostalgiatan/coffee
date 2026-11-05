@@ -1,0 +1,30 @@
+use * in drive
+use putchar in libc of c
+
+fn main() => int:
+    let m = 0
+    /#/ a class with a string field: scope end releases both
+    m = m + expect_exit("class P:\n    name: str\n    n: int\n\nfn main() => int:\n    let p = P { name: \"bob\", n: 3 }\n    return p.n + len(&p.name)\n", 6)
+    /#/ a move into another variable, and out of a function
+    m = m + expect_exit("class P:\n    n: int\n\nfn make(k: int) => P:\n    let p = P { n: k }\n    return p\n\nfn main() => int:\n    let a = make(5)\n    let b = a\n    return b.n\n", 5)
+    /#/ passed by value: the callee releases it
+    m = m + expect_exit("class P:\n    n: int\n\nfn eat(p: P) => int:\n    return p.n * 2\n\nfn main() => int:\n    let a = P { n: 4 }\n    return eat(a)\n", 8)
+    /#/ moved on one path only: released on the other
+    m = m + expect_exit("class P:\n    n: int\n\nfn eat(p: P) => int:\n    return p.n\n\nfn run(c: bool) => int:\n    let a = P { n: 6 }\n    if c:\n        return eat(a)\n    return 1\n\nfn main() => int:\n    return run(true) + run(false)\n", 7)
+    m = m + expect_exit("class P:\n    n: int\n\nfn eat(p: P) => int:\n    return p.n\n\nfn main() => int:\n    let a = P { n: 6 }\n    let r = 0\n    if r == 0:\n        r = eat(a)\n    return r\n", 6)
+    /#/ reassignment releases the old value
+    m = m + expect_exit("class P:\n    n: int\n\nfn main() => int:\n    let a = P { n: 1 }\n    a = P { n: 2 }\n    a = P { n: a.n + 40 }\n    return a.n\n", 42)
+    /#/ objects made in a loop, with break and continue
+    m = m + expect_exit("class P:\n    n: int\n\nfn main() => int:\n    let s = 0\n    for i in 0..10:\n        let p = P { n: i }\n        if i == 2:\n            continue\n        if i == 6:\n            break\n        s = s + p.n\n    return s\n", 13)
+    /#/ rm releases early
+    m = m + expect_exit("class P:\n    n: int\n\nfn main() => int:\n    let a = P { n: 9 }\n    let k = a.n\n    rm a\n    return k\n", 9)
+    /#/ clone is deep
+    m = m + expect_exit("class P:\n    name: str\n\nfn main() => int:\n    let a = P { name: \"abc\" }\n    let b = clone a\n    return len(&a.name) + len(&b.name)\n", 6)
+    m = m + expect_exit("class P:\n    name: str\n\nfn main() => int:\n    let a = P { name: \"abc\" }\n    clone a b\n    mv a c\n    return len(&b.name) + len(&c.name)\n", 6)
+    /#/ strings: concatenation, comparison, replacing a field
+    m = m + expect_exit("class P:\n    name: str\n\n    fn rename(self, s: str) => void:\n        self.name = s\n\nfn main() => int:\n    let p = P { name: \"ab\" }\n    p.rename(\"x\" + \"yz\")\n    if p.name == \"xyz\":\n        return len(&p.name)\n    return 0\n", 3)
+    /#/ arrays are copied
+    m = m + expect_exit("fn main() => int:\n    let a = [1, 2, 3]\n    let b = a\n    b[0] = 9\n    return a[0] * 10 + b[0]\n", 19)
+    /#/ a buffer in a class, released with it
+    m = m + expect_exit("class B:\n    data: buf<int>\n\nfn main() => int:\n    let x = B { data: new_buf(int, 4) }\n    x.data[2] = 7\n    return x.data[2]\n", 7)
+    return m

@@ -134,6 +134,22 @@ fn float_bits(a: &Ast, tok: int, single: bool) => int:
     let frac = int((v - 1.0) * 4503599627370496.0)
     return ((ex + 1023) << 52) | frac
 
+/#/ Does a value of type `x` own something that has to be released?
+fn needs_drop(t: &Tys, g: &Syms, x: int) => bool:
+    let k = t.kind[x]
+    if k == int(Ty.Str) || k == int(Ty.Array):
+        return true
+    if k == int(Ty.Buf):
+        return t.a[x] >= 0
+    if k == int(Ty.Named):
+        return g.kind[t.a[x]] == int(Sk.Class)
+    return false
+
+/#/ Is a value of type `x` moved, not copied, when it is used as a value? (Arrays are
+/#/ copied: a copy is a new block.)
+fn is_moved(t: &Tys, g: &Syms, x: int) => bool:
+    return needs_drop(t, g, x) && t.kind[x] != int(Ty.Array)
+
 class Lower:
     f: Fun
     rs: Reps
@@ -169,6 +185,27 @@ class Lower:
     nloops: int
     /#/ variables that live in a slot: its value, or -1; the names `&` is applied to
     v_slot: buf<int>
+    /#/ the variable holding 1 while a variable still owns its value, or -1
+    v_flag: buf<int>
+    /#/ owned temporaries that were only borrowed: released at the end of the statement
+    tmp_v: buf<int>
+    tmp_ty: buf<int>
+    tmp_n: int
+    no_own: int
+    /#/ the owning variables in scope, innermost last
+    own_st: buf<int>
+    own_n: int
+    /#/ the scope depth each loop was entered at
+    ld: buf<int>
+    /#/ drop and clone functions still to be generated: type, kind (0 drop, 1 clone)
+    glue_ty: buf<int>
+    glue_kind: buf<int>
+    glue_n: int
+    glue_done: int
+    /#/ the fields of a class in layout order: type and offset
+    lay_ty: buf<int>
+    lay_off: buf<int>
+    lay_n: int
     addr: Names
     scanned: int
     /#/ the type of the field or element the last lookup found
@@ -179,6 +216,9 @@ class Lower:
     rt_strlen: int
     rt_malloc: int
     rt_free: int
+    rt_strdup: int
+    rt_memcpy: int
+    rt_strcmp: int
     /#/ the return type of the function
     ret_ty: int
     bad: int
@@ -360,10 +400,12 @@ class Lower:
             self.v_rep = buf_resize(self.v_rep, (self.nv + 1) * 2)
             self.v_ty = buf_resize(self.v_ty, (self.nv + 1) * 2)
             self.v_slot = buf_resize(self.v_slot, (self.nv + 1) * 2)
+            self.v_flag = buf_resize(self.v_flag, (self.nv + 1) * 2)
         let id = self.nv
         self.v_rep[id] = rep
         self.v_ty[id] = ty
         self.v_slot[id] = -1
+        self.v_flag[id] = -1
         self.nv = id + 1
         if tok >= 0:
             self.sc.add_tok(a, tok, int(Sk.Local), id, 0)
@@ -457,6 +499,8 @@ class Lower:
             return self.logic(t, g, ty, a, n, op == int(Bop.And))
         let lt = ty.node[l]
         let rt = ty.node[r]
+        if t.kind[self.strip_refs(t, lt)] == int(Ty.Str) && t.kind[self.strip_refs(t, rt)] == int(Ty.Str):
+            return self.str_op(t, g, ty, a, n, op)
         if self.rep(t, g, lt) < 0 || self.rep(t, g, rt) < 0 || t.kind[lt] == int(Ty.Str) || t.kind[rt] == int(Ty.Str):
             self.unsupported(n)
             return self.f.undef(int(Rp.I8))
@@ -512,6 +556,38 @@ class Lower:
         return self.f.bin(int(Op.Xor), v, w)
 
     /#/ A comparison of two values of types `lt` and `rt`, as a `bool`.
+    /#/ `a + b` of strings makes a new string; `==` and `!=` compare the text.
+    fn str_op(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int, op: int) => int:
+        let x = self.exb(t, g, ty, a, a.pa[n])
+        let y = self.exb(t, g, ty, a, a.pb[n])
+        if op == int(Bop.Eq) || op == int(Bop.Ne):
+            self.f.arg(x)
+            self.f.arg(y)
+            let c = self.f.ccall(int(Rp.I32), 2, self.rt_strcmp, 0)
+            let p = int(Pr.Eq)
+            if op == int(Bop.Ne):
+                p = int(Pr.Ne)
+            return self.f.cmp(p, c, self.f.cint(int(Rp.I32), 0))
+        if op != int(Bop.Add):
+            self.unsupported(n)
+            return self.f.undef(int(Rp.Ptr))
+        self.f.arg(x)
+        let lx = self.f.ccall(int(Rp.I64), 1, self.rt_strlen, 0)
+        self.f.arg(y)
+        let ly = self.f.ccall(int(Rp.I64), 1, self.rt_strlen, 0)
+        let total = self.f.bin(int(Op.Add), self.f.bin(int(Op.Add), lx, ly), self.f.cint(int(Rp.I64), 1))
+        self.f.arg(total)
+        let p = self.f.ccall(int(Rp.Ptr), 1, self.rt_malloc, 0)
+        self.f.arg(p)
+        self.f.arg(x)
+        self.f.arg(lx)
+        self.f.ccall(int(Rp.Ptr), 3, self.rt_memcpy, 0)
+        self.f.arg(self.f.index(p, lx, 1))
+        self.f.arg(y)
+        self.f.arg(self.f.bin(int(Op.Add), ly, self.f.cint(int(Rp.I64), 1)))
+        self.f.ccall(int(Rp.Ptr), 3, self.rt_memcpy, 0)
+        return p
+
     fn compare(self, t: &Tys, g: &Syms, op: int, x: int, y: int, lt: int, rt: int) => int:
         let fx = self.f.rep[x]
         let fy = self.f.rep[y]
@@ -625,9 +701,15 @@ class Lower:
             if i >= len(vals):
                 vals = buf_resize(vals, i * 2)
             let at = ty.node[c]
-            let v = self.ex(t, g, ty, a, c)
+            let v = -1
+            if k == int(Sk.Extern):
+                v = self.exb(t, g, ty, a, c)
+            else:
+                v = self.ex(t, g, ty, a, c)
             if i < fixed:
                 v = self.coerce(t, g, v, at, t.arg(sig, i))
+                if t.kind[t.arg(sig, i)] != int(Ty.Ref) && k != int(Sk.Extern):
+                    v = self.consume(t, g, a, c, v, at)
             vals[i] = v
             i = i + 1
             c = a.next[c]
@@ -643,7 +725,7 @@ class Lower:
         return self.f.call(rr, -1, id)
 
     fn note_c(self, id: int, sig: int, variadic: int) => void:
-        if id == self.rt_exit || id == self.rt_calloc || id == self.rt_strlen || id == self.rt_malloc || id == self.rt_free:
+        if id == self.rt_exit || id == self.rt_calloc || id == self.rt_strlen || id == self.rt_malloc || id == self.rt_free || id == self.rt_strdup || id == self.rt_memcpy || id == self.rt_strcmp:
             return
         for i in 0..self.cd_n:
             if self.cd_name[i] == id:
@@ -694,7 +776,11 @@ class Lower:
                 v = 1
             return self.f.cint(int(Rp.I8), v)
         if k == int(Nk.Str):
-            return self.f.strlit(self.string(a, a.tok[n]))
+            let lit = self.f.strlit(self.string(a, a.tok[n]))
+            if t.kind[x] == int(Ty.Str):
+                self.f.arg(lit)
+                return self.f.ccall(int(Rp.Ptr), 1, self.rt_strdup, 0)
+            return lit
         if k == int(Nk.Name):
             let v = self.lookup(a, a.tok[n])
             if v < 0:
@@ -739,6 +825,17 @@ class Lower:
         let x = ty.node[o]
         if k == int(Tk.Amp):
             return self.borrow(t, g, ty, a, n)
+        if k == int(Tk.KwClone) || k == int(Tk.KwMv):
+            let res = ty.node[n]
+            if self.rep(t, g, res) < 0:
+                self.unsupported(n)
+                return self.f.undef(int(Rp.I64))
+            let v = self.ex(t, g, ty, a, o)
+            if k == int(Tk.KwClone):
+                if needs_drop(t, g, res):
+                    return self.clone_value(t, g, v, res)
+                return v
+            return self.consume(t, g, a, o, v, res)
         if k == int(Tk.Star):
             if t.kind[x] != int(Ty.Ref):
                 self.unsupported(n)
@@ -774,7 +871,7 @@ class Lower:
         let o = a.pa[n]
         let x = ty.node[o]
         if is_handle(t, g, x):
-            return self.ex(t, g, ty, a, o)
+            return self.exb(t, g, ty, a, o)
         if a.kind[o] == int(Nk.Name):
             let v = self.lookup(a, a.tok[o])
             if v >= 0 && self.v_slot[v] >= 0:
@@ -786,13 +883,21 @@ class Lower:
 
     fn block(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, b: int) => void:
         let mark = self.sc.n
+        let own_mark = self.own_n
         let c = a.child[b]
         while c >= 0:
             self.stmt(t, g, ty, a, c)
             c = a.next[c]
+        if !self.f.terminated(self.f.cur):
+            self.drop_scope(t, g, a, own_mark)
+        self.own_n = own_mark
         self.sc.truncate(mark)
 
     fn stmt(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => void:
+        self.stmt_inner(t, g, ty, a, n)
+        self.flush_temps(t, g)
+
+    fn stmt_inner(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => void:
         let k = a.kind[n]
         if k == int(Nk.Let):
             let vt = ty.node[n]
@@ -802,23 +907,38 @@ class Lower:
                 return
             let val = -1
             if a.pc[n] >= 0:
-                val = self.coerce(t, g, self.ex(t, g, ty, a, a.pc[n]), ty.node[a.pc[n]], vt)
+                val = self.sink(t, g, ty, a, a.pc[n], vt)
             else:
                 val = self.f.undef(vr)
             self.bind_var(t, g, a, a.pa[n], vt, val)
         elif k == int(Nk.Assign):
             self.assign(t, g, ty, a, n)
         elif k == int(Nk.ExprStmt):
-            self.ex(t, g, ty, a, a.pa[n])
+            let e = a.pa[n]
+            let v = self.ex(t, g, ty, a, e)
+            let et = ty.node[e]
+            if needs_drop(t, g, et) && (a.kind[e] == int(Nk.Call) || a.kind[e] == int(Nk.StructLit) || a.kind[e] == int(Nk.Unary)):
+                self.drop_value(t, g, v, et)
         elif k == int(Nk.Return):
             if a.pa[n] >= 0 && t.kind[self.ret_ty] != int(Ty.Void):
-                let v = self.coerce(t, g, self.ex(t, g, ty, a, a.pa[n]), ty.node[a.pa[n]], self.ret_ty)
+                let v = self.sink(t, g, ty, a, a.pa[n], self.ret_ty)
+                self.flush_temps(t, g)
+                self.drop_scope(t, g, a, 0)
                 self.f.ret(v)
             else:
                 if a.pa[n] >= 0:
                     self.ex(t, g, ty, a, a.pa[n])
+                self.drop_scope(t, g, a, 0)
                 self.f.ret_void()
             self.dead_block()
+        elif k == int(Nk.Rm):
+            self.rm_stmt(t, g, ty, a, a.pa[n])
+            let extra = a.child[n]
+            while extra >= 0:
+                self.rm_stmt(t, g, ty, a, extra)
+                extra = a.next[extra]
+        elif k == int(Nk.Mv):
+            self.mv_stmt(t, g, ty, a, n)
         elif k == int(Nk.If):
             self.if_stmt(t, g, ty, a, n)
         elif k == int(Nk.While):
@@ -829,6 +949,7 @@ class Lower:
             if self.nloops == 0:
                 self.unsupported(n)
                 return
+            self.drop_scope(t, g, a, self.ld[self.nloops - 1])
             if k == int(Nk.Break):
                 self.jump(self.lb[self.nloops - 1])
             else:
@@ -845,14 +966,18 @@ class Lower:
             if v < 0:
                 self.unsupported(n)
                 return
-            let val = self.coerce(t, g, self.ex(t, g, ty, a, a.pb[n]), ty.node[a.pb[n]], self.v_ty[v])
+            let val = self.sink(t, g, ty, a, a.pb[n], self.v_ty[v])
+            /#/ what the variable owned is released once the new value is known
+            self.drop_var(t, g, a, v)
             self.var_write(v, val)
+            if self.v_flag[v] >= 0:
+                self.write_var(self.v_flag[v], self.f.cur, self.f.cint(int(Rp.I8), 1))
         elif tk == int(Nk.Member) || tk == int(Nk.Index) || (tk == int(Nk.Unary) && a.pc[target] == int(Tk.Star)):
             let tt = ty.node[target]
             if self.rep(t, g, tt) < 0:
                 self.unsupported(n)
                 return
-            let val = self.coerce(t, g, self.ex(t, g, ty, a, a.pb[n]), ty.node[a.pb[n]], tt)
+            let val = self.sink(t, g, ty, a, a.pb[n], tt)
             let p = -1
             if tk == int(Nk.Member):
                 p = self.field_addr(t, g, ty, a, target)
@@ -860,12 +985,47 @@ class Lower:
                 p = self.element_addr(t, g, ty, a, target)
             else:
                 p = self.ex(t, g, ty, a, a.pa[target])
+            if needs_drop(t, g, tt):
+                self.drop_value(t, g, self.f.load(self.rep(t, g, tt), -1, p), tt)
             self.f.store(p, val)
         else:
             self.unsupported(n)
 
+    /#/ The value of `n` for a place that wants type `to` and takes ownership of it.
+    fn sink(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int, to: int) => int:
+        let from = ty.node[n]
+        let v = self.coerce(t, g, self.ex(t, g, ty, a, n), from, to)
+        return self.consume(t, g, a, n, v, from)
+
+    fn rm_stmt(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, e: int) => void:
+        if e < 0:
+            return
+        if a.kind[e] != int(Nk.Name):
+            self.unsupported(e)
+            return
+        let v = self.lookup(a, a.tok[e])
+        if v < 0:
+            self.unsupported(e)
+            return
+        self.drop_var(t, g, a, v)
+
+    /#/ `mv a b` and `clone a b`: a new variable `b` made from `a`.
+    fn mv_stmt(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => void:
+        let src = a.pa[n]
+        let x = ty.node[n]
+        if src < 0 || a.kind[src] != int(Nk.Name) || self.rep(t, g, x) < 0 || a.pb[n] < 0:
+            self.unsupported(n)
+            return
+        let v = self.ex(t, g, ty, a, src)
+        if a.pc[n] == 1:
+            v = self.clone_value(t, g, v, x)
+        else:
+            v = self.consume(t, g, a, src, v, x)
+        self.bind_var(t, g, a, a.pb[n], x, v)
+
     fn if_stmt(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => void:
         let c = self.ex(t, g, ty, a, a.pa[n])
+        self.flush_temps(t, g)
         let yes = self.new_block()
         let no = self.new_block()
         let join = self.new_block()
@@ -890,6 +1050,8 @@ class Lower:
         if self.nloops >= len(self.lc):
             self.lc = buf_resize(self.lc, (self.nloops + 1) * 2)
             self.lb = buf_resize(self.lb, (self.nloops + 1) * 2)
+            self.ld = buf_resize(self.ld, (self.nloops + 1) * 2)
+        self.ld[self.nloops] = self.own_n
         self.lc[self.nloops] = cont
         self.lb[self.nloops] = brk
         self.nloops = self.nloops + 1
@@ -901,6 +1063,7 @@ class Lower:
         self.jump(head)
         self.f.set_block(head)
         let c = self.ex(t, g, ty, a, a.pa[n])
+        self.flush_temps(t, g)
         self.branch(c, body, exit)
         self.seal(body)
         self.f.set_block(body)
@@ -1009,6 +1172,8 @@ class Lower:
             self.f.store(s, val)
         else:
             self.write_var(v, self.f.cur, val)
+        if self.no_own == 0:
+            self.own_bind(t, g, a, v, vt)
         return v
 
     fn var_read(self, v: int) => int:
@@ -1070,7 +1235,7 @@ class Lower:
         if off < 0:
             self.unsupported(n)
             return self.f.undef(int(Rp.Ptr))
-        return self.f.field(self.ex(t, g, ty, a, o), off)
+        return self.f.field(self.exb(t, g, ty, a, o), off)
 
     /#/ The value of an aggregate (`buf<T>`, slice, tuple) held by `o`, which may be a reference.
     fn agg_of(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, o: int) => int:
@@ -1134,7 +1299,7 @@ class Lower:
                 self.unsupported(fi)
                 return p
             let ft = self.fty
-            let v = self.coerce(t, g, self.ex(t, g, ty, a, a.pa[fi]), ty.node[a.pa[fi]], ft)
+            let v = self.sink(t, g, ty, a, a.pa[fi], ft)
             self.f.store(self.f.field(p, off), v)
             fi = a.next[fi]
         return p
@@ -1165,7 +1330,7 @@ class Lower:
         let c = a.child[n]
         let i = 0
         while c >= 0:
-            let v = self.coerce(t, g, self.ex(t, g, ty, a, c), ty.node[c], t.a[x])
+            let v = self.sink(t, g, ty, a, c, t.a[x])
             self.f.store(self.f.index(p, self.f.cint(int(Rp.I64), i), size), v)
             i = i + 1
             c = a.next[c]
@@ -1195,7 +1360,7 @@ class Lower:
         if (k == int(Ty.Buf) && t.a[ot] >= 0) || k == int(Ty.Slice):
             return self.f.extract(int(Rp.I64), self.agg_of(t, g, ty, a, o), 1)
         if k == int(Ty.Str):
-            self.f.arg(self.ex(t, g, ty, a, o))
+            self.f.arg(self.exb(t, g, ty, a, o))
             return self.f.ccall(int(Rp.I64), 1, self.rt_strlen, 0)
         self.unsupported(n)
         return self.f.cint(int(Rp.I64), 0)
@@ -1252,7 +1417,7 @@ class Lower:
                 self.unsupported(n)
                 return self.f.undef(int(Rp.I64))
             row = t.a[ot]
-            recv = self.ex(t, g, ty, a, o)
+            recv = self.exb(t, g, ty, a, o)
             first = 1
         let vals: buf<int> = new_buf(int, 8)
         let i = 0
@@ -1266,12 +1431,243 @@ class Lower:
             let v = self.ex(t, g, ty, a, c)
             if i < t.count_of(sig):
                 v = self.coerce(t, g, v, ty.node[c], t.arg(sig, i))
+                if t.kind[t.arg(sig, i)] != int(Ty.Ref):
+                    v = self.consume(t, g, a, c, v, ty.node[c])
             vals[i] = v
             i = i + 1
             c = a.next[c]
         for j in 0..i:
             self.f.arg(vals[j])
         return self.f.call(rr, -1, self.method_name(g, a, row, a.tok[callee]))
+
+    /#/ ---- ownership -----------------------------------------------------------
+
+    /#/ The value of `n` where it is only borrowed: a literal stays static, a temporary that
+    /#/ owns something is released at the end of the statement.
+    fn exb(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => int:
+        if a.kind[n] == int(Nk.Str):
+            return self.f.strlit(self.string(a, a.tok[n]))
+        let v = self.ex(t, g, ty, a, n)
+        let x = ty.node[n]
+        let k = a.kind[n]
+        if needs_drop(t, g, x) && (k == int(Nk.Call) || k == int(Nk.StructLit) || k == int(Nk.Array) || k == int(Nk.Binary) || k == int(Nk.Unary)):
+            if self.tmp_n >= len(self.tmp_v):
+                self.tmp_v = buf_resize(self.tmp_v, (self.tmp_n + 1) * 2)
+                self.tmp_ty = buf_resize(self.tmp_ty, (self.tmp_n + 1) * 2)
+            self.tmp_v[self.tmp_n] = v
+            self.tmp_ty[self.tmp_n] = x
+            self.tmp_n = self.tmp_n + 1
+        return v
+
+    fn flush_temps(self, t: &Tys, g: &Syms) => void:
+        if self.reachable():
+            let i = self.tmp_n - 1
+            while i >= 0:
+                self.drop_value(t, g, self.tmp_v[i], self.tmp_ty[i])
+                i = i - 1
+        self.tmp_n = 0
+
+    /#/ The name number of the glue function of type `x`: `drop.N` (kind 0) or `clone.N`
+    /#/ (kind 1); it is generated when the module is finished.
+    fn glue(self, x: int, kind: int) => int:
+        let w = new_txt()
+        if kind == 0:
+            w.put("drop.")
+        else:
+            w.put("clone.")
+        w.put_int(x)
+        let id = self.names.intern(&w)
+        for i in 0..self.glue_n:
+            if self.glue_ty[i] == x && self.glue_kind[i] == kind:
+                return id
+        if self.glue_n >= len(self.glue_ty):
+            self.glue_ty = buf_resize(self.glue_ty, (self.glue_n + 1) * 2)
+            self.glue_kind = buf_resize(self.glue_kind, (self.glue_n + 1) * 2)
+        self.glue_ty[self.glue_n] = x
+        self.glue_kind[self.glue_n] = kind
+        self.glue_n = self.glue_n + 1
+        return id
+
+    /#/ Releases the value `v` of type `x`.
+    fn drop_value(self, t: &Tys, g: &Syms, v: int, x: int) => void:
+        let k = t.kind[x]
+        if k == int(Ty.Str):
+            self.f.free(v)
+        elif k == int(Ty.Buf):
+            self.f.free(self.f.extract(int(Rp.Ptr), v, 0))
+        elif k == int(Ty.Array) && !needs_drop(t, g, t.a[x]):
+            self.f.free(v)
+        else:
+            self.f.drop_of(v, self.glue(x, 0))
+
+    /#/ A deep copy of `v`, of type `x`.
+    fn clone_value(self, t: &Tys, g: &Syms, v: int, x: int) => int:
+        let k = t.kind[x]
+        if k == int(Ty.Str):
+            self.f.arg(v)
+            return self.f.ccall(int(Rp.Ptr), 1, self.rt_strdup, 0)
+        if k == int(Ty.Array) && !needs_drop(t, g, t.a[x]):
+            let bytes = st_size(t, g, t.a[x]) * t.b[x]
+            let p = self.f.alloc(bytes)
+            self.f.arg(p)
+            self.f.arg(v)
+            self.f.arg(self.f.cint(int(Rp.I64), bytes))
+            self.f.ccall(int(Rp.Ptr), 3, self.rt_memcpy, 0)
+            return p
+        if k == int(Ty.Named):
+            return self.f.clone_of(v, self.glue(x, 1))
+        self.f.arg(v)
+        return v
+
+    /#/ The variable `v` has just been made; if its type owns something it gets a flag.
+    fn own_bind(self, t: &Tys, g: &Syms, a: &Ast, v: int, vt: int) => void:
+        if !needs_drop(t, g, vt):
+            return
+        let fv = self.new_var(a, -1, int(Rp.I8), -1)
+        self.write_var(fv, self.f.cur, self.f.cint(int(Rp.I8), 1))
+        self.v_flag[v] = fv
+        if self.own_n >= len(self.own_st):
+            self.own_st = buf_resize(self.own_st, (self.own_n + 1) * 2)
+        self.own_st[self.own_n] = v
+        self.own_n = self.own_n + 1
+
+    /#/ Can control reach the current block?
+    fn reachable(self) => bool:
+        let b = self.f.cur
+        if b == 0:
+            return true
+        let e = self.pe_head[b]
+        while e >= 0:
+            if self.f.eto[e] == b:
+                return true
+            e = self.pe_next[e]
+        return false
+
+    /#/ Releases what `v` still owns; nothing when it was moved away.
+    fn drop_var(self, t: &Tys, g: &Syms, a: &Ast, v: int) => void:
+        let fv = self.v_flag[v]
+        if fv < 0:
+            return
+        let fl = self.read_var(fv, self.f.cur)
+        if self.f.is_const(fl):
+            if self.f.cval(fl) != 0:
+                self.drop_value(t, g, self.var_read(v), self.v_ty[v])
+            self.write_var(fv, self.f.cur, self.f.cint(int(Rp.I8), 0))
+            return
+        let yes = self.new_block()
+        let join = self.new_block()
+        self.branch(fl, yes, join)
+        self.seal(yes)
+        self.f.set_block(yes)
+        self.drop_value(t, g, self.var_read(v), self.v_ty[v])
+        self.write_var(fv, yes, self.f.cint(int(Rp.I8), 0))
+        self.jump(join)
+        self.seal(join)
+        self.f.set_block(join)
+
+    /#/ Drops the owning variables declared since scope depth `mark`, innermost first.
+    fn drop_scope(self, t: &Tys, g: &Syms, a: &Ast, mark: int) => void:
+        if !self.reachable():
+            return
+        let i = self.own_n - 1
+        while i >= mark:
+            self.drop_var(t, g, a, self.own_st[i])
+            i = i - 1
+
+    /#/ `v` was used where a value of type `x` is wanted, by the expression `n`: a variable
+    /#/ that is moved gives up what it owned; an array is copied.
+    fn consume(self, t: &Tys, g: &Syms, a: &Ast, n: int, v: int, x: int) => int:
+        if !needs_drop(t, g, x):
+            return v
+        let k = a.kind[n]
+        if k == int(Nk.Name):
+            let var = self.lookup(a, a.tok[n])
+            if var >= 0 && self.v_flag[var] >= 0:
+                if is_moved(t, g, x):
+                    self.write_var(self.v_flag[var], self.f.cur, self.f.cint(int(Rp.I8), 0))
+                    return v
+                return self.clone_value(t, g, v, x)
+            return v
+        if (k == int(Nk.Member) || k == int(Nk.Index)) && t.kind[x] == int(Ty.Array):
+            return self.clone_value(t, g, v, x)
+        return v
+
+
+    /#/ The fields of class type `x` in layout order, in `lay_ty` and `lay_off`.
+    fn layout(self, t: &Tys, g: &Syms, x: int) => void:
+        let chain: buf<int> = new_buf(int, 8)
+        let n = 0
+        let cur = t.a[x]
+        while cur >= 0 && n < 8:
+            chain[n] = cur
+            n = n + 1
+            let next = -1
+            for i in 0..g.n:
+                if g.info[i] == cur && g.kind[i] == int(Sk.Parent):
+                    next = g.find_class_row(i)
+            cur = next
+        self.lay_n = 0
+        let off = 0
+        let c = n - 1
+        while c >= 0:
+            for i in 0..g.n:
+                if g.info[i] == chain[c] && g.kind[i] == int(Sk.Field) && g.ty[i] >= 0:
+                    let ft = g.ty[i]
+                    off = align_up(off, st_align(t, g, ft))
+                    if self.lay_n >= len(self.lay_ty):
+                        self.lay_ty = buf_resize(self.lay_ty, (self.lay_n + 1) * 2)
+                        self.lay_off = buf_resize(self.lay_off, (self.lay_n + 1) * 2)
+                    self.lay_ty[self.lay_n] = ft
+                    self.lay_off[self.lay_n] = off
+                    self.lay_n = self.lay_n + 1
+                    off = off + st_size(t, g, ft)
+            c = c - 1
+
+    /#/ Generates the drop and clone functions asked for so far, as text in `o`.
+    fn emit_glue(self, o: &Txt, t: &Tys, g: &Syms) => void:
+        while self.glue_done < self.glue_n:
+            let x = self.glue_ty[self.glue_done]
+            let kind = self.glue_kind[self.glue_done]
+            self.glue_done = self.glue_done + 1
+            let name = new_txt()
+            if kind == 0:
+                name.put("drop.")
+            else:
+                name.put("clone.")
+            name.put_int(x)
+            if kind == 0:
+                self.f.reset(&name, int(Rp.Void))
+            else:
+                self.f.reset(&name, int(Rp.Ptr))
+            self.sc.truncate(0)
+            let b = self.f.new_block()
+            self.f.set_block(b)
+            let p = self.f.param(b, int(Rp.Ptr), -1)
+            self.layout(t, g, x)
+            if kind == 0:
+                self.glue_drop_fields(t, g, p)
+                self.f.free(p)
+                self.f.ret_void()
+            else:
+                let q = self.f.alloc(st_block(t, g, x))
+                self.glue_clone_fields(t, g, p, q)
+                self.f.ret(q)
+            self.emit_current(o)
+
+    fn glue_drop_fields(self, t: &Tys, g: &Syms, p: int) => void:
+        for i in 0..self.lay_n:
+            let ft = self.lay_ty[i]
+            if needs_drop(t, g, ft):
+                let v = self.f.load(self.rep(t, g, ft), -1, self.f.field(p, self.lay_off[i]))
+                self.drop_value(t, g, v, ft)
+
+    fn glue_clone_fields(self, t: &Tys, g: &Syms, p: int, q: int) => void:
+        for i in 0..self.lay_n:
+            let ft = self.lay_ty[i]
+            let v = self.f.load(self.rep(t, g, ft), -1, self.f.field(p, self.lay_off[i]))
+            if needs_drop(t, g, ft):
+                v = self.clone_value(t, g, v, ft)
+            self.f.store(self.f.field(q, self.lay_off[i]), v)
 
     /#/ ---- functions -----------------------------------------------------------
 
@@ -1302,6 +1698,7 @@ class Lower:
         self.nv = 0
         self.inc_n = 0
         self.nloops = 0
+        self.own_n = 0
         self.ret_ty = t.c[sig]
         if rr < 0 || body < 0:
             self.unsupported(fn_node)
@@ -1321,12 +1718,17 @@ class Lower:
                 if pr < 0 || pr == int(Rp.Void):
                     self.unsupported(p)
                     return
+                /#/ `self` is borrowed from the caller
+                if a.kind[p] == int(Nk.SelfParam):
+                    self.no_own = 1
                 self.bind_var(t, g, a, a.tok[p], pt, self.f.param(entry, pr, -1))
+                self.no_own = 0
                 i = i + 1
             p = a.next[p]
         self.block(t, g, ty, a, body)
         if !self.f.terminated(self.f.cur):
             if rr == int(Rp.Void):
+                self.drop_scope(t, g, a, 0)
                 self.f.ret_void()
             else:
                 self.f.unreachable()
@@ -1385,7 +1787,10 @@ fn new_lower() => Lower:
     lw.rt_strlen = lw.names.add("strlen")
     lw.rt_malloc = lw.names.add("malloc")
     lw.rt_free = lw.names.add("free")
+    lw.rt_strdup = lw.names.add("strdup")
+    lw.rt_memcpy = lw.names.add("memcpy")
+    lw.rt_strcmp = lw.names.add("strcmp")
     return lw
 
 fn make_lower() => Lower:
-    return Lower { f: new_fun("", 0), rs: new_reps(), names: new_names(), globals: new_txt(), nstr: 0, cd_name: new_buf(int, 8), cd_sig: new_buf(int, 8), cd_var: new_buf(int, 8), cd_n: 0, sc: new_syms(), v_rep: new_buf(int, 16), v_ty: new_buf(int, 16), v_slot: new_buf(int, 16), addr: new_names(), scanned: 0, fty: 0, rt_exit: 0, rt_calloc: 0, rt_strlen: 0, rt_malloc: 0, rt_free: 0, nv: 0, dk: new_buf(int, 64), dv: new_buf(int, 64), dn: 0, sealed: new_buf(int, 16), inc_head: new_buf(int, 16), inc_var: new_buf(int, 16), inc_par: new_buf(int, 16), inc_next: new_buf(int, 16), inc_n: 0, pe_head: new_buf(int, 16), pe_next: new_buf(int, 16), lc: new_buf(int, 8), lb: new_buf(int, 8), nloops: 0, ret_ty: 0, bad: 0, bad_node: -1 }
+    return Lower { f: new_fun("", 0), rs: new_reps(), names: new_names(), globals: new_txt(), nstr: 0, cd_name: new_buf(int, 8), cd_sig: new_buf(int, 8), cd_var: new_buf(int, 8), cd_n: 0, sc: new_syms(), v_rep: new_buf(int, 16), v_ty: new_buf(int, 16), v_slot: new_buf(int, 16), v_flag: new_buf(int, 16), tmp_v: new_buf(int, 8), tmp_ty: new_buf(int, 8), tmp_n: 0, no_own: 0, own_st: new_buf(int, 16), own_n: 0, ld: new_buf(int, 8), glue_ty: new_buf(int, 8), glue_kind: new_buf(int, 8), glue_n: 0, glue_done: 0, lay_ty: new_buf(int, 8), lay_off: new_buf(int, 8), lay_n: 0, addr: new_names(), scanned: 0, fty: 0, rt_exit: 0, rt_calloc: 0, rt_strlen: 0, rt_malloc: 0, rt_free: 0, rt_strdup: 0, rt_memcpy: 0, rt_strcmp: 0, nv: 0, dk: new_buf(int, 64), dv: new_buf(int, 64), dn: 0, sealed: new_buf(int, 16), inc_head: new_buf(int, 16), inc_var: new_buf(int, 16), inc_par: new_buf(int, 16), inc_next: new_buf(int, 16), inc_n: 0, pe_head: new_buf(int, 16), pe_next: new_buf(int, 16), lc: new_buf(int, 8), lb: new_buf(int, 8), nloops: 0, ret_ty: 0, bad: 0, bad_node: -1 }

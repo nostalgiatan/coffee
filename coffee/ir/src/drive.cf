@@ -4,7 +4,7 @@ use fopen, fputc, fclose, system, putchar, printf, fflush in libc of c
 
 /#/ Compiles `src` through our front end and IR, with clang, and runs it: the exit code,
 /#/ or -1 when something did not compile.
-fn run_src(src: str) => int:
+fn run_src(src: str, leaks: bool) => int:
     let t = new_tys()
     let g = new_globals()
     let a = parse(src)
@@ -39,22 +39,34 @@ fn run_src(src: str) => int:
         it = a.next[it]
     o.put_all(&lw.globals)
     lw.emit_decls(&o, &t, &g)
+    lw.emit_glue(&body, &t, &g)
     o.put_all(&body)
-    return compile_and_run(&o)
+    return compile_and_run(&o, leaks)
 
-fn compile_and_run(m: &Txt) => int:
+fn compile_and_run(m: &Txt, leaks: bool) => int:
     let fp = fopen("/tmp/ir_lower_test.ll", "w")
     for k in 0..m.n:
         fputc(m.b[k], fp)
     fclose(fp)
-    if system("clang -w -o /tmp/ir_lower_test /tmp/ir_lower_test.ll") != 0:
+    if system("clang -w -fsanitize=address -o /tmp/ir_lower_test /tmp/ir_lower_test.ll") != 0:
         return -1
-    let st = system("/tmp/ir_lower_test")
+    let cmd = "ASAN_OPTIONS=exitcode=99:detect_leaks=1 /tmp/ir_lower_test 2>/tmp/ir_lower_err"
+    if !leaks:
+        cmd = "ASAN_OPTIONS=exitcode=99:detect_leaks=0 /tmp/ir_lower_test 2>/tmp/ir_lower_err"
+    let st = system(cmd)
     return (st >> 8) & 255
 
 fn expect_exit(src: str, want: int) => int:
+    return expect_with(src, want, true)
+
+/#/ Like `expect_exit` for programs that stop early (a failed bounds check) and so leave
+/#/ their memory behind.
+fn expect_exit_early(src: str, want: int) => int:
+    return expect_with(src, want, false)
+
+fn expect_with(src: str, want: int, leaks: bool) => int:
     let copy = clone src
-    let r = run_src(src)
+    let r = run_src(src, leaks)
     if r != want:
         printf("FAIL: got %d, want %d\n%s\n", r, want, copy)
         fflush(0)
