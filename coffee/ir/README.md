@@ -9,6 +9,10 @@ in columns. See `DESIGN.md` for the design and the order of work.
 - `src/print.cf` — text form (what tests compare against)
 - `src/verify.cf` — well-formedness: terminators, edge arity/types, op types, dominance
 - `src/ssa.cf` — block parameters added after the edges exist; removing the trivial ones
+- `src/opt.cf` — the optimizer: constant branches become jumps, unreachable blocks go, a block
+  with one predecessor joins it, unused instructions and block parameters (also those only
+  passed back to themselves) go, an `alloc` that is only freed goes, `clone x` whose original is
+  dropped at once is `x`; every pass keeps the use counts right, and the verifier runs after
 - `src/lower.cf` — typed tree to IR, SSA built directly (Braun et al.): scalars, locals, `if`, `while`,
   `for` over a range, `break`/`continue`/`return`, calls of functions and C functions; locals
   whose address is taken live in a slot; classes (literal, fields, methods, parents), `buf<T>`,
@@ -25,7 +29,7 @@ in columns. See `DESIGN.md` for the design and the order of work.
 - `src/drive.cf` — test support: source text through the front end, IR and clang, then run
 - `src/emit.cf` — LLVM text: phis for block parameters, slots in the entry block, `Syms` for callee names
 
-Steps 1 to 6 are done (builder, printer, verifier; emitter; scalars,
+Steps 1 to 7 are done, the optimizer without effect summaries, inlining and attributes (builder, printer, verifier; emitter; scalars,
 control flow and calls; slots, classes, `buf<T>`, arrays; ownership; enums, `match`, `for`, `raise`, generics). Lowering reads the typed tree of `coffee/types`, so
 the tests need its paths:
 

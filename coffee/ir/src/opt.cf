@@ -1,0 +1,363 @@
+/#/ The optimizer: a short list of linear passes over one function, run once, in an order
+/#/ chosen so that one run reaches the result.
+/#/
+/#/   cleanup:  branches on a constant become jumps, unreachable blocks go, a block with one
+/#/             predecessor that jumps to it is merged into it, instructions and block
+/#/             parameters nobody uses go
+/#/   own-opt:  `alloc` that is only freed goes with its `free`; `clone x` whose original
+/#/             is dropped right after, and used nowhere else, is `x` itself
+/#/
+/#/ Every pass keeps the use counts of the columns right, so the next one can rely on them.
+/#/ Not here yet: effect summaries, inlining and the attributes that come from them.
+use * in ssa
+
+/#/ The value an operand stands for.
+fn opd(f: &Fun, v: int) => int:
+    return f.follow(v)
+
+/#/ Takes `i` out of its block's list (a parameter is not in that list).
+fn unlink(f: &Fun, i: int) => void:
+    let b = f.blk[i]
+    let p = f.pv[i]
+    let n = f.nx[i]
+    if p >= 0:
+        f.nx[p] = n
+    else:
+        f.bfirst[b] = n
+    if n >= 0:
+        f.pv[n] = p
+    else:
+        f.blast[b] = p
+    f.pv[i] = -1
+    f.nx[i] = -1
+
+/#/ One use fewer for every operand of `i`.
+fn unuse(f: &Fun, i: int) => void:
+    for k in 0..f.nval(i):
+        let v = f.val_at(i, k)
+        if v >= 0:
+            let x = f.follow(v)
+            f.uses[x] = f.uses[x] - 1
+
+/#/ An edge that goes nowhere any more: its arguments are not used.
+fn cut_edge(f: &Fun, e: int) => void:
+    if f.eto[e] < 0:
+        return
+    for k in 0..f.eargn[e]:
+        let x = f.follow(f.pool[f.eargs[e] + k])
+        f.uses[x] = f.uses[x] - 1
+    f.eargn[e] = 0
+    f.eto[e] = -1
+
+/#/ Deletes instruction `i`: out of its list, its operands unused, its edges cut.
+fn delete_inst(f: &Fun, i: int) => void:
+    unuse(f, i)
+    let o = f.op[i]
+    if o == int(Op.Br) || o == int(Op.CondBr) || o == int(Op.Switch):
+        for q in 0..f.nsucc(f.blk[i]):
+            cut_edge(f, f.succ_edge(f.blk[i], q))
+    unlink(f, i)
+
+/#/ ---- constant branches ---------------------------------------------------
+
+/#/ `condbr` on a constant is a `br` to the edge taken; the other edge is cut.
+fn fold_branches(f: &Fun) => bool:
+    let changed = false
+    for b in 0..f.nb:
+        let t = f.blast[b]
+        if t >= 0 && f.op[t] == int(Op.CondBr):
+            let c = f.follow(f.a[t])
+            if f.is_const(c):
+                let keep = f.b[t]
+                let gone = f.c[t]
+                if f.cval(c) == 0:
+                    keep = f.c[t]
+                    gone = f.b[t]
+                cut_edge(f, gone)
+                f.uses[c] = f.uses[c] - 1
+                f.op[t] = int(Op.Br)
+                f.aux[t] = keep
+                f.a[t] = -1
+                f.b[t] = -1
+                f.c[t] = -1
+                changed = true
+    return changed
+
+/#/ ---- unreachable blocks --------------------------------------------------
+
+/#/ Removes the blocks no path from the entry reaches, and renumbers the rest.
+fn drop_unreachable(f: &Fun) => bool:
+    let seen: buf<int> = new_buf(int, f.nb + 1)
+    let stack: buf<int> = new_buf(int, f.nb + 1)
+    let sp = 0
+    seen[0] = 1
+    stack[0] = 0
+    sp = 1
+    while sp > 0:
+        sp = sp - 1
+        let b = stack[sp]
+        for q in 0..f.nsucc(b):
+            let e = f.succ_edge(b, q)
+            let to = f.eto[e]
+            if to >= 0 && seen[to] == 0:
+                seen[to] = 1
+                stack[sp] = to
+                sp = sp + 1
+    let dead = 0
+    for b in 0..f.nb:
+        if seen[b] == 0:
+            dead = dead + 1
+    if dead == 0:
+        return false
+    for b in 0..f.nb:
+        if seen[b] == 0:
+            let i = f.blast[b]
+            while i >= 0:
+                let p = f.pv[i]
+                delete_inst(f, i)
+                i = p
+            f.bfirst[b] = -1
+            f.blast[b] = -1
+    /#/ renumber
+    let map: buf<int> = new_buf(int, f.nb + 1)
+    let n = 0
+    for b in 0..f.nb:
+        map[b] = -1
+        if seen[b] == 1:
+            map[b] = n
+            n = n + 1
+    for b in 0..f.nb:
+        if seen[b] == 1:
+            let nb = map[b]
+            f.bfirst[nb] = f.bfirst[b]
+            f.blast[nb] = f.blast[b]
+            f.pfirst[nb] = f.pfirst[b]
+            f.plast[nb] = f.plast[b]
+            f.npar[nb] = f.npar[b]
+            let i = f.bfirst[nb]
+            while i >= 0:
+                f.blk[i] = nb
+                i = f.nx[i]
+            let p = f.pfirst[nb]
+            while p >= 0:
+                f.blk[p] = nb
+                p = f.nx[p]
+    f.set_blocks(n)
+    for e in 0..f.ne:
+        if f.eto[e] >= 0:
+            f.eto[e] = map[f.eto[e]]
+        if f.efrom[e] >= 0:
+            f.efrom[e] = map[f.efrom[e]]
+    return true
+
+/#/ ---- merging blocks ------------------------------------------------------
+
+/#/ How many live edges enter block `b`.
+fn pred_count(f: &Fun, b: int) => int:
+    let n = 0
+    for e in 0..f.ne:
+        if f.eto[e] == b:
+            n = n + 1
+    return n
+
+/#/ The first live edge that enters block `b`.
+fn pred_first(f: &Fun, b: int) => int:
+    for e in 0..f.ne:
+        if f.eto[e] == b:
+            return e
+    return -1
+
+/#/ A block that only one block enters, by a plain jump, joins that block.
+fn merge_blocks(f: &Fun) => bool:
+    let changed = false
+    for b in 1..f.nb:
+        if f.bfirst[b] >= 0 && pred_count(f, b) == 1:
+            let e = pred_first(f, b)
+            let a = f.efrom[e]
+            let t = f.blast[a]
+            if a != b && a >= 0 && t >= 0 && f.op[t] == int(Op.Br) && f.aux[t] == e:
+                /#/ the parameters are what the edge passes
+                let p = f.pfirst[b]
+                let k = 0
+                while p >= 0:
+                    let x = f.follow(f.pool[f.eargs[e] + k])
+                    f.fwd[p] = x
+                    f.uses[x] = f.uses[x] + f.uses[p] - 1
+                    p = f.nx[p]
+                    k = k + 1
+                f.pfirst[b] = -1
+                f.plast[b] = -1
+                f.npar[b] = 0
+                /#/ the jump goes, the block's instructions follow the rest of `a`
+                f.eargn[e] = 0
+                f.eto[e] = -1
+                unlink(f, t)
+                let i = f.bfirst[b]
+                while i >= 0:
+                    f.blk[i] = a
+                    i = f.nx[i]
+                if f.bfirst[b] >= 0:
+                    let l = f.blast[a]
+                    if l >= 0:
+                        f.nx[l] = f.bfirst[b]
+                    else:
+                        f.bfirst[a] = f.bfirst[b]
+                    f.pv[f.bfirst[b]] = l
+                    f.blast[a] = f.blast[b]
+                f.bfirst[b] = -1
+                f.blast[b] = -1
+                for q in 0..f.ne:
+                    if f.efrom[q] == b:
+                        f.efrom[q] = a
+                changed = true
+    return changed
+
+/#/ ---- dead code -----------------------------------------------------------
+
+/#/ Can nobody tell that `i` was removed, when its value is not used?
+fn removable(f: &Fun, i: int) => bool:
+    let o = f.op[i]
+    if f.tab.has(o, f_term()) || f.tab.has(o, f_writes()) || f.tab.has(o, f_consumes()):
+        return false
+    if o == int(Op.Param) || o == int(Op.Call) || o == int(Op.CCall) || o == int(Op.CallI) || o == int(Op.Clone):
+        return false
+    return true
+
+/#/ Removes the instructions whose value nobody uses, from the end of each block backwards.
+fn dead_code(f: &Fun) => bool:
+    let changed = false
+    for b in 0..f.nb:
+        let i = f.blast[b]
+        while i >= 0:
+            let p = f.pv[i]
+            if f.uses[i] == 0 && f.fwd[i] < 0 && removable(f, i):
+                delete_inst(f, i)
+                changed = true
+            i = p
+    return changed
+
+/#/ Removes the parameters of the blocks (not the entry's) that nobody uses, and the
+/#/ arguments the edges pass to them.
+fn dead_params(f: &Fun) => bool:
+    let changed = false
+    for b in 1..f.nb:
+        let n = f.npar[b]
+        let keep: buf<int> = new_buf(int, n + 1)
+        let any = false
+        let p = f.pfirst[b]
+        let k = 0
+        while p >= 0:
+            keep[k] = 1
+            /#/ nobody uses it, or only the jump around the loop hands it back to itself
+            let own = 0
+            for e in 0..f.ne:
+                if f.eto[e] == b && k < f.eargn[e] && f.follow(f.pool[f.eargs[e] + k]) == p:
+                    own = own + 1
+            if f.uses[p] == own:
+                keep[k] = 0
+                any = true
+            p = f.nx[p]
+            k = k + 1
+        if any:
+            for e in 0..f.ne:
+                if f.eto[e] == b:
+                    let m = f.eargn[e]
+                    let start = f.np
+                    let out = 0
+                    for j in 0..m:
+                        if j < n && keep[j] == 0:
+                            let x = f.follow(f.pool[f.eargs[e] + j])
+                            f.uses[x] = f.uses[x] - 1
+                        else:
+                            f.pool_put(f.pool[f.eargs[e] + j])
+                            out = out + 1
+                    f.eargs[e] = start
+                    f.eargn[e] = out
+            let first = -1
+            let last = -1
+            let q = f.pfirst[b]
+            let cnt = 0
+            while q >= 0:
+                let nxt = f.nx[q]
+                if keep[f.aux[q]] == 1:
+                    f.pv[q] = last
+                    f.nx[q] = -1
+                    if last >= 0:
+                        f.nx[last] = q
+                    else:
+                        first = q
+                    last = q
+                    cnt = cnt + 1
+                q = nxt
+            /#/ parameter numbers are their position
+            let r = first
+            let pos = 0
+            while r >= 0:
+                f.aux[r] = pos
+                pos = pos + 1
+                r = f.nx[r]
+            f.pfirst[b] = first
+            f.plast[b] = last
+            f.npar[b] = cnt
+            changed = true
+    return changed
+
+/#/ ---- ownership -----------------------------------------------------------
+
+/#/ An `alloc` whose only use is the `free` that follows is no allocation at all.
+/#/ `y = clone x; ...; drop x` with no other use of `x` makes `y` be `x`: the copy is never made.
+fn own_opt(f: &Fun) => bool:
+    let changed = false
+    for b in 0..f.nb:
+        let i = f.bfirst[b]
+        while i >= 0:
+            let nxt = f.nx[i]
+            let o = f.op[i]
+            if o == int(Op.Alloc) && f.uses[i] == 1:
+                let j = nxt
+                while j >= 0 && !(f.op[j] == int(Op.Free) && f.follow(f.a[j]) == i):
+                    j = f.nx[j]
+                if j >= 0:
+                    if nxt == j:
+                        nxt = f.nx[j]
+                    delete_inst(f, j)
+                    delete_inst(f, i)
+                    changed = true
+            elif o == int(Op.Clone) && f.fwd[i] < 0:
+                let x = f.follow(f.a[i])
+                if f.uses[x] == 2:
+                    let j = f.nx[i]
+                    while j >= 0 && !(f.op[j] == int(Op.Drop) && f.follow(f.a[j]) == x):
+                        j = f.nx[j]
+                    if j >= 0:
+                        if nxt == j:
+                            nxt = f.nx[j]
+                        delete_inst(f, j)
+                        f.uses[x] = f.uses[x] + f.uses[i]
+                        f.fwd[i] = x
+                        unlink(f, i)
+                        f.uses[x] = f.uses[x] - 1
+                        changed = true
+            i = nxt
+    return changed
+
+/#/ Runs the passes: cleanup, own-opt, cleanup again for what that exposed.
+fn optimize(f: &Fun) => void:
+    let round = 0
+    let changed = true
+    while changed && round < 8:
+        changed = false
+        if fold_branches(f):
+            changed = true
+        if drop_unreachable(f):
+            changed = true
+            simplify_params(f)
+        if merge_blocks(f):
+            changed = true
+        if own_opt(f):
+            changed = true
+        if dead_code(f):
+            changed = true
+        if dead_params(f):
+            changed = true
+        round = round + 1

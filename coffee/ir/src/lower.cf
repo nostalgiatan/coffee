@@ -10,7 +10,7 @@
 /#/ What is lowered: scalars (`int`, `bool`, `float`, strings as pointers), locals, `if`/`elif`/
 /#/ `else`, `while`, `for` over a range, `break`/`continue`/`return`, calls of plain functions
 /#/ and C functions. Anything else sets `bad` and the function is not emitted.
-use * in ssa
+use * in opt
 use * in typer
 
 /#/ The IR representation of a type; -1 when it has none yet.
@@ -224,6 +224,8 @@ class Lower:
     rt_memcpy: int
     rt_strcmp: int
     rt_write: int
+    /#/ 0: the function is emitted as lowered; above: the optimizer runs first
+    opt: int
     /#/ the type arguments the function being lowered is instantiated with, as `Name<A, B>`; -1 if none
     penv: int
     /#/ scratch: what `unify` found for each type parameter
@@ -2367,6 +2369,8 @@ class Lower:
 
     /#/ The function in `self.f` as LLVM text; a verifier finding is marked in the text.
     fn emit_current(self, o: &Txt) => void:
+        if self.opt > 0:
+            optimize(&self.f)
         let d = verify(&self.f)
         if d.n > 0:
             o.put("; verifier: ")
@@ -2421,4 +2425,4 @@ fn new_lower() => Lower:
     return lw
 
 fn make_lower() => Lower:
-    return Lower { f: new_fun("", 0), rs: new_reps(), names: new_names(), globals: new_txt(), nstr: 0, cd_name: new_buf(int, 8), cd_sig: new_buf(int, 8), cd_var: new_buf(int, 8), cd_n: 0, sc: new_syms(), v_rep: new_buf(int, 16), v_ty: new_buf(int, 16), v_slot: new_buf(int, 16), v_flag: new_buf(int, 16), tmp_v: new_buf(int, 8), tmp_ty: new_buf(int, 8), tmp_n: 0, no_own: 0, own_st: new_buf(int, 16), own_n: 0, ld: new_buf(int, 8), glue_ty: new_buf(int, 8), glue_kind: new_buf(int, 8), glue_n: 0, glue_done: 0, lay_ty: new_buf(int, 8), lay_off: new_buf(int, 8), lay_n: 0, addr: new_names(), scanned: 0, fty: 0, rt_exit: 0, rt_calloc: 0, rt_strlen: 0, rt_malloc: 0, rt_free: 0, rt_strdup: 0, rt_memcpy: 0, rt_strcmp: 0, rt_write: 0, penv: -1, ue: new_buf(int, 16), iq_node: new_buf(int, 8), iq_env: new_buf(int, 8), iq_cls: new_buf(int, 8), iq_n: 0, iq_done: 0, lis: -1, nv: 0, dk: new_buf(int, 64), dv: new_buf(int, 64), dn: 0, sealed: new_buf(int, 16), inc_head: new_buf(int, 16), inc_var: new_buf(int, 16), inc_par: new_buf(int, 16), inc_next: new_buf(int, 16), inc_n: 0, pe_head: new_buf(int, 16), pe_next: new_buf(int, 16), lc: new_buf(int, 8), lb: new_buf(int, 8), nloops: 0, ret_ty: 0, bad: 0, bad_node: -1 }
+    return Lower { f: new_fun("", 0), rs: new_reps(), names: new_names(), globals: new_txt(), nstr: 0, cd_name: new_buf(int, 8), cd_sig: new_buf(int, 8), cd_var: new_buf(int, 8), cd_n: 0, sc: new_syms(), v_rep: new_buf(int, 16), v_ty: new_buf(int, 16), v_slot: new_buf(int, 16), v_flag: new_buf(int, 16), tmp_v: new_buf(int, 8), tmp_ty: new_buf(int, 8), tmp_n: 0, no_own: 0, own_st: new_buf(int, 16), own_n: 0, ld: new_buf(int, 8), glue_ty: new_buf(int, 8), glue_kind: new_buf(int, 8), glue_n: 0, glue_done: 0, lay_ty: new_buf(int, 8), lay_off: new_buf(int, 8), lay_n: 0, addr: new_names(), scanned: 0, fty: 0, rt_exit: 0, rt_calloc: 0, rt_strlen: 0, rt_malloc: 0, rt_free: 0, rt_strdup: 0, rt_memcpy: 0, rt_strcmp: 0, rt_write: 0, opt: 1, penv: -1, ue: new_buf(int, 16), iq_node: new_buf(int, 8), iq_env: new_buf(int, 8), iq_cls: new_buf(int, 8), iq_n: 0, iq_done: 0, lis: -1, nv: 0, dk: new_buf(int, 64), dv: new_buf(int, 64), dn: 0, sealed: new_buf(int, 16), inc_head: new_buf(int, 16), inc_var: new_buf(int, 16), inc_par: new_buf(int, 16), inc_next: new_buf(int, 16), inc_n: 0, pe_head: new_buf(int, 16), pe_next: new_buf(int, 16), lc: new_buf(int, 8), lb: new_buf(int, 8), nloops: 0, ret_ty: 0, bad: 0, bad_node: -1 }

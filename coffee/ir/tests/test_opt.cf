@@ -1,0 +1,153 @@
+use * in drive
+use printf, fflush in libc of c
+
+/#/ The instructions left in the blocks, and the blocks.
+fn count(f: &Fun) => int:
+    let n = 0
+    for b in 0..f.nb:
+        let i = f.bfirst[b]
+        while i >= 0:
+            n = n + 1
+            i = f.nx[i]
+    return n
+
+fn expect(what: int, got: int, want: int) => int:
+    if got != want:
+        printf("MISS #%d: got %d, want %d\n", what, got, want)
+        fflush(0)
+        return 1
+    return 0
+
+fn sound(what: int, f: &Fun) => int:
+    let d = verify(f)
+    if d.n != 0:
+        printf("MISS #%d: verifier code %d\n", what, d.code[0])
+        fflush(0)
+        return 1
+    return 0
+
+/#/ A program with a loop, a constant branch and a class value.
+fn sample() => str:
+    return "class P:\n    a: int\n    b: int\n\nfn f(k: int) => int:\n    let p = P { a: k, b: 2 }\n    let t = 0\n    for i in 0..k:\n        t = t + p.a * p.b\n    if true:\n        return t\n    return 0\n\nfn main() => int:\n    return f(3)\n"
+
+fn main() => int:
+    let m = 0
+    let i64 = int(Rp.I64)
+    let i8 = int(Rp.I8)
+    /#/ a branch on a constant: the other arm goes, and the arm taken joins the entry
+    let g = new_fun("fold", i64)
+    let e = g.new_block()
+    let yes = g.new_block()
+    let no = g.new_block()
+    g.set_block(e)
+    let x = g.param(e, i64, -1)
+    let ey = g.mk_edge(yes)
+    let en = g.mk_edge(no)
+    g.condbr(g.cint(i8, 1), ey, en)
+    g.set_block(yes)
+    g.ret(g.bin(int(Op.Add), x, g.cint(i64, 1)))
+    g.set_block(no)
+    g.ret(g.bin(int(Op.Sub), x, g.cint(i64, 1)))
+    m = m + sound(1, &g)
+    optimize(&g)
+    m = m + sound(2, &g)
+    m = m + expect(3, g.nb, 1)
+    m = m + expect(4, count(&g), 2)
+    /#/ values nobody uses go, chains of them too
+    let d = new_fun("dead", i64)
+    let d0 = d.new_block()
+    d.set_block(d0)
+    let p = d.param(d0, i64, -1)
+    let a1 = d.bin(int(Op.Mul), p, p)
+    let a2 = d.bin(int(Op.Add), a1, p)
+    d.bin(int(Op.Sub), a2, a1)
+    d.ret(p)
+    optimize(&d)
+    m = m + sound(5, &d)
+    m = m + expect(6, count(&d), 1)
+    /#/ a loop parameter that nothing reads goes with the arguments passed to it
+    let l = new_fun("loop", i64)
+    let l0 = l.new_block()
+    let head = l.new_block()
+    let body = l.new_block()
+    let done = l.new_block()
+    l.set_block(l0)
+    let n = l.param(l0, i64, -1)
+    l.arg(l.cint(i64, 0))
+    l.arg(l.cint(i64, 7))
+    l.br(head)
+    l.set_block(head)
+    let i = l.param(head, i64, -1)
+    let junk = l.param(head, i64, -1)
+    let t = l.mk_edge(body)
+    let fl = l.mk_edge(done)
+    l.condbr(l.cmp(int(Pr.SLt), i, n), t, fl)
+    l.set_block(body)
+    l.arg(l.bin(int(Op.Add), i, l.cint(i64, 1)))
+    l.arg(junk)
+    l.br(head)
+    l.set_block(done)
+    l.ret(i)
+    m = m + sound(7, &l)
+    optimize(&l)
+    m = m + sound(8, &l)
+    m = m + expect(9, l.npar[1], 1)
+    /#/ an allocation that is only freed is no allocation
+    let h = new_fun("heap", i64)
+    let h0 = h.new_block()
+    h.set_block(h0)
+    let hp = h.alloc(16)
+    h.free(hp)
+    h.ret(h.cint(i64, 3))
+    optimize(&h)
+    m = m + sound(10, &h)
+    m = m + expect(11, count(&h), 1)
+    /#/ `clone x` whose original is dropped at once is `x`
+    let c = new_fun("copy", int(Rp.Ptr))
+    let c0 = c.new_block()
+    c.set_block(c0)
+    let cx = c.param(c0, int(Rp.Ptr), -1)
+    let cy = c.clone_of(cx, 1)
+    c.drop_of(cx, 1)
+    c.ret(cy)
+    m = m + sound(12, &c)
+    optimize(&c)
+    m = m + sound(13, &c)
+    m = m + expect(14, count(&c), 1)
+    /#/ but not when the original is still used
+    let k = new_fun("keep", int(Rp.Ptr))
+    let k0 = k.new_block()
+    k.set_block(k0)
+    let kx = k.param(k0, int(Rp.Ptr), -1)
+    let ky = k.clone_of(kx, 1)
+    k.drop_of(kx, 1)
+    k.drop_of(ky, 1)
+    k.ret(kx)
+    optimize(&k)
+    m = m + expect(15, count(&k), 4)
+    /#/ a block that only one jump enters joins its block, its parameter being what the jump passes
+    let j = new_fun("join", i64)
+    let j0 = j.new_block()
+    let j1 = j.new_block()
+    j.set_block(j0)
+    let jp = j.param(j0, i64, -1)
+    j.arg(j.bin(int(Op.Add), jp, j.cint(i64, 5)))
+    j.br(j1)
+    j.set_block(j1)
+    let jq = j.param(j1, i64, -1)
+    j.ret(j.bin(int(Op.Mul), jq, jq))
+    m = m + sound(16, &j)
+    optimize(&j)
+    m = m + sound(17, &j)
+    m = m + expect(18, j.nb, 1)
+    m = m + expect(19, count(&j), 3)
+    /#/ on lowered programs: never longer, and shorter where there is something to remove
+    let raw = lowered_lines(sample(), 0)
+    let opt = lowered_lines(sample(), 1)
+    let shorter = 0
+    if raw > opt:
+        shorter = 1
+    printf("lowered lines: %d, optimized %d\n", raw, opt)
+    m = m + expect(20, shorter, 1)
+    m = m + expect(21, run_src(sample(), true), 18)
+    return m

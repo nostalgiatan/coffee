@@ -219,6 +219,10 @@ class Fun:
         self.nb = n + 1
         return n
 
+    /#/ Keeps only the first `n` blocks (the optimizer renumbers them to the front).
+    fn set_blocks(self, n: int) => void:
+        self.nb = n
+
     fn set_block(self, b: int) => void:
         self.cur = b
 
