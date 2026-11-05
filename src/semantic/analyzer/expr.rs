@@ -325,7 +325,7 @@ impl SemanticAnalyzer {
                 let generic_callee = matches!(function.kind(), Expression::Variable(n)
                     if self.type_registry.read().map(|r| r.is_generic_fn(n)).unwrap_or(false));
                 if matches!(function.kind(), Expression::Variable(n)
-                    if matches!(n.as_str(), "new_buf" | "buf_resize" | "buf_ptr"))
+                    if matches!(n.as_str(), "new_buf" | "buf_resize" | "buf_ptr" | "subslice"))
                     && self.analyze_expression(function).is_err()
                 {
                     let skip = usize::from(matches!(function.kind(), Expression::Variable(n) if n == "new_buf"));
@@ -459,7 +459,9 @@ impl SemanticAnalyzer {
                                 let param_type = &params[i];
                                 let types_match = match (&arg_type, param_type) {
                                     (Type::Int { .. }, Type::Int { .. }) => true,
-                                    _ => arg_type == *param_type,
+                                    _ => arg_type == *param_type
+                                        || (matches!(param_type, Type::Slice(_))
+                                            && param_type.can_coerce_from(&arg_type)),
                                 };
                                 if !types_match {
                                     return Err(TypeSystemError::TypeMismatch {

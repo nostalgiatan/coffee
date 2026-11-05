@@ -244,7 +244,7 @@ where
                     }
                 }
                 if let Expression::Variable(f) = function.kind() {
-                    if matches!(f.as_str(), "new_buf" | "buf_resize" | "buf_ptr")
+                    if matches!(f.as_str(), "new_buf" | "buf_resize" | "buf_ptr" | "subslice")
                         && self.lower_expr(function).is_err()
                     {
                         // `new_buf(T, n)` carries `T` in the result type, not as an argument.
@@ -544,7 +544,7 @@ where
                 let ty = match &array.ty {
                     Type::Array { elem, .. } | Type::Slice(elem) => (**elem).clone(),
                     Type::String => Type::Int { bits: 8, signed: false },
-                    t if t.typed_buf_elem().is_some() => t.typed_buf_elem().cloned().unwrap(),
+                    t if t.buf_elem_viewed().is_some() => t.buf_elem_viewed().cloned().unwrap(),
                     Type::Tuple(elems) => match elems.first() {
                         Some(e) => e.clone(),
                         None => return Ok(None),

@@ -81,6 +81,12 @@ impl super::TypeChecker {
 
         // C `object`: in-params use handle-shaped values (not bool). Out-params
         // only to pointer-sized int, string, ref, or object — never int(4)+.
+        // A borrowed `buf<T>` is a view of its elements: it can be passed where `[T]` is wanted.
+        if let (Type::Slice(want), Type::Ref { elem, .. }) = (expected, found) {
+            if elem.typed_buf_elem() == Some(&**want) {
+                return Ok(true);
+            }
+        }
         if matches!(expected, Type::Variadic) {
             return Ok(found.is_c_handle_value() && !found.is_int());
         }

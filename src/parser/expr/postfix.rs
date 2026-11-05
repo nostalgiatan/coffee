@@ -71,6 +71,23 @@ fn last_top_level_dot(input: &str, mask: &[bool]) -> Option<usize> {
 /// Postfix forms, outermost last: `x[i]`, `f(args)`, `x.method(args)`, `x.field`.
 /// The final suffix of the expression is peeled off and the rest is parsed recursively,
 /// so chains such as `a[1].x` and `c.me().get()` nest correctly.
+/// Byte offset of a `..` outside brackets and strings.
+fn top_level_range(inner: &str) -> Option<usize> {
+    let bytes = inner.as_bytes();
+    let (mut depth, mut in_string) = (0i32, false);
+    for (i, &c) in bytes.iter().enumerate() {
+        match c {
+            b'"' => in_string = !in_string,
+            _ if in_string => {}
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b'.' if depth == 0 && bytes.get(i + 1) == Some(&b'.') => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
+
 pub(super) fn try_postfix(input: &str, start: usize) -> Result<Option<Expression>, String> {
     let mask = string_mask(input);
     let last = input.len() - 1;
@@ -83,6 +100,24 @@ pub(super) fn try_postfix(input: &str, start: usize) -> Result<Option<Expression
                 return Ok(None);
             }
             let array_expr = parse_expression_at(&input[..open], start)?;
+            // `a[lo..hi]`, `a[..hi]`, `a[lo..]` select a view: `subslice(a, lo[, hi])`.
+            if let Some(dots) = top_level_range(&input[open + 1..last]) {
+                let inner = &input[open + 1..last];
+                let (lo, hi) = (inner[..dots].trim(), inner[dots + 2..].trim());
+                let lo_expr = if lo.is_empty() {
+                    Expression::Literal("0".to_string())
+                } else {
+                    parse_expression_at(lo, start + open + 1)?
+                };
+                let mut args = vec![array_expr, lo_expr];
+                if !hi.is_empty() {
+                    args.push(parse_expression_at(hi, start + open + 1 + dots + 2)?);
+                }
+                return Ok(Some(Expression::Call {
+                    function: Box::new(Expression::Variable("subslice".to_string())),
+                    args,
+                }));
+            }
             let index_expr = parse_expression_at(&input[open + 1..last], start + open + 1)?;
             Ok(Some(Expression::Index {
                 array: Box::new(array_expr),

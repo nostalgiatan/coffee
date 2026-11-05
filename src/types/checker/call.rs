@@ -260,7 +260,7 @@ impl super::TypeChecker {
                     return fail(self, "buf_ptr(b) takes one buffer".to_string());
                 }
                 let b = self.check_expression(&args[0])?;
-                if b.typed_buf_elem().is_none() {
+                if b.buf_elem_viewed().is_none() {
                     return fail(self, format!("buf_ptr() takes a buf<T>, found {}", b));
                 }
                 Ok(Type::Variadic)
@@ -284,11 +284,40 @@ impl super::TypeChecker {
             let arg_type = self.check_expression(&args[0])?;
             return match arg_type {
                 Type::String | Type::Slice(_) | Type::Array { .. } => Ok(Type::int()),
-                ref t if t.typed_buf_elem().is_some() => Ok(Type::int()),
+                ref t if t.buf_elem_viewed().is_some() => Ok(Type::int()),
                 other => {
                     let error = TypeSystemError::ParseError {
                         type_str: "len".to_string(),
                         reason: format!("len() takes a str, slice or array, found {}", other),
+                    };
+                    self.add_error(error.clone());
+                    Err(error)
+                }
+            };
+        }
+
+        if name == "subslice" && (2..=3).contains(&args.len()) && !self.user_defines(name) {
+            let source = self.check_expression(&args[0])?;
+            for bound in &args[1..] {
+                if !self.check_expression(bound)?.is_int() {
+                    let error = TypeSystemError::ParseError {
+                        type_str: "subslice".to_string(),
+                        reason: "slice bounds must be integers".to_string(),
+                    };
+                    self.add_error(error.clone());
+                    return Err(error);
+                }
+            }
+            let elem = match &source {
+                Type::Slice(e) => Some((**e).clone()),
+                other => other.buf_elem_viewed().cloned(),
+            };
+            return match elem {
+                Some(e) => Ok(Type::Slice(Box::new(e))),
+                None => {
+                    let error = TypeSystemError::ParseError {
+                        type_str: "subslice".to_string(),
+                        reason: format!("only a buf<T> or a slice can be sliced, found {}", source),
                     };
                     self.add_error(error.clone());
                     Err(error)

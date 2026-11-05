@@ -373,6 +373,19 @@ impl super::TypeChecker {
         ty: &Type,
         what: &str,
     ) -> Result<(), TypeSystemError> {
+        // A subslice borrows its buffer, and nothing tracks that loan past the statement, so it
+        // may only be consumed right where it is written (an argument, an index, `len`).
+        if what != "call argument"
+            && matches!(expr.kind(), crate::parser::expr::Expression::Call { function, .. }
+                if matches!(function.kind(), crate::parser::expr::Expression::Variable(n) if n == "subslice"))
+        {
+            let error = TypeSystemError::OwnershipError {
+                reason: format!("a subslice cannot be stored ({what}); pass it straight to the function that reads it"),
+                span: Span::new(0, 0),
+            };
+            self.add_error(error.clone());
+            return Err(error);
+        }
         if !self.ty_is_owned_resource(ty) {
             return Ok(());
         }

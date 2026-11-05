@@ -147,6 +147,15 @@ impl Type {
         }
     }
 
+    /// Element type of a `buf<T>` seen directly or through a `&` / `&mut` borrow. Only reading,
+    /// writing and `len` look through the borrow; ownership (drop, move, resize) never does.
+    pub fn buf_elem_viewed(&self) -> Option<&Type> {
+        match self {
+            Type::Ref { elem, .. } => elem.typed_buf_elem(),
+            other => other.typed_buf_elem(),
+        }
+    }
+
     pub fn is_buf(&self) -> bool {
         matches!(self, Type::NamedType { name } if name == "buf")
     }
@@ -316,6 +325,8 @@ impl Type {
             (Type::Ref { elem: e1, mutable: false }, Type::Ref { elem: e2, mutable: true }) => {
                 e1.can_coerce_from(e2)
             }
+            // A borrowed `buf<T>` is a view of its elements: it can be passed where `[T]` is wanted.
+            (Type::Slice(want), Type::Ref { elem, .. }) if elem.typed_buf_elem() == Some(&**want) => true,
             // 单元类型可以是 void
             (Type::Unit, Type::Void) => true,
             _ => false,

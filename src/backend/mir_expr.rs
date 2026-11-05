@@ -354,7 +354,11 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         &mut self,
         collection: &HirExpr,
     ) -> Result<BasicValueEnum<'ctx>, String> {
-        if collection.ty.typed_buf_elem().is_some() {
+        if collection.ty.buf_elem_viewed().is_some() {
+            let value = self.compile_hir_expr_typed(collection)?;
+            return Ok(self.buf_split(value)?.1.into());
+        }
+        if matches!(collection.ty, Type::Slice(_)) && hir_variable_name(collection).is_none() {
             let value = self.compile_hir_expr_typed(collection)?;
             return Ok(self.buf_split(value)?.1.into());
         }
@@ -654,7 +658,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         index: &HirExpr,
         _full: &HirExpr,
     ) -> Result<BasicValueEnum<'ctx>, String> {
-        if array.ty.typed_buf_elem().is_some() {
+        if array.ty.buf_elem_viewed().is_some() {
             return self.compile_hir_buf_index(array, index);
         }
         if matches!(array.ty, Type::String) {
@@ -826,7 +830,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         value: &HirExpr,
     ) -> Result<BasicValueEnum<'ctx>, String> {
         let ptr = match &target.kind {
-            HirExprKind::Index { array, index } if array.ty.typed_buf_elem().is_some() => {
+            HirExprKind::Index { array, index } if array.ty.buf_elem_viewed().is_some() => {
                 self.buf_element_ptr(array, index)?.0
             }
             HirExprKind::Index { array, index } => {
@@ -1334,7 +1338,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         args: &[HirExpr],
         _full: &HirExpr,
     ) -> Result<BasicValueEnum<'ctx>, String> {
-        if matches!(func_name, "new_buf" | "buf_resize" | "buf_ptr") && !self.variables.contains_key(func_name) {
+        if matches!(func_name, "new_buf" | "buf_resize" | "buf_ptr" | "subslice") && !self.variables.contains_key(func_name) {
             if let Some(v) = self.compile_buf_intrinsic(func_name, args, _full)? {
                 return Ok(v);
             }
@@ -1535,6 +1539,17 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 continue;
             }
             let param_type = param_types[i];
+            // `&buf<T>` passed as `[T]`: the borrow points at the `{ptr, len}` pair, which is
+            // exactly the slice layout, so the view is a plain load.
+            let fat = BasicTypeEnum::from(self.type_mapper.slice_fat_type());
+            let arg = &if param_type == fat && matches!(arg, BasicValueEnum::PointerValue(_)) {
+                self.backend
+                    .builder
+                    .build_load(fat, arg.into_pointer_value(), "buf_view")
+                    .map_err(|e| self.error("function_call", e.to_string()))?
+            } else {
+                *arg
+            };
             let arg_type = arg.get_type();
             if !self.are_types_compatible(arg_type, param_type) {
                 let arg_type_str = self.type_to_string(arg_type);

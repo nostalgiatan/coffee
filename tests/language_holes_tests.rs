@@ -360,3 +360,44 @@ fn test_buf_sized_element_and_raw_pointer_escape() {
     let src = "use memset in libc of c\n\nfn main() => int:\n    let b: buf<int> = new_buf(int, 4)\n    memset(buf_ptr(b), 255, 8)\n    if b[0] == 0 - 1:\n        return 0\n    return 1\n";
     assert_exit_code(src, 0).unwrap();
 }
+
+const SUM_SLICE: &str = "fn sum(xs: [int]) => int:\n    let t = 0\n    for x in xs:\n        t = t + x\n    return t\n\n";
+
+#[test]
+fn test_borrowed_buf_reads_and_writes() {
+    let read = "fn first(b: &buf<int>) => int:\n    return b[0] + len(b)\n\nfn main() => int:\n    let b: buf<int> = new_buf(int, 2)\n    b[0] = 5\n    return first(&b)\n";
+    assert_exit_code(read, 7).unwrap();
+    assert_balanced(read);
+    let write = "fn set(b: &mut buf<int>) => void:\n    b[1] = 8\n\nfn main() => int:\n    let b: buf<int> = new_buf(int, 2)\n    set(&mut b)\n    return b[1]\n";
+    assert_exit_code(write, 8).unwrap();
+}
+
+#[test]
+fn test_borrowed_buf_is_a_slice_view() {
+    let src = format!("{SUM_SLICE}fn main() => int:\n    let b: buf<int> = new_buf(int, 3)\n    b[0] = 1\n    b[1] = 2\n    b[2] = 3\n    return sum(&b)\n");
+    assert_exit_code(&src, 6).unwrap();
+    assert_balanced(&src);
+}
+
+#[test]
+fn test_subslice_ranges() {
+    let main = |tail: &str| format!("{SUM_SLICE}fn main() => int:\n    let b: buf<int> = new_buf(int, 4)\n    b[0] = 1\n    b[1] = 2\n    b[2] = 3\n    b[3] = 4\n    return {tail}\n");
+    assert_exit_code(&main("sum(b[1..3])"), 5).unwrap();
+    assert_exit_code(&main("sum(b[2..])"), 7).unwrap();
+    assert_exit_code(&main("sum(b[..2])"), 3).unwrap();
+    assert_exit_code(&main("len(b[1..3])"), 2).unwrap();
+    assert_balanced(&main("sum(b[1..3])"));
+}
+
+#[test]
+fn test_subslice_out_of_range_stops_the_program() {
+    let src = "fn n(xs: [int]) => int:\n    return len(xs)\n\nfn main() => int:\n    let b: buf<int> = new_buf(int, 4)\n    let i = 5\n    return n(b[1..i])\n";
+    let r = compile_and_run_coffee(src).unwrap();
+    assert_eq!(r.exit_code, 1);
+    assert!(r.stdout.contains("Slice range out of bounds"), "{:?}", r.stdout);
+}
+
+#[test]
+fn test_subslice_cannot_be_stored() {
+    assert_compile_error("fn main() => int:\n    let b: buf<int> = new_buf(int, 4)\n    let s = b[1..3]\n    return 0\n", "a subslice cannot be stored").unwrap();
+}

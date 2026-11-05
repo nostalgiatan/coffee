@@ -333,7 +333,7 @@ impl super::TypeChecker {
                     Type::Array { ref elem, .. } => Ok(*elem.clone()),
                     Type::Slice(ref elem) => Ok(*elem.clone()),
                     Type::String => Ok(Type::Int { bits: 8, signed: false }),
-                    ref t if t.typed_buf_elem().is_some() => Ok(t.typed_buf_elem().cloned().unwrap()),
+                    ref t if t.buf_elem_viewed().is_some() => Ok(t.buf_elem_viewed().cloned().unwrap()),
                     _ => Err(TypeSystemError::ParseError {
                         type_str: format!("array indexing"),
                         reason: format!("cannot index non-array type {:?}", array_type),

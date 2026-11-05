@@ -33,7 +33,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
 
     fn buf_elem_llvm(&self, ty: &Type) -> Result<BasicTypeEnum<'ctx>, String> {
         let elem = ty
-            .typed_buf_elem()
+            .buf_elem_viewed()
             .ok_or_else(|| self.error("buf", format!("'{}' is not a buf<T>", ty)))?;
         self.coffee_type_to_llvm(&elem.to_string())
             .map_err(|e| self.error("buf", e))
@@ -243,6 +243,54 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                     }
                 }
                 Ok(Some(self.buf_pack(data, n)?))
+            }
+            "subslice" => {
+                let Type::Slice(elem_ty) = &full.ty else {
+                    return Err(self.error("buf", "subslice must produce a slice"));
+                };
+                let elem = self
+                    .coffee_type_to_llvm(&elem_ty.to_string())
+                    .map_err(|e| self.error("buf", e))?;
+                let source = self.compile_hir_expr_typed(&args[0])?;
+                let (data, len) = self.buf_split(source)?;
+                let widen = |this: &mut Self, v: IntValue<'ctx>| {
+                    this.backend
+                        .builder
+                        .build_int_s_extend_or_bit_cast(v, i64_type, "slice_bound")
+                        .map_err(|e| this.error("buf", e.to_string()))
+                };
+                let lo = self.compile_hir_expr_typed(&args[1])?.into_int_value();
+                let lo = widen(self, lo)?;
+                let hi = match args.get(2) {
+                    Some(h) => {
+                        let h = self.compile_hir_expr_typed(h)?.into_int_value();
+                        widen(self, h)?
+                    }
+                    None => len,
+                };
+                // Unsigned compares also reject negative bounds.
+                let b = &self.backend.builder;
+                let lo_past_hi = b
+                    .build_int_compare(IntPredicate::UGT, lo, hi, "slice_lo_hi")
+                    .map_err(|e| self.error("buf", e.to_string()))?;
+                let hi_past_len = b
+                    .build_int_compare(IntPredicate::UGT, hi, len, "slice_hi_len")
+                    .map_err(|e| self.error("buf", e.to_string()))?;
+                let bad = b
+                    .build_or(lo_past_hi, hi_past_len, "slice_bad")
+                    .map_err(|e| self.error("buf", e.to_string()))?;
+                self.emit_failure_if(bad, "Slice range out of bounds")?;
+                // SAFETY: `lo <= hi <= len` was just checked.
+                let start = unsafe {
+                    self.backend.builder.build_in_bounds_gep(elem, data, &[lo], "slice_start")
+                }
+                .map_err(|e| self.error("buf", e.to_string()))?;
+                let count = self
+                    .backend
+                    .builder
+                    .build_int_sub(hi, lo, "slice_len")
+                    .map_err(|e| self.error("buf", e.to_string()))?;
+                Ok(Some(self.buf_pack(start, count)?))
             }
             "buf_ptr" => {
                 let value = self.compile_hir_expr_typed(&args[0])?;
