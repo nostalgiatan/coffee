@@ -1401,7 +1401,7 @@ class Typer:
             return
         let mark = self.rd.sc.loc.n
         self.rd.bind_params(t, a, cl)
-        let self_ty = t.named(g.info[ci])
+        let self_ty = self_type(t, g, ci)
         let f = a.child[cl]
         while f >= 0:
             if a.kind[f] == int(Nk.Fn):

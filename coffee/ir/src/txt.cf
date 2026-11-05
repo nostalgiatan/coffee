@@ -29,6 +29,15 @@ class Txt:
             self.put_int(v // 10)
             self.put_byte('0' + v % 10)
 
+    /#/ Is the text the same as `o`?
+    fn same(self, o: &Txt) => bool:
+        if self.n != o.n:
+            return false
+        for i in 0..self.n:
+            if self.b[i] != o.b[i]:
+                return false
+        return true
+
     /#/ Does the text equal `want`?
     fn is(self, want: &str) => bool:
         if self.n != len(want):

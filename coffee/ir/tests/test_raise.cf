@@ -1,0 +1,15 @@
+use * in drive
+
+fn main() => int:
+    let m = 0
+    /#/ a listener's result is what the function returns
+    m = m + expect_exit("class Err of Error:\n    x: int\n\nfn on_err(err: Error) => int:\n    return err.code\n\nfn div(a: int, b: int) #on_err => int:\n    if b == 0:\n        raise Error(7, \"zero\")\n    return a // b\n\nfn main() => int:\n    return div(10, 2) + div(1, 0)\n", 12)
+    /#/ no listener: the process ends with status 1
+    m = m + expect_exit_early("fn f(k: int) => int:\n    if k > 1:\n        raise Error(3, \"too big\")\n    return k\n\nfn main() => int:\n    return f(5)\n", 1)
+    /#/ owned values are released before the listener answers
+    m = m + expect_exit("fn on_err(err: Error) => int:\n    return len(err.note)\n\nfn f(k: int) #on_err => int:\n    let s = \"abc\" + \"def\"\n    if k > 0:\n        raise Error(1, \"four\")\n    return 0\n\nfn main() => int:\n    return f(1) + f(0)\n", 4)
+    /#/ a void listener
+    m = m + expect_exit("fn on_err(err: Error) => void:\n    return\n\nfn f(k: int) #on_err => void:\n    raise Error(1)\n\nfn main() => int:\n    f(1)\n    return 3\n", 3)
+    /#/ a raised value of a subclass
+    m = m + expect_exit("class Bad of Error:\n    extra: int\n\nfn on_err(err: Error) => int:\n    return err.code\n\nfn f() #on_err => int:\n    let b = Bad { code: 9, note: \"n\", e: 0, extra: 2 }\n    raise b\n\nfn main() => int:\n    return f()\n", 9)
+    return m

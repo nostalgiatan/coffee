@@ -3,4 +3,6 @@ use * in types_probe
 fn main() => int:
     let m = 0
     m = m + miss_ok("enum S:\n    A(int)\n    B\n\nfn f(s: &S) => int:\n    match s:\n        S.A(r) =>\n            return r\n        S.B =>\n            return 0\n\nfn main() => int:\n    let a = S.A(1)\n    return f(&a)\n")
+    /#/ `self` of a generic class carries the class's own type parameters
+    m = m + miss_ok("class Box<T>:\n    v: T\n\n    fn get(self) => &T:\n        return &self.v\n\nfn main() => int:\n    let b: Box<int> = Box { v: 3 }\n    return b.v\n")
     return m

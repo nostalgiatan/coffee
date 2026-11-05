@@ -25,6 +25,21 @@ fn declare_c(t: &Tys, g: &Syms) => void:
             return
     declare_c_lib(t, g, c_libc_source(), "libc.cfc")
     declare_c_lib(t, g, c_libm_source(), "libm.cfc")
+    declare_error(t, g)
+
+/#/ The fields of the builtin class `Error`: `code: int`, `note: str`, `e: object`.
+fn declare_error(t: &Tys, g: &Syms) => void:
+    for i in 0..g.n:
+        if g.kind[i] == int(Sk.Class) && g.mod[i] == -1 && g.size[i] == 5 && g.pool[g.off[i]] == 'E' && g.pool[g.off[i] + 4] == 'r':
+            for f in 0..g.n:
+                if g.info[f] == i && g.kind[f] == int(Sk.Field) && g.mod[f] == -1:
+                    let c = g.pool[g.off[f]]
+                    if c == 'c':
+                        g.ty[f] = t.int_ty(8, true)
+                    elif c == 'n':
+                        g.ty[f] = t.simple(int(Ty.Str))
+                    else:
+                        g.ty[f] = t.simple(int(Ty.Object))
 
 fn declare_c_lib(t: &Tys, g: &Syms, src: str, name: &str) => void:
     let a = parse(src)
@@ -104,13 +119,24 @@ fn count_params(a: &Ast, f: int) => int:
         p = a.next[p]
     return k
 
+/#/ The type of `self` in a method of class row `ci`: the class, applied to its own type
+/#/ parameters when it has some.
+fn self_type(t: &Tys, g: &Syms, ci: int) => int:
+    let n = g.ty[ci]
+    if n <= 0:
+        return t.named(g.info[ci])
+    let start = t.args_n
+    for i in 0..n:
+        t.push_arg(t.param_ty(i))
+    return t.intern(int(Ty.Named), g.info[ci], 0, n, start)
+
 fn declare_class(t: &Tys, g: &Syms, rd: &Reader, a: &Ast, cl: int, m: int) => void:
     let ci = g.find_in_module(a, a.pa[cl], m)
     if ci < 0:
         return
-    let self_ty = t.named(g.info[ci])
     /#/ the class row's `ty` is its number of type parameters
     g.ty[ci] = count_params(a, cl)
+    let self_ty = self_type(t, g, ci)
     let mark = rd.bind_params(t, a, cl)
     let f = a.child[cl]
     while f >= 0:

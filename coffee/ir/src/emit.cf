@@ -63,7 +63,7 @@ fn new_names() => Names:
 
 /#/ What the generated code calls on its own: `alloc` and `free`, buffers, bounds failures, `len`.
 fn emit_prelude(o: &Txt) => void:
-    o.put("declare ptr @malloc(i64)\ndeclare void @free(ptr)\ndeclare ptr @calloc(i64, i64)\ndeclare void @exit(i32)\ndeclare i64 @strlen(ptr)\ndeclare ptr @strdup(ptr)\ndeclare ptr @memcpy(ptr, ptr, i64)\ndeclare i32 @strcmp(ptr, ptr)\n")
+    o.put("declare ptr @malloc(i64)\ndeclare void @free(ptr)\ndeclare ptr @calloc(i64, i64)\ndeclare void @exit(i32)\ndeclare i64 @strlen(ptr)\ndeclare ptr @strdup(ptr)\ndeclare ptr @memcpy(ptr, ptr, i64)\ndeclare i32 @strcmp(ptr, ptr)\ndeclare i64 @write(i32, ptr, i64)\n")
 
 /#/ An LLVM type.
 fn put_ty(o: &Txt, rs: &Reps, r: int) => void:

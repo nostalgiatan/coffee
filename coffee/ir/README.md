@@ -17,12 +17,16 @@ in columns. See `DESIGN.md` for the design and the order of work.
   that were only borrowed are dropped at the end of the statement; `drop.N` / `clone.N` glue
   functions are generated per class type; enums (a bare tag, or a heap block with the tag and the
   payload of the live variant), `match` on enums and integers (arms tried in order, guards,
-  payload names bound to copies), `for` over arrays, slices and `buf` of plain elements
+  payload names bound to copies), `for` over arrays, slices and `buf` of plain elements; `raise`
+  (with a listener: an `Error` is built, the listener called and its result returned after the
+  scope is released; without: message to stderr, then exit 1); generics by instantiation: a call
+  of a generic function or a method of a generic class asks for `name__<args>`, lowered once per
+  set of type arguments
 - `src/drive.cf` — test support: source text through the front end, IR and clang, then run
 - `src/emit.cf` — LLVM text: phis for block parameters, slots in the entry block, `Syms` for callee names
 
-Steps 1 to 6 are done, except `raise` and generics (builder, printer, verifier; emitter; scalars,
-control flow and calls; slots, classes, `buf<T>`, arrays; ownership; enums, `match`, `for`). Lowering reads the typed tree of `coffee/types`, so
+Steps 1 to 6 are done (builder, printer, verifier; emitter; scalars,
+control flow and calls; slots, classes, `buf<T>`, arrays; ownership; enums, `match`, `for`, `raise`, generics). Lowering reads the typed tree of `coffee/types`, so
 the tests need its paths:
 
     coffee test --test-mode -I ../types/src -I ../sema/src -I ../parser/src -I ../lexer/src -I src
@@ -30,7 +34,7 @@ the tests need its paths:
 The lowering tests compile with AddressSanitizer: a leak or a double free fails them (exit 99).
 Field offsets and sizes come from the storage table of `coffee/types`; `test_layout.cf` pins them.
 
-Not lowered yet (a function that uses one is reported as `bad`, not emitted): `raise` and
-listeners, generics, nested patterns, `for` over owned elements, arrays of resources, tuples that
+Not lowered yet (a function that uses one is reported as `bad`, not emitted): nested patterns, generic
+methods of their own and static functions of generic classes, `for` over owned elements, arrays of resources, tuples that
 own something. `match` is a chain of tests, not a `switch`; LLVM turns it into one.
 Temporaries inside `&&`/`||` that were only borrowed are not released.

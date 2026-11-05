@@ -21,24 +21,28 @@ fn run_src(src: str, leaks: bool) => int:
     let body = new_txt()
     let it = a.child[a.root]
     while it >= 0:
-        if a.kind[it] == int(Nk.Fn):
+        if a.kind[it] == int(Nk.Fn) && type_param_count(&a, it) == 0:
             lw.function(&t, &g, &ty, &a, it, -1)
             if lw.bad > 0:
-                putchar(63)
+                printf("unsupported: node kind %d at line %d\n", a.kind[lw.bad_node], a.toks.line[a.tok[lw.bad_node]])
                 return -3
             lw.emit_current(&body)
-        elif a.kind[it] == int(Nk.Class):
+        elif a.kind[it] == int(Nk.Class) && type_param_count(&a, it) == 0:
             let row = g.find_in_module(&a, a.pa[it], ty.cur)
             let c = a.child[it]
             while c >= 0:
                 if a.kind[c] == int(Nk.Fn):
                     lw.function(&t, &g, &ty, &a, c, row)
                     if lw.bad > 0:
-                        putchar(63)
+                        printf("unsupported: node kind %d at line %d\n", a.kind[lw.bad_node], a.toks.line[a.tok[lw.bad_node]])
                         return -3
                     lw.emit_current(&body)
                 c = a.next[c]
         it = a.next[it]
+    lw.run_instances(&t, &g, &ty, &a, &body)
+    if lw.bad > 0:
+        printf("unsupported: node kind %d at line %d\n", a.kind[lw.bad_node], a.toks.line[a.tok[lw.bad_node]])
+        return -3
     o.put_all(&lw.globals)
     lw.emit_decls(&o, &t, &g)
     lw.emit_glue(&body, &t, &g)
