@@ -1,0 +1,31 @@
+use * in check
+
+fn shape_of(src: &str, want: &str) => int:
+    let t = lex(src)
+    return miss_shape(&t, want)
+
+fn main() => int:
+    let bad = 0
+    /#/ an unterminated string stops at the newline
+    bad = bad + shape_of("\"abc\nx\n", "XNwNE")
+    bad = bad + shape_of("\"abc", "XNE")
+    /#/ a bad escape poisons the string but lexing resumes after it
+    bad = bad + shape_of("\"a\\qb\" x", "XwNE")
+    bad = bad + shape_of("\"\\x4\"", "XNE")
+    /#/ malformed numbers and chars
+    bad = bad + shape_of("0x", "XNE")
+    bad = bad + shape_of("12ab", "XNE")
+    bad = bad + shape_of("'ab'", "XNE")
+    bad = bad + shape_of("''", "XNE")
+    /#/ stray characters, lone `#`, unbalanced brackets
+    bad = bad + shape_of("a @ b", "wXwNE")
+    bad = bad + shape_of("# x", "XwNE")
+    bad = bad + shape_of(")", "XNE")
+    bad = bad + shape_of("(a", "(wXNE")
+    /#/ tabs in indentation and a dedent to a level that was never open
+    bad = bad + shape_of("a:\n\tb\n", "w:NXIwNDE")
+    bad = bad + shape_of("if a:\n        b\n    d\n", "kw:NIwNDXwNE")
+    /#/ lexing always ends with Eof, even on empty input
+    bad = bad + shape_of("", "E")
+    bad = bad + shape_of("\n\n", "E")
+    return bad

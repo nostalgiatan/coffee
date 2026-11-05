@@ -1,0 +1,39 @@
+use * in check
+
+fn shape_of(src: &str, want: &str) => int:
+    let t = lex(src)
+    return miss_shape(&t, want)
+
+fn lexeme(src: &str, word: &str, kind: int) => int:
+    let t = lex(src)
+    let bad = 0
+    bad = bad + miss(&t, 0, kind)
+    bad = bad + miss_text(src, &t, 0, word)
+    return bad
+
+fn main() => int:
+    let bad = 0
+    /#/ integers in every radix, with separators
+    bad = bad + lexeme("12345", "12345", int(Tk.Int))
+    bad = bad + lexeme("1_000_000", "1_000_000", int(Tk.Int))
+    bad = bad + lexeme("0xFF_ff", "0xFF_ff", int(Tk.Int))
+    bad = bad + lexeme("0b1010", "0b1010", int(Tk.Int))
+    bad = bad + lexeme("0o755", "0o755", int(Tk.Int))
+    /#/ floats
+    bad = bad + lexeme("3.14", "3.14", int(Tk.Float))
+    bad = bad + lexeme("1e9", "1e9", int(Tk.Float))
+    bad = bad + lexeme("2.5E-3", "2.5E-3", int(Tk.Float))
+    /#/ `1..5` is a range, not a float
+    bad = bad + shape_of("1..5", "ioiNE")
+    /#/ `x.y` and `1.method` keep the dot apart
+    bad = bad + shape_of("a.b", "wowNE")
+    /#/ strings, escapes, f-strings and chars
+    bad = bad + lexeme("\"hello\"", "\"hello\"", int(Tk.Str))
+    bad = bad + lexeme("\"a\\\"b\\n\\x41\"", "\"a\\\"b\\n\\x41\"", int(Tk.Str))
+    bad = bad + lexeme("f\"x = {x}\"", "f\"x = {x}\"", int(Tk.FStr))
+    bad = bad + lexeme("'a'", "'a'", int(Tk.Char))
+    bad = bad + lexeme("'\\n'", "'\\n'", int(Tk.Char))
+    bad = bad + lexeme("'\\''", "'\\''", int(Tk.Char))
+    /#/ an identifier that merely starts with f is not an f-string
+    bad = bad + shape_of("foo \"x\"", "wsNE")
+    return bad

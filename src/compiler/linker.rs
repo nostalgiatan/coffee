@@ -313,6 +313,12 @@ pub fn clang_link_args(
 ) -> Vec<String> {
     let mut args = clang_driver_flags(options.opt_level, options.target_triple.as_deref());
 
+    // `use` copies the imported definitions into the importing unit, so a
+    // module that is also its own unit defines the same symbols twice.
+    if object_files.len() > 1 {
+        args.push("-Wl,--allow-multiple-definition".to_string());
+    }
+
     for obj in object_files {
         let Some(path) = obj.to_str() else {
             continue;

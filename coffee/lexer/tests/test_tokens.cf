@@ -1,0 +1,64 @@
+use * in check
+
+fn kind_of(src: &str, kind: int) => int:
+    let t = lex(src)
+    let bad = miss(&t, 0, kind)
+    bad = bad + miss_text(src, &t, 0, src)
+    return bad
+
+fn main() => int:
+    let bad = 0
+    /#/ operators: longest match wins
+    bad = bad + kind_of("+", int(Tk.Plus))
+    bad = bad + kind_of("-", int(Tk.Minus))
+    bad = bad + kind_of("*", int(Tk.Star))
+    bad = bad + kind_of("/", int(Tk.Slash))
+    bad = bad + kind_of("//", int(Tk.SlashSlash))
+    bad = bad + kind_of("%", int(Tk.Percent))
+    bad = bad + kind_of("&", int(Tk.Amp))
+    bad = bad + kind_of("&&", int(Tk.AmpAmp))
+    bad = bad + kind_of("|", int(Tk.Pipe))
+    bad = bad + kind_of("||", int(Tk.PipePipe))
+    bad = bad + kind_of("^", int(Tk.Caret))
+    bad = bad + kind_of("<<", int(Tk.Shl))
+    bad = bad + kind_of(">>", int(Tk.Shr))
+    bad = bad + kind_of("<", int(Tk.Lt))
+    bad = bad + kind_of("<=", int(Tk.Le))
+    bad = bad + kind_of(">", int(Tk.Gt))
+    bad = bad + kind_of(">=", int(Tk.Ge))
+    bad = bad + kind_of("==", int(Tk.EqEq))
+    bad = bad + kind_of("!=", int(Tk.NotEq))
+    bad = bad + kind_of("!", int(Tk.Bang))
+    bad = bad + kind_of("~", int(Tk.Tilde))
+    bad = bad + kind_of("=", int(Tk.Assign))
+    bad = bad + kind_of("=>", int(Tk.Arrow))
+    bad = bad + kind_of("::", int(Tk.ColonColon))
+    bad = bad + kind_of("..", int(Tk.DotDot))
+    bad = bad + kind_of(".", int(Tk.Dot))
+    bad = bad + kind_of(",", int(Tk.Comma))
+    bad = bad + kind_of(":", int(Tk.Colon))
+    /#/ keywords map onto the contiguous KwFn.. block in table order
+    bad = bad + kind_of("fn", int(Tk.KwFn))
+    bad = bad + kind_of("c", int(Tk.KwC))
+    bad = bad + kind_of("class", int(Tk.KwClass))
+    bad = bad + kind_of("elif", int(Tk.KwElif))
+    bad = bad + kind_of("while", int(Tk.KwWhile))
+    bad = bad + kind_of("match", int(Tk.KwMatch))
+    bad = bad + kind_of("mv", int(Tk.KwMv))
+    bad = bad + kind_of("clone", int(Tk.KwClone))
+    bad = bad + kind_of("rm", int(Tk.KwRm))
+    bad = bad + kind_of("raise", int(Tk.KwRaise))
+    bad = bad + kind_of("continue", int(Tk.KwContinue))
+    bad = bad + kind_of("true", int(Tk.KwTrue))
+    bad = bad + kind_of("float", int(Tk.KwFloat))
+    bad = bad + kind_of("str", int(Tk.KwStr))
+    bad = bad + kind_of("void", int(Tk.KwVoid))
+    /#/ near misses stay identifiers
+    bad = bad + kind_of("fns", int(Tk.Ident))
+    bad = bad + kind_of("lett", int(Tk.Ident))
+    bad = bad + kind_of("_c", int(Tk.Ident))
+    bad = bad + kind_of("Class", int(Tk.Ident))
+    bad = bad + kind_of("str2", int(Tk.Ident))
+    /#/ error-listener tokens
+    bad = bad + kind_of("#timeout", int(Tk.Listener))
+    return bad

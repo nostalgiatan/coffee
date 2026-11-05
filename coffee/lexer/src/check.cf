@@ -1,0 +1,100 @@
+/#/ Assertions over a token table, shared by the test programs.
+/#/ Every helper returns 0 when the expectation holds and 1 when it does not,
+/#/ so a test sums them and exits with the number of failures.
+use * in lexer
+
+fn miss(t: &Tokens, i: int, kind: int) => int:
+    if t.kind_at(i) == kind:
+        return 0
+    return 1
+
+/#/ The lexeme of token i equals `word`.
+fn miss_text(src: &str, t: &Tokens, i: int, word: &str) => int:
+    if i < 0 || i >= t.count:
+        return 1
+    let s = t.start[i]
+    let e = t.end[i]
+    if e - s != len(word):
+        return 1
+    for k in 0..len(word):
+        if byte(src, s + k) != byte(word, k):
+            return 1
+    return 0
+
+fn miss_pos(t: &Tokens, i: int, line: int, col: int) => int:
+    if i < 0 || i >= t.count:
+        return 1
+    if t.line[i] == line && t.col[i] == col:
+        return 0
+    return 1
+
+fn miss_count(t: &Tokens, n: int) => int:
+    if t.count == n:
+        return 0
+    return 1
+
+/#/ Number of Error tokens in the table.
+fn errors(t: &Tokens) => int:
+    let k = 0
+    for i in 0..t.count:
+        if t.kind[i] == int(Tk.Error):
+            k = k + 1
+    return k
+
+/#/ One letter per token class, for compact expectations:
+/#/   N newline  I indent  D dedent  E eof  X error  w identifier  k keyword
+/#/   i int  d float  s string  f f-string  c char  @ listener
+/#/   ( ) [ ] { } , :  the delimiters   o any other operator
+fn shape_char(kind: int) => int:
+    if kind == int(Tk.Newline):
+        return 'N'
+    if kind == int(Tk.Indent):
+        return 'I'
+    if kind == int(Tk.Dedent):
+        return 'D'
+    if kind == int(Tk.Eof):
+        return 'E'
+    if kind == int(Tk.Error):
+        return 'X'
+    if kind == int(Tk.Ident):
+        return 'w'
+    if kind == int(Tk.Int):
+        return 'i'
+    if kind == int(Tk.Float):
+        return 'd'
+    if kind == int(Tk.Str):
+        return 's'
+    if kind == int(Tk.FStr):
+        return 'f'
+    if kind == int(Tk.Char):
+        return 'c'
+    if kind == int(Tk.Listener):
+        return '@'
+    if kind >= int(Tk.KwFn) && kind <= int(Tk.KwVoid):
+        return 'k'
+    if kind == int(Tk.LParen):
+        return '('
+    if kind == int(Tk.RParen):
+        return ')'
+    if kind == int(Tk.LBracket):
+        return '['
+    if kind == int(Tk.RBracket):
+        return ']'
+    if kind == int(Tk.LBrace):
+        return '{'
+    if kind == int(Tk.RBrace):
+        return '}'
+    if kind == int(Tk.Comma):
+        return ','
+    if kind == int(Tk.Colon):
+        return ':'
+    return 'o'
+
+/#/ The whole table, spelled in shape letters, equals `shape` (Eof included).
+fn miss_shape(t: &Tokens, shape: &str) => int:
+    if t.count != len(shape):
+        return 1
+    for i in 0..t.count:
+        if shape_char(t.kind[i]) != byte(shape, i):
+            return 1
+    return 0

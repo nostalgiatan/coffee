@@ -34,6 +34,16 @@ impl super::super::TypeChecker {
         if from.is_numeric() && to.is_numeric() {
             return true;
         }
+        // A fieldless enum is its variant number; the way back (int to enum) does not exist.
+        if let (Type::NamedType { name }, Type::Int { .. }) = (from, to) {
+            if let Ok(reg) = self.registry.read() {
+                if let Some(crate::types::definition::TypeDef::Enum { variants, .. }) = reg.get_type(name) {
+                    if variants.iter().all(|v| v.fields.is_empty()) {
+                        return true;
+                    }
+                }
+            }
+        }
         // Forging or inspecting a raw pointer is always spelled out: `n as object`, `p as int`.
         if matches!(
             (from, to),

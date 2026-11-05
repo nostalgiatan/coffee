@@ -90,7 +90,10 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 self.variable_types.insert(param.name.clone(), param.param_type.clone());
             }
             if param.name != "self"
-                && (param.param_type == "str" || self.is_owned_aggregate_type(&param.param_type))
+                && (param.param_type == "str"
+                    || self.is_owned_aggregate_type(&param.param_type)
+                    || crate::types::type_from_str(&param.param_type)
+                        .is_ok_and(|t| t.typed_buf_elem().is_some()))
             {
                 self.owned_aggregate_params
                     .push((param.name.clone(), param.param_type.clone()));

@@ -88,7 +88,7 @@ pub fn parse_if_at(input: &str, base: usize) -> IResult<&str, IfExpr> {
     let has_newline = input.starts_with('\n');
     let (input, body) = if has_newline {
         // Multiline body - pass input with whitespace to parse_statement_block
-        parse_statement_block(input, false)?
+        parse_statement_block(input)?
     } else {
         // Single line body - parse inline
         let (tmp_input, _) = multispace0(input)?;
@@ -167,7 +167,7 @@ fn parse_elif(input: &str) -> IResult<&str, ElifBranch> {
     // Check if there's a newline (multiline body)
     let has_newline = input.starts_with('\n');
     let (input, body) = if has_newline {
-        parse_statement_block(input, false)?
+        parse_statement_block(input)?
     } else {
         let (tmp_input, _) = multispace0(input)?;
         if tmp_input.is_empty() {
@@ -228,7 +228,7 @@ fn parse_else(input: &str) -> IResult<&str, Vec<Statement>> {
     // Check if there's a newline (multiline body)
     let has_newline = input.starts_with('\n');
     let (input, body) = if has_newline {
-        parse_statement_block(input, true)?
+        parse_statement_block(input)?
     } else {
         let (input, _) = multispace0(input)?;
         if input.is_empty() {
@@ -269,14 +269,12 @@ fn parse_else(input: &str) -> IResult<&str, Vec<Statement>> {
 /// # Arguments
 /// 
 /// * `input` - The input string containing the block to parse
-/// * `is_last_branch` - Flag indicating if this is the last branch in an if expression
-///   (for else blocks, where no elif/else can follow)
 /// 
 /// # Returns
 /// 
 /// * `Ok((remaining, Vec<Statement>))` - Successfully parsed statements and remaining input
 /// * `Err(nom::Err)` - If the block parsing fails
-pub(super) fn parse_statement_block(input: &str, is_last_branch: bool) -> IResult<&str, Vec<Statement>> {
+pub(super) fn parse_statement_block(input: &str) -> IResult<&str, Vec<Statement>> {
     if !input.starts_with('\n') {
         // Single line - try both multiline and single line parsers
         let (input, line) = take_until_newline(input)?;
@@ -340,21 +338,9 @@ pub(super) fn parse_statement_block(input: &str, is_last_branch: bool) -> IResul
                 line
             };
 
-            // For if/elif bodies, check if we encounter elif or else at the SAME indent level
-            if !is_last_branch {
-                let trimmed = content.trim();
-                // Only break if we're back to base indent level (not nested)
-                let current_indent = if line.starts_with(indent) {
-                    indent.len()
-                } else {
-                    0
-                };
-                // Only break if at base indent (not nested)
-                if current_indent == indent.len() && (trimmed.starts_with("elif ") || trimmed.starts_with("else:")) {
-                    break;
-                }
-            }
-
+            // `elif`/`else` at the body's own indent belong to an `if` nested in
+            // the body; this branch's continuation sits at a shallower indent and
+            // already fails the `starts_with(indent)` test above.
             body_lines_vec.push(content);
             consumed += line.len() + 1;
         } else {

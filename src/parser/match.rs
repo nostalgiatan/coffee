@@ -93,7 +93,7 @@ fn parse_match_arm(input: &str) -> IResult<&str, MatchArm> {
 
     let line = result.trim();
     let body = if let Some(block) = block {
-        match super::r#if::parse_statement_block(&block, true) {
+        match super::r#if::parse_statement_block(&block) {
             Ok((_, stmts)) => stmts,
             Err(_) => {
                 return Err(nom::Err::Error(nom::error::Error {

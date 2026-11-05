@@ -1,0 +1,31 @@
+use * in check
+
+fn main() => int:
+    let src = "fn add(a: int, b: int) => int:\n    return a + b\n"
+    let t = lex(&src)
+    let bad = miss_count(&t, 23)
+    bad = bad + miss(&t, 0, int(Tk.KwFn))
+    bad = bad + miss(&t, 1, int(Tk.Ident))
+    bad = bad + miss_text(&src, &t, 1, "add")
+    bad = bad + miss(&t, 2, int(Tk.LParen))
+    bad = bad + miss(&t, 3, int(Tk.Ident))
+    bad = bad + miss(&t, 4, int(Tk.Colon))
+    bad = bad + miss(&t, 5, int(Tk.KwInt))
+    bad = bad + miss(&t, 6, int(Tk.Comma))
+    bad = bad + miss(&t, 9, int(Tk.KwInt))
+    bad = bad + miss(&t, 10, int(Tk.RParen))
+    bad = bad + miss(&t, 11, int(Tk.Arrow))
+    bad = bad + miss(&t, 12, int(Tk.KwInt))
+    bad = bad + miss(&t, 13, int(Tk.Colon))
+    bad = bad + miss(&t, 14, int(Tk.Newline))
+    bad = bad + miss(&t, 15, int(Tk.Indent))
+    bad = bad + miss(&t, 16, int(Tk.KwReturn))
+    bad = bad + miss(&t, 18, int(Tk.Plus))
+    bad = bad + miss(&t, 20, int(Tk.Newline))
+    bad = bad + miss(&t, 21, int(Tk.Dedent))
+    bad = bad + miss(&t, 22, int(Tk.Eof))
+    bad = bad + miss_pos(&t, 0, 1, 1)
+    bad = bad + miss_pos(&t, 1, 1, 4)
+    bad = bad + miss_pos(&t, 16, 2, 5)
+    bad = bad + errors(&t)
+    return bad

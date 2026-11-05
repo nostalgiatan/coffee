@@ -1,0 +1,510 @@
+/#/ Coffee lexer, written in Coffee.
+/#/
+/#/ `lex` turns source text into a `Tokens` table. Lexemes are never copied:
+/#/ a token is a kind plus the byte range [start, end) of the source it came
+/#/ from, and a 1-based line/column. Layout follows Python: NEWLINE, INDENT and
+/#/ DEDENT tokens are synthesised from indentation, and newlines inside
+/#/ brackets or after a trailing binary operator do not end a statement.
+/#/ Malformed input never aborts; it becomes an `Error` token.
+use * in token
+
+class Tokens:
+    kind: buf<int>
+    start: buf<int>
+    end: buf<int>
+    line: buf<int>
+    col: buf<int>
+    count: int
+
+    fn push(self, kind: int, start: int, end: int, line: int, col: int) => void:
+        let at = self.count
+        if at >= len(self.kind):
+            let cap = (at + 1) * 2
+            self.kind = buf_resize(self.kind, cap)
+            self.start = buf_resize(self.start, cap)
+            self.end = buf_resize(self.end, cap)
+            self.line = buf_resize(self.line, cap)
+            self.col = buf_resize(self.col, cap)
+        self.kind[at] = kind
+        self.start[at] = start
+        self.end[at] = end
+        self.line[at] = line
+        self.col[at] = col
+        self.count = at + 1
+
+    fn last_kind(self) => int:
+        if self.count == 0:
+            return -1
+        return self.kind[self.count - 1]
+
+    fn kind_at(self, i: int) => int:
+        if i < 0 || i >= self.count:
+            return -1
+        return self.kind[i]
+
+fn new_tokens() => Tokens:
+    return Tokens { kind: new_buf(int, 64), start: new_buf(int, 64), end: new_buf(int, 64), line: new_buf(int, 64), col: new_buf(int, 64), count: 0 }
+
+/#/ ---- character classes -------------------------------------------------
+
+fn byte(src: &str, i: int) => int:
+    if i < 0 || i >= len(src):
+        return 0
+    return int(src[i])
+
+fn is_digit(c: int) => bool:
+    return c >= '0' && c <= '9'
+
+fn is_hex(c: int) => bool:
+    return is_digit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+
+fn is_alpha(c: int) => bool:
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
+
+fn is_ident(c: int) => bool:
+    return is_alpha(c) || is_digit(c)
+
+/#/ ---- keywords ----------------------------------------------------------
+
+fn keyword_scan(src: &str, s: int, e: int, table: &str) => int:
+    let n = e - s
+    let tn = len(table)
+    let idx = 0
+    let p = 0
+    while p < tn:
+        let q = p
+        while q < tn && byte(table, q) != ' ':
+            q = q + 1
+        if q - p == n:
+            let same = true
+            for k in 0..n:
+                if byte(src, s + k) != byte(table, p + k):
+                    same = false
+            if same:
+                return idx
+        idx = idx + 1
+        p = q + 1
+    return -1
+
+/#/ Token kind of the word at [s, e): a keyword kind or Ident.
+fn word_kind(src: &str, s: int, e: int) => int:
+    let idx = keyword_scan(src, s, e, "fn c class type packed enum of if elif else while for in match let mv clone copy rm clean raise return break continue use as true false int float bool string str void")
+    if idx < 0:
+        return int(Tk.Ident)
+    return int(Tk.KwFn) + idx
+
+/#/ ---- operators ---------------------------------------------------------
+
+/#/ Kind of the two-byte operator (a, b), or -1.
+fn op2_kind(a: int, b: int) => int:
+    if a == '/' && b == '/':
+        return int(Tk.SlashSlash)
+    if a == '<' && b == '<':
+        return int(Tk.Shl)
+    if a == '>' && b == '>':
+        return int(Tk.Shr)
+    if a == '&' && b == '&':
+        return int(Tk.AmpAmp)
+    if a == '|' && b == '|':
+        return int(Tk.PipePipe)
+    if a == '=' && b == '=':
+        return int(Tk.EqEq)
+    if a == '!' && b == '=':
+        return int(Tk.NotEq)
+    if a == '<' && b == '=':
+        return int(Tk.Le)
+    if a == '>' && b == '=':
+        return int(Tk.Ge)
+    if a == '=' && b == '>':
+        return int(Tk.Arrow)
+    if a == ':' && b == ':':
+        return int(Tk.ColonColon)
+    if a == '.' && b == '.':
+        return int(Tk.DotDot)
+    return -1
+
+/#/ Kind of the one-byte operator or delimiter c, or -1.
+fn op1_kind(c: int) => int:
+    if c == '+':
+        return int(Tk.Plus)
+    if c == '-':
+        return int(Tk.Minus)
+    if c == '*':
+        return int(Tk.Star)
+    if c == '/':
+        return int(Tk.Slash)
+    if c == '%':
+        return int(Tk.Percent)
+    if c == '&':
+        return int(Tk.Amp)
+    if c == '|':
+        return int(Tk.Pipe)
+    if c == '^':
+        return int(Tk.Caret)
+    if c == '<':
+        return int(Tk.Lt)
+    if c == '>':
+        return int(Tk.Gt)
+    if c == '!':
+        return int(Tk.Bang)
+    if c == '~':
+        return int(Tk.Tilde)
+    if c == '=':
+        return int(Tk.Assign)
+    if c == '.':
+        return int(Tk.Dot)
+    if c == ',':
+        return int(Tk.Comma)
+    if c == ':':
+        return int(Tk.Colon)
+    if c == '(':
+        return int(Tk.LParen)
+    if c == ')':
+        return int(Tk.RParen)
+    if c == '[':
+        return int(Tk.LBracket)
+    if c == ']':
+        return int(Tk.RBracket)
+    if c == '{':
+        return int(Tk.LBrace)
+    if c == '}':
+        return int(Tk.RBrace)
+    return -1
+
+/#/ A statement continues on the next line after these (Plus..Ge and `=`).
+fn continues_line(kind: int) => bool:
+    return (kind >= int(Tk.Plus) && kind <= int(Tk.Ge)) || kind == int(Tk.Assign)
+
+/#/ True when the stream ends in the type suffix `int(4)+` / `float(8)-`,
+/#/ whose trailing sign is part of the type and does not continue the line.
+fn ends_in_size_suffix(t: &Tokens) => bool:
+    let n = t.count
+    if n < 5:
+        return false
+    let k = t.kind[n - 1]
+    if k != int(Tk.Plus) && k != int(Tk.Minus):
+        return false
+    if t.kind[n - 2] != int(Tk.RParen) || t.kind[n - 3] != int(Tk.Int) || t.kind[n - 4] != int(Tk.LParen):
+        return false
+    return t.kind[n - 5] == int(Tk.KwInt) || t.kind[n - 5] == int(Tk.KwFloat)
+
+/#/ ---- literals ----------------------------------------------------------
+
+/#/ End (exclusive) of the digits/underscores run starting at i that satisfy
+/#/ the radix: 2, 8, 10 or 16.
+fn scan_digits(src: &str, i: int, radix: int) => int:
+    let j = i
+    while true:
+        let c = byte(src, j)
+        let ok = c == '_'
+        if radix == 16:
+            ok = ok || is_hex(c)
+        elif radix == 2:
+            ok = ok || c == '0' || c == '1'
+        elif radix == 8:
+            ok = ok || (c >= '0' && c <= '7')
+        else:
+            ok = ok || is_digit(c)
+        if !ok:
+            break
+        j = j + 1
+    return j
+
+fn skip_ident(src: &str, i: int) => int:
+    let j = i
+    while is_ident(byte(src, j)):
+        j = j + 1
+    return j
+
+/#/ Scans a number starting at i. Returns the end, negated when malformed.
+/#/ Whether it is a float is a separate question: `number_is_float`.
+fn scan_number(src: &str, i: int) => int:
+    let c0 = byte(src, i)
+    let c1 = byte(src, i + 1)
+    let j = i
+    if c0 == '0' && (c1 == 'x' || c1 == 'X' || c1 == 'b' || c1 == 'B' || c1 == 'o' || c1 == 'O'):
+        let radix = 16
+        if c1 == 'b' || c1 == 'B':
+            radix = 2
+        elif c1 == 'o' || c1 == 'O':
+            radix = 8
+        j = scan_digits(src, i + 2, radix)
+        if j == i + 2 || is_ident(byte(src, j)):
+            return 0 - (skip_ident(src, j) + 1)
+        return j
+    j = scan_digits(src, i, 10)
+    if byte(src, j) == '.' && is_digit(byte(src, j + 1)):
+        j = scan_digits(src, j + 1, 10)
+    let e = byte(src, j)
+    if e == 'e' || e == 'E':
+        let k = j + 1
+        let sg = byte(src, k)
+        if sg == '+' || sg == '-':
+            k = k + 1
+        if is_digit(byte(src, k)):
+            j = scan_digits(src, k, 10)
+    if is_ident(byte(src, j)):
+        return 0 - (skip_ident(src, j) + 1)
+    return j
+
+fn number_is_float(src: &str, s: int, e: int) => bool:
+    if byte(src, s) == '0':
+        let c1 = byte(src, s + 1)
+        if c1 == 'x' || c1 == 'X' || c1 == 'b' || c1 == 'B' || c1 == 'o' || c1 == 'O':
+            return false
+    for k in s..e:
+        let c = byte(src, k)
+        if c == '.' || c == 'e' || c == 'E':
+            return true
+    return false
+
+/#/ Validates the escape whose backslash is at i; returns its length or 0.
+fn escape_len(src: &str, i: int) => int:
+    let c = byte(src, i + 1)
+    if c == 'n' || c == 't' || c == 'r' || c == '\\' || c == '"' || c == '\'' || c == '0':
+        return 2
+    if c == 'x' && is_hex(byte(src, i + 2)) && is_hex(byte(src, i + 3)):
+        return 4
+    return 0
+
+/#/ Scans a string whose opening quote is at i. Returns the end past the
+/#/ closing quote, negated when the string is unterminated or has a bad escape.
+fn scan_string(src: &str, i: int) => int:
+    let n = len(src)
+    let j = i + 1
+    let bad = false
+    while j < n:
+        let c = byte(src, j)
+        if c == '"':
+            if bad:
+                return 0 - (j + 1)
+            return j + 1
+        if c == '\n':
+            return 0 - j
+        if c == '\\':
+            let l = escape_len(src, j)
+            if l == 0:
+                bad = true
+                j = j + 1
+            else:
+                j = j + l
+        else:
+            j = j + 1
+    return 0 - n
+
+/#/ Scans a char literal whose opening quote is at i; negated when malformed.
+fn scan_char(src: &str, i: int) => int:
+    let c = byte(src, i + 1)
+    if c == '\\':
+        let l = escape_len(src, i + 1)
+        if l != 0 && byte(src, i + 1 + l) == '\'':
+            return i + l + 2
+    elif c != 0 && c != '\'' && c != '\n' && byte(src, i + 2) == '\'':
+        return i + 3
+    let j = i + 1
+    while j < len(src) && byte(src, j) != '\'' && byte(src, j) != '\n':
+        j = j + 1
+    if byte(src, j) == '\'':
+        j = j + 1
+    return 0 - j
+
+/#/ ---- comments ----------------------------------------------------------
+
+/#/ End of the `/#/ ...` line comment at i (the newline is not consumed).
+fn skip_line_comment(src: &str, i: int) => int:
+    let j = i
+    while j < len(src) && byte(src, j) != '\n':
+        j = j + 1
+    return j
+
+/#/ End of the `/#* ... *#/` comment at i; negated when it never closes.
+fn skip_block_comment(src: &str, i: int) => int:
+    let n = len(src)
+    let j = i + 3
+    while j < n:
+        if byte(src, j) == '*' && byte(src, j + 1) == '#' && byte(src, j + 2) == '/':
+            return j + 3
+        j = j + 1
+    return 0 - n
+
+fn starts_line_comment(src: &str, i: int) => bool:
+    return byte(src, i) == '/' && byte(src, i + 1) == '#' && byte(src, i + 2) == '/'
+
+fn starts_block_comment(src: &str, i: int) => bool:
+    return byte(src, i) == '/' && byte(src, i + 1) == '#' && byte(src, i + 2) == '*'
+
+fn count_newlines(src: &str, a: int, b: int) => int:
+    let k = 0
+    for i in a..b:
+        if byte(src, i) == '\n':
+            k = k + 1
+    return k
+
+/#/ Offset just past the last newline in [a, b), or -1 if there is none.
+fn after_last_newline(src: &str, a: int, b: int) => int:
+    let r = -1
+    for i in a..b:
+        if byte(src, i) == '\n':
+            r = i + 1
+    return r
+
+/#/ ---- the lexer ---------------------------------------------------------
+
+fn lex(src: &str) => Tokens:
+    let n = len(src)
+    let t = new_tokens()
+    let stack = new_buf(int, 128)
+    let sp = 1
+    let depth = 0
+    let line = 1
+    let line_start = 0
+    let at_bol = true
+    let i = 0
+    while i < n:
+        if at_bol:
+            /#/ Measure indentation; blank and comment-only lines are ignored.
+            let ind = 0
+            let j = i
+            while byte(src, j) == ' ' || byte(src, j) == '\t':
+                if byte(src, j) == '\t':
+                    t.push(int(Tk.Error), j, j + 1, line, j - line_start + 1)
+                    ind = ind + 4
+                else:
+                    ind = ind + 1
+                j = j + 1
+            let c = byte(src, j)
+            if j >= n:
+                i = j
+            elif c == '\n' || c == '\r':
+                if c == '\r':
+                    j = j + 1
+                i = j
+                if byte(src, i) == '\n':
+                    i = i + 1
+                    line = line + 1
+                    line_start = i
+            elif starts_line_comment(src, j):
+                i = skip_line_comment(src, j)
+            else:
+                i = j
+                at_bol = false
+                let top = stack[sp - 1]
+                if ind > top:
+                    if sp >= len(stack):
+                        t.push(int(Tk.Error), j, j, line, j - line_start + 1)
+                    else:
+                        stack[sp] = ind
+                        sp = sp + 1
+                        t.push(int(Tk.Indent), j, j, line, j - line_start + 1)
+                elif ind < top:
+                    while sp > 1 && ind < stack[sp - 1]:
+                        sp = sp - 1
+                        t.push(int(Tk.Dedent), j, j, line, j - line_start + 1)
+                    if ind != stack[sp - 1]:
+                        t.push(int(Tk.Error), j, j, line, j - line_start + 1)
+        else:
+            let c = byte(src, i)
+            let col = i - line_start + 1
+            if c == ' ' || c == '\t' || c == '\r':
+                i = i + 1
+            elif c == '\n':
+                let last = t.last_kind()
+                let ends = last != int(Tk.Newline) && last != int(Tk.Indent) && last != int(Tk.Dedent) && last >= 0
+                let cont = continues_line(last) && !ends_in_size_suffix(&t)
+                if depth == 0 && ends && !cont:
+                    t.push(int(Tk.Newline), i, i + 1, line, col)
+                i = i + 1
+                line = line + 1
+                line_start = i
+                at_bol = depth == 0 && !cont
+            elif starts_line_comment(src, i):
+                i = skip_line_comment(src, i)
+            elif starts_block_comment(src, i):
+                let e = skip_block_comment(src, i)
+                if e < 0:
+                    e = 0 - e
+                    t.push(int(Tk.Error), i, e, line, col)
+                let nl = after_last_newline(src, i, e)
+                if nl >= 0:
+                    line = line + count_newlines(src, i, e)
+                    line_start = nl
+                i = e
+            elif is_digit(c):
+                let e = scan_number(src, i)
+                if e < 0:
+                    e = 0 - e - 1
+                    t.push(int(Tk.Error), i, e, line, col)
+                elif number_is_float(src, i, e):
+                    t.push(int(Tk.Float), i, e, line, col)
+                else:
+                    t.push(int(Tk.Int), i, e, line, col)
+                i = e
+            elif c == 'f' && byte(src, i + 1) == '"':
+                let e = scan_string(src, i + 1)
+                if e < 0:
+                    e = 0 - e
+                    t.push(int(Tk.Error), i, e, line, col)
+                else:
+                    t.push(int(Tk.FStr), i, e, line, col)
+                i = e
+            elif is_alpha(c):
+                let e = i + 1
+                while is_ident(byte(src, e)):
+                    e = e + 1
+                t.push(word_kind(src, i, e), i, e, line, col)
+                i = e
+            elif c == '"':
+                let e = scan_string(src, i)
+                if e < 0:
+                    e = 0 - e
+                    t.push(int(Tk.Error), i, e, line, col)
+                else:
+                    t.push(int(Tk.Str), i, e, line, col)
+                i = e
+            elif c == '\'':
+                let e = scan_char(src, i)
+                if e < 0:
+                    e = 0 - e
+                    t.push(int(Tk.Error), i, e, line, col)
+                else:
+                    t.push(int(Tk.Char), i, e, line, col)
+                i = e
+            elif c == '#':
+                let e = i + 1
+                while is_ident(byte(src, e)):
+                    e = e + 1
+                if e == i + 1:
+                    t.push(int(Tk.Error), i, e, line, col)
+                else:
+                    t.push(int(Tk.Listener), i, e, line, col)
+                i = e
+            else:
+                let k2 = op2_kind(c, byte(src, i + 1))
+                if k2 >= 0:
+                    t.push(k2, i, i + 2, line, col)
+                    i = i + 2
+                else:
+                    let k1 = op1_kind(c)
+                    if k1 < 0:
+                        t.push(int(Tk.Error), i, i + 1, line, col)
+                    else:
+                        if k1 == int(Tk.LParen) || k1 == int(Tk.LBracket) || k1 == int(Tk.LBrace):
+                            depth = depth + 1
+                        elif k1 == int(Tk.RParen) || k1 == int(Tk.RBracket) || k1 == int(Tk.RBrace):
+                            if depth == 0:
+                                k1 = int(Tk.Error)
+                            else:
+                                depth = depth - 1
+                        t.push(k1, i, i + 1, line, col)
+                    i = i + 1
+    let col = i - line_start + 1
+    if depth > 0:
+        t.push(int(Tk.Error), n, n, line, col)
+    let last = t.last_kind()
+    if last >= 0 && last != int(Tk.Newline) && last != int(Tk.Indent) && last != int(Tk.Dedent):
+        t.push(int(Tk.Newline), n, n, line, col)
+    while sp > 1:
+        sp = sp - 1
+        t.push(int(Tk.Dedent), n, n, line, col)
+    t.push(int(Tk.Eof), n, n, line, col)
+    return t

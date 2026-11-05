@@ -19,7 +19,7 @@ pub(super) fn try_paren_or_tuple(input: &str, start: usize) -> Result<Option<Exp
         let inner = inner_raw.trim();
 
         // Check if it's a tuple (contains comma)
-        if inner.contains(',') {
+        if has_top_level_comma(inner) {
             // It's a tuple literal
             let mut elements = Vec::new();
             let mut current_element = String::new();
@@ -354,4 +354,20 @@ fn normalize_integer_literal(input: &str) -> Option<String> {
         return None;
     };
     value.map(|v| v.to_string())
+}
+
+/// A comma outside any bracket or string: `(a, b)` is a tuple, `(f(a, b) + 1)` is grouping.
+fn has_top_level_comma(inner: &str) -> bool {
+    let mut depth = 0i32;
+    let mut in_string = false;
+    for ch in inner.chars() {
+        match ch {
+            '"' => in_string = !in_string,
+            '(' | '[' | '{' if !in_string => depth += 1,
+            ')' | ']' | '}' if !in_string => depth -= 1,
+            ',' if !in_string && depth == 0 => return true,
+            _ => {}
+        }
+    }
+    false
 }

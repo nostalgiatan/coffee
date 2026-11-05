@@ -439,3 +439,60 @@ fn test_str_borrow_reads_bytes_and_length() {
 fn test_string_literal_can_be_lent_to_a_str_borrow() {
     assert_exit_code("fn n(s: &str) => int:\n    return len(s)\n\nfn main() => int:\n    return n(\"hello\")\n", 5).unwrap();
 }
+
+#[test]
+fn test_subtracting_a_negative_is_not_an_overflow() {
+    let src = "fn n(x: int) => int:\n    return 0 - x\n\nfn main() => int:\n    let a = 3 - n(5)\n    let b = n(5) - n(3)\n    return a + b - 6\n";
+    assert_exit_code(src, 0).unwrap();
+}
+
+#[test]
+fn test_subtraction_that_really_overflows_still_traps() {
+    assert_crashes_with("fn big() => int:\n    return 9223372036854775807\n\nfn main() => int:\n    let b = 0 - 5\n    return big() - b\n", "integer overflow in subtraction");
+}
+
+#[test]
+fn test_else_belongs_to_the_if_nested_in_the_body() {
+    let src = "fn h(c: int) => int:\n    let j = 0\n    if c == 2:\n        let l = 2\n        if l == 0:\n            j = 1\n        else:\n            j = 5\n    else:\n        j = 9\n    return j\n\nfn main() => int:\n    return h(2) * 10 + h(3) - 59\n";
+    assert_exit_code(src, 0).unwrap();
+}
+
+#[test]
+fn test_buf_resize_argument_declared_in_a_branch() {
+    let src = "fn f(b: buf<int>) => int:\n    if 1 > len(b):\n        let cap = 4\n        b = buf_resize(b, cap)\n    return len(b)\n\nfn main() => int:\n    return f(new_buf(int, 0)) - 4\n";
+    assert_exit_code(src, 0).unwrap();
+    assert_balanced(src);
+}
+
+#[test]
+fn test_buf_parameter_is_freed_by_the_callee() {
+    assert_balanced("fn f(b: buf<int>) => int:\n    return len(b)\n\nfn main() => int:\n    return f(new_buf(int, 1)) - 1\n");
+    assert_balanced("fn f(b: buf<int>) => int:\n    if 1 > len(b):\n        b = buf_resize(b, 4)\n    return len(b)\n\nfn main() => int:\n    return f(new_buf(int, 0)) - 4\n");
+}
+
+#[test]
+fn test_buf_parameter_returned_is_not_freed_twice() {
+    assert_balanced("fn id(b: buf<int>) => buf<int>:\n    return b\n\nfn main() => int:\n    let b = id(new_buf(int, 2))\n    return len(b) - 2\n");
+}
+
+#[test]
+fn test_grouping_parens_may_contain_a_call_with_commas() {
+    let src = "fn add(a: int, b: int) => int:\n    return a + b\n\nfn main() => int:\n    return 10 - (add(1, 2) + 1) - 6\n";
+    assert_exit_code(src, 0).unwrap();
+}
+
+#[test]
+fn test_use_in_module_brings_the_types_along() {
+    let dir = std::env::temp_dir().join(format!("coffee_use_types_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("kinds.cf"), "enum K:\n    A\n    B\n\nfn is_b(k: K) => bool:\n    return k == K.B\n").unwrap();
+    std::fs::write(dir.join("main.cf"), "use is_b in kinds\n\nfn main() => int:\n    let k = K.B\n    if is_b(k):\n        return 0\n    return 1\n").unwrap();
+    let out = std::process::Command::new(coffee_bin(&std::env::current_dir().unwrap()))
+        .current_dir(&dir)
+        .args(["--test-mode", "--jit", "main.cf"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(text.contains("exited with code: 0"), "{}", text);
+}

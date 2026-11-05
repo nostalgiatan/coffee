@@ -1,0 +1,23 @@
+use * in check
+
+fn shape_of(src: &str, want: &str) => int:
+    let t = lex(src)
+    return miss_shape(&t, want)
+
+fn main() => int:
+    let bad = 0
+    /#/ a line comment runs to the end of the line
+    bad = bad + shape_of("a /#/ x + y\nb\n", "wNwNE")
+    /#/ a block comment can sit between tokens
+    bad = bad + shape_of("a /#* skip *#/ b\n", "wwNE")
+    /#/ ... and span lines; the line counter follows
+    let src = "a /#* one\ntwo\nthree *#/ b\nd\n"
+    let t = lex(&src)
+    bad = bad + miss_shape(&t, "wwNwNE")
+    bad = bad + miss_pos(&t, 1, 3, 11)
+    bad = bad + miss_pos(&t, 3, 4, 1)
+    /#/ a lone slash is division
+    bad = bad + shape_of("a / b\n", "wowNE")
+    /#/ an unterminated block comment is one error
+    bad = bad + shape_of("a /#* never closed", "wXNE")
+    return bad

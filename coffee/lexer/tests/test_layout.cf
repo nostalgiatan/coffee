@@ -1,0 +1,28 @@
+use * in check
+
+fn shape_of(src: &str, want: &str) => int:
+    let t = lex(src)
+    return miss_shape(&t, want)
+
+fn main() => int:
+    let bad = 0
+    /#/ plain statements
+    bad = bad + shape_of("let x = 1\n", "kwoiNE")
+    bad = bad + shape_of("let x = 1", "kwoiNE")
+    /#/ nested blocks, then dedent past two levels at once
+    bad = bad + shape_of("if a:\n    if b:\n        x\nd\n", "kw:NIkw:NIwNDDwNE")
+    /#/ blank and comment-only lines do not disturb layout
+    bad = bad + shape_of("a\n\n   \n/#/ note\nb\n", "wNwNE")
+    /#/ dedent at end of file
+    bad = bad + shape_of("if a:\n    b", "kw:NIwNDE")
+    /#/ brackets suppress newlines
+    bad = bad + shape_of("f(a,\n  b)\n", "w(w,w)NE")
+    bad = bad + shape_of("let a = [1,\n  2,\n  3]\n", "kwo[i,i,i]NE")
+    /#/ a trailing binary operator continues the statement
+    bad = bad + shape_of("let a = 1 +\n    2\n", "kwoioiNE")
+    bad = bad + shape_of("let a =\n    2\n", "kwoiNE")
+    /#/ the size suffix of int(4)+ is a type, not a continuation
+    bad = bad + shape_of("let a: int(4)+\nb\n", "kw:k(i)oNwNE")
+    /#/ CRLF line endings
+    bad = bad + shape_of("a\r\nb\r\n", "wNwNE")
+    return bad

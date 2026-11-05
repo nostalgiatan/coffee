@@ -1,0 +1,14 @@
+/#/ Prints token tables for debugging.
+use * in check
+use printf, putchar in libc of c
+
+/#/ One token per line: `line:col kind start-end`.
+fn dump(t: &Tokens) => void:
+    for i in 0..t.count:
+        printf("%d:%d kind=%d %d-%d\n", t.line[i], t.col[i], t.kind[i], t.start[i], t.end[i])
+
+/#/ The shape letters of `check.cf`, on one line.
+fn dump_shape(t: &Tokens) => void:
+    for i in 0..t.count:
+        putchar(shape_char(t.kind[i]))
+    putchar(10)

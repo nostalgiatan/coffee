@@ -232,6 +232,11 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             };
             let ty = if type_name == "str" {
                 crate::types::Type::String
+            } else if let Some(buf) = crate::types::type_from_str(&type_name)
+                .ok()
+                .filter(|t| t.typed_buf_elem().is_some())
+            {
+                buf
             } else {
                 crate::types::Type::NamedType { name: type_name }
             };

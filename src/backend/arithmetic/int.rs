@@ -254,16 +254,16 @@ impl<'ctx> ArithmeticContext<'ctx> {
                 "diff_sign"
             ).map_err(|e| format!("failed to build compare: {}", e))?;
 
-            // Overflow if signs are the same but operands had different signs
-            let sign_same = builder.build_int_compare(
-                inkwell::IntPredicate::EQ,
+            // The result left the sign of the minuend
+            let sign_flipped = builder.build_int_compare(
+                inkwell::IntPredicate::NE,
                 left_neg,
                 result_neg,
-                "sign_same"
+                "sign_flipped"
             ).map_err(|e| format!("failed to build compare: {}", e))?;
 
-            // Overflow occurred: diff_sign AND sign_same
-            let overflow = builder.build_and(diff_sign, sign_same, "overflow")
+            // Overflow occurred: operand signs differ AND the result flipped the minuend's sign
+            let overflow = builder.build_and(diff_sign, sign_flipped, "overflow")
                 .map_err(|e| format!("failed to build and: {}", e))?;
 
             // Create basic blocks for handling overflow

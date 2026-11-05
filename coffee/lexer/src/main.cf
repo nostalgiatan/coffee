@@ -1,0 +1,10 @@
+/#/ Lexes a sample program and prints its tokens.
+use * in dump
+
+fn main() => int:
+    let src = "fn add(a: int, b: int) => int:\n    return a + b\n"
+    let t = lex(&src)
+    dump(&t)
+    if errors(&t) > 0:
+        return 1
+    return 0

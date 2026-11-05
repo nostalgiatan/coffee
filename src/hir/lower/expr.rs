@@ -150,8 +150,10 @@ where
                     // Do not treat a failed Call as a class ctor here: `as_int`
                     // is a function. Class `TestError("msg")` is rewritten by
                     // `try_lower_class_ctor_call` before `infer(Call)`.
-                    if let Expression::Call { function, .. } = expr {
-                        if let Some(ret) = self.callee_function_return(function) {
+                    if let Expression::Call { function, args } = expr {
+                        if let Some(ret) = self.intrinsic_return_type(function, args) {
+                            ret
+                        } else if let Some(ret) = self.callee_function_return(function) {
                             ret
                         } else {
                             recover_nonvar_type(expr, err)?
@@ -448,6 +450,33 @@ where
     }
 
     /// Failed `Call`: callee `Function` return type (infer, extra_types, or registry).
+    /// Result type of a buffer/arith intrinsic whose arguments name locals the
+    /// checker's scope no longer holds (declared in a loop or branch body).
+    fn intrinsic_return_type(&mut self, function: &Expression, args: &[Expression]) -> Option<Type> {
+        let Expression::Variable(name) = function.kind() else { return None };
+        match name.as_str() {
+            "len" if args.len() == 1 => Some(Type::int()),
+            "buf_resize" if args.len() == 2 => self.lower_expr(&args[0]).ok().map(|a| a.ty),
+            "new_buf" if args.len() == 2 => {
+                let Expression::Variable(t) = args[0].kind() else { return None };
+                let elem = self.registry.as_ref()?.read().ok()?.resolve_type(t).ok()?;
+                Some(Type::App { name: "buf".to_string(), args: vec![elem] })
+            }
+            "subslice" if (2..=3).contains(&args.len()) => {
+                let source = self.lower_expr(&args[0]).ok()?.ty;
+                let elem = match &source {
+                    Type::Slice(e) => (**e).clone(),
+                    other => other.buf_elem_viewed()?.clone(),
+                };
+                Some(Type::Slice(Box::new(elem)))
+            }
+            op if crate::types::checker::wrapping_op(op).is_some() && args.len() == 2 => {
+                self.lower_expr(&args[0]).ok().map(|a| a.ty)
+            }
+            _ => None,
+        }
+    }
+
     fn callee_function_return(&mut self, function: &Expression) -> Option<Type> {
         let ty = if let Expression::Variable(name) = function.kind() {
             if let Some(ty) = self.extra_types.get(name) {

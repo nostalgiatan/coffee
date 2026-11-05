@@ -223,6 +223,13 @@ impl CompilationPipeline {
                     imported_spans.push(
                         loaded_module.stmt_spans.get(idx).copied().unwrap_or(missing_span),
                     );
+                } else if loaded_module.statements.iter().any(|stmt| match stmt {
+                    Statement::Class(c) => c.name == *symbol_name,
+                    Statement::Enum(e) => e.name == *symbol_name,
+                    _ => false,
+                }) && spec.alias.is_none() {
+                    // Types are added after this loop.
+                    continue;
                 } else {
                     return Err(format!(
                         "symbol '{}' not found in module '{}' or not exported",
@@ -251,6 +258,42 @@ impl CompilationPipeline {
                 }
             }
         }
+
+        // Types travel with selective imports: signatures of the imported
+        // functions mention them, and `use * in m` is expected to expose them.
+        let mut declared_types = std::collections::HashSet::new();
+        let mut type_stmts = Vec::new();
+        let mut type_spans = Vec::new();
+        for stmt in all_statements.iter().chain(program.statements.iter()) {
+            match stmt {
+                Statement::Class(c) => { declared_types.insert(c.name.clone()); }
+                Statement::Enum(e) => { declared_types.insert(e.name.clone()); }
+                _ => {}
+            }
+        }
+        for spec in selective_imports {
+            let loaded_module = self.load_module_expanded(&spec.module)
+                .map_err(|e| format!("failed to load module '{}': {}", spec.module, e.message))?;
+            for (idx, stmt) in loaded_module.statements.iter().enumerate() {
+                let name = match stmt {
+                    Statement::Class(c) => &c.name,
+                    Statement::Enum(e) => &e.name,
+                    _ => continue,
+                };
+                if !declared_types.insert(name.clone()) {
+                    continue;
+                }
+                type_stmts.push(stmt.clone());
+                type_spans.push(
+                    loaded_module.stmt_spans.get(idx).copied().unwrap_or(missing_span),
+                );
+            }
+        }
+        // Declarations first so function bodies see them.
+        type_stmts.extend(all_statements);
+        type_spans.extend(imported_spans);
+        let mut all_statements = type_stmts;
+        let mut imported_spans = type_spans;
 
         // Finally, add main program statements (keep their parse_program byte ranges).
         debug_assert_eq!(all_statements.len(), imported_spans.len());
