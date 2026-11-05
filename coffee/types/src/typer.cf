@@ -3,7 +3,7 @@
 /#/ `check_types(t, g, a, m)` runs after `declare_types` has typed every signature of the
 /#/ modules involved. The type of node `n` is `typer.node[n]`; locals live in the scope table
 /#/ with their types in `ty`. The rules are in RULES.md.
-use * in declare
+use * in storage
 
 enum Op:
     Add
@@ -987,6 +987,7 @@ class Typer:
             if a.kind[p] == int(Nk.Param) || a.kind[p] == int(Nk.SelfParam):
                 if i < t.count_of(fty):
                     self.declare_local(a, a.tok[p], int(Sk.Param), t.arg(fty, i))
+                    self.node[p] = t.arg(fty, i)
                 i = i + 1
             p = a.next[p]
         self.ret = t.c[fty]
@@ -1085,6 +1086,7 @@ class Typer:
                 extra = a.next[extra]
         elif k == int(Nk.Mv):
             let ty = self.expr(t, g, a, a.pa[n], -1)
+            self.node[n] = ty
             if a.pb[n] >= 0:
                 self.declare_local(a, a.pb[n], int(Sk.Local), ty)
         elif k == int(Nk.TypeAlias):
@@ -1126,6 +1128,8 @@ class Typer:
                 ty = self.value(t, g, a, a.pc[n], -1)
         if ty < 0:
             ty = 0
+        /#/ the type of the variable a `let` declares is recorded on the statement
+        self.node[n] = ty
         if a.pa[n] < 0:
             return
         if self.in_fn == 1:
@@ -1190,6 +1194,7 @@ class Typer:
                 self.err(a.tok[it], int(Te.InvalidType), 0, ct)
         self.loops = self.loops + 1
         let mark = self.rd.sc.loc.n
+        self.node[n] = elem
         if a.pa[n] >= 0:
             self.declare_local(a, a.pa[n], int(Sk.Local), elem)
         if a.pc[n] >= 0:

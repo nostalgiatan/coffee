@@ -1,0 +1,50 @@
+/#/ What the ownership checker reports. The numbers are the Rust compiler's.
+enum Oe:
+    UseAfterMove
+    UseAfterDrop
+    CopyResource
+    BorrowViolation
+    ReturnsLocalRef
+    BorrowConflict
+
+fn oe_number(code: int) => int:
+    if code == int(Oe.UseAfterMove):
+        return 300
+    if code == int(Oe.UseAfterDrop):
+        return 301
+    if code == int(Oe.CopyResource):
+        return 302
+    if code == int(Oe.BorrowViolation):
+        return 303
+    if code == int(Oe.ReturnsLocalRef):
+        return 400
+    return 401
+
+/#/ A finding: the token it is about and its code.
+class ODiags:
+    tok: buf<int>
+    code: buf<int>
+    n: int
+
+    fn add(self, tok: int, code: int) => void:
+        if self.n >= len(self.tok):
+            let cap = (self.n + 1) * 2
+            self.tok = buf_resize(self.tok, cap)
+            self.code = buf_resize(self.code, cap)
+        /#/ the same finding is not reported twice
+        for i in 0..self.n:
+            if self.tok[i] == tok && self.code[i] == code:
+                return
+        self.tok[self.n] = tok
+        self.code[self.n] = code
+        self.n = self.n + 1
+
+    fn count(self, code: int) => int:
+        let c = 0
+        for i in 0..self.n:
+            if self.code[i] == code:
+                c = c + 1
+        return c
+
+fn new_odiags() => ODiags:
+    return ODiags { tok: new_buf(int, 8), code: new_buf(int, 8), n: 0 }

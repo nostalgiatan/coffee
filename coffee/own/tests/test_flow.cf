@@ -1,0 +1,35 @@
+use * in own_probe
+
+fn prog(body: str) => str:
+    return "fn take(s: str) => void:\n    return\n\nfn main() => int:\n" + body + "    return 0\n"
+
+fn main() => int:
+    let m = 0
+    let moved = int(Oe.UseAfterMove)
+    let dropped = int(Oe.UseAfterDrop)
+    let copy = int(Oe.CopyResource)
+    let viol = int(Oe.BorrowViolation)
+    let conf = int(Oe.BorrowConflict)
+    let ret = int(Oe.ReturnsLocalRef)
+    /#/ a branch that moves makes the variable unusable after the join
+    m = m + miss_o(prog("    let s = \"a\" + \"b\"\n    if 1 < 2:\n        take(s)\n    take(s)\n"), copy, 1)
+    m = m + miss_o(prog("    let s = \"a\" + \"b\"\n    if 1 < 2:\n        mv s t\n    mv s u\n"), moved, 1)
+    m = m + miss_clean(prog("    let s = \"a\" + \"b\"\n    if 1 < 2:\n        take(s)\n    else:\n        take(s)\n"))
+    /#/ moving in a loop uses it again on the next turn
+    m = m + miss_o(prog("    let s = \"a\" + \"b\"\n    let i = 0\n    while i < 3:\n        mv s t\n        i = i + 1\n"), moved, 1)
+    m = m + miss_clean(prog("    let i = 0\n    while i < 3:\n        let s = \"a\" + \"b\"\n        take(s)\n        i = i + 1\n"))
+    /#/ assigning revives a moved variable
+    m = m + miss_clean(prog("    let s = \"a\" + \"b\"\n    mv s t\n    s = \"c\" + \"d\"\n    take(s)\n"))
+    /#/ rm drops early
+    m = m + miss_o(prog("    let s = \"a\" + \"b\"\n    rm s\n    take(s)\n"), dropped, 1)
+    m = m + miss_o(prog("    let s = \"a\" + \"b\"\n    rm s\n    rm s\n"), dropped, 1)
+    m = m + miss_o(prog("    let s = \"a\" + \"b\"\n    mv s t\n    rm s\n"), moved, 1)
+    /#/ code after a return is not checked
+    m = m + miss_clean("fn f(s: str) => int:\n    return 1\n    take(s)\n    take(s)\n\nfn take(s: str) => void:\n    return\n\nfn main() => int:\n    return 0\n")
+    /#/ borrows: many shared, or one mutable
+    m = m + miss_clean(prog("    let a = 1\n    let r = &a\n    let q = &a\n    let n = *r + *q\n"))
+    m = m + miss_o(prog("    let a = 1\n    let r = &a\n    let q = &mut a\n    let n = *r\n"), conf, 1)
+    m = m + miss_o(prog("    let a = 1\n    let r = &mut a\n    a = 2\n    let n = *r\n"), viol, 1)
+    m = m + miss_clean(prog("    let a = 1\n    let r = &mut a\n    let n = *r\n    a = 2\n"))
+    m = m + miss_o(prog("    let a = 1\n    let r = &mut a\n    let n = a\n    let k = *r\n"), viol, 1)
+    return m

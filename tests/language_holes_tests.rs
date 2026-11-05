@@ -572,3 +572,9 @@ fn test_comparison_passed_as_a_bool_argument_to_a_method() {
     // the comparison is an i1; the method's `bool` parameter is a byte
     assert_exit_code("fn f(x: int, b: bool) => int:\n    if b:\n        return x\n    return 0\n\nclass C:\n    n: int\n\n    fn g(self, b: bool) => int:\n        if b:\n            return 1\n        return 0\n\nfn mk() => buf<int>:\n    let b: buf<int> = new_buf(int, 2)\n    b[0] = 1\n    return b\n\nfn main() => int:\n    let v = mk()\n    let c = C { n: 1 }\n    return f(5, v[0] == 1) + c.g(v[0] == 1) * 10\n", 15).unwrap();
 }
+
+#[test]
+fn test_class_may_define_a_method_named_assign() {
+    // `assign` is built in for `p.assign("field", v)`; a method of the class wins
+    assert_exit_code("class A:\n    n: int\n\n    fn assign(self, a: int, b: int, c: int, d: int, e: int) => int:\n        return a + b + c + d + e + self.n\n\n    fn go(self) => int:\n        return self.assign(1, 2, 3, 4, 5)\n\nfn main() => int:\n    let a = A { n: 1 }\n    return a.go()\n", 16).unwrap();
+}

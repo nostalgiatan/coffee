@@ -1,0 +1,944 @@
+/#/ The ownership checker. See RULES.md.
+/#/
+/#/ Each function is lowered to a graph of events (`Flow.build_*`), then three analyses run on
+/#/ it: liveness (backwards), move state and loans (forwards, to a fixed point). Findings are
+/#/ reported in one last pass over the settled states.
+use * in typer
+use * in own_diag
+
+enum Ev:
+    Let
+    Assign
+    Use
+    Consume
+    Move
+    Borrow
+    Drop
+    Write
+    Bind
+    Flow
+    Ret
+    Scope
+    End
+
+/#/ Hash of the bytes of token `tok`: the name of a field in a place.
+fn tok_hash(a: &Ast, tok: int) => int:
+    let h = 0
+    for k in a.toks.start[tok]..a.toks.end[tok]:
+        h = hash_step(h, a.byte_at(k))
+    return h
+
+class Flow:
+    /#/ events: kind, variable, node, and four operands whose meaning depends on the kind
+    ek: buf<int>
+    ev: buf<int>
+    en: buf<int>
+    ea: buf<int>
+    eb: buf<int>
+    ec: buf<int>
+    ed: buf<int>
+    ne: int
+    /#/ blocks of events and the edges between them
+    bs: buf<int>
+    be: buf<int>
+    nb: int
+    ef: buf<int>
+    et: buf<int>
+    nedge: int
+    cur: int
+    /#/ variables
+    v_tok: buf<int>
+    v_ty: buf<int>
+    v_param: buf<int>
+    v_node: buf<int>
+    v_exit: buf<int>
+    nv: int
+    /#/ scope: variable names -> ids, and the stack of live ids
+    sc: Syms
+    ss: buf<int>
+    sn: int
+    /#/ loops: head block, exit block, scope depth at entry
+    lh: buf<int>
+    lx: buf<int>
+    ld: buf<int>
+    nl_loops: int
+    /#/ places and loans
+    pp: buf<int>
+    pn: int
+    pt: buf<int>
+    plen: int
+    pvar: int
+    lroot: buf<int>
+    lps: buf<int>
+    lpl: buf<int>
+    lmut: buf<int>
+    lthru: buf<int>
+    nl: int
+    s0: int
+    target: int
+    /#/ results
+    diags: ODiags
+    moved_at: buf<int>
+    live_after: buf<int>
+    reach: buf<int>
+    st_in: buf<int>
+    live_in: buf<int>
+    live_out: buf<int>
+    w: buf<int>
+    exit_of: buf<int>
+
+    /#/ ---- the graph ---------------------------------------------------------
+
+    fn ev_add(self, kind: int, var: int, node: int, a: int, b: int, c: int, d: int) => void:
+        if self.ne >= len(self.ek):
+            let cap = (self.ne + 1) * 2
+            self.ek = buf_resize(self.ek, cap)
+            self.ev = buf_resize(self.ev, cap)
+            self.en = buf_resize(self.en, cap)
+            self.ea = buf_resize(self.ea, cap)
+            self.eb = buf_resize(self.eb, cap)
+            self.ec = buf_resize(self.ec, cap)
+            self.ed = buf_resize(self.ed, cap)
+        let i = self.ne
+        self.ek[i] = kind
+        self.ev[i] = var
+        self.en[i] = node
+        self.ea[i] = a
+        self.eb[i] = b
+        self.ec[i] = c
+        self.ed[i] = d
+        self.ne = i + 1
+
+    fn new_block(self) => int:
+        if self.nb >= len(self.bs):
+            let cap = (self.nb + 1) * 2
+            self.bs = buf_resize(self.bs, cap)
+            self.be = buf_resize(self.be, cap)
+        let b = self.nb
+        self.bs[b] = 0
+        self.be[b] = 0
+        self.nb = b + 1
+        return b
+
+    /#/ Makes `b` the block events are added to; the one left is closed.
+    fn enter(self, b: int) => void:
+        if self.cur >= 0:
+            self.be[self.cur] = self.ne
+        self.cur = b
+        self.bs[b] = self.ne
+
+    fn edge(self, f: int, t: int) => void:
+        if self.nedge >= len(self.ef):
+            let cap = (self.nedge + 1) * 2
+            self.ef = buf_resize(self.ef, cap)
+            self.et = buf_resize(self.et, cap)
+        self.ef[self.nedge] = f
+        self.et[self.nedge] = t
+        self.nedge = self.nedge + 1
+
+    /#/ Code after a jump is unreachable: it goes to a block nothing leads to.
+    fn dead_block(self) => void:
+        self.enter(self.new_block())
+
+    fn add_var(self, a: &Ast, tok: int, ty: int, param: bool, node: int) => int:
+        if self.nv >= len(self.v_tok):
+            let cap = (self.nv + 1) * 2
+            self.v_tok = buf_resize(self.v_tok, cap)
+            self.v_ty = buf_resize(self.v_ty, cap)
+            self.v_param = buf_resize(self.v_param, cap)
+            self.v_node = buf_resize(self.v_node, cap)
+            self.v_exit = buf_resize(self.v_exit, cap)
+        let id = self.nv
+        self.v_tok[id] = tok
+        self.v_ty[id] = ty
+        self.v_param[id] = 0
+        if param:
+            self.v_param[id] = 1
+        self.v_node[id] = node
+        self.v_exit[id] = 0
+        self.nv = id + 1
+        self.sc.add_tok(a, tok, int(Sk.Local), id, 0)
+        if self.sn >= len(self.ss):
+            self.ss = buf_resize(self.ss, (self.sn + 1) * 2)
+        self.ss[self.sn] = id
+        self.sn = self.sn + 1
+        return id
+
+    fn lookup_var(self, a: &Ast, tok: int) => int:
+        let r = self.sc.find_tok(a, tok, 0)
+        if r >= 0 && self.sc.kind[r] == int(Sk.Local):
+            return self.sc.info[r]
+        return -1
+
+    /#/ Ends the scope back to depth `depth`: its variables go out of scope, last declared first.
+    fn close_scope(self, depth: int, mark: int) => void:
+        let i = self.sn - 1
+        while i >= depth:
+            self.ev_add(int(Ev.Scope), self.ss[i], -1, 0, 0, 0, 0)
+            i = i - 1
+        self.sc.truncate(mark)
+        self.sn = depth
+
+    /#/ A jump out of scopes down to `depth` drops what is declared in them, without closing them.
+    fn leave_scopes(self, depth: int) => void:
+        let i = self.sn - 1
+        while i >= depth:
+            self.ev_add(int(Ev.Scope), self.ss[i], -1, 0, 0, 0, 0)
+            i = i - 1
+
+    /#/ ---- places ------------------------------------------------------------
+
+    /#/ Is `n` a place (a variable, or fields and indexes of one)? Fills `pvar` and `pt`.
+    fn place(self, a: &Ast, n: int) => bool:
+        if n < 0:
+            return false
+        let k = a.kind[n]
+        if k == int(Nk.Name):
+            self.pvar = self.lookup_var(a, a.tok[n])
+            self.plen = 0
+            return self.pvar >= 0
+        if k == int(Nk.Member) && a.pd[n] != 1:
+            if !self.place(a, a.pa[n]):
+                return false
+            self.push_path(tok_hash(a, a.tok[n]))
+            return true
+        if k == int(Nk.Index):
+            if !self.place(a, a.pa[n]):
+                return false
+            self.push_path(-1)
+            return true
+        return false
+
+    fn push_path(self, h: int) => void:
+        if self.plen >= len(self.pt):
+            self.pt = buf_resize(self.pt, (self.plen + 1) * 2)
+        self.pt[self.plen] = h
+        self.plen = self.plen + 1
+
+    /#/ Stores the path in `pt` in the pool and returns where it starts.
+    fn keep_path(self) => int:
+        let start = self.pn
+        for i in 0..self.plen:
+            if self.pn >= len(self.pp):
+                self.pp = buf_resize(self.pp, (self.pn + 1) * 2)
+            self.pp[self.pn] = self.pt[i]
+            self.pn = self.pn + 1
+        return start
+
+    /#/ Evaluates what a place expression needs before it is accessed: the index expressions
+    /#/ and a root that is not a variable.
+    fn place_subs(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => void:
+        if n < 0:
+            return
+        let k = a.kind[n]
+        if k == int(Nk.Name):
+            return
+        if k == int(Nk.Member) && a.pd[n] != 1:
+            self.place_subs(t, g, ty, a, a.pa[n])
+        elif k == int(Nk.Index):
+            self.place_subs(t, g, ty, a, a.pa[n])
+            self.ex(t, g, ty, a, a.pb[n], true)
+        else:
+            self.ex(t, g, ty, a, n, false)
+
+    /#/ Is `n` written like the place the current assignment stores to (`p = f(p)`)? The
+    /#/ value is taken out and put back, so the place is never left empty.
+    fn is_target(self, a: &Ast, n: int) => bool:
+        let tg = self.target
+        if tg < 0 || a.end[tg] - a.tok[tg] != a.end[n] - a.tok[n]:
+            return false
+        for k in 0..a.end[n] - a.tok[n]:
+            let x = a.tok[n] + k
+            let y = a.tok[tg] + k
+            if a.toks.end[x] - a.toks.start[x] != a.toks.end[y] - a.toks.start[y]:
+                return false
+            for b in 0..a.toks.end[x] - a.toks.start[x]:
+                if a.byte_at(a.toks.start[x] + b) != a.byte_at(a.toks.start[y] + b):
+                    return false
+        return true
+
+    /#/ `b[i..j]` is a view of the buffer, not an element taken out of it.
+    fn is_slice_of(self, a: &Ast, n: int) => bool:
+        return a.kind[n] == int(Nk.Index) && a.pb[n] >= 0 && a.kind[a.pb[n]] == int(Nk.Range)
+
+    fn own_of(self, t: &Tys, g: &Syms, x: int) => int:
+        if x < 0 || t.is_error(x):
+            return int(Own.Copy)
+        let o = st_own(t, g, x)
+        if o == int(Own.Unknown):
+            return int(Own.Copy)
+        return o
+
+    /#/ ---- expressions -------------------------------------------------------
+
+    /#/ Adds the events of expression `n`. `value` is true where the result is taken as a
+    /#/ value (and so moves a resource), false where it is only looked at.
+    fn ex(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int, value: bool) => void:
+        if n < 0:
+            return
+        let k = a.kind[n]
+        let x = ty.node[n]
+        if k == int(Nk.Name):
+            let v = self.lookup_var(a, a.tok[n])
+            if v < 0:
+                return
+            if value && self.own_of(t, g, self.v_ty[v]) == int(Own.Move):
+                self.ev_add(int(Ev.Consume), v, n, 0, 0, 0, 0)
+            else:
+                self.ev_add(int(Ev.Use), v, n, 0, 0, 0, 0)
+        elif k == int(Nk.Member) || k == int(Nk.Index):
+            self.place_subs(t, g, ty, a, n)
+            if self.place(a, n):
+                let v = self.pvar
+                if value && x >= 0 && self.own_of(t, g, x) == int(Own.Move) && !self.is_target(a, n) && !self.is_slice_of(a, n):
+                    self.diags.add(a.tok[n], int(Oe.CopyResource))
+                self.ev_add(int(Ev.Use), v, n, self.keep_path(), self.plen, 0, 0)
+        elif k == int(Nk.Unary):
+            self.unary(t, g, ty, a, n, value)
+        elif k == int(Nk.Binary):
+            self.ex(t, g, ty, a, a.pa[n], false)
+            self.ex(t, g, ty, a, a.pb[n], false)
+        elif k == int(Nk.Cast):
+            self.ex(t, g, ty, a, a.pa[n], false)
+        elif k == int(Nk.Call):
+            self.call(t, g, ty, a, n)
+        elif k == int(Nk.StructLit):
+            let f = a.child[n]
+            while f >= 0:
+                self.ex(t, g, ty, a, a.pa[f], false)
+                f = a.next[f]
+        elif k == int(Nk.Tuple) || k == int(Nk.Array):
+            let c = a.child[n]
+            while c >= 0:
+                self.ex(t, g, ty, a, c, false)
+                c = a.next[c]
+        elif k == int(Nk.Range):
+            self.ex(t, g, ty, a, a.pa[n], true)
+            self.ex(t, g, ty, a, a.pb[n], true)
+        elif k == int(Nk.FStr):
+            self.fstr(a, n)
+
+    /#/ `{name}` inside an f-string reads the variable.
+    fn fstr(self, a: &Ast, n: int) => void:
+        let tk = a.tok[n]
+        let i = a.toks.start[tk]
+        let e = a.toks.end[tk]
+        while i < e:
+            if a.byte_at(i) == '{':
+                let s = i + 1
+                let j = s
+                while j < e && is_ident_byte(a.byte_at(j)):
+                    j = j + 1
+                if j > s:
+                    let r = self.sc.find_span(a, s, j, 0)
+                    if r >= 0 && self.sc.kind[r] == int(Sk.Local):
+                        self.ev_add(int(Ev.Use), self.sc.info[r], n, 0, 0, 0, 0)
+                i = j
+            else:
+                i = i + 1
+
+    fn unary(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int, value: bool) => void:
+        let k = a.pc[n]
+        let o = a.pa[n]
+        if k == int(Tk.Amp):
+            self.place_subs(t, g, ty, a, o)
+            if self.place(a, o):
+                let v = self.pvar
+                let mutable = 0
+                if a.pd[n] == 1:
+                    mutable = 1
+                let loan = -1
+                if self.nl < 60:
+                    loan = self.nl
+                    self.lroot[loan] = v
+                    self.lps[loan] = self.keep_path()
+                    self.lpl[loan] = self.plen
+                    self.lmut[loan] = mutable
+                    let thru = 0
+                    if t.kind[self.v_ty[v]] == int(Ty.Ref) || self.v_param[v] != 0:
+                        thru = 1
+                    self.lthru[loan] = thru
+                    self.nl = self.nl + 1
+                    self.ev_add(int(Ev.Borrow), v, n, self.lps[loan], self.plen, mutable, loan)
+                else:
+                    self.ev_add(int(Ev.Use), v, n, 0, 0, 0, 0)
+            return
+        if k == int(Tk.Star):
+            let x = ty.node[n]
+            if value && x >= 0 && self.own_of(t, g, x) == int(Own.Move):
+                self.diags.add(a.tok[n], int(Oe.CopyResource))
+            self.ex(t, g, ty, a, o, false)
+            return
+        if k == int(Tk.KwClone) || k == int(Tk.KwCopy):
+            self.ex(t, g, ty, a, o, false)
+            return
+        self.ex(t, g, ty, a, o, false)
+
+    /#/ Arguments of a call are values, except to builtins and C functions, which only borrow.
+    fn call(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => void:
+        let callee = a.pa[n]
+        let by_value = true
+        let sig = -1
+        if callee >= 0 && a.kind[callee] == int(Nk.Name):
+            if self.lookup_var(a, a.tok[callee]) >= 0:
+                self.ex(t, g, ty, a, callee, false)
+            else:
+                let r = ty.lookup(a, a.tok[callee])
+                if r >= 0 && (ty.rd.sc.loc.kind[r] == int(Sk.Builtin) || ty.rd.sc.loc.kind[r] == int(Sk.Extern)):
+                    by_value = false
+                elif r >= 0 && ty.rd.sc.loc.kind[r] == int(Sk.Fn):
+                    sig = ty.rd.sc.loc.ty[r]
+        elif callee >= 0 && a.kind[callee] == int(Nk.Member):
+            self.place_subs(t, g, ty, a, a.pa[callee])
+            if self.place(a, a.pa[callee]):
+                self.ev_add(int(Ev.Use), self.pvar, callee, self.keep_path(), self.plen, 0, 0)
+        elif callee >= 0:
+            self.ex(t, g, ty, a, callee, false)
+        let c = a.child[n]
+        let i = 0
+        while c >= 0:
+            let v = by_value
+            /#/ a `buf` given to an `object` parameter is only a pointer to look through
+            if sig >= 0 && t.kind[sig] == int(Ty.Fn) && i < t.count_of(sig) && t.kind[t.arg(sig, i)] == int(Ty.Object):
+                v = false
+            self.ex(t, g, ty, a, c, v)
+            c = a.next[c]
+            i = i + 1
+
+    /#/ ---- statements --------------------------------------------------------
+
+    fn stmt_start(self) => void:
+        self.s0 = self.nl
+
+    /#/ Ends a statement: loans that were not stored anywhere end with it.
+    fn stmt_end(self) => void:
+        self.ev_add(int(Ev.End), -1, -1, 0, 0, 0, 0)
+
+    /#/ `dst` receives the value of `init`: references hold the loans it created and the ones
+    /#/ its reference arguments hold.
+    fn bind_loans(self, t: &Tys, ty: &Typer, a: &Ast, dst: int, init: int) => void:
+        if dst < 0 || init < 0 || t.kind[self.v_ty[dst]] != int(Ty.Ref):
+            return
+        if self.nl > self.s0 && a.kind[init] == int(Nk.Unary):
+            self.ev_add(int(Ev.Bind), dst, init, self.s0, self.nl, 0, 0)
+        self.flow_from(a, dst, init)
+
+    fn flow_from(self, a: &Ast, dst: int, e: int) => void:
+        if e < 0:
+            return
+        if a.kind[e] == int(Nk.Name):
+            let src = self.lookup_var(a, a.tok[e])
+            if src >= 0 && src != dst:
+                self.ev_add(int(Ev.Flow), dst, e, src, 0, 0, 0)
+
+    fn block(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, b: int) => void:
+        if b < 0:
+            return
+        let depth = self.sn
+        let mark = self.sc.n
+        let c = a.child[b]
+        while c >= 0:
+            self.stmt(t, g, ty, a, c)
+            c = a.next[c]
+        self.close_scope(depth, mark)
+
+    fn stmt(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => void:
+        let k = a.kind[n]
+        self.stmt_start()
+        if k == int(Nk.Let):
+            self.ex(t, g, ty, a, a.pc[n], true)
+            if a.pa[n] >= 0:
+                let v = self.add_var(a, a.pa[n], ty.node[n], false, n)
+                self.ev_add(int(Ev.Let), v, n, 0, 0, 0, 0)
+                self.bind_loans(t, ty, a, v, a.pc[n])
+            self.stmt_end()
+        elif k == int(Nk.Assign):
+            self.assign(t, g, ty, a, n)
+        elif k == int(Nk.Return):
+            self.ex(t, g, ty, a, a.pa[n], true)
+            let rv = -1
+            let l0 = self.nl
+            let rt = -1
+            if a.pa[n] >= 0:
+                rt = ty.node[a.pa[n]]
+            if rt >= 0 && t.kind[rt] == int(Ty.Ref):
+                l0 = self.s0
+                if a.kind[a.pa[n]] == int(Nk.Name):
+                    rv = self.lookup_var(a, a.tok[a.pa[n]])
+            self.ev_add(int(Ev.Ret), rv, n, l0, self.nl, 0, 0)
+            self.leave_scopes(0)
+            self.dead_block()
+        elif k == int(Nk.Raise):
+            self.ex(t, g, ty, a, a.pa[n], true)
+            self.stmt_end()
+        elif k == int(Nk.ExprStmt):
+            self.ex(t, g, ty, a, a.pa[n], false)
+            self.stmt_end()
+        elif k == int(Nk.Rm):
+            self.rm_target(t, g, ty, a, a.pa[n])
+            let extra = a.child[n]
+            while extra >= 0:
+                self.rm_target(t, g, ty, a, extra)
+                extra = a.next[extra]
+            self.stmt_end()
+        elif k == int(Nk.Clean):
+            self.diags.add(a.tok[n], int(Oe.CopyResource))
+            self.stmt_end()
+        elif k == int(Nk.Mv):
+            let src = -1
+            if a.pa[n] >= 0 && a.kind[a.pa[n]] == int(Nk.Name):
+                src = self.lookup_var(a, a.tok[a.pa[n]])
+            if src >= 0:
+                if a.pc[n] == 1:
+                    self.ev_add(int(Ev.Use), src, a.pa[n], 0, 0, 0, 0)
+                else:
+                    self.ev_add(int(Ev.Move), src, a.pa[n], 0, 0, 0, 0)
+            if a.pb[n] >= 0:
+                let ty_of = 0
+                if src >= 0:
+                    ty_of = self.v_ty[src]
+                let v = self.add_var(a, a.pb[n], ty_of, false, n)
+                self.ev_add(int(Ev.Let), v, n, 0, 0, 0, 0)
+            self.stmt_end()
+        elif k == int(Nk.If):
+            self.if_stmt(t, g, ty, a, n)
+        elif k == int(Nk.While):
+            self.while_stmt(t, g, ty, a, n)
+        elif k == int(Nk.For):
+            self.for_stmt(t, g, ty, a, n)
+        elif k == int(Nk.Match):
+            self.match_stmt(t, g, ty, a, n)
+        elif k == int(Nk.Break):
+            if self.nl_loops > 0:
+                let l = self.nl_loops - 1
+                self.leave_scopes(self.ld[l])
+                self.edge(self.cur, self.lx[l])
+            self.dead_block()
+        elif k == int(Nk.Continue):
+            if self.nl_loops > 0:
+                let l = self.nl_loops - 1
+                self.leave_scopes(self.ld[l])
+                self.edge(self.cur, self.lh[l])
+            self.dead_block()
+
+    fn rm_target(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, e: int) => void:
+        if e < 0:
+            return
+        if a.kind[e] == int(Nk.Name):
+            let v = self.lookup_var(a, a.tok[e])
+            if v >= 0:
+                self.ev_add(int(Ev.Drop), v, e, 0, 0, 0, 0)
+        else:
+            self.ex(t, g, ty, a, e, false)
+
+    fn assign(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => void:
+        let target = a.pa[n]
+        self.target = target
+        self.ex(t, g, ty, a, a.pb[n], true)
+        self.target = -1
+        if target >= 0 && a.kind[target] == int(Nk.Name):
+            let v = self.lookup_var(a, a.tok[target])
+            if v >= 0:
+                self.ev_add(int(Ev.Assign), v, n, 0, 0, 0, 0)
+                self.bind_loans(t, ty, a, v, a.pb[n])
+        else:
+            self.place_subs(t, g, ty, a, target)
+            if self.place(a, target):
+                self.ev_add(int(Ev.Write), self.pvar, n, self.keep_path(), self.plen, 0, 0)
+            elif target >= 0 && a.kind[target] == int(Nk.Unary):
+                self.ex(t, g, ty, a, a.pa[target], false)
+        self.stmt_end()
+
+    fn if_stmt(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => void:
+        self.ex(t, g, ty, a, a.pa[n], true)
+        self.stmt_end()
+        let head = self.cur
+        let then_b = self.new_block()
+        let join = self.new_block()
+        self.edge(head, then_b)
+        self.enter(then_b)
+        self.block(t, g, ty, a, a.pb[n])
+        self.edge(self.cur, join)
+        let e = a.pc[n]
+        if e >= 0:
+            let else_b = self.new_block()
+            self.edge(head, else_b)
+            self.enter(else_b)
+            if a.kind[e] == int(Nk.If):
+                self.stmt(t, g, ty, a, e)
+            else:
+                self.block(t, g, ty, a, e)
+            self.edge(self.cur, join)
+        else:
+            self.edge(head, join)
+        self.enter(join)
+
+    fn push_loop(self, head: int, exit: int) => void:
+        if self.nl_loops >= len(self.lh):
+            let cap = (self.nl_loops + 1) * 2
+            self.lh = buf_resize(self.lh, cap)
+            self.lx = buf_resize(self.lx, cap)
+            self.ld = buf_resize(self.ld, cap)
+        self.lh[self.nl_loops] = head
+        self.lx[self.nl_loops] = exit
+        self.ld[self.nl_loops] = self.sn
+        self.nl_loops = self.nl_loops + 1
+
+    fn while_stmt(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => void:
+        let pre = self.cur
+        let head = self.new_block()
+        let body = self.new_block()
+        let exit = self.new_block()
+        self.edge(pre, head)
+        self.enter(head)
+        self.ex(t, g, ty, a, a.pa[n], true)
+        self.stmt_end()
+        self.edge(head, body)
+        self.edge(head, exit)
+        self.push_loop(head, exit)
+        self.enter(body)
+        self.block(t, g, ty, a, a.pb[n])
+        self.edge(self.cur, head)
+        self.nl_loops = self.nl_loops - 1
+        self.enter(exit)
+
+    fn for_stmt(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => void:
+        self.ex(t, g, ty, a, a.pb[n], false)
+        self.stmt_end()
+        let pre = self.cur
+        let head = self.new_block()
+        let body = self.new_block()
+        let exit = self.new_block()
+        self.edge(pre, head)
+        self.enter(head)
+        self.edge(head, body)
+        self.edge(head, exit)
+        self.push_loop(head, exit)
+        self.enter(body)
+        let depth = self.sn
+        let mark = self.sc.n
+        if a.pa[n] >= 0:
+            let v = self.add_var(a, a.pa[n], ty.node[n], false, n)
+            self.ev_add(int(Ev.Let), v, n, 0, 0, 0, 0)
+        self.block(t, g, ty, a, a.pc[n])
+        self.close_scope(depth, mark)
+        self.edge(self.cur, head)
+        self.nl_loops = self.nl_loops - 1
+        self.enter(exit)
+
+    /#/ Names in a pattern that bind a new variable get the type the checker gave them.
+    fn pattern(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, p: int) => void:
+        if p < 0:
+            return
+        let k = a.kind[p]
+        if k == int(Nk.Name):
+            if tok_is(a, a.tok[p], "_"):
+                return
+            if self.lookup_var(a, a.tok[p]) >= 0 || ty.lookup(a, a.tok[p]) < 0:
+                let v = self.add_var(a, a.tok[p], ty.node[p], false, p)
+                self.ev_add(int(Ev.Let), v, p, 0, 0, 0, 0)
+        elif k == int(Nk.Call) || k == int(Nk.Tuple):
+            let c = a.child[p]
+            while c >= 0:
+                self.pattern(t, g, ty, a, c)
+                c = a.next[c]
+        elif k == int(Nk.StructLit):
+            let f = a.child[p]
+            while f >= 0:
+                self.pattern(t, g, ty, a, a.pa[f])
+                f = a.next[f]
+
+    fn match_stmt(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => void:
+        let s = a.pa[n]
+        self.ex(t, g, ty, a, s, false)
+        self.stmt_end()
+        let head = self.cur
+        let join = self.new_block()
+        let arm = a.child[n]
+        while arm >= 0:
+            let ab = self.new_block()
+            self.edge(head, ab)
+            self.enter(ab)
+            let depth = self.sn
+            let mark = self.sc.n
+            self.pattern(t, g, ty, a, a.pa[arm])
+            if a.pc[arm] >= 0:
+                self.stmt_start()
+                self.ex(t, g, ty, a, a.pc[arm], true)
+                self.stmt_end()
+            self.block(t, g, ty, a, a.pb[arm])
+            self.close_scope(depth, mark)
+            self.edge(self.cur, join)
+            arm = a.next[arm]
+        if a.child[n] < 0:
+            self.edge(head, join)
+        self.enter(join)
+
+    /#/ ---- analyses ----------------------------------------------------------
+
+    /#/ Does variable `v` stay in use after event `i`?
+    fn live_at(self, i: int, v: int) => bool:
+        return self.live_after[i * self.nv + v] != 0
+
+    /#/ Backwards: which variables are read later. Fills `live_after` for every event.
+    fn liveness(self) => void:
+        let nv = self.nv
+        let size = self.nb * nv + 1
+        self.live_in = new_buf(int, size)
+        self.live_out = new_buf(int, size)
+        self.live_after = new_buf(int, self.ne * nv + 1)
+        let tmp: buf<int> = new_buf(int, nv + 1)
+        let round = 0
+        let changed = true
+        while changed && round < 200:
+            changed = false
+            round = round + 1
+            for e in 0..self.nedge:
+                let f = self.ef[e]
+                let to = self.et[e]
+                for v in 0..nv:
+                    if self.live_in[to * nv + v] != 0 && self.live_out[f * nv + v] == 0:
+                        self.live_out[f * nv + v] = 1
+                        changed = true
+            let b = self.nb - 1
+            while b >= 0:
+                for v in 0..nv:
+                    tmp[v] = self.live_out[b * nv + v]
+                let i = self.be[b] - 1
+                while i >= self.bs[b]:
+                    for v in 0..nv:
+                        self.live_after[i * nv + v] = tmp[v]
+                    let k = self.ek[i]
+                    let x = self.ev[i]
+                    if k == int(Ev.Let) || k == int(Ev.Assign):
+                        tmp[x] = 0
+                    elif k == int(Ev.Use) || k == int(Ev.Consume) || k == int(Ev.Borrow) || k == int(Ev.Move) || k == int(Ev.Write):
+                        tmp[x] = 1
+                    i = i - 1
+                for v in 0..nv:
+                    if self.live_in[b * nv + v] != tmp[v]:
+                        self.live_in[b * nv + v] = tmp[v]
+                        changed = true
+                b = b - 1
+
+    /#/ Do two places of the same variable overlap? An index step matches any index.
+    fn overlap(self, s1: int, l1: int, s2: int, l2: int) => bool:
+        let n = l1
+        if l2 < n:
+            n = l2
+        for i in 0..n:
+            let x = self.pp[s1 + i]
+            let y = self.pp[s2 + i]
+            if x != y && x != -1 && y != -1:
+                return false
+        return true
+
+    /#/ The loans in force at event `i`: those of the statement so far, and those held by a
+    /#/ variable that is still used later.
+    fn active(self, i: int) => int:
+        let nv = self.nv
+        let m = self.w[2 * nv]
+        for h in 0..nv:
+            if self.w[nv + h] != 0 && self.live_at(i, h):
+                m = m | self.w[nv + h]
+        return m
+
+    /#/ kind: 0 read, 1 write/move/drop, 2 shared borrow, 3 mutable borrow
+    fn access(self, a: &Ast, i: int, node: int, v: int, ps: int, pl: int, kind: int) => void:
+        let m = self.active(i)
+        if m == 0:
+            return
+        for l in 0..self.nl:
+            if (m & (1 << l)) != 0 && self.lroot[l] == v && self.overlap(ps, pl, self.lps[l], self.lpl[l]):
+                if kind >= 2:
+                    if kind == 3 || self.lmut[l] != 0:
+                        self.diags.add(a.tok[node], int(Oe.BorrowConflict))
+                elif kind == 1 || self.lmut[l] != 0:
+                    self.diags.add(a.tok[node], int(Oe.BorrowViolation))
+
+    fn check_state(self, a: &Ast, node: int, v: int) => void:
+        let s = self.w[v]
+        if (s & 2) != 0:
+            self.diags.add(a.tok[node], int(Oe.UseAfterMove))
+        elif (s & 4) != 0:
+            self.diags.add(a.tok[node], int(Oe.UseAfterDrop))
+
+    /#/ One event on the working state `w`. With `report`, findings are recorded.
+    fn step(self, a: &Ast, i: int, report: bool) => void:
+        let nv = self.nv
+        let k = self.ek[i]
+        let v = self.ev[i]
+        let n = self.en[i]
+        if k == int(Ev.Let):
+            self.w[v] = 1
+            self.w[nv + v] = 0
+        elif k == int(Ev.Assign):
+            if report:
+                self.access(a, i, n, v, 0, 0, 1)
+            self.w[v] = 1
+            self.w[nv + v] = 0
+        elif k == int(Ev.Use):
+            if report:
+                self.check_state(a, n, v)
+                self.access(a, i, n, v, self.ea[i], self.eb[i], 0)
+        elif k == int(Ev.Consume):
+            if report:
+                self.check_state(a, n, v)
+                self.access(a, i, n, v, 0, 0, 1)
+            if self.live_at(i, v):
+                if report:
+                    self.diags.add(a.tok[n], int(Oe.CopyResource))
+            else:
+                self.w[v] = 2
+                if report:
+                    self.moved_at[n] = 1
+        elif k == int(Ev.Move):
+            if report:
+                self.check_state(a, n, v)
+                self.access(a, i, n, v, 0, 0, 1)
+            self.w[v] = 2
+        elif k == int(Ev.Borrow):
+            if report:
+                self.check_state(a, n, v)
+                self.access(a, i, n, v, self.ea[i], self.eb[i], 2 + self.ec[i])
+            self.w[2 * nv] = self.w[2 * nv] | (1 << self.ed[i])
+        elif k == int(Ev.Drop):
+            if report:
+                let s = self.w[v]
+                if (s & 2) != 0:
+                    self.diags.add(a.tok[n], int(Oe.UseAfterMove))
+                elif (s & 4) != 0:
+                    self.diags.add(a.tok[n], int(Oe.UseAfterDrop))
+                self.access(a, i, n, v, 0, 0, 1)
+            self.w[v] = 4
+        elif k == int(Ev.Write):
+            if report:
+                self.check_state(a, n, v)
+                self.access(a, i, n, v, self.ea[i], self.eb[i], 1)
+        elif k == int(Ev.Bind):
+            let mask = 0
+            for l in self.ea[i]..self.eb[i]:
+                mask = mask | (1 << l)
+            self.w[nv + v] = self.w[nv + v] | mask
+        elif k == int(Ev.Flow):
+            self.w[nv + v] = self.w[nv + v] | self.w[nv + self.ea[i]]
+        elif k == int(Ev.Ret):
+            if report:
+                for l in self.ea[i]..self.eb[i]:
+                    if self.lthru[l] == 0:
+                        self.diags.add(a.tok[n], int(Oe.ReturnsLocalRef))
+                if v >= 0:
+                    for l in 0..self.nl:
+                        if (self.w[nv + v] & (1 << l)) != 0 && self.lthru[l] == 0:
+                            self.diags.add(a.tok[n], int(Oe.ReturnsLocalRef))
+        elif k == int(Ev.Scope):
+            if report:
+                let s = self.w[v]
+                if (s & 1) != 0:
+                    self.v_exit[v] = self.v_exit[v] | 1
+                if (s & 6) != 0:
+                    self.v_exit[v] = self.v_exit[v] | 2
+            self.w[nv + v] = 0
+        elif k == int(Ev.End):
+            self.w[2 * nv] = 0
+
+    /#/ Forwards to a fixed point, then once more to report.
+    fn solve(self, a: &Ast) => void:
+        let nv = self.nv
+        let width = 2 * nv + 1
+        self.w = new_buf(int, width)
+        self.st_in = new_buf(int, self.nb * width + 1)
+        let st_out: buf<int> = new_buf(int, self.nb * width + 1)
+        self.reach = new_buf(int, self.nb + 1)
+        self.reach[0] = 1
+        let changed = true
+        let round = 0
+        while changed && round < 100:
+            changed = false
+            round = round + 1
+            for b in 0..self.nb:
+                if self.reach[b] != 0:
+                    self.run_block(a, b, width, false)
+                    for j in 0..width:
+                        st_out[b * width + j] = self.w[j]
+            for e in 0..self.nedge:
+                let f = self.ef[e]
+                let to = self.et[e]
+                if self.reach[f] != 0:
+                    if self.reach[to] == 0:
+                        self.reach[to] = 1
+                        for j in 0..width:
+                            self.st_in[to * width + j] = st_out[f * width + j]
+                        changed = true
+                    else:
+                        for j in 0..width:
+                            let x = self.st_in[to * width + j] | st_out[f * width + j]
+                            if x != self.st_in[to * width + j]:
+                                self.st_in[to * width + j] = x
+                                changed = true
+        for b in 0..self.nb:
+            if self.reach[b] != 0:
+                self.run_block(a, b, width, true)
+
+    fn run_block(self, a: &Ast, b: int, width: int, report: bool) => void:
+        for j in 0..width:
+            self.w[j] = self.st_in[b * width + j]
+        for i in self.bs[b]..self.be[b]:
+            self.step(a, i, report)
+
+    fn reset(self) => void:
+        self.ne = 0
+        self.nb = 0
+        self.nedge = 0
+        self.cur = -1
+        self.nv = 0
+        self.sn = 0
+        self.nl_loops = 0
+        self.pn = 0
+        self.nl = 0
+        self.s0 = 0
+        self.sc.truncate(0)
+
+    /#/ Checks one function (`f` is its Fn node; methods and plain functions alike).
+    fn function(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, f: int) => void:
+        let body = a.pc[f]
+        if body < 0:
+            return
+        self.reset()
+        self.enter(self.new_block())
+        let p = a.child[f]
+        while p >= 0:
+            if a.kind[p] == int(Nk.Param) || a.kind[p] == int(Nk.SelfParam):
+                let v = self.add_var(a, a.tok[p], ty.node[p], true, p)
+                if a.kind[p] == int(Nk.SelfParam):
+                    self.v_param[v] = 2
+                self.ev_add(int(Ev.Let), v, p, 0, 0, 0, 0)
+            p = a.next[p]
+        self.block(t, g, ty, a, body)
+        self.leave_scopes(0)
+        self.be[self.cur] = self.ne
+        self.liveness()
+        self.solve(a)
+        for v in 0..self.nv:
+            self.exit_of[self.v_node[v]] = self.v_exit[v]
+
+fn new_flow(a: &Ast) => Flow:
+    return Flow { ek: new_buf(int, 64), ev: new_buf(int, 64), en: new_buf(int, 64), ea: new_buf(int, 64), eb: new_buf(int, 64), ec: new_buf(int, 64), ed: new_buf(int, 64), ne: 0, bs: new_buf(int, 16), be: new_buf(int, 16), nb: 0, ef: new_buf(int, 16), et: new_buf(int, 16), nedge: 0, cur: -1, v_tok: new_buf(int, 16), v_ty: new_buf(int, 16), v_param: new_buf(int, 16), v_node: new_buf(int, 16), v_exit: new_buf(int, 16), nv: 0, sc: new_syms(), ss: new_buf(int, 16), sn: 0, lh: new_buf(int, 8), lx: new_buf(int, 8), ld: new_buf(int, 8), nl_loops: 0, pp: new_buf(int, 64), pn: 0, pt: new_buf(int, 16), plen: 0, pvar: -1, lroot: new_buf(int, 64), lps: new_buf(int, 64), lpl: new_buf(int, 64), lmut: new_buf(int, 64), lthru: new_buf(int, 64), nl: 0, s0: 0, target: -1, diags: new_odiags(), moved_at: new_buf(int, a.count + 1), exit_of: new_buf(int, a.count + 1), live_after: new_buf(int, 1), reach: new_buf(int, 1), st_in: new_buf(int, 1), live_in: new_buf(int, 1), live_out: new_buf(int, 1), w: new_buf(int, 1) }
+
+/#/ Checks every function and method of module `m` (tree `a`); `ty` is the typer's result for
+/#/ it. Findings are in `diags`, implicit moves in `moved_at`.
+fn check_own(t: &Tys, g: &Syms, a: &Ast, ty: &Typer) => Flow:
+    let f = new_flow(a)
+    let it = a.child[a.root]
+    while it >= 0:
+        let k = a.kind[it]
+        if k == int(Nk.Fn):
+            f.function(t, g, ty, a, it)
+        elif k == int(Nk.Class):
+            let c = a.child[it]
+            while c >= 0:
+                if a.kind[c] == int(Nk.Fn):
+                    f.function(t, g, ty, a, c)
+                c = a.next[c]
+        it = a.next[it]
+    return f

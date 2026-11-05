@@ -1,0 +1,15 @@
+[package]
+name = "own"
+version = "0.1.0"
+
+[dependencies.packages.types]
+path = "../types"
+
+[dependencies.packages.sema]
+path = "../sema"
+
+[dependencies.packages.parser]
+path = "../parser"
+
+[dependencies.packages.lexer]
+path = "../lexer"

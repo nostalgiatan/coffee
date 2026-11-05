@@ -1,0 +1,20 @@
+use * in own_probe
+
+fn prog(body: str) => str:
+    return "fn take(s: str) => void:\n    return\n\nfn main() => int:\n" + body + "    return 0\n"
+
+fn main() => int:
+    let m = 0
+    let moved = int(Oe.UseAfterMove)
+    let copy = int(Oe.CopyResource)
+    /#/ the last use of a resource moves it
+    m = m + miss_clean(prog("    let s = \"a\" + \"b\"\n    take(s)\n"))
+    m = m + miss_clean(prog("    let s = \"a\" + \"b\"\n    let t = s\n    take(t)\n"))
+    /#/ using it afterwards is an error
+    m = m + miss_o(prog("    let s = \"a\" + \"b\"\n    let t = s\n    take(s)\n"), copy, 1)
+    m = m + miss_o(prog("    let s = \"a\" + \"b\"\n    take(s)\n    take(s)\n"), copy, 1)
+    m = m + miss_o(prog("    let s = \"a\" + \"b\"\n    mv s t\n    take(s)\n"), moved, 1)
+    m = m + miss_clean(prog("    let s = \"a\" + \"b\"\n    mv s t\n    take(t)\n"))
+    /#/ values copy freely
+    m = m + miss_clean(prog("    let a = 1\n    let b = a\n    let c = a + b\n"))
+    return m

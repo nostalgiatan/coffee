@@ -186,7 +186,18 @@ impl super::TypeChecker {
                 }
 
                 if field == "assign" {
-                    return self.check_assign_call(object, args);
+                    // `p.assign("field", v)` is built in, unless the class has a method of its own
+                    let user_defined = match self.check_expression(object) {
+                        Ok(Type::NamedType { name }) => self.lookup_method(&name, "assign").is_some(),
+                        Ok(Type::Ref { elem, .. }) => matches!(
+                            *elem,
+                            Type::NamedType { ref name } if self.lookup_method(name, "assign").is_some()
+                        ),
+                        _ => false,
+                    };
+                    if !user_defined {
+                        return self.check_assign_call(object, args);
+                    }
                 }
 
                 let object_type = self.check_expression(object)?;
