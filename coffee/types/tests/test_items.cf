@@ -1,0 +1,75 @@
+use * in types_probe
+
+fn main() => int:
+    let m = 0
+    let mis = int(Te.Mismatch)
+    let ar = int(Te.ArityMismatch)
+    let nc = int(Te.NotCallable)
+    let fnf = int(Te.FieldNotFound)
+    let mnf = int(Te.MethodNotFound)
+    let vnf = int(Te.VariantNotFound)
+    /#/ calls: arity and argument types, functions declared later
+    m = m + miss_ok("fn add(a: int, b: int) => int:\n    return a + b\n\nfn main() => int:\n    return add(1, 2)\n")
+    m = m + miss_t("fn add(a: int, b: int) => int:\n    return a + b\n\nfn main() => int:\n    return add(1)\n", ar, 1)
+    m = m + miss_t("fn add(a: int, b: int) => int:\n    return a + b\n\nfn main() => int:\n    return add(1, \"x\")\n", mis, 1)
+    m = m + miss_ok("fn main() => int:\n    return later(2)\n\nfn later(n: int) => int:\n    return n\n")
+    m = m + miss_t("fn main() => int:\n    let n = 1\n    return n(2)\n", nc, 1)
+    m = m + miss_ok("fn twice(f: fn(int) => int, x: int) => int:\n    return f(f(x))\n\nfn inc(n: int) => int:\n    return n + 1\n\nfn main() => int:\n    return twice(inc, 1)\n")
+    /#/ literals become the parameter's type
+    m = m + miss_ok("fn f(a: int(1)+, b: float(4)) => int:\n    return 0\n\nfn main() => int:\n    return f(5, 2.5)\n")
+    m = m + miss_t("fn f(a: int(1)+) => int:\n    return 0\n\nfn main() => int:\n    return f(500)\n", mis, 1)
+    m = m + miss_ok("fn f(s: &str) => int:\n    return len(s)\n\nfn main() => int:\n    return f(\"abc\")\n")
+    /#/ classes: fields, struct literals, methods
+    let cls = "class P:\n    x: int\n    s: str\n\n    fn get(self) => int:\n        return self.x\n\n    fn put(self, v: int) => void:\n        self.x = v\n\n"
+    m = m + miss_ok(cls + "fn main() => int:\n    let p = P { x: 1, s: \"a\" }\n    p.put(4)\n    return p.get() + p.x\n")
+    m = m + miss_t(cls + "fn main() => int:\n    let p = P { x: 1, s: \"a\" }\n    return p.y\n", fnf, 1)
+    m = m + miss_t(cls + "fn main() => int:\n    let p = P { x: \"no\", s: \"a\" }\n    return 0\n", mis, 1)
+    m = m + miss_t(cls + "fn main() => int:\n    let p = P { x: 1, s: \"a\", z: 2 }\n    return 0\n", fnf, 1)
+    m = m + miss_t(cls + "fn main() => int:\n    let p = P { x: 1, s: \"a\" }\n    return p.nope()\n", mnf, 1)
+    m = m + miss_t(cls + "fn main() => int:\n    let p = P { x: 1, s: \"a\" }\n    p.put(\"x\")\n    return 0\n", mis, 1)
+    m = m + miss_t(cls + "fn main() => int:\n    let p = P { x: 1, s: \"a\" }\n    p.put(1, 2)\n    return 0\n", ar, 1)
+    m = m + miss_t(cls + "fn main() => int:\n    let p = P { x: 1, s: \"a\" }\n    let s: int = p.s\n    return 0\n", mis, 1)
+    m = m + miss_t(cls + "fn main() => int:\n    let q: P = 5\n    return 0\n", mis, 1)
+    /#/ a method's last bare value is its result
+    m = m + miss_ok("class A:\n    n: int\n\n    fn v(self) => int:\n        self.n\n")
+    m = m + miss_t("class A:\n    n: int\n\n    fn v(self) => str:\n        self.n\n", mis, 1)
+    /#/ a class passes by reference where an ancestor is wanted
+    let inh = "class A:\n    x: int\n\nclass B of A:\n    y: int\n\n"
+    m = m + miss_ok(inh + "fn f(a: &A) => int:\n    return a.x\n\nfn main() => int:\n    let b = B { x: 1, y: 2 }\n    return f(&b) + b.x + b.y\n")
+    m = m + miss_t(inh + "fn f(b: &B) => int:\n    return b.y\n\nfn main() => int:\n    let a = A { x: 1 }\n    return f(&a)\n", mis, 1)
+    /#/ enums
+    let en = "enum E:\n    A\n    B(int, str)\n\n"
+    m = m + miss_ok(en + "fn main() => int:\n    let a = E.A\n    let b = E.B(1, \"x\")\n    return 0\n")
+    m = m + miss_t(en + "fn main() => int:\n    let a = E.Z\n    return 0\n", vnf, 1)
+    m = m + miss_t(en + "fn main() => int:\n    let b = E.B(1)\n    return 0\n", ar, 1)
+    m = m + miss_t(en + "fn main() => int:\n    let b: int = E.A\n    return 0\n", mis, 1)
+    m = m + miss_ok(en + "fn f(e: E) => int:\n    match e:\n        E.A => return 1\n        E.B(n, s) => return n + len(s)\n    return 0\n")
+    m = m + miss_t(en + "fn f(e: E) => int:\n    match e:\n        E.B(n, s) => return s\n        _ => return 0\n    return 0\n", mis, 1)
+    /#/ loops
+    m = m + miss_ok("fn main() => int:\n    let s = 0\n    for i in 0..10:\n        s = s + i\n    let a = [1, 2]\n    for x in a:\n        s = s + x\n    return s\n")
+    m = m + miss_t("fn main() => int:\n    for i in 0..\"x\":\n        let a = 1\n    return 0\n", mis, 1)
+    m = m + miss_t("fn main() => int:\n    for i in 5:\n        let a = 1\n    return 0\n", int(Te.InvalidType), 1)
+    m = m + miss_t("fn main() => int:\n    let n: int(1)+ = 5\n    for i in 0..n:\n        let k: int(1)+ = i\n    return 0\n", mis, 0)
+    /#/ generics
+    m = m + miss_ok("fn id<T>(x: T) => T:\n    return x\n\nfn main() => int:\n    let a: int = id(5)\n    let s: str = id(\"s\")\n    return a\n")
+    m = m + miss_t("fn id<T>(x: T) => T:\n    return x\n\nfn main() => int:\n    let a: str = id(5)\n    return 0\n", mis, 1)
+    m = m + miss_ok("class Box<T>:\n    v: T\n\n    fn get(self) => T:\n        return self.v\n\nfn main() => int:\n    let b = Box { v: 7 }\n    return b.get()\n")
+    m = m + miss_t("class Box<T>:\n    v: T\n\n    fn get(self) => T:\n        return self.v\n\nfn main() => int:\n    let b = Box { v: 7 }\n    let s: str = b.get()\n    return 0\n", mis, 1)
+    /#/ locals: shadowing, closures see their own, globals
+    m = m + miss_ok("let K: int = 5\n\nfn main() => int:\n    return K + 1\n")
+    m = m + miss_t("let K: int = 5\n\nfn main() => int:\n    let s: str = K\n    return 0\n", mis, 1)
+    m = m + miss_ok("fn main() => int:\n    let a = 1\n    if a == 1:\n        let a = \"s\"\n        let n = len(a)\n    return a\n")
+    /#/ match: every variant or a catch-all, and arms that give a value agree
+    let nx = int(Te.NonExhaustive)
+    m = m + miss_t(en + "fn f(e: E) => int:\n    match e:\n        E.A => return 1\n    return 0\n", nx, 1)
+    m = m + miss_ok(en + "fn f(e: E) => int:\n    match e:\n        E.A => return 1\n        _ => return 2\n    return 0\n")
+    m = m + miss_t(en + "fn f(e: E) => int:\n    match e:\n        E.A if true => return 1\n        E.B(n, s) => return 2\n    return 0\n", nx, 1)
+    m = m + miss_t("fn f(x: int) => int:\n    match x:\n        0 => return 1\n        1 => return 2\n    return 0\n", nx, 1)
+    m = m + miss_ok("fn f(x: int) => int:\n    match x:\n        0 => return 1\n        n => return n\n    return 0\n")
+    m = m + miss_ok("fn f(x: bool) => int:\n    match x:\n        true => return 1\n        false => return 2\n    return 0\n")
+    m = m + miss_t("fn f(x: int) => int:\n    match x:\n        0 => \"zero\"\n        _ => 1\n    return 0\n", mis, 1)
+    m = m + miss_ok("fn f(t: (int, int)) => int:\n    match t:\n        (x, y) => return x + y\n    return 0\n")
+    /#/ only an Error can be raised
+    m = m + miss_ok("class E of Error:\n    x: int\n\nfn f() => void:\n    raise E { code: 1, note: \"n\", e: 0, x: 2 }\n")
+    m = m + miss_t("fn f() => void:\n    raise 1\n", mis, 1)
+    return m

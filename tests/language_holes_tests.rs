@@ -566,3 +566,9 @@ fn test_function_declared_after_use_may_take_a_class() {
 fn test_method_called_through_a_class_reference_with_a_loop_variable() {
     assert_exit_code("class S:\n    t: str\n\n    fn at(self, i: int) => int:\n        return byte(&self.t, i)\n\nfn byte(s: &str, i: int) => int:\n    return int(s[i])\n\nfn same(a: &S, w: &str) => bool:\n    for k in 0..len(w):\n        if a.at(k) != byte(w, k):\n            return false\n    return true\n\nfn main() => int:\n    let a = S { t: \"ab\" + \"c\" }\n    if same(&a, \"abc\"):\n        return 0\n    return 1\n", 0).unwrap();
 }
+
+#[test]
+fn test_comparison_passed_as_a_bool_argument_to_a_method() {
+    // the comparison is an i1; the method's `bool` parameter is a byte
+    assert_exit_code("fn f(x: int, b: bool) => int:\n    if b:\n        return x\n    return 0\n\nclass C:\n    n: int\n\n    fn g(self, b: bool) => int:\n        if b:\n            return 1\n        return 0\n\nfn mk() => buf<int>:\n    let b: buf<int> = new_buf(int, 2)\n    b[0] = 1\n    return b\n\nfn main() => int:\n    let v = mk()\n    let c = C { n: 1 }\n    return f(5, v[0] == 1) + c.g(v[0] == 1) * 10\n", 15).unwrap();
+}

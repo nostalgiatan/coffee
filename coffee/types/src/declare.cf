@@ -15,50 +15,6 @@ fn member_of(g: &Syms, a: &Ast, owner: int, tok: int, kind: int) => int:
             return i
     return -1
 
-/#/ Gives the type parameters among `f`'s children the numbers 0, 1, … in `scope` and returns
-/#/ the scope mark to pop back to.
-fn bind_params(t: &Tys, rd: &Reader, a: &Ast, f: int) => int:
-    let mark = rd.sc.loc.n
-    let k = 0
-    let p = a.child[f]
-    while p >= 0:
-        if a.kind[p] == int(Nk.TypeParam):
-            let r = rd.sc.loc.add_tok(a, a.tok[p], int(Sk.TypeParam), -1, -1)
-            rd.sc.loc.ty[r] = t.param_ty(k)
-            k = k + 1
-        p = a.next[p]
-    return mark
-
-/#/ The function type of `f` seen from `scope`; a method gets `&mut Class` first.
-fn fn_sig(t: &Tys, rd: &Reader, a: &Ast, f: int, class_ty: int) => int:
-    let mark = bind_params(t, rd, a, f)
-    let items = new_buf(int, 8)
-    let count = 0
-    if class_ty >= 0:
-        items[0] = t.ref_to(class_ty, true)
-        count = 1
-    let p = a.child[f]
-    while p >= 0:
-        if a.kind[p] == int(Nk.Param):
-            if count >= len(items):
-                items = buf_resize(items, count * 2)
-            items[count] = rd.from_ref(t, a, a.pa[p])
-            count = count + 1
-        elif a.kind[p] == int(Nk.SelfParam) && class_ty < 0:
-            if count >= len(items):
-                items = buf_resize(items, count * 2)
-            items[count] = 0
-            count = count + 1
-        p = a.next[p]
-    let ret = t.simple(int(Ty.Void))
-    if a.pb[f] >= 0:
-        ret = rd.from_ref(t, a, a.pb[f])
-    let start = t.args_n
-    for i in 0..count:
-        t.push_arg(items[i])
-    rd.sc.loc.truncate(mark)
-    return t.intern(int(Ty.Fn), 0, count, ret, start)
-
 /#/ Declares the types of module `m`, whose tree is `a`. The modules it imports from must be
 /#/ declared first.
 fn declare_types(t: &Tys, g: &Syms, a: &Ast, m: int) => void:
@@ -81,7 +37,7 @@ fn declare_types(t: &Tys, g: &Syms, a: &Ast, m: int) => void:
         if k == int(Nk.Fn) && a.pa[it] >= 0:
             let r = g.find_in_module(a, a.pa[it], m)
             if r >= 0:
-                g.ty[r] = fn_sig(t, &rd, a, it, -1)
+                g.ty[r] = rd.fn_sig(t, a, it, -1)
         elif k == int(Nk.Class) && a.pa[it] >= 0:
             declare_class(t, g, &rd, a, it, m)
         elif k == int(Nk.Enum) && a.pa[it] >= 0:
@@ -92,12 +48,23 @@ fn declare_types(t: &Tys, g: &Syms, a: &Ast, m: int) => void:
                 g.ty[r] = rd.from_ref(t, a, a.pb[it])
         it = a.next[it]
 
+fn count_params(a: &Ast, f: int) => int:
+    let k = 0
+    let p = a.child[f]
+    while p >= 0:
+        if a.kind[p] == int(Nk.TypeParam):
+            k = k + 1
+        p = a.next[p]
+    return k
+
 fn declare_class(t: &Tys, g: &Syms, rd: &Reader, a: &Ast, cl: int, m: int) => void:
     let ci = g.find_in_module(a, a.pa[cl], m)
     if ci < 0:
         return
     let self_ty = t.named(g.info[ci])
-    let mark = bind_params(t, rd, a, cl)
+    /#/ the class row's `ty` is its number of type parameters
+    g.ty[ci] = count_params(a, cl)
+    let mark = rd.bind_params(t, a, cl)
     let f = a.child[cl]
     while f >= 0:
         if a.kind[f] == int(Nk.Field):
@@ -107,7 +74,7 @@ fn declare_class(t: &Tys, g: &Syms, rd: &Reader, a: &Ast, cl: int, m: int) => vo
         elif a.kind[f] == int(Nk.Fn) && a.pa[f] >= 0:
             let r = member_of(g, a, ci, a.pa[f], int(Sk.Method))
             if r >= 0:
-                g.ty[r] = fn_sig(t, rd, a, f, self_ty)
+                g.ty[r] = rd.fn_sig(t, a, f, self_ty)
         f = a.next[f]
     rd.sc.loc.truncate(mark)
 

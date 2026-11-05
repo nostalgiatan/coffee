@@ -37,9 +37,11 @@ fn main() => int:
     m = m + miss("fn f(a: &mut [u8]) => (int, str):\n    return (1, \"\")\n", "f", "fn(&mut [int(1)-]) => (int(8)+, str)")
     m = m + miss("fn g(b: B) => B:\n    return b\n\nclass B:\n    x: int\n", "g", "fn(B) => B")
     m = m + miss("class B:\n    x: float\n    s: str\n", "x", "float(8)")
-    m = m + miss("class B:\n    x: float\n\n    fn get(self, k: int) => float:\n        return self.x\n", "get", "fn(&mut B, int(8)+) => float(8)")
+    m = m + miss("class B:\n    x: float\n\n    fn get(self, k: int) => float:\n        return self.x\n", "get", "fn(B, int(8)+) => float(8)")
     m = m + miss("enum E:\n    A\n    B(int, str)\n", "A", "E")
     m = m + miss("enum E:\n    A\n    B(int, str)\n", "B", "fn(int(8)+, str) => E")
     m = m + miss("type H: object\n\nfn f(h: H) => void:\n    return\n", "f", "fn(object) => void")
     m = m + miss("let K: int = 5\n", "K", "int(8)+")
+    m = m + miss("class B:\n    x: int\n\n    fn new(x: int) => B:\n        return B { x: x }\n", "new", "fn(int(8)+) => B")
+    m = m + miss("fn id<T>(x: T) => T:\n    return x\n", "id", "fn(T0) => T0")
     return m

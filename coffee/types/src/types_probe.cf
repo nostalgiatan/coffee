@@ -1,0 +1,23 @@
+/#/ Helpers for tests and tools: type-check a source and count what was found.
+use * in typer
+
+/#/ Declares and checks `src` as a module of its own.
+fn tcheck(src: str) => Typer:
+    let g = new_globals()
+    let a = parse(src)
+    let m = declare_module(&g, &a, "t")
+    let t = new_tys()
+    declare_types(&t, &g, &a, m)
+    return check_types(&t, &g, &a, m)
+
+/#/ 1 when `src` does not yield exactly `want` findings with `code`, else 0.
+fn miss_t(src: str, code: int, want: int) => int:
+    let r = tcheck(src)
+    if r.diags.count(code) != want:
+        return 1
+    return 0
+
+/#/ 1 when `src` yields any finding, else 0.
+fn miss_ok(src: str) => int:
+    let r = tcheck(src)
+    return r.diags.n

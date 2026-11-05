@@ -264,7 +264,14 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         }
 
         let mut call_args = vec![object_value];
-        call_args.extend(compiled_args);
+        // a comparison arrives as an i1; the callee's `bool` parameter is wider
+        let params = function.get_params();
+        for (i, arg) in compiled_args.into_iter().enumerate() {
+            match params.get(i + 1) {
+                Some(param) => call_args.push(self.convert_value_to_type(arg, param.get_type(), &format!("arg_{}", i))?),
+                None => call_args.push(arg),
+            }
+        }
 
         let metadata_args: Vec<inkwell::values::BasicMetadataValueEnum> = call_args.iter()
             .map(|v| (*v).into())

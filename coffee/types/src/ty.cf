@@ -47,6 +47,8 @@ class Tys:
     /#/ the cursor of `from_ref`
     pos: int
     params: int
+    /#/ 1 while the first `>` of a `>>` token has been taken
+    half: int
 
     fn grow(self) => void:
         if self.n < len(self.kind):
@@ -60,6 +62,9 @@ class Tys:
 
     fn set_pos(self, p: int) => void:
         self.pos = p
+
+    fn set_half(self, h: int) => void:
+        self.half = h
 
     fn set_args_n(self, n: int) => void:
         self.args_n = n
@@ -210,7 +215,7 @@ class Tys:
         return false
 
 fn new_tys() => Tys:
-    let t = Tys { kind: new_buf(int, 32), a: new_buf(int, 32), b: new_buf(int, 32), c: new_buf(int, 32), hash: new_buf(int, 32), n: 0, args: new_buf(int, 32), args_n: 0, pos: 0, params: 0 }
+    let t = Tys { kind: new_buf(int, 32), a: new_buf(int, 32), b: new_buf(int, 32), c: new_buf(int, 32), hash: new_buf(int, 32), n: 0, args: new_buf(int, 32), args_n: 0, pos: 0, params: 0, half: 0 }
     /#/ id 0 is the Error type, so that a zeroed slot reads as "already reported"
     t.simple(int(Ty.Error))
     return t

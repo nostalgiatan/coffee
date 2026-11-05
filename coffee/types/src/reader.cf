@@ -134,7 +134,7 @@ class Reader:
         /#/ element is collected first and pushed after
         let found = new_buf(int, 8)
         let count = 0
-        while t.pos < end && a.toks.kind[t.pos] != close:
+        while t.pos < end && a.toks.kind[t.pos] != close && !(close == int(Tk.Gt) && a.toks.kind[t.pos] == int(Tk.Shr)):
             let before = t.pos
             let item = self.read_ty(t, a, end)
             if count >= len(found):
@@ -145,7 +145,14 @@ class Reader:
                 t.set_pos(t.pos + 1)
             if t.pos == before:
                 break
-        if t.pos < end && a.toks.kind[t.pos] == close:
+        if t.pos < end && close == int(Tk.Gt) && a.toks.kind[t.pos] == int(Tk.Shr):
+            /#/ `>>` closes two lists: the first takes half of it, the second the rest
+            if t.half == 1:
+                t.set_half(0)
+                t.set_pos(t.pos + 1)
+            else:
+                t.set_half(1)
+        elif t.pos < end && a.toks.kind[t.pos] == close:
             t.set_pos(t.pos + 1)
         for i in 0..count:
             t.push_arg(found[i])
@@ -157,3 +164,48 @@ class Reader:
             return 0
         t.set_pos(a.tok[node])
         return self.read_ty(t, a, a.end[node])
+
+    /#/ Gives the type parameters among `f`'s children the numbers 0, 1, … in `scope` and returns
+    /#/ the scope mark to pop back to.
+    fn bind_params(self, t: &Tys, a: &Ast, f: int) => int:
+        let mark = self.sc.loc.n
+        let k = 0
+        let p = a.child[f]
+        while p >= 0:
+            if a.kind[p] == int(Nk.TypeParam):
+                let r = self.sc.loc.add_tok(a, a.tok[p], int(Sk.TypeParam), -1, -1)
+                self.sc.loc.ty[r] = t.param_ty(k)
+                k = k + 1
+            p = a.next[p]
+        return mark
+
+    /#/ The function type of `f` seen from `scope`; a method gets `&mut Class` first.
+    fn fn_sig(self, t: &Tys, a: &Ast, f: int, class_ty: int) => int:
+        let mark = self.bind_params(t, a, f)
+        let items = new_buf(int, 8)
+        let count = 0
+        let p = a.child[f]
+        while p >= 0:
+            if a.kind[p] == int(Nk.Param):
+                if count >= len(items):
+                    items = buf_resize(items, count * 2)
+                items[count] = self.from_ref(t, a, a.pa[p])
+                count = count + 1
+            elif a.kind[p] == int(Nk.SelfParam):
+                /#/ `self` is the class itself (a method borrows it)
+                if count >= len(items):
+                    items = buf_resize(items, count * 2)
+                if class_ty >= 0:
+                    items[count] = class_ty
+                else:
+                    items[count] = 0
+                count = count + 1
+            p = a.next[p]
+        let ret = t.simple(int(Ty.Void))
+        if a.pb[f] >= 0:
+            ret = self.from_ref(t, a, a.pb[f])
+        let start = t.args_n
+        for i in 0..count:
+            t.push_arg(items[i])
+        self.sc.loc.truncate(mark)
+        return t.intern(int(Ty.Fn), 0, count, ret, start)

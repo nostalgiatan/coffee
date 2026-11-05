@@ -53,6 +53,9 @@ fn new_out() => Out:
 
 /#/ Writes a readable spelling of type `x`, for messages and tests.
 fn show(o: &Out, t: &Tys, g: &Syms, x: int) => void:
+    if x < 0:
+        o.put("_")
+        return
     let k = t.kind[x]
     if k == int(Ty.Error):
         o.put("?")

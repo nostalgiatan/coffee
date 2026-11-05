@@ -50,6 +50,10 @@ fn main() => int:
     m = m + miss("class A:\n    x: int\n\n", "A", "A")
     m = m + miss("class A:\n    x: int\n\n", "&mut A", "&mut A")
     m = m + miss("class A:\n    x: int\n\n", "List<A>", "?")
+    m = m + miss("class A:\n    x: int\n\n", "A", "A")
     m = m + miss("", "Nope", "?")
+    m = m + miss("class Box<T>:\n    v: T\n\n", "Box<Box<int>>", "Box<Box<int(8)+>>")
+    m = m + miss("class Box<T>:\n    v: T\n\n", "Box<Box<Box<str>>>", "Box<Box<Box<str>>>")
+    m = m + miss("class Box<T>:\n    v: T\n\n", "(Box<int>, Box<Box<bool>>)", "(Box<int(8)+>, Box<Box<bool>>)")
     m = m + miss("enum E:\n    P\n    Q\n\n", "[E]", "[E]")
     return m

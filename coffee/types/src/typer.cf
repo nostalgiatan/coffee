@@ -1,0 +1,1413 @@
+/#/ The type checker: gives every expression of a module a type and reports what does not fit.
+/#/
+/#/ `check_types(t, g, a, m)` runs after `declare_types` has typed every signature of the
+/#/ modules involved. The type of node `n` is `typer.node[n]`; locals live in the scope table
+/#/ with their types in `ty`. The rules are in RULES.md.
+use * in declare
+
+enum Op:
+    Add
+    Sub
+    Mul
+    Div
+    IDiv
+    Rem
+    BitAnd
+    BitOr
+    BitXor
+    Shl
+    Shr
+    And
+    Or
+    Eq
+    Ne
+    Lt
+    Le
+    Gt
+    Ge
+    Other
+
+/#/ The operator a binary operator token kind stands for.
+fn op_of(k: int) => int:
+    if k == int(Tk.Plus):
+        return int(Op.Add)
+    if k == int(Tk.Minus):
+        return int(Op.Sub)
+    if k == int(Tk.Star):
+        return int(Op.Mul)
+    if k == int(Tk.Slash):
+        return int(Op.Div)
+    if k == int(Tk.SlashSlash):
+        return int(Op.IDiv)
+    if k == int(Tk.Percent):
+        return int(Op.Rem)
+    if k == int(Tk.Amp):
+        return int(Op.BitAnd)
+    if k == int(Tk.Pipe):
+        return int(Op.BitOr)
+    if k == int(Tk.Caret):
+        return int(Op.BitXor)
+    if k == int(Tk.Shl):
+        return int(Op.Shl)
+    if k == int(Tk.Shr):
+        return int(Op.Shr)
+    if k == int(Tk.AmpAmp):
+        return int(Op.And)
+    if k == int(Tk.PipePipe):
+        return int(Op.Or)
+    if k == int(Tk.EqEq):
+        return int(Op.Eq)
+    if k == int(Tk.NotEq):
+        return int(Op.Ne)
+    if k == int(Tk.Lt):
+        return int(Op.Lt)
+    if k == int(Tk.Le):
+        return int(Op.Le)
+    if k == int(Tk.Gt):
+        return int(Op.Gt)
+    if k == int(Tk.Ge):
+        return int(Op.Ge)
+    return int(Op.Other)
+
+/#/ The value of integer literal token `tok`. `big` is set when it does not fit an `int`.
+fn lit_digits(a: &Ast, tok: int) => int:
+    let s = a.toks.start[tok]
+    let e = a.toks.end[tok]
+    let base = 10
+    if e - s > 2 && a.byte_at(s) == '0':
+        let p = a.byte_at(s + 1)
+        if p == 'x' || p == 'X':
+            base = 16
+            s = s + 2
+        elif p == 'b' || p == 'B':
+            base = 2
+            s = s + 2
+        elif p == 'o' || p == 'O':
+            base = 8
+            s = s + 2
+    let v = 0
+    for i in s..e:
+        let b = a.byte_at(i)
+        let d = -1
+        if b >= '0' && b <= '9':
+            d = b - '0'
+        elif b >= 'a' && b <= 'f':
+            d = b - 'a' + 10
+        elif b >= 'A' && b <= 'F':
+            d = b - 'A' + 10
+        if d >= 0 && d < base:
+            if v > (9223372036854775807 - d) // base:
+                return -1
+            v = v * base + d
+    return v
+
+class Typer:
+    rd: Reader
+    diags: TDiags
+    node: buf<int>
+    ret: int
+    loops: int
+    self_class: int
+    in_fn: int
+    /#/ bindings of the type parameters of the call or member being checked
+    binds: buf<int>
+    cur: int
+
+    fn err(self, tok: int, code: int, want: int, found: int) => void:
+        self.diags.add(tok, code, want, found)
+
+    fn set(self, n: int, ty: int) => int:
+        self.node[n] = ty
+        return ty
+
+    /#/ How many expression nodes the checker visited and how many of them it could not type.
+    fn visited(self, a: &Ast) => int:
+        let c = 0
+        for i in 0..a.count:
+            if self.node[i] >= 0:
+                c = c + 1
+        return c
+
+    fn untyped(self, a: &Ast) => int:
+        let c = 0
+        for i in 0..a.count:
+            if self.node[i] == 0:
+                c = c + 1
+        return c
+
+    /#/ The scope row a name token refers to; -1 when it names nothing.
+    fn lookup(self, a: &Ast, tok: int) => int:
+        return self.rd.sc.loc.find_tok(a, tok, 0)
+
+    fn declare_local(self, a: &Ast, tok: int, kind: int, ty: int) => void:
+        let r = self.rd.sc.loc.add_tok(a, tok, kind, -1, self.cur)
+        self.rd.sc.loc.ty[r] = ty
+
+    fn pop(self, mark: int) => void:
+        self.rd.sc.loc.truncate(mark)
+
+    /#/ ---- what fits what -------------------------------------------------
+
+    /#/ Is `anc` the class `cls` or one of its ancestors? Both are class rows of `g`.
+    fn inherits(self, g: &Syms, cls: int, anc: int) => bool:
+        let cur = cls
+        let depth = 0
+        while cur >= 0 && depth < 32:
+            if cur == anc:
+                return true
+            let next = -1
+            for i in 0..g.n:
+                if g.info[i] == cur && g.kind[i] == int(Sk.Parent):
+                    next = g.find_class_row(i)
+            cur = next
+            depth = depth + 1
+        return false
+
+    /#/ Can a value of type `from` be used where `to` is wanted?
+    fn fits(self, t: &Tys, g: &Syms, from: int, to: int) => bool:
+        if from == to || t.kind[from] == int(Ty.Error) || t.kind[to] == int(Ty.Error):
+            return true
+        let fk = t.kind[from]
+        let tk = t.kind[to]
+        if fk == int(Ty.Int) && tk == int(Ty.Int):
+            let fb = t.a[from]
+            let tb = t.a[to]
+            if t.b[from] == t.b[to]:
+                return fb <= tb
+            if t.b[from] == 0 && t.b[to] == 1:
+                return fb < tb
+            return false
+        if fk == int(Ty.Float) && tk == int(Ty.Float):
+            return t.a[from] <= t.a[to]
+        if fk == int(Ty.Ref) && tk == int(Ty.Ref):
+            if t.b[to] == 1 && t.b[from] == 0:
+                return false
+            let ft = t.a[from]
+            let tt = t.a[to]
+            if self.fits_target(t, g, ft, tt):
+                return true
+            /#/ a borrowed buffer or array is a view of its elements
+            return false
+        if fk == int(Ty.Array) && tk == int(Ty.Slice):
+            return t.a[from] == t.a[to]
+        if fk == int(Ty.Ref) && tk == int(Ty.Slice):
+            let target = t.a[from]
+            if t.kind[target] == int(Ty.Buf) && t.a[target] == t.a[to]:
+                return true
+            if t.kind[target] == int(Ty.Array) && t.a[target] == t.a[to]:
+                return true
+            return false
+        if fk == int(Ty.Named) && tk == int(Ty.Named):
+            return t.c[from] == t.c[to] && t.c[from] == 0 && self.inherits(g, t.a[from], t.a[to])
+        if tk == int(Ty.Object):
+            return fk == int(Ty.Str) || fk == int(Ty.Named) || fk == int(Ty.Ref) || fk == int(Ty.Buf) || fk == int(Ty.Slice)
+        if fk == int(Ty.Object):
+            return tk == int(Ty.Buf) || tk == int(Ty.Str)
+        if fk == int(Ty.Tuple) && tk == int(Ty.Tuple) && t.b[from] == t.b[to]:
+            for i in 0..t.b[from]:
+                if !self.fits(t, g, t.arg(from, i), t.arg(to, i)):
+                    return false
+            return true
+        return false
+
+    /#/ The target of `&target`: `&D` fits `&A` for an ancestor `A`.
+    fn fits_target(self, t: &Tys, g: &Syms, from: int, to: int) => bool:
+        if from == to || t.kind[from] == int(Ty.Error) || t.kind[to] == int(Ty.Error):
+            return true
+        if t.kind[from] == int(Ty.Named) && t.kind[to] == int(Ty.Named) && t.c[from] == 0 && t.c[to] == 0:
+            return self.inherits(g, t.a[from], t.a[to])
+        return false
+
+    /#/ ---- literals -----------------------------------------------------
+
+    /#/ Is node `n` an integer literal, a character, or `-` one: a number that takes the type
+    /#/ it is wanted as?
+    fn is_flex(self, a: &Ast, n: int) => bool:
+        let k = a.kind[n]
+        if k == int(Nk.Int) || k == int(Nk.Char):
+            return true
+        if k == int(Nk.Unary) && a.pc[n] == int(Tk.Minus) && a.pa[n] >= 0:
+            return a.kind[a.pa[n]] == int(Nk.Int)
+        return false
+
+    /#/ The type of integer literal `n` (negated when `neg`) where `want` is wanted.
+    fn int_lit(self, t: &Tys, a: &Ast, n: int, want: int, neg: bool) => int:
+        let tok = a.tok[n]
+        let v = 0
+        if a.kind[n] == int(Nk.Char):
+            v = char_value(a, tok)
+        else:
+            v = lit_digits(a, tok)
+        let big = v < 0
+        if want >= 0:
+            let k = t.kind[want]
+            if k == int(Ty.Int):
+                if big:
+                    if !neg && t.b[want] == 0 && t.a[want] == 8:
+                        return want
+                elif self.int_fits(t, want, v, neg):
+                    return want
+            elif k == int(Ty.Object) && v == 0 && !neg:
+                return want
+        return t.int_ty(8, true)
+
+    fn int_fits(self, t: &Tys, ty: int, v: int, neg: bool) => bool:
+        let bytes = t.a[ty]
+        if bytes >= 8:
+            if t.b[ty] == 1:
+                return true
+            return !neg || v == 0
+        let bits = bytes * 8
+        let limit = 1
+        for i in 0..bits:
+            limit = limit * 2
+        if t.b[ty] == 1:
+            let half = limit // 2
+            if neg:
+                return v <= half
+            return v < half
+        if neg:
+            return v == 0
+        return v < limit
+
+    /#/ ---- expressions ---------------------------------------------------
+
+    /#/ Types expression `n`; `want` is the type the context hopes for (-1: none), which lets
+    /#/ a literal take it. Records and returns the type.
+    fn expr(self, t: &Tys, g: &Syms, a: &Ast, n: int, want: int) => int:
+        if n < 0:
+            return 0
+        let k = a.kind[n]
+        if k == int(Nk.Int) || k == int(Nk.Char):
+            return self.set(n, self.int_lit(t, a, n, want, false))
+        if k == int(Nk.Float):
+            if want >= 0 && t.kind[want] == int(Ty.Float):
+                return self.set(n, want)
+            return self.set(n, t.float_ty(8))
+        if k == int(Nk.Str):
+            if want >= 0 && t.kind[want] == int(Ty.Ref) && t.b[want] == 0 && t.kind[t.a[want]] == int(Ty.Str):
+                return self.set(n, want)
+            return self.set(n, t.simple(int(Ty.Str)))
+        if k == int(Nk.FStr):
+            return self.set(n, t.simple(int(Ty.Str)))
+        if k == int(Nk.Bool):
+            return self.set(n, t.simple(int(Ty.Bool)))
+        if k == int(Nk.Name):
+            return self.set(n, self.name(t, g, a, n))
+        if k == int(Nk.Binary):
+            return self.set(n, self.binary(t, g, a, n, want))
+        if k == int(Nk.Unary):
+            return self.set(n, self.unary(t, g, a, n, want))
+        if k == int(Nk.Call):
+            return self.set(n, self.call(t, g, a, n, want))
+        if k == int(Nk.Member):
+            return self.set(n, self.member(t, g, a, n))
+        if k == int(Nk.Index):
+            return self.set(n, self.index(t, g, a, n))
+        if k == int(Nk.Cast):
+            return self.set(n, self.cast(t, g, a, n))
+        if k == int(Nk.Tuple):
+            return self.set(n, self.tuple(t, g, a, n, want))
+        if k == int(Nk.Array):
+            return self.set(n, self.array(t, g, a, n, want))
+        if k == int(Nk.StructLit):
+            return self.set(n, self.struct_lit(t, g, a, n))
+        if k == int(Nk.Range):
+            self.expr(t, g, a, a.pa[n], -1)
+            self.expr(t, g, a, a.pb[n], -1)
+            return self.set(n, 0)
+        if k == int(Nk.Fn):
+            return self.set(n, self.function(t, g, a, n, -1))
+        return self.set(n, 0)
+
+    /#/ Types `n` as a value: `void` is no value.
+    fn value(self, t: &Tys, g: &Syms, a: &Ast, n: int, want: int) => int:
+        let ty = self.expr(t, g, a, n, want)
+        if t.kind[ty] == int(Ty.Void):
+            self.err(a.tok[n], int(Te.Mismatch), want, ty)
+            return 0
+        return ty
+
+    /#/ Types `n` where `want` is required: a mismatch is reported once.
+    fn expect(self, t: &Tys, g: &Syms, a: &Ast, n: int, want: int) => int:
+        let ty = self.value(t, g, a, n, want)
+        if !self.fits(t, g, ty, want):
+            self.err(a.tok[n], int(Te.Mismatch), want, ty)
+        return ty
+
+    fn name(self, t: &Tys, g: &Syms, a: &Ast, n: int) => int:
+        let r = self.lookup(a, a.tok[n])
+        if r < 0:
+            return 0
+        let k = self.rd.sc.loc.kind[r]
+        if k == int(Sk.Local) || k == int(Sk.Param) || k == int(Sk.Global) || k == int(Sk.Fn):
+            let ty = self.rd.sc.loc.ty[r]
+            if ty < 0:
+                return 0
+            return ty
+        return 0
+
+    /#/ ---- operators ---------------------------------------------------------
+
+    fn strip_refs(self, t: &Tys, ty: int) => int:
+        let cur = ty
+        while t.kind[cur] == int(Ty.Ref):
+            cur = t.a[cur]
+        return cur
+
+    /#/ The common type of two numbers, 0 when neither fits the other.
+    fn join(self, t: &Tys, g: &Syms, l: int, r: int) => int:
+        if self.fits(t, g, l, r):
+            return r
+        if self.fits(t, g, r, l):
+            return l
+        return -1
+
+    fn binary(self, t: &Tys, g: &Syms, a: &Ast, n: int, want: int) => int:
+        let l = a.pa[n]
+        let r = a.pb[n]
+        let op = op_of(a.pc[n])
+        let tok = a.pd[n]
+        if tok < 0:
+            tok = a.tok[n]
+        let compare = op >= int(Op.Eq) && op <= int(Op.Ge)
+        let logic = op == int(Op.And) || op == int(Op.Or)
+        let wl = -1
+        if !compare && !logic && want >= 0 && t.kind[want] != int(Ty.Bool):
+            wl = want
+        let lt = 0
+        let rt = 0
+        if self.is_flex(a, l) && !self.is_flex(a, r):
+            rt = self.value(t, g, a, r, -1)
+            lt = self.value(t, g, a, l, rt)
+        elif self.is_flex(a, r):
+            lt = self.value(t, g, a, l, wl)
+            rt = self.value(t, g, a, r, lt)
+        else:
+            lt = self.value(t, g, a, l, wl)
+            rt = self.value(t, g, a, r, -1)
+        let bool_ty = t.simple(int(Ty.Bool))
+        if t.kind[lt] == int(Ty.Error) || t.kind[rt] == int(Ty.Error):
+            if compare || logic:
+                return bool_ty
+            return 0
+        if logic:
+            if t.kind[lt] != int(Ty.Bool) || t.kind[rt] != int(Ty.Bool):
+                self.err(tok, int(Te.InvalidOperation), lt, rt)
+            return bool_ty
+        if compare:
+            let ok = false
+            if op == int(Op.Eq) || op == int(Op.Ne):
+                ok = self.fits(t, g, lt, rt) || self.fits(t, g, rt, lt)
+                if t.kind[lt] == int(Ty.Void) || t.kind[lt] == int(Ty.Fn):
+                    ok = false
+            else:
+                let l2 = self.strip_refs(t, lt)
+                let r2 = self.strip_refs(t, rt)
+                if t.is_numeric(lt) && t.is_numeric(rt):
+                    ok = self.join(t, g, lt, rt) >= 0
+                elif t.kind[l2] == int(Ty.Str) && t.kind[r2] == int(Ty.Str):
+                    ok = true
+            if !ok:
+                self.err(tok, int(Te.InvalidOperation), lt, rt)
+            return bool_ty
+        if op == int(Op.Add):
+            let l2 = self.strip_refs(t, lt)
+            let r2 = self.strip_refs(t, rt)
+            if t.kind[l2] == int(Ty.Str) && t.kind[r2] == int(Ty.Str):
+                return t.simple(int(Ty.Str))
+        /#/ pointer arithmetic: an `object` moves by bytes
+        if (op == int(Op.Add) || op == int(Op.Sub)) && t.kind[lt] == int(Ty.Object) && t.is_int(rt):
+            return lt
+        if op == int(Op.Add) && t.kind[rt] == int(Ty.Object) && t.is_int(lt):
+            return rt
+        if op == int(Op.BitAnd) || op == int(Op.BitOr) || op == int(Op.BitXor) || op == int(Op.IDiv) || op == int(Op.Shl) || op == int(Op.Shr):
+            if !t.is_int(lt) || !t.is_int(rt):
+                self.err(tok, int(Te.InvalidOperation), lt, rt)
+                return 0
+            if op == int(Op.Shl) || op == int(Op.Shr):
+                return lt
+            let j = self.join(t, g, lt, rt)
+            if j < 0:
+                self.err(tok, int(Te.InvalidOperation), lt, rt)
+                return 0
+            return j
+        if !t.is_numeric(lt) || !t.is_numeric(rt):
+            self.err(tok, int(Te.InvalidOperation), lt, rt)
+            return 0
+        if op == int(Op.Div) && (t.is_int(lt) || t.is_int(rt)):
+            self.err(tok, int(Te.InvalidOperation), lt, rt)
+            return 0
+        let j = self.join(t, g, lt, rt)
+        if j < 0:
+            self.err(tok, int(Te.InvalidOperation), lt, rt)
+            return 0
+        return j
+
+    fn unary(self, t: &Tys, g: &Syms, a: &Ast, n: int, want: int) => int:
+        let o = a.pa[n]
+        let k = a.pc[n]
+        let tok = a.tok[n]
+        if k == int(Tk.Minus):
+            if o >= 0 && a.kind[o] == int(Nk.Int):
+                return self.set(o, self.int_lit(t, a, o, want, true))
+            let ty = self.value(t, g, a, o, want)
+            if !t.is_numeric(ty) && !t.is_error(ty):
+                self.err(tok, int(Te.InvalidOperation), ty, ty)
+                return 0
+            return ty
+        if k == int(Tk.Bang):
+            let ty = self.value(t, g, a, o, -1)
+            if t.kind[ty] != int(Ty.Bool) && !t.is_error(ty):
+                self.err(tok, int(Te.InvalidOperation), ty, ty)
+            return t.simple(int(Ty.Bool))
+        if k == int(Tk.Tilde):
+            let ty = self.value(t, g, a, o, want)
+            if !t.is_int(ty) && !t.is_error(ty):
+                self.err(tok, int(Te.InvalidOperation), ty, ty)
+                return 0
+            return ty
+        if k == int(Tk.Amp):
+            let ty = self.value(t, g, a, o, -1)
+            if t.is_error(ty):
+                return 0
+            return t.ref_to(ty, a.pd[n] == 1)
+        if k == int(Tk.Star):
+            let ty = self.value(t, g, a, o, -1)
+            if t.kind[ty] == int(Ty.Ref):
+                return t.a[ty]
+            if !t.is_error(ty):
+                self.err(tok, int(Te.InvalidOperation), ty, ty)
+            return 0
+        return self.value(t, g, a, o, want)
+
+    /#/ ---- generics ------------------------------------------------------------
+
+    fn reset_binds(self) => void:
+        for i in 0..16:
+            self.binds[i] = -1
+
+    fn has_param(self, t: &Tys, ty: int) => bool:
+        let k = t.kind[ty]
+        if k == int(Ty.Param):
+            return true
+        if k == int(Ty.Ref) || k == int(Ty.Slice) || k == int(Ty.Buf) || k == int(Ty.Array):
+            if t.a[ty] < 0:
+                return false
+            return self.has_param(t, t.a[ty])
+        if k == int(Ty.Tuple) || k == int(Ty.Named) || k == int(Ty.Fn):
+            for i in 0..t.count_of(ty):
+                if self.has_param(t, t.arg(ty, i)):
+                    return true
+            if k == int(Ty.Fn):
+                return self.has_param(t, t.c[ty])
+        return false
+
+    /#/ Matches parameter type `p` (which may name type parameters) against argument type `x`,
+    /#/ recording what each type parameter stands for.
+    fn bind(self, t: &Tys, g: &Syms, p: int, x: int) => bool:
+        if t.is_error(x) || t.is_error(p):
+            return true
+        let pk = t.kind[p]
+        if !self.has_param(t, p):
+            return self.fits(t, g, x, p)
+        if pk == int(Ty.Param):
+            let k = t.a[p]
+            if k >= 16:
+                return true
+            if self.binds[k] < 0:
+                self.binds[k] = x
+                return true
+            return self.fits(t, g, x, self.binds[k]) || self.fits(t, g, self.binds[k], x)
+        let xk = t.kind[x]
+        if pk == int(Ty.Slice) && xk == int(Ty.Ref):
+            let target = t.a[x]
+            if t.kind[target] == int(Ty.Buf) || t.kind[target] == int(Ty.Array):
+                return self.bind(t, g, t.a[p], t.a[target])
+        if pk != xk:
+            return false
+        if pk == int(Ty.Ref) || pk == int(Ty.Slice) || pk == int(Ty.Buf) || pk == int(Ty.Array):
+            return self.bind(t, g, t.a[p], t.a[x])
+        if pk == int(Ty.Tuple) || pk == int(Ty.Named) || pk == int(Ty.Fn):
+            if t.count_of(p) != t.count_of(x):
+                return false
+            for i in 0..t.count_of(p):
+                if !self.bind(t, g, t.arg(p, i), t.arg(x, i)):
+                    return false
+            if pk == int(Ty.Fn):
+                return self.bind(t, g, t.c[p], t.c[x])
+            return true
+        return false
+
+    /#/ `ty` with each type parameter replaced by what it was bound to (Error when unbound).
+    fn subst(self, t: &Tys, ty: int) => int:
+        if !self.has_param(t, ty):
+            return ty
+        let k = t.kind[ty]
+        if k == int(Ty.Param):
+            if t.a[ty] < 16 && self.binds[t.a[ty]] >= 0:
+                return self.binds[t.a[ty]]
+            return 0
+        if k == int(Ty.Ref):
+            return t.ref_to(self.subst(t, t.a[ty]), t.b[ty] == 1)
+        if k == int(Ty.Slice):
+            return t.slice_of(self.subst(t, t.a[ty]))
+        if k == int(Ty.Buf):
+            return t.buf_of(self.subst(t, t.a[ty]))
+        if k == int(Ty.Array):
+            return t.array_of(self.subst(t, t.a[ty]), t.b[ty])
+        let count = t.count_of(ty)
+        let items = new_buf(int, count + 1)
+        for i in 0..count:
+            items[i] = self.subst(t, t.arg(ty, i))
+        let start = t.args_n
+        for i in 0..count:
+            t.push_arg(items[i])
+        if k == int(Ty.Tuple):
+            return t.intern(int(Ty.Tuple), 0, count, 0, start)
+        if k == int(Ty.Fn):
+            return t.intern(int(Ty.Fn), 0, count, self.subst(t, t.c[ty]), start)
+        return t.intern(int(Ty.Named), t.a[ty], 0, count, start)
+
+    /#/ For a value of class type `ty`: binds the class's type parameters to its type arguments.
+    fn bind_named(self, t: &Tys, ty: int) => void:
+        self.reset_binds()
+        if t.kind[ty] == int(Ty.Named):
+            for i in 0..t.count_of(ty):
+                if i < 16:
+                    self.binds[i] = t.arg(ty, i)
+
+    /#/ ---- members and calls ----------------------------------------------------
+
+    /#/ The row of `g` declaring a member of kind `kind` named `tok` in class `ci` or an
+    /#/ ancestor; -1 when there is none.
+    fn find_member(self, g: &Syms, a: &Ast, ci: int, tok: int, kind: int) => int:
+        let cur = ci
+        let depth = 0
+        while cur >= 0 && depth < 32:
+            let r = member_of(g, a, cur, tok, kind)
+            if r >= 0:
+                return r
+            let next = -1
+            for i in 0..g.n:
+                if g.info[i] == cur && g.kind[i] == int(Sk.Parent):
+                    next = g.find_class_row(i)
+            cur = next
+            depth = depth + 1
+        return -1
+
+    /#/ Is `n` a name that stands for an enum? Returns the enum's row in `g`, else -1.
+    fn enum_of(self, a: &Ast, n: int) => int:
+        if n < 0 || a.kind[n] != int(Nk.Name):
+            return -1
+        let r = self.lookup(a, a.tok[n])
+        if r >= 0 && self.rd.sc.loc.kind[r] == int(Sk.Enum):
+            return self.rd.sc.loc.info[r]
+        return -1
+
+    fn member(self, t: &Tys, g: &Syms, a: &Ast, n: int) => int:
+        let o = a.pa[n]
+        let tok = a.tok[n]
+        let en = self.enum_of(a, o)
+        if en >= 0:
+            let r = member_of(g, a, en, tok, int(Sk.Variant))
+            if r < 0:
+                self.err(tok, int(Te.VariantNotFound), 0, 0)
+                return 0
+            if g.ty[r] < 0:
+                return 0
+            return g.ty[r]
+        if a.pd[n] == 1:
+            return 0
+        let ot = self.strip_refs(t, self.value(t, g, a, o, -1))
+        if t.kind[ot] == int(Ty.Error) || t.kind[ot] == int(Ty.Object):
+            return 0
+        if t.kind[ot] != int(Ty.Named):
+            self.err(tok, int(Te.FieldNotFound), 0, ot)
+            return 0
+        let r = self.find_member(g, a, t.a[ot], tok, int(Sk.Field))
+        if r >= 0:
+            if g.ty[r] < 0:
+                return 0
+            self.bind_named(t, ot)
+            return self.subst(t, g.ty[r])
+        let m = self.find_member(g, a, t.a[ot], tok, int(Sk.Method))
+        if m >= 0 && g.ty[m] >= 0:
+            return g.ty[m]
+        self.err(tok, int(Te.FieldNotFound), 0, ot)
+        return 0
+
+    /#/ Checks the arguments of call `n` against function type `fty`, skipping the first
+    /#/ `skip` parameters (the receiver). Returns the result type.
+    fn check_args(self, t: &Tys, g: &Syms, a: &Ast, n: int, fty: int, skip: int, tok: int) => int:
+        let params = t.count_of(fty) - skip
+        let given = 0
+        let c = a.child[n]
+        while c >= 0:
+            given = given + 1
+            c = a.next[c]
+        if given != params:
+            self.err(tok, int(Te.ArityMismatch), params, given)
+            c = a.child[n]
+            while c >= 0:
+                self.value(t, g, a, c, -1)
+                c = a.next[c]
+            return self.subst(t, t.c[fty])
+        let i = 0
+        c = a.child[n]
+        while c >= 0:
+            let p = t.arg(fty, skip + i)
+            if self.has_param(t, p):
+                let x = self.value(t, g, a, c, -1)
+                if !self.bind(t, g, p, x):
+                    self.err(a.tok[c], int(Te.Mismatch), self.subst(t, p), x)
+            else:
+                self.expect(t, g, a, c, p)
+            i = i + 1
+            c = a.next[c]
+        return self.subst(t, t.c[fty])
+
+    fn args_untyped(self, t: &Tys, g: &Syms, a: &Ast, n: int) => void:
+        let c = a.child[n]
+        while c >= 0:
+            self.value(t, g, a, c, -1)
+            c = a.next[c]
+
+    /#/ A cast `x as T` or `T(x)`.
+    fn cast_ok(self, t: &Tys, g: &Syms, from: int, to: int) => bool:
+        if from == to || t.is_error(from) || t.is_error(to):
+            return true
+        let fk = t.kind[from]
+        let tk = t.kind[to]
+        if (fk == int(Ty.Int) || fk == int(Ty.Float)) && (tk == int(Ty.Int) || tk == int(Ty.Float)):
+            return true
+        if (fk == int(Ty.Int) || fk == int(Ty.Float)) && tk == int(Ty.Bool):
+            return true
+        if fk == int(Ty.Bool) && tk == int(Ty.Int):
+            return true
+        if fk == int(Ty.Object) && (tk == int(Ty.Int) || tk == int(Ty.Ref) || tk == int(Ty.Buf) || tk == int(Ty.Str) || tk == int(Ty.Named)):
+            return true
+        if fk == int(Ty.Int) && tk == int(Ty.Object):
+            return true
+        if fk == int(Ty.Named) && tk == int(Ty.Int):
+            return true
+        return self.fits(t, g, from, to)
+
+    fn cast(self, t: &Tys, g: &Syms, a: &Ast, n: int) => int:
+        let from = self.value(t, g, a, a.pa[n], -1)
+        let to = self.rd.from_ref(t, a, a.pb[n])
+        if !self.cast_ok(t, g, from, to):
+            self.err(a.tok[n], int(Te.InvalidOperation), to, from)
+        return to
+
+    fn call(self, t: &Tys, g: &Syms, a: &Ast, n: int, want: int) => int:
+        let callee = a.pa[n]
+        if callee < 0:
+            return 0
+        let ck = a.kind[callee]
+        let tok = a.tok[callee]
+        if ck == int(Nk.Name):
+            let r = self.lookup(a, tok)
+            if r < 0:
+                self.args_untyped(t, g, a, n)
+                return 0
+            let k = self.rd.sc.loc.kind[r]
+            if k == int(Sk.Builtin):
+                return self.builtin_call(t, g, a, n, tok)
+            if k == int(Sk.Extern):
+                self.args_untyped(t, g, a, n)
+                return 0
+            if k == int(Sk.Class) || k == int(Sk.Enum) || k == int(Sk.Module):
+                self.args_untyped(t, g, a, n)
+                return 0
+        if ck == int(Nk.Member) && a.pd[callee] == 1:
+            return self.static_call(t, g, a, n, callee)
+        if ck == int(Nk.Member):
+            return self.method_call(t, g, a, n, callee)
+        let fty = self.value(t, g, a, callee, -1)
+        if t.kind[fty] == int(Ty.Error):
+            self.args_untyped(t, g, a, n)
+            return 0
+        if t.kind[fty] != int(Ty.Fn):
+            self.err(tok, int(Te.NotCallable), 0, fty)
+            self.args_untyped(t, g, a, n)
+            return 0
+        self.reset_binds()
+        return self.check_args(t, g, a, n, fty, 0, tok)
+
+    /#/ `Class::name(args)`: a function of the class that takes no `self`.
+    fn static_call(self, t: &Tys, g: &Syms, a: &Ast, n: int, callee: int) => int:
+        let o = a.pa[callee]
+        let tok = a.tok[callee]
+        let ci = -1
+        if o >= 0 && a.kind[o] == int(Nk.Name):
+            let r = self.lookup(a, a.tok[o])
+            if r >= 0 && self.rd.sc.loc.kind[r] == int(Sk.Class):
+                ci = self.rd.sc.loc.info[r]
+        if ci < 0:
+            self.args_untyped(t, g, a, n)
+            return 0
+        let m = self.find_member(g, a, ci, tok, int(Sk.Method))
+        if m < 0:
+            self.err(tok, int(Te.MethodNotFound), 0, t.named(ci))
+            self.args_untyped(t, g, a, n)
+            return 0
+        if g.ty[m] < 0:
+            self.args_untyped(t, g, a, n)
+            return 0
+        self.reset_binds()
+        self.set(callee, g.ty[m])
+        return self.check_args(t, g, a, n, g.ty[m], 0, tok)
+
+    fn method_call(self, t: &Tys, g: &Syms, a: &Ast, n: int, callee: int) => int:
+        let o = a.pa[callee]
+        let tok = a.tok[callee]
+        let en = self.enum_of(a, o)
+        if en >= 0:
+            let fty = self.member(t, g, a, callee)
+            self.set(callee, fty)
+            if t.kind[fty] == int(Ty.Fn):
+                self.reset_binds()
+                return self.check_args(t, g, a, n, fty, 0, tok)
+            self.args_untyped(t, g, a, n)
+            if t.kind[fty] == int(Ty.Error):
+                return 0
+            self.err(tok, int(Te.NotCallable), 0, fty)
+            return 0
+        let ot = self.strip_refs(t, self.value(t, g, a, o, -1))
+        if t.kind[ot] == int(Ty.Error) || t.kind[ot] == int(Ty.Object):
+            self.args_untyped(t, g, a, n)
+            return 0
+        if t.kind[ot] != int(Ty.Named):
+            self.err(tok, int(Te.MethodNotFound), 0, ot)
+            self.args_untyped(t, g, a, n)
+            return 0
+        let m = self.find_member(g, a, t.a[ot], tok, int(Sk.Method))
+        if m < 0:
+            /#/ `obj.assign("field", v)` is part of every class
+            if tok_is(a, tok, "assign"):
+                self.args_untyped(t, g, a, n)
+                return t.simple(int(Ty.Void))
+            let f = self.find_member(g, a, t.a[ot], tok, int(Sk.Field))
+            if f >= 0 && g.ty[f] >= 0 && t.kind[g.ty[f]] == int(Ty.Fn):
+                self.reset_binds()
+                return self.check_args(t, g, a, n, g.ty[f], 0, tok)
+            self.err(tok, int(Te.MethodNotFound), 0, ot)
+            self.args_untyped(t, g, a, n)
+            return 0
+        if g.ty[m] < 0:
+            self.args_untyped(t, g, a, n)
+            return 0
+        self.bind_named(t, ot)
+        self.set(callee, g.ty[m])
+        return self.check_args(t, g, a, n, g.ty[m], 1, tok)
+
+    /#/ `len`, `sizeof`, the sized casts and the buffer intrinsics.
+    fn builtin_call(self, t: &Tys, g: &Syms, a: &Ast, n: int, tok: int) => int:
+        let first = a.child[n]
+        if tok_is(a, tok, "len"):
+            self.args_untyped(t, g, a, n)
+            return t.int_ty(8, true)
+        if tok_is(a, tok, "sizeof"):
+            return t.int_ty(8, true)
+        if tok_is(a, tok, "new_buf"):
+            if first < 0 || a.kind[first] != int(Nk.Name):
+                self.args_untyped(t, g, a, n)
+                return 0
+            let elem = self.rd.named_ty(t, a, a.tok[first])
+            let count = a.next[first]
+            if count >= 0:
+                self.expect(t, g, a, count, t.int_ty(8, true))
+            return t.buf_of(elem)
+        if tok_is(a, tok, "buf_resize"):
+            let b = self.value(t, g, a, first, -1)
+            if first >= 0 && a.next[first] >= 0:
+                self.expect(t, g, a, a.next[first], t.int_ty(8, true))
+            return b
+        if tok_is(a, tok, "buf_ptr"):
+            self.args_untyped(t, g, a, n)
+            return t.simple(int(Ty.Object))
+        if tok_is(a, tok, "subslice"):
+            let b = self.strip_refs(t, self.value(t, g, a, first, -1))
+            let c = a.next[first]
+            while c >= 0 && first >= 0:
+                self.value(t, g, a, c, t.int_ty(8, true))
+                c = a.next[c]
+            if t.kind[b] == int(Ty.Buf) || t.kind[b] == int(Ty.Slice) || t.kind[b] == int(Ty.Array):
+                return t.slice_of(t.a[b])
+            return 0
+        if tok_is(a, tok, "wrapping_add") || tok_is(a, tok, "wrapping_sub") || tok_is(a, tok, "wrapping_mul"):
+            let l = self.value(t, g, a, first, -1)
+            if first >= 0 && a.next[first] >= 0:
+                self.expect(t, g, a, a.next[first], l)
+            return l
+        if tok_is(a, tok, "range") || tok_is(a, tok, "nil"):
+            self.args_untyped(t, g, a, n)
+            return 0
+        /#/ the casts: int(x), float(x), bool(x), u8(x), str(x) ...
+        let to = self.rd.named_ty(t, a, tok)
+        if first >= 0:
+            let from = self.value(t, g, a, first, -1)
+            if !self.cast_ok(t, g, from, to):
+                self.err(tok, int(Te.InvalidOperation), to, from)
+        return to
+
+    /#/ ---- composite expressions -----------------------------------------------
+
+    fn index(self, t: &Tys, g: &Syms, a: &Ast, n: int) => int:
+        let o = self.strip_refs(t, self.value(t, g, a, a.pa[n], -1))
+        let i = a.pb[n]
+        let k = t.kind[o]
+        let int_ty = t.int_ty(8, true)
+        if i >= 0 && a.kind[i] == int(Nk.Range):
+            self.expr(t, g, a, i, -1)
+            self.expect_index(t, g, a, a.pa[i])
+            self.expect_index(t, g, a, a.pb[i])
+            if k == int(Ty.Buf) || k == int(Ty.Slice) || k == int(Ty.Array):
+                if t.a[o] >= 0:
+                    return t.slice_of(t.a[o])
+            return 0
+        self.expect_index(t, g, a, i)
+        if t.is_error(o):
+            return 0
+        if k == int(Ty.Array) || k == int(Ty.Slice) || (k == int(Ty.Buf) && t.a[o] >= 0):
+            return t.a[o]
+        if k == int(Ty.Str):
+            return t.int_ty(1, false)
+        if k == int(Ty.Object) || k == int(Ty.Buf):
+            return 0
+        self.err(a.tok[n], int(Te.InvalidOperation), o, o)
+        return 0
+
+    /#/ An index or a range bound is an integer of any width.
+    fn expect_index(self, t: &Tys, g: &Syms, a: &Ast, i: int) => void:
+        if i < 0:
+            return
+        let ty = self.value(t, g, a, i, t.int_ty(8, true))
+        if !t.is_int(ty) && !t.is_error(ty):
+            self.err(a.tok[i], int(Te.Mismatch), t.int_ty(8, true), ty)
+
+    fn tuple(self, t: &Tys, g: &Syms, a: &Ast, n: int, want: int) => int:
+        let count = 0
+        let c = a.child[n]
+        while c >= 0:
+            count = count + 1
+            c = a.next[c]
+        let items = new_buf(int, count + 1)
+        let w = -1
+        if want >= 0 && t.kind[want] == int(Ty.Tuple) && t.count_of(want) == count:
+            w = want
+        let i = 0
+        c = a.child[n]
+        while c >= 0:
+            let ew = -1
+            if w >= 0:
+                ew = t.arg(w, i)
+            items[i] = self.value(t, g, a, c, ew)
+            i = i + 1
+            c = a.next[c]
+        let start = t.args_n
+        for k in 0..count:
+            t.push_arg(items[k])
+        return t.intern(int(Ty.Tuple), 0, count, 0, start)
+
+    fn array(self, t: &Tys, g: &Syms, a: &Ast, n: int, want: int) => int:
+        let elem = -1
+        if want >= 0 && (t.kind[want] == int(Ty.Array) || t.kind[want] == int(Ty.Slice)):
+            elem = t.a[want]
+        let count = 0
+        let c = a.child[n]
+        while c >= 0:
+            if elem < 0:
+                elem = self.value(t, g, a, c, -1)
+            else:
+                self.expect(t, g, a, c, elem)
+            count = count + 1
+            c = a.next[c]
+        if elem < 0:
+            return 0
+        return t.array_of(elem, count)
+
+    fn struct_lit(self, t: &Tys, g: &Syms, a: &Ast, n: int) => int:
+        let tn = a.pa[n]
+        let ci = -1
+        if tn >= 0 && a.kind[tn] == int(Nk.Name):
+            let r = self.lookup(a, a.tok[tn])
+            if r >= 0 && self.rd.sc.loc.kind[r] == int(Sk.Class):
+                ci = self.rd.sc.loc.info[r]
+        if ci < 0:
+            let f = a.child[n]
+            while f >= 0:
+                self.value(t, g, a, a.pa[f], -1)
+                f = a.next[f]
+            return 0
+        self.reset_binds()
+        let f = a.child[n]
+        while f >= 0:
+            let fr = self.find_member(g, a, ci, a.tok[f], int(Sk.Field))
+            if fr < 0:
+                self.value(t, g, a, a.pa[f], -1)
+                self.err(a.tok[f], int(Te.FieldNotFound), 0, t.named(ci))
+            elif g.ty[fr] < 0:
+                self.value(t, g, a, a.pa[f], -1)
+            elif self.has_param(t, g.ty[fr]):
+                let x = self.value(t, g, a, a.pa[f], -1)
+                if !self.bind(t, g, g.ty[fr], x):
+                    self.err(a.tok[f], int(Te.Mismatch), self.subst(t, g.ty[fr]), x)
+            else:
+                self.expect(t, g, a, a.pa[f], g.ty[fr])
+            f = a.next[f]
+        let params = g.ty[ci]
+        if params <= 0:
+            return t.named(ci)
+        let start = t.args_n
+        for i in 0..params:
+            if i < 16 && self.binds[i] >= 0:
+                t.push_arg(self.binds[i])
+            else:
+                t.push_arg(0)
+        return t.intern(int(Ty.Named), ci, 0, params, start)
+
+    /#/ ---- functions and statements ----------------------------------------------
+
+    /#/ Checks the body of function `f` and returns its type. `class_ty` is the class type of a
+    /#/ method (its `self`), -1 otherwise.
+    fn function(self, t: &Tys, g: &Syms, a: &Ast, f: int, class_ty: int) => int:
+        let fty = self.rd.fn_sig(t, a, f, class_ty)
+        if a.pc[f] < 0:
+            return fty
+        let saved_ret = self.ret
+        let saved_loops = self.loops
+        let saved_in = self.in_fn
+        let mark = self.rd.sc.loc.n
+        self.rd.bind_params(t, a, f)
+        let i = 0
+        let p = a.child[f]
+        while p >= 0:
+            if a.kind[p] == int(Nk.Param) || a.kind[p] == int(Nk.SelfParam):
+                if i < t.count_of(fty):
+                    self.declare_local(a, a.tok[p], int(Sk.Param), t.arg(fty, i))
+                i = i + 1
+            p = a.next[p]
+        self.ret = t.c[fty]
+        self.loops = 0
+        self.in_fn = 1
+        self.block(t, g, a, a.pc[f])
+        if class_ty >= 0 && t.kind[self.ret] != int(Ty.Void) && a.pc[f] >= 0:
+            let last = a.child[a.pc[f]]
+            let tail = -1
+            while last >= 0:
+                tail = last
+                last = a.next[last]
+            if tail >= 0 && a.kind[tail] == int(Nk.ExprStmt) && a.pa[tail] >= 0:
+                let x = self.node[a.pa[tail]]
+                if !self.fits(t, g, x, self.ret):
+                    self.err(a.tok[tail], int(Te.Mismatch), self.ret, x)
+        self.pop(mark)
+        self.ret = saved_ret
+        self.loops = saved_loops
+        self.in_fn = saved_in
+        return fty
+
+    fn block(self, t: &Tys, g: &Syms, a: &Ast, b: int) => void:
+        if b < 0:
+            return
+        let mark = self.rd.sc.loc.n
+        let c = a.child[b]
+        while c >= 0:
+            self.stmt(t, g, a, c)
+            c = a.next[c]
+        self.pop(mark)
+
+    /#/ A pattern that matches every value: a binder, `_`, or a tuple or struct of such.
+    fn irrefutable(self, a: &Ast, p: int) => bool:
+        if p < 0:
+            return false
+        let k = a.kind[p]
+        if k == int(Nk.Name):
+            let r = self.lookup(a, a.tok[p])
+            return tok_is(a, a.tok[p], "_") || r < 0 || self.rd.sc.loc.kind[r] == int(Sk.Local) || self.rd.sc.loc.kind[r] == int(Sk.Param)
+        if k == int(Nk.Tuple):
+            let c = a.child[p]
+            while c >= 0:
+                if !self.irrefutable(a, c):
+                    return false
+                c = a.next[c]
+            return true
+        if k == int(Nk.StructLit):
+            let f = a.child[p]
+            while f >= 0:
+                if !self.irrefutable(a, a.pa[f]):
+                    return false
+                f = a.next[f]
+            return true
+        return false
+
+    /#/ The builtin class `Error`, -1 when the table has none.
+    fn error_class(self, g: &Syms) => int:
+        for i in 0..g.n:
+            if g.kind[i] == int(Sk.Class) && g.mod[i] == -1 && g.size[i] == 5 && g.pool[g.off[i]] == 'E' && g.pool[g.off[i] + 4] == 'r':
+                return g.info[i]
+        return -1
+
+    fn cond(self, t: &Tys, g: &Syms, a: &Ast, c: int) => void:
+        if c < 0:
+            return
+        self.expect(t, g, a, c, t.simple(int(Ty.Bool)))
+
+    fn stmt(self, t: &Tys, g: &Syms, a: &Ast, n: int) => void:
+        let k = a.kind[n]
+        if k == int(Nk.Let):
+            self.let_stmt(t, g, a, n)
+        elif k == int(Nk.Assign):
+            let tt = self.expr(t, g, a, a.pa[n], -1)
+            if t.is_error(tt):
+                self.value(t, g, a, a.pb[n], -1)
+            else:
+                self.expect(t, g, a, a.pb[n], tt)
+        elif k == int(Nk.Return):
+            self.return_stmt(t, g, a, n)
+        elif k == int(Nk.Raise):
+            let x = self.expr(t, g, a, a.pa[n], -1)
+            let er = self.error_class(g)
+            let ok = t.is_error(x)
+            if t.kind[x] == int(Ty.Named) && er >= 0 && self.inherits(g, t.a[x], er):
+                ok = true
+            if t.kind[x] == int(Ty.Object):
+                ok = true
+            if !ok:
+                self.err(a.tok[n], int(Te.Mismatch), 0, x)
+        elif k == int(Nk.ExprStmt) || k == int(Nk.Rm) || k == int(Nk.Clean):
+            self.expr(t, g, a, a.pa[n], -1)
+            let extra = a.child[n]
+            while extra >= 0:
+                self.expr(t, g, a, extra, -1)
+                extra = a.next[extra]
+        elif k == int(Nk.Mv):
+            let ty = self.expr(t, g, a, a.pa[n], -1)
+            if a.pb[n] >= 0:
+                self.declare_local(a, a.pb[n], int(Sk.Local), ty)
+        elif k == int(Nk.TypeAlias):
+            if a.pa[n] >= 0:
+                let r = self.rd.sc.loc.add_tok(a, a.pa[n], int(Sk.Alias), -1, self.cur)
+                self.rd.sc.loc.ty[r] = self.rd.from_ref(t, a, a.pb[n])
+        elif k == int(Nk.If):
+            self.cond(t, g, a, a.pa[n])
+            self.block(t, g, a, a.pb[n])
+            let e = a.pc[n]
+            if e >= 0:
+                if a.kind[e] == int(Nk.If):
+                    self.stmt(t, g, a, e)
+                else:
+                    self.block(t, g, a, e)
+        elif k == int(Nk.While):
+            self.cond(t, g, a, a.pa[n])
+            self.loops = self.loops + 1
+            self.block(t, g, a, a.pb[n])
+            self.loops = self.loops - 1
+        elif k == int(Nk.For):
+            self.for_stmt(t, g, a, n)
+        elif k == int(Nk.Match):
+            self.match_stmt(t, g, a, n)
+        elif k == int(Nk.Fn):
+            if a.pa[n] >= 0:
+                let sig = self.rd.fn_sig(t, a, n, -1)
+                self.declare_local(a, a.pa[n], int(Sk.Fn), sig)
+            self.function(t, g, a, n, -1)
+
+    fn let_stmt(self, t: &Tys, g: &Syms, a: &Ast, n: int) => void:
+        let ty = -1
+        if a.pb[n] >= 0:
+            ty = self.rd.from_ref(t, a, a.pb[n])
+        if a.pc[n] >= 0:
+            if ty >= 0:
+                self.expect(t, g, a, a.pc[n], ty)
+            else:
+                ty = self.value(t, g, a, a.pc[n], -1)
+        if ty < 0:
+            ty = 0
+        if a.pa[n] < 0:
+            return
+        if self.in_fn == 1:
+            self.declare_local(a, a.pa[n], int(Sk.Local), ty)
+        else:
+            let r = g.find_in_module(a, a.pa[n], self.cur)
+            if r >= 0:
+                g.ty[r] = ty
+            let s = self.lookup(a, a.pa[n])
+            if s >= 0:
+                self.rd.sc.loc.ty[s] = ty
+
+    fn return_stmt(self, t: &Tys, g: &Syms, a: &Ast, n: int) => void:
+        if self.in_fn == 0:
+            return
+        let v = a.pa[n]
+        let void_ty = t.simple(int(Ty.Void))
+        if v >= 0:
+            if t.kind[self.ret] == int(Ty.Void):
+                let x = self.expr(t, g, a, v, -1)
+                if !t.is_error(x):
+                    self.err(a.tok[n], int(Te.Mismatch), void_ty, x)
+            else:
+                self.expect(t, g, a, v, self.ret)
+        elif t.kind[self.ret] != int(Ty.Void) && !t.is_error(self.ret):
+            self.err(a.tok[n], int(Te.Mismatch), self.ret, void_ty)
+
+    fn for_stmt(self, t: &Tys, g: &Syms, a: &Ast, n: int) => void:
+        let it = a.pb[n]
+        let elem = 0
+        if it >= 0 && a.kind[it] == int(Nk.Range):
+            let l = a.pa[it]
+            let r = a.pb[it]
+            let lt = 0
+            let rt = 0
+            if self.is_flex(a, l) && !self.is_flex(a, r):
+                rt = self.value(t, g, a, r, -1)
+                lt = self.value(t, g, a, l, rt)
+            else:
+                lt = self.value(t, g, a, l, -1)
+                rt = self.value(t, g, a, r, lt)
+            if !t.is_int(lt) && !t.is_error(lt):
+                self.err(a.tok[l], int(Te.Mismatch), t.int_ty(8, true), lt)
+            if !t.is_int(rt) && !t.is_error(rt):
+                self.err(a.tok[r], int(Te.Mismatch), t.int_ty(8, true), rt)
+            let j = self.join(t, g, lt, rt)
+            if j >= 0 && t.is_int(lt) && t.is_int(rt):
+                elem = j
+            elif t.is_int(lt):
+                elem = lt
+            self.set(it, 0)
+        else:
+            let ct = self.strip_refs(t, self.value(t, g, a, it, -1))
+            let k = t.kind[ct]
+            if k == int(Ty.Array) || k == int(Ty.Slice) || (k == int(Ty.Buf) && t.a[ct] >= 0):
+                elem = t.a[ct]
+            elif k == int(Ty.Tuple) && t.count_of(ct) > 0:
+                elem = t.arg(ct, 0)
+            elif k == int(Ty.Str):
+                elem = t.int_ty(1, false)
+            elif k != int(Ty.Error):
+                self.err(a.tok[it], int(Te.InvalidType), 0, ct)
+        self.loops = self.loops + 1
+        let mark = self.rd.sc.loc.n
+        if a.pa[n] >= 0:
+            self.declare_local(a, a.pa[n], int(Sk.Local), elem)
+        if a.pc[n] >= 0:
+            let c = a.child[a.pc[n]]
+            while c >= 0:
+                self.stmt(t, g, a, c)
+                c = a.next[c]
+        self.pop(mark)
+        self.loops = self.loops - 1
+
+    fn match_stmt(self, t: &Tys, g: &Syms, a: &Ast, n: int) => void:
+        let st = self.expr(t, g, a, a.pa[n], -1)
+        let arm = a.child[n]
+        let first = -1
+        let wild = false
+        let covered = new_buf(int, 16)
+        let seen = 0
+        let truth = 0
+        let sc = self.strip_refs(t, st)
+        let en = -1
+        if t.kind[sc] == int(Ty.Named) && g.kind[t.a[sc]] == int(Sk.Enum):
+            en = t.a[sc]
+        while arm >= 0:
+            let mark = self.rd.sc.loc.n
+            self.pattern(t, g, a, a.pa[arm], st)
+            if a.pc[arm] >= 0:
+                self.cond(t, g, a, a.pc[arm])
+            else:
+                /#/ an arm with a guard may not match, so it covers nothing
+                let p = a.pa[arm]
+                if self.irrefutable(a, p):
+                    wild = true
+                elif p >= 0 && a.kind[p] == int(Nk.Bool):
+                    if tok_is(a, a.tok[p], "true"):
+                        truth = truth | 1
+                    else:
+                        truth = truth | 2
+                elif en >= 0 && p >= 0:
+                    let v = p
+                    if a.kind[p] == int(Nk.Call):
+                        v = a.pa[p]
+                    if v >= 0 && a.kind[v] == int(Nk.Member):
+                        let vr = member_of(g, a, en, a.tok[v], int(Sk.Variant))
+                        let dup = false
+                        for i in 0..seen:
+                            if covered[i] == vr:
+                                dup = true
+                        if vr >= 0 && !dup && seen < 16:
+                            covered[seen] = vr
+                            seen = seen + 1
+            if a.pb[arm] >= 0:
+                let c = a.child[a.pb[arm]]
+                let only = c
+                while c >= 0:
+                    self.stmt(t, g, a, c)
+                    c = a.next[c]
+                /#/ arms that are a bare value must agree on its type
+                if only >= 0 && a.next[only] < 0 && a.kind[only] == int(Nk.ExprStmt) && a.pa[only] >= 0:
+                    let x = self.node[a.pa[only]]
+                    if x >= 0 && t.kind[x] != int(Ty.Void) && !t.is_error(x):
+                        if first < 0:
+                            first = x
+                        elif !self.fits(t, g, x, first) && !self.fits(t, g, first, x):
+                            self.err(a.tok[only], int(Te.Mismatch), first, x)
+            self.pop(mark)
+            arm = a.next[arm]
+        if wild || a.child[n] < 0:
+            return
+        let total = 0
+        if en >= 0:
+            for i in 0..g.n:
+                if g.info[i] == en && g.kind[i] == int(Sk.Variant):
+                    total = total + 1
+            if seen >= total:
+                return
+        elif t.kind[sc] == int(Ty.Bool) && truth == 3:
+            return
+        elif t.is_error(sc):
+            return
+        self.err(a.tok[n], int(Te.NonExhaustive), 0, st)
+
+    /#/ A pattern of type `st`: names bind, `E.V(p, ...)` binds the payload, anything else is
+    /#/ a value of that type.
+    fn pattern(self, t: &Tys, g: &Syms, a: &Ast, p: int, st: int) => void:
+        if p < 0:
+            return
+        let k = a.kind[p]
+        if k == int(Nk.Name):
+            if tok_is(a, a.tok[p], "_"):
+                return
+            let r = self.lookup(a, a.tok[p])
+            if r >= 0 && self.rd.sc.loc.kind[r] != int(Sk.Local) && self.rd.sc.loc.kind[r] != int(Sk.Param):
+                self.expect(t, g, a, p, st)
+            else:
+                self.declare_local(a, a.tok[p], int(Sk.Local), st)
+                self.set(p, st)
+        elif k == int(Nk.Call):
+            let callee = a.pa[p]
+            let vt = 0
+            if callee >= 0 && a.kind[callee] == int(Nk.Member):
+                vt = self.expr(t, g, a, callee, -1)
+            let i = 0
+            let c = a.child[p]
+            while c >= 0:
+                let pt = 0
+                if t.kind[vt] == int(Ty.Fn) && i < t.count_of(vt):
+                    pt = t.arg(vt, i)
+                self.pattern(t, g, a, c, pt)
+                i = i + 1
+                c = a.next[c]
+            if t.kind[vt] == int(Ty.Fn):
+                let e = t.c[vt]
+                if !self.fits(t, g, e, st):
+                    self.err(a.tok[p], int(Te.Mismatch), st, e)
+            self.set(p, st)
+        elif k == int(Nk.Tuple):
+            let i = 0
+            let c = a.child[p]
+            while c >= 0:
+                let pt = 0
+                if t.kind[st] == int(Ty.Tuple) && i < t.count_of(st):
+                    pt = t.arg(st, i)
+                self.pattern(t, g, a, c, pt)
+                i = i + 1
+                c = a.next[c]
+        elif k == int(Nk.StructLit):
+            let tn = a.pa[p]
+            let ci = -1
+            if tn >= 0 && a.kind[tn] == int(Nk.Name):
+                let r = self.lookup(a, a.tok[tn])
+                if r >= 0 && self.rd.sc.loc.kind[r] == int(Sk.Class):
+                    ci = self.rd.sc.loc.info[r]
+            let f = a.child[p]
+            while f >= 0:
+                let ft = 0
+                if ci >= 0:
+                    let fr = self.find_member(g, a, ci, a.tok[f], int(Sk.Field))
+                    if fr >= 0 && g.ty[fr] >= 0:
+                        ft = g.ty[fr]
+                self.pattern(t, g, a, a.pa[f], ft)
+                f = a.next[f]
+        else:
+            self.expect(t, g, a, p, st)
+
+    /#/ ---- a module ---------------------------------------------------------------
+
+    fn class_decl(self, t: &Tys, g: &Syms, a: &Ast, cl: int) => void:
+        let ci = g.find_in_module(a, a.pa[cl], self.cur)
+        if ci < 0:
+            return
+        let mark = self.rd.sc.loc.n
+        self.rd.bind_params(t, a, cl)
+        let self_ty = t.named(g.info[ci])
+        let f = a.child[cl]
+        while f >= 0:
+            if a.kind[f] == int(Nk.Fn):
+                self.function(t, g, a, f, self_ty)
+            f = a.next[f]
+        self.pop(mark)
+
+    fn module(self, t: &Tys, g: &Syms, a: &Ast) => void:
+        let it = a.child[a.root]
+        while it >= 0:
+            if a.kind[it] == int(Nk.Let):
+                self.let_stmt(t, g, a, it)
+            it = a.next[it]
+        it = a.child[a.root]
+        while it >= 0:
+            let k = a.kind[it]
+            if k == int(Nk.Fn):
+                self.function(t, g, a, it, -1)
+            elif k == int(Nk.Class):
+                self.class_decl(t, g, a, it)
+            elif k != int(Nk.Let) && k != int(Nk.Use) && k != int(Nk.Enum) && k != int(Nk.TypeAlias):
+                self.stmt(t, g, a, it)
+            it = a.next[it]
+
+/#/ The value of character literal token `tok` (`'a'`, `'\n'`, a UTF-8 character).
+fn char_value(a: &Ast, tok: int) => int:
+    let s = a.toks.start[tok] + 1
+    let e = a.toks.end[tok] - 1
+    if s >= e:
+        return 0
+    let b = a.byte_at(s)
+    if b == '\\':
+        let c = a.byte_at(s + 1)
+        if c == 'n':
+            return 10
+        if c == 't':
+            return 9
+        if c == 'r':
+            return 13
+        if c == '0':
+            return 0
+        return c
+    if b < 128:
+        return b
+    let extra = 1
+    let v = b % 32
+    if b >= 240:
+        extra = 3
+        v = b % 8
+    elif b >= 224:
+        extra = 2
+        v = b % 16
+    for i in 1..extra + 1:
+        v = v * 64 + a.byte_at(s + i) % 64
+    return v
+
+fn new_typer(a: &Ast, g: &Syms, m: int) => Typer:
+    let nodes: buf<int> = new_buf(int, a.count + 1)
+    for i in 0..a.count + 1:
+        nodes[i] = -1
+    return Typer { rd: Reader { sc: scope_of(a, g, m) }, diags: new_tdiags(), node: nodes, ret: 0, loops: 0, self_class: -1, in_fn: 0, binds: new_buf(int, 16), cur: m }
+
+/#/ Types module `m` (tree `a`) of `g`. `declare_types` must have run on it and on the modules
+/#/ it imports from. The findings are in the result's `diags`.
+fn check_types(t: &Tys, g: &Syms, a: &Ast, m: int) => Typer:
+    let r = new_typer(a, g, m)
+    r.module(t, g, a)
+    return r
