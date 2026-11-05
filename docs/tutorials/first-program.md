@@ -42,7 +42,14 @@ coffee2 hello.cf -o hello
 
 ## 4. 看一眼编译器生成了什么
 
-加上 `--emit-llvm`,编译器停在 LLVM 文本这一步:
+默认情况下,编译器直接生成 x86-64 机器码。加上 `--emit-obj`,它停在目标文件这一步:
+
+```bash
+coffee2 hello.cf --emit-obj -o hello.o
+objdump -d hello.o | head -30
+```
+
+看到的是每个函数的指令。链接这一步交给系统的 `cc`。
 
 ```bash
 coffee2 hello.cf --emit-llvm -o hello.ll
@@ -51,24 +58,18 @@ head hello.ll
 
 文件开头是一些 `declare` 行,后面是每个函数的定义。你不需要读懂它,只要知道前面的编译就是先生成这个文本,再交给 `clang`。
 
-## 5. 换成机器码
+## 5. 换成 LLVM 文本
 
-自举编译器还有第二条路:不经过 LLVM,直接生成 x86-64 机器码。
-
-```bash
-coffee2 hello.cf --mc -o hello_mc
-./hello_mc
-```
-
-输出和刚才一样。再试试只生成目标文件,自己链接:
+还有第二条路:生成 LLVM 文本,再交给 `clang`。
 
 ```bash
-coffee2 hello.cf --emit-obj -o hello.o
-clang hello.o -o hello_mc2 -lm
-./hello_mc2
+coffee2 hello.cf --emit-llvm -o hello.ll
+head hello.ll
+clang hello.ll -o hello_llvm -lm
+./hello_llvm
 ```
 
-`--emit-obj` 写出的是标准的 ELF 目标文件,可以用 `objdump -d hello.o` 看里面的指令。
+输出和刚才一样。文件开头是一些 `declare` 行,后面是每个函数的定义。这条路径只用来做对照,不是默认。
 
 ## 你完成了什么
 

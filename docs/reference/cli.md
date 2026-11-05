@@ -1,7 +1,7 @@
 # 命令行参考:`coffee2`
 
 ```
-coffee2 input.cf [-o output] [-I dir] [-O0|-O1|-O2|-O3] [--emit-llvm] [--emit-obj] [--mc] [--emit-flat]
+coffee2 input.cf [-o output] [-I dir] [-O0|-O1|-O2|-O3] [--emit-obj] [--emit-llvm] [--emit-flat]
 ```
 
 `coffee2` 是自举编译器(`coffee/driver/src/main.cf`)。它只做编译。项目模式(`coffee.toml`)、依赖获取和 `std install` 不在这里,它们留给以后的工具链程序。
@@ -13,11 +13,11 @@ coffee2 input.cf [-o output] [-I dir] [-O0|-O1|-O2|-O3] [--emit-llvm] [--emit-ob
 | `input.cf` | 源文件。必须有且只有一个。 |
 | `-o output` | 输出路径。省略时见下表。 |
 | `-I dir` | 增加一个模块搜索目录和 `.cfc` 搜索目录,可重复。 |
-| `-O0` | 关闭 IR 优化器,交给 `clang -O0`。 |
-| `-O1` `-O2` `-O3` | 打开 IR 优化器;数字同时传给 `clang`。默认 `-O1`。 |
-| `--emit-llvm` | 写出 LLVM 文本后停止,不调用 `clang`。 |
-| `--mc` | 用 x86-64 机器码后端代替 LLVM 文本,再用 `clang` 链接。 |
-| `--emit-obj` | 等于 `--mc`,但写出 `.o` 后停止。 |
+| `-O0` | 关闭 IR 优化器。 |
+| `-O1` `-O2` `-O3` | 打开 IR 优化器。默认 `-O1`。 |
+| `--emit-obj` | 写出 `.o` 后停止,不链接。 |
+| `--emit-llvm` | 改用 LLVM 文本后端,写出 `.ll` 后停止。 |
+| `--mc` | 默认行为(x86-64 机器码),为旧命令行保留。 |
 | `--emit-flat` | 写出展开了所有 `use` 的单文件源码后停止。诊断里的行号指的是这份文本。 |
 
 ## 默认输出
@@ -25,8 +25,8 @@ coffee2 input.cf [-o output] [-I dir] [-O0|-O1|-O2|-O3] [--emit-llvm] [--emit-ob
 | 选项 | 没有 `-o` 时 |
 |---|---|
 | 无 | `a.out` |
-| `--emit-llvm` | `<input>.ll` |
 | `--emit-obj` | `<input>.o` |
+| `--emit-llvm` | `<input>.ll` |
 | `--emit-flat` | `<input>.flat` |
 
 ## 模块与 C 库

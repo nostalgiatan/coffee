@@ -1,4 +1,5 @@
-/#/ The self-hosted compiler: `coffee2 input.cf [-o out] [-I dir] [-O0..-O3] [--emit-llvm]`.
+/#/ The self-hosted compiler: `coffee2 input.cf [-o out] [-I dir] [-O0..-O3] [--emit-obj] [--emit-llvm]`.
+/#/ Machine code (our own x86-64 backend) is the default; `--emit-llvm` writes LLVM text instead.
 /#/ The standard C library gives a program no arguments, so they are read from /proc/self/cmdline.
 use * in flat
 use printf, fflush, system, exit in libc of c
@@ -26,6 +27,9 @@ class Cli:
 
     fn set_mc(self) => void:
         self.mc = true
+
+    fn set_llvm(self) => void:
+        self.mc = false
 
     fn set_flat_only(self) => void:
         self.flat_only = true
@@ -65,7 +69,7 @@ fn cmdline() => Txt:
     return read_file(&p)
 
 fn parse_cli(fl: &Flat) => Cli:
-    let cli = Cli { input: new_txt(), output: new_txt(), emit_only: false, flat_only: false, mc: false, level: 1, bad: 0 }
+    let cli = Cli { input: new_txt(), output: new_txt(), emit_only: false, flat_only: false, mc: true, level: 1, bad: 0 }
     let raw = cmdline()
     let words = new_txt()
     /#/ one word per line
@@ -96,11 +100,11 @@ fn parse_cli(fl: &Flat) => Cli:
             elif w.is("-I"):
                 want_inc = true
             elif w.is("--emit-llvm"):
+                cli.set_llvm()
                 cli.set_emit_only()
             elif w.is("--mc"):
                 cli.set_mc()
             elif w.is("--emit-obj"):
-                cli.set_mc()
                 cli.set_emit_only()
             elif w.is("--emit-flat"):
                 cli.set_flat_only()
@@ -135,7 +139,7 @@ fn dir_of(path: &Txt) => Txt:
     return slice(path, 0, cut)
 
 fn usage() => int:
-    printf("usage: coffee2 input.cf [-o output] [-I dir] [-O0|-O1|-O2|-O3] [--emit-llvm] [--emit-obj] [--mc] [--emit-flat]\n")
+    printf("usage: coffee2 input.cf [-o output] [-I dir] [-O0|-O1|-O2|-O3] [--emit-obj] [--emit-llvm] [--emit-flat]\n")
     fflush(0)
     return 2
 
@@ -175,9 +179,7 @@ fn main() => int:
     write_file(&ll_path, &ll)
     if cli.emit_only:
         return 0
-    let cmd = txt_of("clang -w -O")
-    cmd.put_int(cli.level)
-    cmd.put(" -o '")
+    let cmd = txt_of("cc -w -o '")
     cmd.put_all(&out)
     cmd.put("' '")
     cmd.put_all(&ll_path)

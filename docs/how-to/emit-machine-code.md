@@ -7,7 +7,7 @@
 ## 直接生成可执行文件
 
 ```bash
-coffee2 prog.cf --mc -o prog
+coffee2 prog.cf -o prog
 ```
 
 ## 只生成目标文件
@@ -35,7 +35,7 @@ objdump -d prog.o
 ## 调试
 
 - 编译时出现 `machine code: N functions could not be translated`,说明有 N 个函数用到了后端没处理的 IR 操作。
-- 想知道某个问题是不是后端造成的,把同一个程序用不带 `--mc` 的方式编译对比结果。
+- 想知道某个问题是不是后端造成的,把同一个程序加 `--emit-llvm` 走 LLVM 后端,链接后对比结果。
 
 ## 相关
 
