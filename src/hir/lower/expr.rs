@@ -158,6 +158,11 @@ where
                         } else {
                             recover_nonvar_type(expr, err)?
                         }
+                    } else if let Some(ret) = match expr {
+                        Expression::Member { object, field, .. } => self.method_call_return(object, field),
+                        _ => None,
+                    } {
+                        ret
                     } else if let Some(hir) = self.try_lower_op_from_children(expr)? {
                         return Ok(hir);
                     } else {
@@ -450,35 +455,39 @@ where
         reg.is_exception_type(name)
     }
 
-    /// A string literal handed to a `&str` method parameter is lent, not moved
-    /// (the same rule `f("x")` gets for plain functions).
-    fn lend_string_literals_to_method(&self, object: &HirExpr, method: &str, args: &mut [HirExpr]) {
+    /// The registry's signature of `method` on the class `object` is an instance of
+    /// (looking through `&`, and up the parent chain).
+    fn method_signature(&self, object: &HirExpr, method: &str) -> Option<crate::types::definition::MethodSignature> {
         let class = match &object.ty {
             Type::NamedType { name } => name.clone(),
             Type::Ref { elem, .. } => match &**elem {
                 Type::NamedType { name } => name.clone(),
-                _ => return,
+                _ => return None,
             },
-            _ => return,
+            _ => return None,
         };
-        let params = self.registry.as_ref().and_then(|r| r.read().ok()).and_then(|reg| {
-            let mut current = Some(class);
-            while let Some(cname) = current {
-                match reg.get_type(&cname) {
-                    Some(TypeDef::Class { methods, parent, .. }) => {
-                        if let Some(m) = methods.iter().find(|m| m.name == method) {
-                            return Some(m.params.clone());
-                        }
-                        current = parent;
+        let reg = self.registry.as_ref().and_then(|r| r.read().ok())?;
+        let mut current = Some(class);
+        while let Some(cname) = current {
+            match reg.get_type(&cname) {
+                Some(TypeDef::Class { methods, parent, .. }) => {
+                    if let Some(m) = methods.iter().find(|m| m.name == method) {
+                        return Some(m.clone());
                     }
-                    _ => return None,
+                    current = parent;
                 }
+                _ => return None,
             }
-            None
-        });
-        let Some(params) = params else { return };
+        }
+        None
+    }
+
+    /// A string literal handed to a `&str` method parameter is lent, not moved
+    /// (the same rule `f("x")` gets for plain functions).
+    fn lend_string_literals_to_method(&self, object: &HirExpr, method: &str, args: &mut [HirExpr]) {
+        let Some(sig) = self.method_signature(object, method) else { return };
         // The registry lists the receiver first.
-        for (arg, param) in args.iter_mut().zip(params.iter().skip(1)) {
+        for (arg, param) in args.iter_mut().zip(sig.params.iter().skip(1)) {
             let wants_ref = matches!(param, Type::Ref { elem, .. } if **elem == Type::String);
             if wants_ref && arg.ty == Type::String && matches!(arg.kind, HirExprKind::Literal(_)) {
                 let literal = std::mem::replace(arg, HirExpr { ty: Type::Unit, kind: HirExprKind::Literal(String::new()) });
@@ -488,6 +497,13 @@ where
                 };
             }
         }
+    }
+
+    /// Return type of a method call the checker could not type (an argument names a local of
+    /// a loop or branch body it no longer holds): the receiver's class says what it returns.
+    fn method_call_return(&mut self, object: &Expression, method: &str) -> Option<Type> {
+        let object = auto_deref_object(self.lower_expr(object).ok()?);
+        self.method_signature(&object, method).map(|m| m.return_type)
     }
 
     /// Result type of a buffer/arith intrinsic whose arguments name locals the

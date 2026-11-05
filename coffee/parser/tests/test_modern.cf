@@ -1,0 +1,16 @@
+use * in tree_shape
+
+/#/ syntax added after the first parser: `::`, `as`, `rm a, b`, `mv`/`clone`, `type`,
+/#/ `else if`, match guards, empty class bodies and body-less `c fn`.
+fn main() => int:
+    let m = 0
+    m = m + miss_parse("let a = m::f\n", "P(L(m(w)))")
+    m = m + miss_parse("let a = b as int\n", "P(L(u(wt)))")
+    m = m + miss_parse("fn f() => void:\n    rm a, b\n", "P(F(tB(r(ww))))")
+    m = m + miss_parse("fn f() => void:\n    mv a b\n    clone a b\n", "P(F(tB(y(w)y(w))))")
+    m = m + miss_parse("type X: int\n", "P(e)")
+    m = m + miss_parse("fn f() => void:\n    if a:\n        b\n    else if c:\n        d\n", "P(F(tB(I(wB(;(w))I(wB(;(w)))))))")
+    m = m + miss_parse("fn f(e: E) => int:\n    match e:\n        A if x => return 1\n        _ => return 0\n", "P(F(p(t)tB(M(wa(wB(R(i))w)a(wB(R(i)))))))")
+    m = m + miss_parse("class A:\n", "P(C)")
+    m = m + miss_parse("c fn go() => void:\n\nlet a = 1\n", "P(F(tB)L(i))")
+    return m

@@ -1,0 +1,23 @@
+use * in sema_probe
+
+fn lib_src() => str:
+    return "fn helper(x: int) => int:\n    return x\n\nclass Box:\n    v: int\n\nenum Kind:\n    A\n    B\n"
+
+fn main() => int:
+    let m = 0
+    m = m + miss_diag_with(lib_src(), "lib", "use helper in lib\n\nfn main() => int:\n    return helper(1)\n", int(Sc.UndefinedName), 0)
+    m = m + miss_diag_with(lib_src(), "lib", "use * in lib\n\nfn main() => int:\n    let b = Box { v: helper(1) }\n    return int(Kind.A) + b.v\n", int(Sc.UndefinedName), 0)
+    /#/ without the import the names are not there
+    m = m + miss_diag_with(lib_src(), "lib", "fn main() => int:\n    return helper(1)\n", int(Sc.UndefinedName), 1)
+    /#/ imported names keep their arity and fields
+    m = m + miss_diag_with(lib_src(), "lib", "use * in lib\n\nfn main() => int:\n    return helper(1, 2)\n", int(Sc.ArityMismatch), 1)
+    m = m + miss_diag_with(lib_src(), "lib", "use * in lib\n\nfn main() => int:\n    let b = Box { w: 1 }\n    return 0\n", int(Sc.UnknownField), 1)
+    m = m + miss_diag_with(lib_src(), "lib", "use * in lib\n\nfn f(b: Box, k: Kind) => int:\n    return 0\n", int(Sc.UndefinedType), 0)
+    m = m + miss_diag_with(lib_src(), "lib", "use missing in lib\n", int(Sc.UnknownImport), 1)
+    m = m + miss_diag_with(lib_src(), "lib", "use * in nothere\n", int(Sc.UnknownModule), 1)
+    /#/ C symbols come from `of c` imports
+    m = m + miss_diag("use printf, fflush in libc of c\n\nfn main() => int:\n    printf(\"hi\")\n    fflush(0)\n    return 0\n", int(Sc.UndefinedName), 0)
+    /#/ the bundled libc and libm names need no import
+    m = m + miss_diag("fn main() => int:\n    printf(\"hi\")\n    return 0\n", int(Sc.UndefinedName), 0)
+    m = m + miss_diag("fn main() => int:\n    frobnicate(\"hi\")\n    return 0\n", int(Sc.UndefinedName), 1)
+    return m

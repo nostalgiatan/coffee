@@ -1,0 +1,36 @@
+use * in sema_probe
+
+fn main() => int:
+    let m = 0
+    m = m + miss_diag("fn main() => int:\n    break\n    return 0\n", int(Sc.BreakOutsideLoop), 1)
+    m = m + miss_diag("fn main() => int:\n    continue\n    return 0\n", int(Sc.ContinueOutsideLoop), 1)
+    m = m + miss_diag("fn main() => int:\n    while true:\n        break\n    return 0\n", int(Sc.BreakOutsideLoop), 0)
+    m = m + miss_diag("fn main() => int:\n    for i in 0..3:\n        if i == 1:\n            continue\n    return 0\n", int(Sc.ContinueOutsideLoop), 0)
+    /#/ a nested fn starts outside any loop
+    m = m + miss_diag("fn main() => int:\n    while true:\n        fn g() => int:\n            break\n            return 1\n        break\n    return 0\n", int(Sc.BreakOutsideLoop), 1)
+    m = m + miss_diag("return 1\n", int(Sc.ReturnOutsideFn), 1)
+    m = m + miss_diag("fn f() => void:\n    return 1\n", int(Sc.ReturnValueInVoid), 1)
+    m = m + miss_diag("fn f() => int:\n    return\n", int(Sc.MissingReturnValue), 1)
+    m = m + miss_diag("fn f() => void:\n    return\n", int(Sc.MissingReturnValue), 0)
+    /#/ every path of a non-void function must return or raise
+    let miss = int(Sc.MissingReturn)
+    m = m + miss_diag("fn f() => int:\n    return 1\n", miss, 0)
+    m = m + miss_diag("fn f(x: int) => int:\n    if x > 0:\n        return 1\n", miss, 1)
+    m = m + miss_diag("fn f(x: int) => int:\n    if x > 0:\n        return 1\n    else:\n        return 2\n", miss, 0)
+    m = m + miss_diag("fn f(x: int) => int:\n    if x > 0:\n        return 1\n    elif x < 0:\n        return 2\n", miss, 1)
+    m = m + miss_diag("fn f(x: int) => int:\n    if x > 0:\n        return 1\n    elif x < 0:\n        return 2\n    else:\n        return 3\n", miss, 0)
+    m = m + miss_diag("fn f(x: int) => int:\n    if x > 0:\n        return 1\n    return 0\n", miss, 0)
+    m = m + miss_diag("fn f() => int:\n    raise e\n", miss, 0)
+    m = m + miss_diag("fn f() => int:\n    let x = 1\n", miss, 1)
+    m = m + miss_diag("fn f() => int:\n    while true:\n        return 1\n", miss, 0)
+    m = m + miss_diag("fn f() => int:\n    while true:\n        break\n", miss, 1)
+    m = m + miss_diag("fn f(x: int) => int:\n    match x:\n        1 => return 1\n        _ => return 2\n", miss, 0)
+    m = m + miss_diag("fn f(x: int) => int:\n    match x:\n        1 => return 1\n        _ => x\n", miss, 0)
+    m = m + miss_diag("fn f(x: int) => int:\n    match x:\n        1 => return 1\n        _ => let y = 2\n", miss, 1)
+    m = m + miss_diag("fn f() => void:\n    let x = 1\n", miss, 0)
+    m = m + miss_diag("fn f():\n    let x = 1\n", miss, 0)
+    /#/ a method may end in a bare value; a function may not
+    m = m + miss_diag("class A:\n    n: int\n\n    fn get(self) => int:\n        self.n\n", miss, 0)
+    m = m + miss_diag("fn f() => int:\n    1\n", miss, 1)
+    m = m + miss_diag("class A:\n    n: int\n\n    fn get(self) => int:\n        let x = 1\n", miss, 1)
+    return m

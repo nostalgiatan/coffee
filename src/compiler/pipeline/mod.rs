@@ -184,18 +184,6 @@ impl CompilationPipeline {
                 }
             }
         }
-        // First pass: declare all functions (without analyzing bodies)
-        // This supports mutual recursion
-        coffee_debug!("DEBUG: compile_source: First pass: declaring all functions");
-        for statement in &program.statements {
-            if let parser::Statement::Function(func) = statement {
-                if !func.type_params.is_empty() {
-                    continue;
-                }
-                let _ = self.session.analyzer.write().unwrap().declare_function_decl(func);
-            }
-        }
-
         // First pass: register all class and enum definitions
         coffee_debug!("DEBUG: compile_source: First pass: registering all class and enum definitions");
         for statement in &program.statements {
@@ -281,6 +269,18 @@ impl CompilationPipeline {
                     }
                 }
                 _ => {}
+            }
+        }
+
+        // Declare all functions (without analyzing bodies) once the classes they mention are
+        // registered; this supports mutual recursion with class-typed parameters.
+        coffee_debug!("DEBUG: compile_source: First pass: declaring all functions");
+        for statement in &program.statements {
+            if let parser::Statement::Function(func) = statement {
+                if !func.type_params.is_empty() {
+                    continue;
+                }
+                let _ = self.session.analyzer.write().unwrap().declare_function_decl(func);
             }
         }
 

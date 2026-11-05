@@ -1,0 +1,845 @@
+/#/ Semantic analysis: name resolution and declaration checks over the parser's tree.
+/#/
+/#/ Two steps. `declare_module` adds a module's top-level names to the globals table; `check`
+/#/ then walks one module with its own scope table (builtins, own and imported names, then
+/#/ locals) and reports undefined and duplicate names, unknown types, call arity, struct
+/#/ literal fields, loop and return placement, and functions that can fall off their end.
+/#/ Types of expressions are not computed here; that is the type checker's job.
+use * in sema_diag
+use * in sym_table
+use * in c_names
+
+/#/ Names every module sees: the primitive types, the casts and the intrinsics.
+fn builtin_names() => str:
+    return "int float bool str string void nil buf object len new_buf buf_resize buf_ptr subslice sizeof range wrapping_add wrapping_sub wrapping_mul i8 i16 i32 i64 u8 u16 u32 u64 f32 f64"
+
+/#/ Adds each space-separated word of `words` as a module-less row of `kind`.
+fn add_words(g: &Syms, words: &str, kind: int) => void:
+    let start = 0
+    for i in 0..len(words) + 1:
+        if i == len(words) || byte(words, i) == ' ':
+            if i > start:
+                let b = g.pool_n
+                let h = 0
+                for k in start..i:
+                    g.put_byte(byte(words, k))
+                    h = hash_step(h, byte(words, k))
+                g.push_row(b, h, kind, -1, -1, -1)
+            start = i + 1
+
+/#/ Globals with what every module sees already in: the casts and intrinsics, the bundled C
+/#/ functions and types, and the builtin class `Error`.
+fn new_globals() => Syms:
+    let g = new_syms()
+    let builtins = builtin_names()
+    add_words(&g, &builtins, int(Sk.Builtin))
+    let c_funcs = c_function_names()
+    add_words(&g, &c_funcs, int(Sk.Extern))
+    let c_types = c_type_names()
+    add_words(&g, &c_types, int(Sk.Builtin))
+    let e = g.add_text("Error", int(Sk.Class), 0, -1)
+    g.info[e] = e
+    g.add_text("code", int(Sk.Field), e, -1)
+    g.add_text("note", int(Sk.Field), e, -1)
+    g.add_text("e", int(Sk.Field), e, -1)
+    return g
+
+/#/ The number of ordinary parameters of fn node `f`.
+fn param_count(a: &Ast, f: int) => int:
+    let c = 0
+    let p = a.child[f]
+    while p >= 0:
+        if a.kind[p] == int(Nk.Param):
+            c = c + 1
+        p = a.next[p]
+    return c
+
+/#/ Adds the top-level names of `a` to `g` as module `name`; returns the module id.
+fn declare_module(g: &Syms, a: &Ast, name: &str) => int:
+    let m = g.add_text(name, int(Sk.Module), 0, -1)
+    g.mod[m] = m
+    let it = a.child[a.root]
+    while it >= 0:
+        let k = a.kind[it]
+        if k == int(Nk.Fn) && a.pa[it] >= 0:
+            g.add_tok(a, a.pa[it], int(Sk.Fn), param_count(a, it), m)
+        elif k == int(Nk.Class) && a.pa[it] >= 0:
+            let ci = g.add_tok(a, a.pa[it], int(Sk.Class), 0, m)
+            g.info[ci] = ci
+            if a.pb[it] >= 0:
+                g.add_tok(a, a.pb[it], int(Sk.Parent), ci, m)
+            let f = a.child[it]
+            while f >= 0:
+                if a.kind[f] == int(Nk.Field):
+                    g.add_tok(a, a.tok[f], int(Sk.Field), ci, m)
+                elif a.kind[f] == int(Nk.Fn) && a.pa[f] >= 0:
+                    g.add_tok(a, a.pa[f], int(Sk.Method), ci, m)
+                f = a.next[f]
+        elif k == int(Nk.Enum) && a.pa[it] >= 0:
+            g.add_tok(a, a.pa[it], int(Sk.Enum), 0, m)
+        elif k == int(Nk.Let) && a.pa[it] >= 0:
+            g.add_tok(a, a.pa[it], int(Sk.Global), 0, m)
+        elif k == int(Nk.TypeAlias) && a.pa[it] >= 0:
+            g.add_tok(a, a.pa[it], int(Sk.Alias), 0, m)
+        elif k == int(Nk.Use) && a.pa[it] >= 0 && a.pc[it] != 1:
+            /#/ `use * in x` is transitive: whoever imports this module sees x's names too
+            let s = a.child[it]
+            while s >= 0:
+                if a.kind[s] == int(Nk.Star):
+                    g.add_tok(a, a.pa[it], int(Sk.Import), 1, m)
+                s = a.next[s]
+        it = a.next[it]
+    return m
+
+/#/ A name another module can import.
+fn exported(kind: int) => bool:
+    return kind == int(Sk.Fn) || kind == int(Sk.Class) || kind == int(Sk.Enum) || kind == int(Sk.Global) || kind == int(Sk.Alias)
+
+fn tok_is(a: &Ast, tok: int, word: &str) => bool:
+    let s = a.toks.start[tok]
+    let e = a.toks.end[tok]
+    if e - s != len(word):
+        return false
+    for k in 0..len(word):
+        if a.byte_at(s + k) != byte(word, k):
+            return false
+    return true
+
+fn same_tok(a: &Ast, t1: int, t2: int) => bool:
+    let s1 = a.toks.start[t1]
+    let l1 = a.toks.end[t1] - s1
+    let s2 = a.toks.start[t2]
+    if a.toks.end[t2] - s2 != l1:
+        return false
+    for k in 0..l1:
+        if a.byte_at(s1 + k) != a.byte_at(s2 + k):
+            return false
+    return true
+
+fn is_ident_byte(b: int) => bool:
+    return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || b == '_' || (b >= '0' && b <= '9')
+
+/#/ Does a `break` that belongs to the loop around `st` appear in it?
+fn has_break(a: &Ast, st: int) => bool:
+    if st < 0:
+        return false
+    let k = a.kind[st]
+    if k == int(Nk.Break):
+        return true
+    if k == int(Nk.If):
+        return has_break(a, a.pb[st]) || has_break(a, a.pc[st])
+    if k == int(Nk.Block):
+        let c = a.child[st]
+        while c >= 0:
+            if has_break(a, c):
+                return true
+            c = a.next[c]
+        return false
+    if k == int(Nk.Match):
+        let arm = a.child[st]
+        while arm >= 0:
+            if has_break(a, a.pb[arm]):
+                return true
+            arm = a.next[arm]
+    return false
+
+/#/ Can control not run off the end of statement `st`?
+fn ends(a: &Ast, st: int) => bool:
+    if st < 0:
+        return false
+    let k = a.kind[st]
+    if k == int(Nk.Return) || k == int(Nk.Raise):
+        return true
+    if k == int(Nk.Block):
+        let c = a.child[st]
+        while c >= 0:
+            if ends(a, c):
+                return true
+            c = a.next[c]
+        return false
+    if k == int(Nk.If):
+        return a.pc[st] >= 0 && ends(a, a.pb[st]) && ends(a, a.pc[st])
+    if k == int(Nk.While):
+        return a.pa[st] >= 0 && a.kind[a.pa[st]] == int(Nk.Bool) && tok_is(a, a.tok[a.pa[st]], "true") && !has_break(a, a.pb[st])
+    if k == int(Nk.Match):
+        let arm = a.child[st]
+        if arm < 0:
+            return false
+        while arm >= 0:
+            if !ends_arm(a, a.pb[arm]):
+                return false
+            arm = a.next[arm]
+        return true
+    return false
+
+/#/ An arm ends when its body does, or when its last statement is a bare value.
+fn ends_arm(a: &Ast, body: int) => bool:
+    if body < 0:
+        return false
+    if ends(a, body):
+        return true
+    let c = a.child[body]
+    let last = -1
+    while c >= 0:
+        last = c
+        c = a.next[c]
+    return last >= 0 && a.kind[last] == int(Nk.ExprStmt)
+
+/#/ Is the last statement of `body` a bare expression?
+fn last_is_value(a: &Ast, body: int) => bool:
+    if body < 0:
+        return false
+    let c = a.child[body]
+    let last = -1
+    while c >= 0:
+        last = c
+        c = a.next[c]
+    return last >= 0 && a.kind[last] == int(Nk.ExprStmt)
+
+class Checker:
+    loc: Syms
+    diags: Diags
+    fn_base: int
+    loops: int
+    in_fn: int
+    ret_void: bool
+    cur: int
+    seen: buf<int>
+    seen_n: int
+    capture_lo: int
+    capture_named: bool
+    cur_class: int
+
+    fn diag(self, tok: int, code: int) => void:
+        self.diags.add(tok, code)
+
+    /#/ ---- scope ---------------------------------------------------------
+
+    fn pop(self, mark: int) => void:
+        let i = mark
+        while i < self.loc.n:
+            if self.loc.kind[i] == int(Sk.Local) && self.loc.used[i] == 0 && self.loc.first_byte(i) != '_':
+                self.diag(self.loc.tok[i], int(Sk.Local) * 0 + int(Sc.UnusedVariable))
+            i = i + 1
+        self.loc.truncate(mark)
+
+    /#/ Declares a local or parameter; redeclaring a live one of this function is an error.
+    fn declare(self, a: &Ast, tok: int, kind: int) => void:
+        let prior = self.loc.find_tok(a, tok, self.fn_base)
+        if prior >= 0 && (self.loc.kind[prior] == int(Sk.Local) || self.loc.kind[prior] == int(Sk.Param)):
+            self.diag(tok, int(Sc.DuplicateName))
+        self.loc.add_tok(a, tok, kind, -1, self.cur)
+
+    /#/ A read of the name at `tok`.
+    fn use_name(self, a: &Ast, tok: int) => void:
+        let i = self.loc.find_tok(a, tok, 0)
+        if i < 0:
+            self.diag(tok, int(Sc.UndefinedName))
+        else:
+            self.loc.used[i] = 1
+            self.check_capture(i, tok)
+
+    /#/ A nested function or anonymous function cannot read the locals around it.
+    fn check_capture(self, i: int, tok: int) => void:
+        if self.capture_lo >= 0 && i >= self.capture_lo && i < self.fn_base:
+            if self.loc.kind[i] == int(Sk.Local) || self.loc.kind[i] == int(Sk.Param):
+                if self.capture_named:
+                    self.diag(tok, int(Sc.UndefinedName))
+                else:
+                    self.diag(tok, int(Sc.CaptureViolation))
+
+    /#/ ---- types ---------------------------------------------------------
+
+    fn type_ref(self, a: &Ast, t: int) => void:
+        if t < 0:
+            return
+        let i = a.tok[t]
+        while i < a.end[t]:
+            if a.toks.kind[i] == int(Tk.Ident):
+                let after_amp = i > a.tok[t] && a.toks.kind[i - 1] == int(Tk.Amp)
+                if !(after_amp && tok_is(a, i, "mut")):
+                    let r = self.loc.find_tok(a, i, 0)
+                    if r < 0:
+                        self.diag(i, int(Sc.UndefinedType))
+                    else:
+                        self.loc.used[r] = 1
+            i = i + 1
+
+    /#/ ---- expressions ---------------------------------------------------
+
+    fn expr(self, a: &Ast, g: &Syms, n: int) => void:
+        if n < 0:
+            return
+        let k = a.kind[n]
+        if k == int(Nk.Name):
+            self.use_name(a, a.tok[n])
+        elif k == int(Nk.Binary) || k == int(Nk.Index) || k == int(Nk.Range):
+            self.expr(a, g, a.pa[n])
+            self.expr(a, g, a.pb[n])
+        elif k == int(Nk.Unary):
+            self.expr(a, g, a.pa[n])
+        elif k == int(Nk.Member):
+            self.expr(a, g, a.pa[n])
+            self.member(a, g, n)
+        elif k == int(Nk.Cast):
+            self.expr(a, g, a.pa[n])
+            self.type_ref(a, a.pb[n])
+        elif k == int(Nk.Call):
+            self.call(a, g, n)
+        elif k == int(Nk.StructLit):
+            self.struct_lit(a, g, n)
+        elif k == int(Nk.Array) || k == int(Nk.Tuple):
+            let c = a.child[n]
+            while c >= 0:
+                self.expr(a, g, c)
+                c = a.next[c]
+        elif k == int(Nk.FStr):
+            self.fstr(a, n)
+        elif k == int(Nk.Fn):
+            self.function(a, g, n, false)
+
+    /#/ `v.name` on a variable whose class is known: the class must have that field or method.
+    fn member(self, a: &Ast, g: &Syms, n: int) => void:
+        let o = a.pa[n]
+        if a.pd[n] == 1 || o < 0 || a.kind[o] != int(Nk.Name) || a.tok[n] < 0:
+            return
+        let r = self.loc.find_tok(a, a.tok[o], 0)
+        if r < 0 || (self.loc.kind[r] != int(Sk.Local) && self.loc.kind[r] != int(Sk.Param)):
+            return
+        let ci = self.loc.info[r]
+        if tok_is(a, a.tok[n], "assign"):
+            return
+        if ci >= 0 && self.member_row(a, g, ci, a.tok[n], true) == -1:
+            self.diag(a.tok[n], int(Sc.UnknownField))
+
+    fn call(self, a: &Ast, g: &Syms, n: int) => void:
+        let callee = a.pa[n]
+        self.expr(a, g, callee)
+        let argc = 0
+        let c = a.child[n]
+        while c >= 0:
+            self.expr(a, g, c)
+            argc = argc + 1
+            c = a.next[c]
+        if callee >= 0 && a.kind[callee] == int(Nk.Name):
+            let i = self.loc.find_tok(a, a.tok[callee], 0)
+            if i >= 0 && self.loc.kind[i] == int(Sk.Fn) && self.loc.info[i] != argc:
+                self.diag(a.tok[callee], int(Sc.ArityMismatch))
+
+    /#/ `Class { f: v, ... }`: the class exists and the fields are exactly its own.
+    fn struct_lit(self, a: &Ast, g: &Syms, n: int) => void:
+        let t = a.pa[n]
+        let ci = -1
+        if t >= 0 && a.kind[t] == int(Nk.Name):
+            let i = self.loc.find_tok(a, a.tok[t], 0)
+            if i < 0:
+                self.diag(a.tok[t], int(Sc.UndefinedName))
+            else:
+                self.loc.used[i] = 1
+                if self.loc.kind[i] == int(Sk.Class):
+                    ci = self.loc.info[i]
+                elif self.loc.kind[i] != int(Sk.TypeParam):
+                    self.diag(a.tok[t], int(Sc.NotAClass))
+        else:
+            self.expr(a, g, t)
+        let given = 0
+        let f = a.child[n]
+        while f >= 0:
+            self.expr(a, g, a.pa[f])
+            if ci >= 0 && self.field_of(a, g, ci, a.tok[f]) < 0:
+                self.diag(a.tok[f], int(Sc.UnknownField))
+            given = given + 1
+            f = a.next[f]
+        if ci >= 0:
+            self.missing_fields(a, g, ci, n)
+
+    /#/ The Field row of class `ci`, or of one of its ancestors, named like `tok`; -1 if none.
+    fn field_of(self, a: &Ast, g: &Syms, ci: int, tok: int) => int:
+        return self.member_row(a, g, ci, tok, false)
+
+    /#/ Like `field_of`, with methods counted too when `methods`. -2 when an ancestor cannot
+    /#/ be found, so nothing can be said.
+    fn member_row(self, a: &Ast, g: &Syms, ci: int, tok: int, methods: bool) => int:
+        let s = a.toks.start[tok]
+        let e = a.toks.end[tok]
+        let h = g.span_hash(a, s, e)
+        let cur = ci
+        let depth = 0
+        while cur >= 0 && depth < 32:
+            let next = -1
+            let has_parent = false
+            for i in 0..g.n:
+                if g.info[i] == cur:
+                    if (g.kind[i] == int(Sk.Field) || (methods && g.kind[i] == int(Sk.Method))) && g.same_span(i, a, s, e, h):
+                        return i
+                    if g.kind[i] == int(Sk.Parent):
+                        has_parent = true
+                        next = g.find_class_row(i)
+            if has_parent && next < 0:
+                return -2
+            cur = next
+            depth = depth + 1
+        return -1
+
+    /#/ Every field of class `ci` must be given in struct literal `n`.
+    fn missing_fields(self, a: &Ast, g: &Syms, ci: int, n: int) => void:
+        for i in 0..g.n:
+            if g.kind[i] == int(Sk.Field) && g.info[i] == ci:
+                let found = false
+                let f = a.child[n]
+                while f >= 0:
+                    if g.same_span(i, a, a.toks.start[a.tok[f]], a.toks.end[a.tok[f]], g.span_hash(a, a.toks.start[a.tok[f]], a.toks.end[a.tok[f]])):
+                        found = true
+                    f = a.next[f]
+                if !found:
+                    self.diag(a.tok[n], int(Sc.MissingField))
+
+    /#/ `{name}` inside an f-string reads `name`. Only marks it used: the text is not parsed.
+    fn fstr(self, a: &Ast, n: int) => void:
+        let t = a.tok[n]
+        let i = a.toks.start[t]
+        let e = a.toks.end[t]
+        while i < e:
+            if a.byte_at(i) == '{':
+                let s = i + 1
+                let j = s
+                while j < e && is_ident_byte(a.byte_at(j)):
+                    j = j + 1
+                if j > s:
+                    let r = self.loc.find_span(a, s, j, 0)
+                    if r >= 0:
+                        self.loc.used[r] = 1
+                i = j
+            else:
+                i = i + 1
+
+    /#/ ---- statements ----------------------------------------------------
+
+    fn stmts(self, a: &Ast, g: &Syms, block: int) => void:
+        if block < 0:
+            return
+        let c = a.child[block]
+        while c >= 0:
+            self.stmt(a, g, c)
+            c = a.next[c]
+
+    fn block(self, a: &Ast, g: &Syms, b: int) => void:
+        if b < 0:
+            return
+        let mark = self.loc.n
+        self.stmts(a, g, b)
+        self.pop(mark)
+
+    fn stmt(self, a: &Ast, g: &Syms, n: int) => void:
+        let k = a.kind[n]
+        if k == int(Nk.Let):
+            self.expr(a, g, a.pc[n])
+            self.type_ref(a, a.pb[n])
+            if a.pa[n] >= 0:
+                if self.in_fn == 0:
+                    self.loc.used[self.loc.find_tok(a, a.pa[n], 0)] = 1
+                else:
+                    self.declare(a, a.pa[n], int(Sk.Local))
+                    let ci = self.class_of_type(a, a.pb[n])
+                    if ci < 0:
+                        ci = self.class_of_literal(a, a.pc[n])
+                    self.loc.info[self.loc.n - 1] = ci
+        elif k == int(Nk.Assign):
+            let t = a.pa[n]
+            if t >= 0 && a.kind[t] == int(Nk.Name):
+                let i = self.loc.find_tok(a, a.tok[t], 0)
+                if i < 0:
+                    self.diag(a.tok[t], int(Sc.UndefinedName))
+            else:
+                self.expr(a, g, t)
+            self.expr(a, g, a.pb[n])
+        elif k == int(Nk.Return):
+            self.ret(a, g, n)
+        elif k == int(Nk.Raise) || k == int(Nk.Rm) || k == int(Nk.Clean) || k == int(Nk.ExprStmt):
+            self.expr(a, g, a.pa[n])
+            let extra = a.child[n]
+            while extra >= 0:
+                self.expr(a, g, extra)
+                extra = a.next[extra]
+        elif k == int(Nk.Mv):
+            self.expr(a, g, a.pa[n])
+            if a.pb[n] >= 0:
+                self.declare(a, a.pb[n], int(Sk.Local))
+        elif k == int(Nk.TypeAlias):
+            self.type_ref(a, a.pb[n])
+            if self.in_fn == 1 && a.pa[n] >= 0:
+                self.loc.add_tok(a, a.pa[n], int(Sk.Alias), -1, self.cur)
+        elif k == int(Nk.If):
+            self.expr(a, g, a.pa[n])
+            self.block(a, g, a.pb[n])
+            let e = a.pc[n]
+            if e >= 0:
+                if a.kind[e] == int(Nk.If):
+                    self.stmt(a, g, e)
+                else:
+                    self.block(a, g, e)
+        elif k == int(Nk.While):
+            self.expr(a, g, a.pa[n])
+            self.loops = self.loops + 1
+            self.block(a, g, a.pb[n])
+            self.loops = self.loops - 1
+        elif k == int(Nk.For):
+            self.expr(a, g, a.pb[n])
+            self.loops = self.loops + 1
+            let mark = self.loc.n
+            if a.pa[n] >= 0:
+                self.declare(a, a.pa[n], int(Sk.Local))
+                self.loc.used[self.loc.n - 1] = 1
+            self.stmts(a, g, a.pc[n])
+            self.pop(mark)
+            self.loops = self.loops - 1
+        elif k == int(Nk.Match):
+            self.expr(a, g, a.pa[n])
+            let arm = a.child[n]
+            while arm >= 0:
+                let mark = self.loc.n
+                self.pattern(a, g, a.pa[arm])
+                self.expr(a, g, a.pc[arm])
+                self.stmts(a, g, a.pb[arm])
+                self.pop(mark)
+                arm = a.next[arm]
+        elif k == int(Nk.Break):
+            if self.loops == 0:
+                self.diag(a.tok[n], int(Sc.BreakOutsideLoop))
+        elif k == int(Nk.Continue):
+            if self.loops == 0:
+                self.diag(a.tok[n], int(Sc.ContinueOutsideLoop))
+        elif k == int(Nk.Fn):
+            if a.pa[n] >= 0:
+                self.loc.add_tok(a, a.pa[n], int(Sk.Fn), param_count(a, n), self.cur)
+            self.function(a, g, n, false)
+        elif k == int(Nk.Class):
+            if a.pa[n] >= 0:
+                self.loc.add_tok(a, a.pa[n], int(Sk.Class), -1, self.cur)
+            self.class_decl(a, g, n)
+        elif k == int(Nk.Enum):
+            if a.pa[n] >= 0:
+                self.loc.add_tok(a, a.pa[n], int(Sk.Enum), -1, self.cur)
+            self.enum_decl(a, g, n)
+
+    fn ret(self, a: &Ast, g: &Syms, n: int) => void:
+        self.expr(a, g, a.pa[n])
+        if self.in_fn == 0:
+            self.diag(a.tok[n], int(Sc.ReturnOutsideFn))
+        elif a.pa[n] >= 0 && self.ret_void:
+            self.diag(a.tok[n], int(Sc.ReturnValueInVoid))
+        elif a.pa[n] < 0 && !self.ret_void:
+            self.diag(a.tok[n], int(Sc.MissingReturnValue))
+
+    /#/ A pattern binds the names inside a variant pattern (`E.S(s)`), ignores `_` and
+    /#/ otherwise reads constants.
+    fn pattern(self, a: &Ast, g: &Syms, p: int) => void:
+        if p < 0:
+            return
+        let k = a.kind[p]
+        if k == int(Nk.Name):
+            if tok_is(a, a.tok[p], "_"):
+                return
+            let i = self.loc.find_tok(a, a.tok[p], 0)
+            if i >= 0 && self.loc.kind[i] != int(Sk.Local) && self.loc.kind[i] != int(Sk.Param):
+                self.loc.used[i] = 1
+            else:
+                self.declare(a, a.tok[p], int(Sk.Local))
+                self.loc.used[self.loc.n - 1] = 1
+        elif k == int(Nk.Call):
+            self.expr(a, g, a.pa[p])
+            let c = a.child[p]
+            while c >= 0:
+                self.pattern(a, g, c)
+                c = a.next[c]
+        elif k == int(Nk.Tuple):
+            let c = a.child[p]
+            while c >= 0:
+                self.pattern(a, g, c)
+                c = a.next[c]
+        elif k == int(Nk.StructLit):
+            /#/ `Point { x: 0, y: b }`: each field holds a pattern
+            let t = a.pa[p]
+            if t >= 0 && a.kind[t] == int(Nk.Name):
+                self.use_name(a, a.tok[t])
+            let f = a.child[p]
+            while f >= 0:
+                self.pattern(a, g, a.pa[f])
+                f = a.next[f]
+        else:
+            self.expr(a, g, p)
+
+    /#/ The class of `Class { ... }`, -1 for any other expression.
+    fn class_of_literal(self, a: &Ast, e: int) => int:
+        if e < 0 || a.kind[e] != int(Nk.StructLit):
+            return -1
+        let t = a.pa[e]
+        if t < 0 || a.kind[t] != int(Nk.Name):
+            return -1
+        let r = self.loc.find_tok(a, a.tok[t], 0)
+        if r >= 0 && self.loc.kind[r] == int(Sk.Class):
+            return self.loc.info[r]
+        return -1
+
+    /#/ ---- declarations --------------------------------------------------
+
+    /#/ `#name` names a function that must exist.
+    fn listener(self, a: &Ast, l: int) => void:
+        let t = a.tok[l]
+        let s = a.toks.start[t] + 1
+        let i = self.loc.find_span(a, s, a.toks.end[t], 0)
+        if i < 0 || self.loc.kind[i] != int(Sk.Fn):
+            self.diag(t, int(Sc.UndefinedName))
+        else:
+            self.loc.used[i] = 1
+
+    /#/ The global row of the class a single-name type (`Box`, `&Box`, `&mut Box`) names; -1
+    /#/ when it is anything else.
+    fn class_of_type(self, a: &Ast, t: int) => int:
+        if t < 0:
+            return -1
+        let i = a.tok[t]
+        while i < a.end[t] && (a.toks.kind[i] == int(Tk.Amp) || tok_is(a, i, "mut")):
+            i = i + 1
+        if i != a.end[t] - 1 || a.toks.kind[i] != int(Tk.Ident):
+            return -1
+        let r = self.loc.find_tok(a, i, 0)
+        if r >= 0 && self.loc.kind[r] == int(Sk.Class):
+            return self.loc.info[r]
+        return -1
+
+
+    /#/ `method`: a method whose last statement is a bare expression returns its value.
+    fn function(self, a: &Ast, g: &Syms, f: int, method: bool) => void:
+        let saved_base = self.fn_base
+        let saved_loops = self.loops
+        let saved_in = self.in_fn
+        let saved_void = self.ret_void
+        let saved_capture = self.capture_lo
+        let saved_named = self.capture_named
+        let mark = self.loc.n
+        if self.in_fn == 1:
+            self.capture_lo = saved_base
+            self.capture_named = a.pa[f] >= 0
+        self.fn_base = mark
+        self.loops = 0
+        self.in_fn = 1
+        let p = a.child[f]
+        while p >= 0:
+            if a.kind[p] == int(Nk.TypeParam):
+                self.declare(a, a.tok[p], int(Sk.TypeParam))
+            p = a.next[p]
+        p = a.child[f]
+        while p >= 0:
+            if a.kind[p] == int(Nk.Param):
+                self.type_ref(a, a.pa[p])
+                self.declare(a, a.tok[p], int(Sk.Param))
+                self.loc.info[self.loc.n - 1] = self.class_of_type(a, a.pa[p])
+            elif a.kind[p] == int(Nk.SelfParam):
+                self.declare(a, a.tok[p], int(Sk.Param))
+                self.loc.info[self.loc.n - 1] = self.cur_class
+            elif a.kind[p] == int(Nk.Listener):
+                self.listener(a, p)
+            p = a.next[p]
+        let rt = a.pb[f]
+        self.type_ref(a, rt)
+        self.ret_void = rt < 0 || (a.end[rt] - a.tok[rt] == 1 && tok_is(a, a.tok[rt], "void")) || (a.end[rt] - a.tok[rt] == 2 && a.toks.kind[a.tok[rt]] == int(Tk.LParen))
+        let body = a.pc[f]
+        if body >= 0:
+            self.stmts(a, g, body)
+            if !self.ret_void && !ends(a, body) && !(method && last_is_value(a, body)):
+                let at = a.tok[f]
+                if a.pa[f] >= 0:
+                    at = a.pa[f]
+                self.diag(at, int(Sc.MissingReturn))
+        self.pop(mark)
+        self.fn_base = saved_base
+        self.capture_lo = saved_capture
+        self.capture_named = saved_named
+        self.loops = saved_loops
+        self.in_fn = saved_in
+        self.ret_void = saved_void
+
+    fn class_decl(self, a: &Ast, g: &Syms, c: int) => void:
+        let mark = self.loc.n
+        let saved_base = self.fn_base
+        let saved_class = self.cur_class
+        self.cur_class = -1
+        if a.pa[c] >= 0:
+            let own = self.loc.find_tok(a, a.pa[c], 0)
+            if own >= 0 && self.loc.kind[own] == int(Sk.Class):
+                self.cur_class = self.loc.info[own]
+        self.fn_base = mark
+        let m = a.child[c]
+        while m >= 0:
+            if a.kind[m] == int(Nk.TypeParam):
+                self.declare(a, a.tok[m], int(Sk.TypeParam))
+            m = a.next[m]
+        if a.pb[c] >= 0:
+            let pi = self.loc.find_tok(a, a.pb[c], 0)
+            if pi < 0 || self.loc.kind[pi] != int(Sk.Class):
+                self.diag(a.pb[c], int(Sc.UnknownParent))
+            else:
+                self.loc.used[pi] = 1
+        m = a.child[c]
+        while m >= 0:
+            let k = a.kind[m]
+            if k == int(Nk.Field):
+                self.type_ref(a, a.pa[m])
+                self.dup_member(a, c, m, a.tok[m])
+            elif k == int(Nk.Fn):
+                self.dup_member(a, c, m, a.pa[m])
+                self.function(a, g, m, true)
+            m = a.next[m]
+        self.fn_base = saved_base
+        self.cur_class = saved_class
+        self.loc.truncate(mark)
+
+    /#/ Is the member named by `tok` already declared by an earlier member of `c`?
+    fn dup_member(self, a: &Ast, c: int, m: int, tok: int) => void:
+        if tok < 0:
+            return
+        let o = a.child[c]
+        while o >= 0 && o != m:
+            let other = -1
+            if a.kind[o] == int(Nk.Field):
+                other = a.tok[o]
+            elif a.kind[o] == int(Nk.Fn):
+                other = a.pa[o]
+            if other >= 0 && same_tok(a, other, tok):
+                self.diag(tok, int(Sc.DuplicateName))
+                return
+            o = a.next[o]
+
+    fn enum_decl(self, a: &Ast, g: &Syms, e: int) => void:
+        let v = a.child[e]
+        while v >= 0:
+            let o = a.child[e]
+            while o != v:
+                if same_tok(a, a.tok[o], a.tok[v]):
+                    self.diag(a.tok[v], int(Sc.DuplicateName))
+                    break
+                o = a.next[o]
+            let f = a.child[v]
+            while f >= 0:
+                self.type_ref(a, a.pa[f])
+                f = a.next[f]
+            v = a.next[v]
+
+    /#/ ---- modules -------------------------------------------------------
+
+    /#/ Brings the builtins, the module's own names and its imports into scope.
+    fn prelude(self, a: &Ast, g: &Syms, m: int) => void:
+        for i in 0..g.n:
+            if g.mod[i] == -1 && (g.kind[i] == int(Sk.Builtin) || g.kind[i] == int(Sk.Extern) || g.kind[i] == int(Sk.Class)):
+                self.loc.copy_row(g, i)
+        for i in 0..g.n:
+            if g.mod[i] == m && exported(g.kind[i]):
+                self.loc.copy_row(g, i)
+        let it = a.child[a.root]
+        while it >= 0:
+            if a.kind[it] == int(Nk.Use):
+                self.import(a, g, it)
+            it = a.next[it]
+
+    fn import(self, a: &Ast, g: &Syms, u: int) => void:
+        if a.pa[u] < 0:
+            return
+        if a.pc[u] == 1:
+            let s = a.child[u]
+            while s >= 0:
+                if a.kind[s] == int(Nk.Name):
+                    self.loc.add_tok(a, a.tok[s], int(Sk.Extern), -1, -1)
+                s = a.next[s]
+            return
+        let mid = g.find_module(a, a.pa[u])
+        if mid < 0:
+            self.diag(a.pa[u], int(Sc.UnknownModule))
+            return
+        if a.child[u] < 0:
+            /#/ `use m` imports the whole module
+            self.import_all(g, mid)
+            return
+        let s = a.child[u]
+        while s >= 0:
+            if a.kind[s] == int(Nk.Star):
+                self.import_all(g, mid)
+            else:
+                let i = g.find_in_module(a, a.tok[s], mid)
+                if i < 0 || !exported(g.kind[i]):
+                    self.diag(a.tok[s], int(Sc.UnknownImport))
+                else:
+                    self.import_row(g, i)
+            s = a.next[s]
+
+    /#/ Everything module `mid` exports and, transitively, what it star-imports.
+    fn import_all(self, g: &Syms, mid: int) => void:
+        for k in 0..self.seen_n:
+            if self.seen[k] == mid:
+                return
+        if self.seen_n >= len(self.seen):
+            self.seen = buf_resize(self.seen, (self.seen_n + 1) * 2)
+        self.seen[self.seen_n] = mid
+        self.seen_n = self.seen_n + 1
+        for i in 0..g.n:
+            if g.mod[i] == mid && exported(g.kind[i]):
+                self.import_row(g, i)
+        for i in 0..g.n:
+            if g.mod[i] == mid && g.kind[i] == int(Sk.Import):
+                let t = g.find_module_row(i)
+                if t >= 0:
+                    self.import_all(g, t)
+
+    /#/ Copies global row `i` into scope unless the same name is already imported.
+    fn import_row(self, g: &Syms, i: int) => void:
+        for k in 0..self.loc.n:
+            if self.loc.hash[k] == g.hash[i] && self.loc.size[k] == g.size[i] && self.loc.mod[k] == g.mod[i] && self.loc.kind[k] == g.kind[i]:
+                return
+        self.loc.copy_row(g, i)
+
+    /#/ Module-level duplicates: two top-level items with one name.
+    fn top_duplicates(self, a: &Ast) => void:
+        let it = a.child[a.root]
+        while it >= 0:
+            let name = self.item_name(a, it)
+            if name >= 0 && a.kind[it] == int(Nk.Class) && tok_is(a, name, "Error"):
+                self.diag(name, int(Sc.DuplicateName))
+            if name >= 0:
+                let o = a.child[a.root]
+                while o != it:
+                    let other = self.item_name(a, o)
+                    if other >= 0 && same_tok(a, other, name):
+                        self.diag(name, int(Sc.DuplicateName))
+                        break
+                    o = a.next[o]
+            it = a.next[it]
+
+    fn item_name(self, a: &Ast, it: int) => int:
+        let k = a.kind[it]
+        if k == int(Nk.Fn) || k == int(Nk.Class) || k == int(Nk.Enum) || k == int(Nk.Let):
+            return a.pa[it]
+        return -1
+
+    fn module(self, a: &Ast, g: &Syms, m: int) => void:
+        self.cur = m
+        self.prelude(a, g, m)
+        self.top_duplicates(a)
+        let it = a.child[a.root]
+        while it >= 0:
+            let k = a.kind[it]
+            if k == int(Nk.Fn):
+                self.function(a, g, it, false)
+            elif k == int(Nk.Class):
+                self.class_decl(a, g, it)
+            elif k == int(Nk.Enum):
+                self.enum_decl(a, g, it)
+            elif k != int(Nk.Use):
+                self.stmt(a, g, it)
+            it = a.next[it]
+
+/#/ Checks module `m` of `g` (see `declare_module`) whose tree is `a`; the findings are in
+/#/ the result's `diags`.
+fn check(a: &Ast, g: &Syms, m: int) => Checker:
+    let c = Checker { loc: new_syms(), diags: new_diags(), fn_base: 0, loops: 0, in_fn: 0, ret_void: true, cur: m, seen: new_buf(int, 8), seen_n: 0, capture_lo: -1, capture_named: true, cur_class: -1 }
+    c.module(a, g, m)
+    return c

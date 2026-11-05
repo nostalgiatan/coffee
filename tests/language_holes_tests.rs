@@ -551,3 +551,18 @@ fn test_trailing_whitespace_after_an_if_header_keeps_the_next_statement() {
 fn test_borrowing_a_string_before_moving_it_is_balanced() {
     assert_balanced("fn eat(s: str) => int:\n    return len(s)\n\nfn main() => int:\n    let s = \"a\" + \"b\"\n    let n = len(&s)\n    return eat(s) + n - 4\n");
 }
+
+#[test]
+fn test_method_may_take_its_own_class_by_reference() {
+    assert_exit_code("class A:\n    n: int\n\n    fn same(self, o: &A) => bool:\n        return self.n == o.n\n\nfn main() => int:\n    let a = A { n: 1 }\n    let b = A { n: 1 }\n    if a.same(&b):\n        return 0\n    return 1\n", 0).unwrap();
+}
+
+#[test]
+fn test_function_declared_after_use_may_take_a_class() {
+    assert_exit_code("fn main() => int:\n    let b = B { n: 3 }\n    return get(&b)\n\nfn get(b: &B) => int:\n    return b.n\n\nclass B:\n    n: int\n", 3).unwrap();
+}
+
+#[test]
+fn test_method_called_through_a_class_reference_with_a_loop_variable() {
+    assert_exit_code("class S:\n    t: str\n\n    fn at(self, i: int) => int:\n        return byte(&self.t, i)\n\nfn byte(s: &str, i: int) => int:\n    return int(s[i])\n\nfn same(a: &S, w: &str) => bool:\n    for k in 0..len(w):\n        if a.at(k) != byte(w, k):\n            return false\n    return true\n\nfn main() => int:\n    let a = S { t: \"ab\" + \"c\" }\n    if same(&a, \"abc\"):\n        return 0\n    return 1\n", 0).unwrap();
+}

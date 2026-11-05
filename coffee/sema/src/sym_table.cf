@@ -1,0 +1,200 @@
+/#/ Symbol table of the semantic analyzer: names with a kind, kept as bytes in one pool so
+/#/ a name read from one module's source can be compared with one read from another.
+/#/
+/#/ One table serves two purposes. The *globals* table holds every module's top-level
+/#/ names; the checker builds a *scope* table per module (builtins, own and imported
+/#/ names) and pushes and pops locals on it, so a lookup is one scan from the top.
+use * in parser
+
+/#/ What a name stands for.
+enum Sk:
+    Fn
+    Class
+    Enum
+    Local
+    Param
+    Extern
+    Builtin
+    Module
+    TypeParam
+    Global
+    Field
+    Import
+    Parent
+    Alias
+    Method
+
+/#/ A name is hashed before its bytes are compared. Kept small so it cannot overflow.
+fn hash_step(h: int, b: int) => int:
+    return (h * 31 + b + 1) % 1000003
+
+class Syms:
+    hash: buf<int>
+    off: buf<int>
+    size: buf<int>
+    kind: buf<int>
+    info: buf<int>
+    mod: buf<int>
+    used: buf<int>
+    tok: buf<int>
+    n: int
+    pool: buf<int>
+    pool_n: int
+
+    fn grow(self) => void:
+        if self.n < len(self.hash):
+            return
+        let cap = (self.n + 1) * 2
+        self.hash = buf_resize(self.hash, cap)
+        self.off = buf_resize(self.off, cap)
+        self.size = buf_resize(self.size, cap)
+        self.kind = buf_resize(self.kind, cap)
+        self.info = buf_resize(self.info, cap)
+        self.mod = buf_resize(self.mod, cap)
+        self.used = buf_resize(self.used, cap)
+        self.tok = buf_resize(self.tok, cap)
+
+    fn put_byte(self, b: int) => void:
+        if self.pool_n >= len(self.pool):
+            self.pool = buf_resize(self.pool, (self.pool_n + 1) * 2)
+        self.pool[self.pool_n] = b
+        self.pool_n = self.pool_n + 1
+
+    /#/ Appends a row whose name bytes are already in the pool from `start`.
+    fn push_row(self, start: int, h: int, kind: int, info: int, mod: int, tok: int) => int:
+        self.grow()
+        let i = self.n
+        self.hash[i] = h
+        self.off[i] = start
+        self.size[i] = self.pool_n - start
+        self.kind[i] = kind
+        self.info[i] = info
+        self.mod[i] = mod
+        self.used[i] = 0
+        self.tok[i] = tok
+        self.n = i + 1
+        return i
+
+    /#/ Adds the name spelled by bytes [s, e) of `a`'s source.
+    fn add_span(self, a: &Ast, s: int, e: int, kind: int, info: int, mod: int, tok: int) => int:
+        let start = self.pool_n
+        let h = 0
+        for k in s..e:
+            let b = a.byte_at(k)
+            self.put_byte(b)
+            h = hash_step(h, b)
+        return self.push_row(start, h, kind, info, mod, tok)
+
+    fn add_tok(self, a: &Ast, tok: int, kind: int, info: int, mod: int) => int:
+        return self.add_span(a, a.toks.start[tok], a.toks.end[tok], kind, info, mod, tok)
+
+    fn add_text(self, s: &str, kind: int, info: int, mod: int) => int:
+        let start = self.pool_n
+        let h = 0
+        for k in 0..len(s):
+            let b = byte(s, k)
+            self.put_byte(b)
+            h = hash_step(h, b)
+        return self.push_row(start, h, kind, info, mod, -1)
+
+    /#/ Copies row `i` of `o`, with its kind, info and module.
+    fn copy_row(self, o: &Syms, i: int) => int:
+        let start = self.pool_n
+        for k in 0..o.size[i]:
+            self.put_byte(o.pool[o.off[i] + k])
+        return self.push_row(start, o.hash[i], o.kind[i], o.info[i], o.mod[i], o.tok[i])
+
+    /#/ Row `i` is named by bytes [s, e) of `a`'s source.
+    fn same_span(self, i: int, a: &Ast, s: int, e: int, h: int) => bool:
+        if self.hash[i] != h || self.size[i] != e - s:
+            return false
+        for k in 0..self.size[i]:
+            if self.pool[self.off[i] + k] != a.byte_at(s + k):
+                return false
+        return true
+
+    fn span_hash(self, a: &Ast, s: int, e: int) => int:
+        let h = 0
+        for k in s..e:
+            h = hash_step(h, a.byte_at(k))
+        return h
+
+    /#/ The newest row at or above `lo` named like [s, e); -1 when there is none.
+    fn find_span(self, a: &Ast, s: int, e: int, lo: int) => int:
+        let h = self.span_hash(a, s, e)
+        let i = self.n - 1
+        while i >= lo:
+            if self.same_span(i, a, s, e, h):
+                return i
+            i = i - 1
+        return -1
+
+    fn find_tok(self, a: &Ast, tok: int, lo: int) => int:
+        return self.find_span(a, a.toks.start[tok], a.toks.end[tok], lo)
+
+    /#/ The newest row of module `mod` named like `tok` and not a field; -1 when none.
+    fn find_in_module(self, a: &Ast, tok: int, mod: int) => int:
+        let s = a.toks.start[tok]
+        let e = a.toks.end[tok]
+        let h = self.span_hash(a, s, e)
+        let i = self.n - 1
+        while i >= 0:
+            if self.mod[i] == mod && self.kind[i] != int(Sk.Field) && self.kind[i] != int(Sk.Module) && self.kind[i] != int(Sk.Import) && self.kind[i] != int(Sk.Parent) && self.same_span(i, a, s, e, h):
+                return i
+            i = i - 1
+        return -1
+
+    /#/ The module row named like `tok`; -1 when none.
+    fn find_module(self, a: &Ast, tok: int) => int:
+        let s = a.toks.start[tok]
+        let e = a.toks.end[tok]
+        let h = self.span_hash(a, s, e)
+        let i = 0
+        while i < self.n:
+            if self.kind[i] == int(Sk.Module) && self.same_span(i, a, s, e, h):
+                return i
+            i = i + 1
+        return -1
+
+    /#/ The module row named like row `i` (an Import row); -1 when there is none.
+    fn find_module_row(self, i: int) => int:
+        let k = 0
+        while k < self.n:
+            if self.kind[k] == int(Sk.Module) && self.hash[k] == self.hash[i] && self.size[k] == self.size[i]:
+                let same = true
+                for b in 0..self.size[k]:
+                    if self.pool[self.off[k] + b] != self.pool[self.off[i] + b]:
+                        same = false
+                if same:
+                    return k
+            k = k + 1
+        return -1
+
+    /#/ The Class row named like row `i` (a Parent row); -1 when there is none.
+    fn find_class_row(self, i: int) => int:
+        let k = 0
+        while k < self.n:
+            if self.kind[k] == int(Sk.Class) && self.hash[k] == self.hash[i] && self.size[k] == self.size[i]:
+                let same = true
+                for b in 0..self.size[k]:
+                    if self.pool[self.off[k] + b] != self.pool[self.off[i] + b]:
+                        same = false
+                if same:
+                    return k
+            k = k + 1
+        return -1
+
+    /#/ Drops every row from `mark` up.
+    fn truncate(self, mark: int) => void:
+        if mark < self.n:
+            self.pool_n = self.off[mark]
+            self.n = mark
+
+    /#/ First byte of row `i`'s name, 0 for an empty one.
+    fn first_byte(self, i: int) => int:
+        if self.size[i] == 0:
+            return 0
+        return self.pool[self.off[i]]
+
+fn new_syms() => Syms:
+    return Syms { hash: new_buf(int, 64), off: new_buf(int, 64), size: new_buf(int, 64), kind: new_buf(int, 64), info: new_buf(int, 64), mod: new_buf(int, 64), used: new_buf(int, 64), tok: new_buf(int, 64), n: 0, pool: new_buf(int, 256), pool_n: 0 }

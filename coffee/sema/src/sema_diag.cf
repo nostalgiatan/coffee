@@ -1,0 +1,76 @@
+/#/ Diagnostics of the semantic analyzer. Error codes follow the Rust compiler's where
+/#/ one exists (E101 undefined type, E103 arity, E106 field, E200 undefined name, E201
+/#/ duplicate, E600 missing return); the rest have no Rust counterpart yet.
+
+enum Sc:
+    UndefinedName
+    DuplicateName
+    UndefinedType
+    ArityMismatch
+    UnknownField
+    MissingField
+    MissingReturn
+    BreakOutsideLoop
+    ContinueOutsideLoop
+    ReturnOutsideFn
+    ReturnValueInVoid
+    MissingReturnValue
+    UnknownModule
+    UnknownImport
+    UnknownParent
+    NotAClass
+    CaptureViolation
+    UnusedVariable
+
+/#/ Rust's code for each diagnostic, for messages.
+fn sc_number(code: int) => int:
+    if code == int(Sc.UndefinedName):
+        return 200
+    if code == int(Sc.DuplicateName):
+        return 201
+    if code == int(Sc.UndefinedType):
+        return 101
+    if code == int(Sc.ArityMismatch):
+        return 103
+    if code == int(Sc.UnknownField) || code == int(Sc.MissingField):
+        return 106
+    if code == int(Sc.MissingReturn) || code == int(Sc.CaptureViolation):
+        return 600
+    return 700 + code
+
+/#/ Only an unused variable is a warning.
+fn sc_is_warning(code: int) => bool:
+    return code == int(Sc.UnusedVariable)
+
+class Diags:
+    tok: buf<int>
+    code: buf<int>
+    n: int
+
+    fn add(self, tok: int, code: int) => void:
+        if self.n >= len(self.tok):
+            self.tok = buf_resize(self.tok, (self.n + 1) * 2)
+            self.code = buf_resize(self.code, (self.n + 1) * 2)
+        self.tok[self.n] = tok
+        self.code[self.n] = code
+        self.n = self.n + 1
+
+    fn errors(self) => int:
+        let c = 0
+        for i in 0..self.n:
+            if !sc_is_warning(self.code[i]):
+                c = c + 1
+        return c
+
+    fn warnings(self) => int:
+        return self.n - self.errors()
+
+    fn count(self, code: int) => int:
+        let c = 0
+        for i in 0..self.n:
+            if self.code[i] == code:
+                c = c + 1
+        return c
+
+fn new_diags() => Diags:
+    return Diags { tok: new_buf(int, 8), code: new_buf(int, 8), n: 0 }

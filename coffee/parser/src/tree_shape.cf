@@ -94,6 +94,12 @@ fn node_char(kind: int) => int:
         return 'A'
     if kind == int(Nk.Tuple):
         return 'N'
+    if kind == int(Nk.Cast):
+        return 'u'
+    if kind == int(Nk.Mv):
+        return 'y'
+    if kind == int(Nk.TypeAlias):
+        return 'e'
     return '!'
 
 class Shaper:
@@ -131,7 +137,7 @@ class Shaper:
         else:
             self.put(node_char(k))
         let has = a.child[n] >= 0
-        if k == int(Nk.Binary) || k == int(Nk.Index) || k == int(Nk.Range) || k == int(Nk.Assign) || k == int(Nk.While) || k == int(Nk.Arm):
+        if k == int(Nk.Binary) || k == int(Nk.Index) || k == int(Nk.Range) || k == int(Nk.Assign) || k == int(Nk.While) || k == int(Nk.Arm) || k == int(Nk.Cast) || k == int(Nk.Mv):
             has = true
         if k == int(Nk.Unary) || k == int(Nk.Return) || k == int(Nk.Raise) || k == int(Nk.Rm) || k == int(Nk.Clean) || k == int(Nk.ExprStmt) || k == int(Nk.Member) || k == int(Nk.Param) || k == int(Nk.Field) || k == int(Nk.VField) || k == int(Nk.FieldInit):
             has = has || a.pa[n] >= 0
@@ -140,12 +146,16 @@ class Shaper:
         if !has:
             return
         self.put('(')
-        if k == int(Nk.Binary) || k == int(Nk.Index) || k == int(Nk.Range) || k == int(Nk.Assign) || k == int(Nk.Arm):
+        if k == int(Nk.Binary) || k == int(Nk.Index) || k == int(Nk.Range) || k == int(Nk.Assign) || k == int(Nk.Arm) || k == int(Nk.Cast):
             self.operand(a, a.pa[n])
             self.operand(a, a.pb[n])
+            if k == int(Nk.Arm):
+                self.operand(a, a.pc[n])
         elif k == int(Nk.While):
             self.operand(a, a.pa[n])
             self.operand(a, a.pb[n])
+        elif k == int(Nk.Mv):
+            self.operand(a, a.pa[n])
         elif k == int(Nk.Unary) || k == int(Nk.Return) || k == int(Nk.Raise) || k == int(Nk.Rm) || k == int(Nk.Clean) || k == int(Nk.ExprStmt) || k == int(Nk.Member) || k == int(Nk.Param) || k == int(Nk.Field) || k == int(Nk.VField) || k == int(Nk.FieldInit):
             self.operand(a, a.pa[n])
         elif k == int(Nk.If):

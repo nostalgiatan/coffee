@@ -1,0 +1,18 @@
+use * in sema_probe
+
+fn main() => int:
+    let m = 0
+    let und = int(Sc.UndefinedName)
+    let dup = int(Sc.DuplicateName)
+    let cap = int(Sc.CaptureViolation)
+    let fld = int(Sc.UnknownField)
+    /#/ an anonymous fn cannot capture a local, one that uses its own is fine
+    m = m + miss_diag("fn main() => int:\n    let n = 1\n    let cb = fn(x: int) => int:\n        return x + n\n    return 0\n", cap, 1)
+    m = m + miss_diag("fn main() => int:\n    let cb = fn(x: int) => int:\n        let n = x\n        return n\n    return 0\n", cap, 0)
+    /#/ a user class may not redeclare the builtin Error
+    m = m + miss_diag("class Error:\n    x: int\n", dup, 1)
+    /#/ members of a variable whose class is known
+    m = m + miss_diag("class A:\n    x: int\n\nfn f(a: &A) => int:\n    return a.y\n", fld, 1)
+    m = m + miss_diag("class A:\n    x: int\n\n    fn g(self) => int:\n        return 1\n\nfn f(a: &A) => int:\n    return a.x + a.g()\n", fld, 0)
+    m = m + miss_diag("class A:\n    x: int\n\nclass B of A:\n    y: int\n\nfn f(b: &B) => int:\n    return b.x + b.y\n", fld, 0)
+    return m

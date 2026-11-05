@@ -16,16 +16,19 @@
 /#/   TypeRef   the tokens tok..end spell the type
 /#/   Block     child=statements
 /#/   Let       a=name token  b=TypeRef  c=init expr
-/#/   Assign    a=target  b=value          Return/Raise/Rm/Clean/ExprStmt  a=expr
+/#/   Assign    a=target  b=value          Return/Raise/Rm/Clean/ExprStmt  a=expr (Rm and Clean: more targets are the children)
 /#/   If        a=cond  b=then Block  c=else Block or If (an `elif`)
 /#/   While     a=cond  b=Block            For  a=variable token  b=iterable  c=Block
 /#/   Match     a=scrutinee  child=Arm     Arm  a=pattern  b=body Block
+/#/   TypeAlias a=name token  b=TypeRef (`type Handle: object`)
+/#/   Mv        a=source Name  b=destination token  c=1 for `clone a b` (`mv a b`)
 /#/   Break, Continue
 /#/   Int, Float, Str, FStr, Char   tok=literal      Bool  tok=true/false      Name  tok=identifier
 /#/   Binary    a=left  b=right  c=operator token kind  d=operator token
 /#/   Unary     a=operand  c=operator token kind  d=1 for `&mut`
 /#/   Call      a=callee  child=arguments        Index  a=object  b=index
-/#/   Member    a=object  tok=field name token   Range  a=from  b=to
+/#/   Cast      a=expr  b=TypeRef (`x as T`)
+/#/   Member    a=object  tok=field name token  d=1 for `Type::name`   Range  a=from  b=to
 /#/   StructLit a=type name expr  child=FieldInit (tok=name  a=value)
 /#/   Array, Tuple   child=elements
 /#/   Error     tok=where it went wrong  a=error code (Ec)
@@ -76,6 +79,9 @@ enum Nk:
     FieldInit
     Array
     Tuple
+    Cast
+    Mv
+    TypeAlias
     Error
 
 /#/ Parse error codes, the `a` payload of an Error node and the code in the error table.

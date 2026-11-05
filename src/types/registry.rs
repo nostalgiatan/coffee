@@ -852,24 +852,12 @@ impl TypeRegistry {
                     continue;
                 }
                 // 如果参数类型是类本身，使用 NamedType 避免循环依赖
-                let ty = if param.param_type == class.name {
-                    Type::NamedType {
-                        name: class.name.clone(),
-                    }
-                } else {
-                    self.resolve_type(&param.param_type)?
-                };
+                let ty = self.resolve_in_class(&param.param_type, &class.name)?;
                 param_types.push(ty);
             }
 
             // 解析返回类型，但如果返回类型是类本身，使用 NamedType 避免循环依赖
-            let return_type = if method.return_type == class.name {
-                Type::NamedType {
-                    name: class.name.clone(),
-                }
-            } else {
-                self.resolve_type(&method.return_type)?
-            };
+            let return_type = self.resolve_in_class(&method.return_type, &class.name)?;
 
             methods.push(MethodSignature {
                 name: method.name.clone(),
@@ -888,6 +876,20 @@ impl TypeRegistry {
             generics: type_params,
             parent: class.parent.clone(),
         })
+    }
+
+    /// Resolves a method signature type while `class_name` is still being bound: a type that
+    /// mentions the class (`A`, `&A`, `buf<A>`) cannot be looked up yet, so it is only parsed.
+    fn resolve_in_class(&self, ty: &str, class_name: &str) -> Result<Type, TypeSystemError> {
+        let mentions = ty
+            .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .any(|word| word == class_name);
+        if mentions {
+            if let Ok(parsed) = super::definition::type_from_str(ty) {
+                return Ok(parsed);
+            }
+        }
+        self.resolve_type(ty)
     }
 
     /// 从 AST 的 EnumDef 创建类型定义（来自 TypeEnv）

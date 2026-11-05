@@ -170,6 +170,9 @@ class Ast:
     /#/ Ends a simple statement: a Newline, or the Dedent/Eof that also ends the line.
     fn end_stmt(self) => void:
         let k = self.peek()
+        /#/ an expression that ended in an indented block (an anonymous fn) has no newline
+        if self.pos > 0 && self.toks.kind[self.pos - 1] == int(Tk.Dedent):
+            return
         if k == int(Tk.Newline):
             self.bump()
         elif k != int(Tk.Dedent) && k != int(Tk.Eof):
@@ -354,8 +357,16 @@ class Ast:
                 if !self.eat(int(Tk.RBracket)):
                     self.record(self.pos, int(Ec.ExpectedClose))
                 left = self.fin(n)
-            elif k == int(Tk.Dot):
+            elif k == int(Tk.KwAs):
+                let n = self.add(int(Nk.Cast), start)
+                self.bump()
+                self.pa[n] = left
+                self.pb[n] = self.parse_type()
+                left = self.fin(n)
+            elif k == int(Tk.Dot) || k == int(Tk.ColonColon):
                 let n = self.add(int(Nk.Member), start)
+                if k == int(Tk.ColonColon):
+                    self.pd[n] = 1
                 self.bump()
                 self.pa[n] = left
                 if self.at(int(Tk.Ident)):
@@ -528,6 +539,27 @@ class Ast:
             let nk = self.peek()
             if nk != int(Tk.Newline) && nk != int(Tk.Dedent) && nk != int(Tk.Eof):
                 self.pa[n] = self.parse_expr()
+                /#/ `rm a, b, c` drops several: the extra targets are the children
+                if (kind == int(Nk.Rm) || kind == int(Nk.Clean)) && self.at(int(Tk.Comma)):
+                    let last = -1
+                    while self.eat(int(Tk.Comma)):
+                        let e = self.parse_expr()
+                        if last < 0:
+                            self.child[n] = e
+                        else:
+                            self.next[last] = e
+                        last = e
+            self.end_stmt()
+            return self.fin(n)
+        /#/ `mv a b` moves a into the new name b; `mv a` inside an expression is unary
+        if (k == int(Tk.KwMv) || k == int(Tk.KwClone)) && self.peek_at(1) == int(Tk.Ident) && self.peek_at(2) == int(Tk.Ident):
+            let n = self.add(int(Nk.Mv), start)
+            if k == int(Tk.KwClone):
+                self.pc[n] = 1
+            self.bump()
+            self.pa[n] = self.leaf(int(Nk.Name))
+            self.pb[n] = self.pos
+            self.bump()
             self.end_stmt()
             return self.fin(n)
         if k == int(Tk.KwBreak) || k == int(Tk.KwContinue):
@@ -597,7 +629,10 @@ class Ast:
             self.pc[n] = self.parse_if()
         elif self.at(int(Tk.KwElse)):
             self.bump()
-            self.pc[n] = self.parse_block()
+            if self.at(int(Tk.KwIf)):
+                self.pc[n] = self.parse_if()
+            else:
+                self.pc[n] = self.parse_block()
         return self.fin(n)
 
     fn parse_for(self) => int:
@@ -645,6 +680,9 @@ class Ast:
     fn parse_arm(self) => int:
         let n = self.add(int(Nk.Arm), self.pos)
         self.pa[n] = self.parse_expr()
+        /#/ `pattern if cond => body`
+        if self.eat(int(Tk.KwIf)):
+            self.pc[n] = self.parse_expr()
         if !self.eat(int(Tk.Arrow)):
             self.record(self.pos, int(Ec.ExpectedArrow))
             self.sync()
@@ -689,6 +727,8 @@ class Ast:
             return self.parse_class()
         if k == int(Tk.KwEnum):
             return self.parse_enum()
+        if k == int(Tk.KwType):
+            return self.parse_type_alias()
         if k == int(Tk.KwLet):
             return self.parse_let()
         /#/ anything else at top level is a statement such as `main(entry())`
@@ -699,6 +739,22 @@ class Ast:
             self.bump()
         return n
 
+    /#/ `type Name: type`
+    fn parse_type_alias(self) => int:
+        let n = self.add(int(Nk.TypeAlias), self.pos)
+        self.bump()
+        if self.at(int(Tk.Ident)):
+            self.pa[n] = self.pos
+            self.bump()
+        else:
+            self.record(self.pos, int(Ec.ExpectedName))
+        if self.eat(int(Tk.Colon)):
+            self.pb[n] = self.parse_type()
+        else:
+            self.record(self.pos, int(Ec.ExpectedColon))
+        self.end_stmt()
+        return self.fin(n)
+
     /#/ `use m`, `use m as a`, `use f, g in m [as a] [of c]`, `use * in m`.
     fn parse_use(self) => int:
         let n = self.add(int(Nk.Use), self.pos)
@@ -706,7 +762,8 @@ class Ast:
         let first = -1
         let last = -1
         let names = 0
-        while true:
+        /#/ `use in lib of c` names nothing
+        while !self.at(int(Tk.KwIn)):
             let sym = -1
             if self.at(int(Tk.Star)):
                 sym = self.leaf(int(Nk.Star))
@@ -815,7 +872,13 @@ class Ast:
             last = l
         if self.eat(int(Tk.Arrow)):
             self.pb[n] = self.parse_type()
-        self.pc[n] = self.parse_block()
+        /#/ `c fn f() => T:` with nothing under it only declares the C export
+        if is_c == 1 && self.at(int(Tk.Colon)) && self.peek_at(1) == int(Tk.Newline) && self.peek_at(2) != int(Tk.Indent):
+            self.bump()
+            self.bump()
+            self.pc[n] = self.fin(self.add(int(Nk.Block), self.pos))
+        else:
+            self.pc[n] = self.parse_block()
         return self.fin(n)
 
     /#/ `[packed] class Name<T> [of Parent]:` then fields and methods.
@@ -843,8 +906,8 @@ class Ast:
             self.record(self.pos, int(Ec.ExpectedColon))
         if !self.eat(int(Tk.Newline)):
             self.record(self.pos, int(Ec.ExpectedNewline))
+        /#/ a class may have no members at all
         if !self.eat(int(Tk.Indent)):
-            self.record(self.pos, int(Ec.ExpectedIndent))
             return self.fin(n)
         while self.peek() != int(Tk.Dedent) && self.peek() != int(Tk.Eof):
             let before = self.pos

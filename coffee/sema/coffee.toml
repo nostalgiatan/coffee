@@ -1,0 +1,9 @@
+[package]
+name = "sema"
+version = "0.1.0"
+
+[dependencies.packages.parser]
+path = "../parser"
+
+[dependencies.packages.lexer]
+path = "../lexer"
