@@ -25,8 +25,11 @@ pub fn drop_coffee_place<'ctx>(
         | Type::Void
         | Type::Function { .. }
         | Type::Variadic
-        | Type::Ref { .. }
-        | Type::App { .. } => Ok(()),
+        | Type::Ref { .. } => Ok(()),
+        Type::App { .. } if ty.typed_buf_elem().is_some() => {
+            drop_typed_buf(context, builder, functions, ptr, llvm_ty)
+        }
+        Type::App { .. } => Ok(()),
         Type::Slice(elem) => drop_slice(context, builder, functions, elem, ptr, llvm_ty),
         Type::String => drop_string(context, builder, functions, ptr, llvm_ty),
         Type::NamedType { name } if name == "buf" => {
@@ -38,6 +41,35 @@ pub fn drop_coffee_place<'ctx>(
             drop_array(context, builder, functions, elem, *size, ptr, llvm_ty)
         }
     }
+}
+
+/// `buf<T>` is `{ptr, len}`; dropping frees the data pointer (elements are plain values).
+fn drop_typed_buf<'ctx>(
+    context: &'ctx Context,
+    builder: &inkwell::builder::Builder<'ctx>,
+    functions: &HashMap<String, FunctionValue<'ctx>>,
+    ptr: PointerValue<'ctx>,
+    llvm_ty: BasicTypeEnum<'ctx>,
+) -> Result<(), String> {
+    let Some(&free_fn) = functions.get("free") else {
+        return Ok(());
+    };
+    let BasicTypeEnum::StructType(st) = llvm_ty else {
+        return Ok(());
+    };
+    let data_field = builder
+        .build_struct_gep(st, ptr, 0, "buf_data_field")
+        .map_err(|e| format!("drop: buf data GEP: {e}"))?;
+    let data = builder
+        .build_load(context.ptr_type(AddressSpace::default()), data_field, "buf_data")
+        .map_err(|e| format!("drop: failed to load buf data: {e}"))?;
+    builder
+        .build_call(free_fn, &[data.into()], "buf_free")
+        .map_err(|e| format!("drop: failed to free buf: {e}"))?;
+    builder
+        .build_store(data_field, context.ptr_type(AddressSpace::default()).const_null())
+        .map_err(|e| format!("drop: failed to clear buf: {e}"))?;
+    Ok(())
 }
 
 fn drop_string<'ctx>(

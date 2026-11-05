@@ -83,6 +83,7 @@ pub fn declare_function<'ctx>(
             inkwell::types::BasicTypeEnum::StructType(t) => {
                 let coffee_ty = crate::types::type_from_str(&func.return_type);
                 let by_value = matches!(coffee_ty, Ok(crate::types::Type::Slice(_)))
+                    || coffee_ty.as_ref().is_ok_and(|t| t.typed_buf_elem().is_some())
                     || type_mapper.c_struct_names.contains(&func.return_type)
                     || type_mapper.c_union_byte_sizes.contains_key(&func.return_type);
                 if by_value {

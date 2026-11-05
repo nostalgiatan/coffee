@@ -324,6 +324,16 @@ impl SemanticAnalyzer {
                 // A generic function has no symbol of its own until the checker instantiates it.
                 let generic_callee = matches!(function.kind(), Expression::Variable(n)
                     if self.type_registry.read().map(|r| r.is_generic_fn(n)).unwrap_or(false));
+                if matches!(function.kind(), Expression::Variable(n)
+                    if matches!(n.as_str(), "new_buf" | "buf_resize" | "buf_ptr"))
+                    && self.analyze_expression(function).is_err()
+                {
+                    let skip = usize::from(matches!(function.kind(), Expression::Variable(n) if n == "new_buf"));
+                    for arg in args.iter().skip(skip) {
+                        self.analyze_expression(arg)?;
+                    }
+                    return Ok(());
+                }
                 let wrapping = args.len() == 2
                     && matches!(function.kind(), Expression::Variable(n)
                         if crate::types::checker::wrapping_op(n).is_some())

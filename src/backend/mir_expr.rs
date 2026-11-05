@@ -354,6 +354,10 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         &mut self,
         collection: &HirExpr,
     ) -> Result<BasicValueEnum<'ctx>, String> {
+        if collection.ty.typed_buf_elem().is_some() {
+            let value = self.compile_hir_expr_typed(collection)?;
+            return Ok(self.buf_split(value)?.1.into());
+        }
         if matches!(collection.ty, Type::String) {
             let i64_type = self.backend.context.i64_type();
             let ptr = self.compile_hir_expr_typed(collection)?.into_pointer_value();
@@ -650,6 +654,9 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         index: &HirExpr,
         _full: &HirExpr,
     ) -> Result<BasicValueEnum<'ctx>, String> {
+        if array.ty.typed_buf_elem().is_some() {
+            return self.compile_hir_buf_index(array, index);
+        }
         if matches!(array.ty, Type::String) {
             let base = self.compile_hir_expr_typed(array)?.into_pointer_value();
             let idx = self.compile_hir_expr_typed(index)?.into_int_value();
@@ -819,6 +826,9 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         value: &HirExpr,
     ) -> Result<BasicValueEnum<'ctx>, String> {
         let ptr = match &target.kind {
+            HirExprKind::Index { array, index } if array.ty.typed_buf_elem().is_some() => {
+                self.buf_element_ptr(array, index)?.0
+            }
             HirExprKind::Index { array, index } => {
                 let array_name = self.hir_index_array_name(array)?;
                 let index_val = self.compile_hir_expr_typed(index)?;
@@ -1261,7 +1271,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
 
     /// A last-use resource variable handed to a call or stored into a new value is moved:
     /// the receiver owns it, so this scope must not drop it again.
-    fn mark_moved_owned_resource_var(&mut self, arg: &HirExpr) {
+    pub(crate) fn mark_moved_owned_resource_var(&mut self, arg: &HirExpr) {
         if self.ty_is_owned_resource(&arg.ty) {
             if let HirExprKind::Variable(n) = &arg.kind {
                 let left = self.mir_name_uses_left.get(n).copied().unwrap_or(0);
@@ -1324,6 +1334,11 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         args: &[HirExpr],
         _full: &HirExpr,
     ) -> Result<BasicValueEnum<'ctx>, String> {
+        if matches!(func_name, "new_buf" | "buf_resize" | "buf_ptr") && !self.variables.contains_key(func_name) {
+            if let Some(v) = self.compile_buf_intrinsic(func_name, args, _full)? {
+                return Ok(v);
+            }
+        }
         if let Some((scope, variant)) = func_name.split_once("::") {
             if self.enums.contains_key(scope) {
                 let compiled_args = self.compile_hir_call_args(args)?;

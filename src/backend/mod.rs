@@ -32,6 +32,7 @@ pub mod mir_expr;
 pub mod mir_raise;
 pub mod mir_return;
 pub mod mir_nested;
+pub mod buf;
 
 // Additional modularized components
 pub mod expressions;

@@ -276,6 +276,7 @@ impl<'ctx> TypeMapper<'ctx> {
                 Ok(st.into())
             }
             CoffeeType::Slice(_) => Ok(self.slice_fat_type().into()),
+            CoffeeType::App { name, .. } if name == "buf" => Ok(self.slice_fat_type().into()),
             CoffeeType::Array { .. }
             | CoffeeType::Ref { .. }
             | CoffeeType::Function { .. }

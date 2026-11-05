@@ -60,8 +60,12 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 return Err(self.error("compile_expression",
                     format!("use of dropped variable: '{}'", expr)));
             }
-            if let BasicTypeEnum::StructType(_) | BasicTypeEnum::ArrayType(_) = var_type {
-                return Ok(ptr.into());
+            // A `buf<T>` local is its `{ptr, len}` pair by value, like a slice.
+            let is_buf_pair = var_type == BasicTypeEnum::from(self.type_mapper.slice_fat_type());
+            if !is_buf_pair {
+                if let BasicTypeEnum::StructType(_) | BasicTypeEnum::ArrayType(_) = var_type {
+                    return Ok(ptr.into());
+                }
             }
             let value = self.backend.builder.build_load(var_type, ptr, expr)
                 .map_err(|e| self.error("compile_expression",

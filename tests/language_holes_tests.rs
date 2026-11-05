@@ -287,3 +287,76 @@ fn test_wrapping_add_does_not_trap() {
 fn test_wrapping_op_rejects_mixed_types() {
     assert_compile_error("fn main() => int:\n    return wrapping_add(1, 2.0)\n", "wrapping_add() takes two integers").unwrap();
 }
+
+#[test]
+fn test_buf_read_write_and_len() {
+    let src = "fn main() => int:\n    let b: buf<int> = new_buf(int, 4)\n    b[0] = 5\n    b[3] = 10\n    return b[0] + b[3] + b[1] + len(b) - 4\n";
+    assert_exit_code(src, 15).unwrap();
+}
+
+#[test]
+fn test_buf_is_zero_initialised() {
+    let src = "fn main() => int:\n    let b: buf<float> = new_buf(float, 3)\n    return int(b[2])\n";
+    assert_exit_code(src, 0).unwrap();
+}
+
+#[test]
+fn test_buf_index_out_of_bounds_stops_the_program() {
+    for index in ["2", "0 - 1"] {
+        let src = format!("fn main() => int:\n    let b: buf<int> = new_buf(int, 2)\n    let i = {}\n    return b[i]\n", index);
+        let r = compile_and_run_coffee(&src).unwrap();
+        assert_eq!(r.exit_code, 1, "index {index}");
+        assert!(r.stdout.contains("out of bounds"), "index {index}: {:?}", r.stdout);
+    }
+}
+
+#[test]
+fn test_buf_negative_length_stops_the_program() {
+    let src = "fn main() => int:\n    let n = 0 - 5\n    let b: buf<int> = new_buf(int, n)\n    return 0\n";
+    let r = compile_and_run_coffee(src).unwrap();
+    assert_eq!(r.exit_code, 1);
+    assert!(r.stdout.contains("negative buffer length"), "{:?}", r.stdout);
+}
+
+#[test]
+fn test_buf_resize_keeps_contents_and_zero_fills() {
+    let src = "fn main() => int:\n    let b: buf<int> = new_buf(int, 2)\n    b[1] = 7\n    b = buf_resize(b, 10)\n    return b[1] + b[9] + len(b) - 10\n";
+    assert_exit_code(src, 7).unwrap();
+}
+
+#[test]
+fn test_buf_moves_through_calls_and_is_freed_once() {
+    let src = "fn fill(b: buf<int>) => buf<int>:\n    b[0] = 9\n    return b\n\nfn main() => int:\n    let b: buf<int> = new_buf(int, 3)\n    let c: buf<int> = fill(b)\n    return c[0]\n";
+    assert_exit_code(src, 9).unwrap();
+    assert_balanced(src);
+}
+
+#[test]
+fn test_buf_is_freed_at_scope_end_and_after_resize() {
+    assert_balanced("fn main() => int:\n    let b: buf<int> = new_buf(int, 4)\n    b = buf_resize(b, 8)\n    b[7] = 1\n    return 0\n");
+    assert_balanced("fn main() => int:\n    let b: buf<int> = new_buf(int, 4)\n    rm b\n    return 0\n");
+}
+
+#[test]
+fn test_buf_in_a_class_field_is_dropped_with_the_class() {
+    let src = "class V:\n    data: buf<int>\n\nfn main() => int:\n    let v = V { data: new_buf(int, 4) }\n    v.data[2] = 4\n    return v.data[2]\n";
+    assert_exit_code(src, 4).unwrap();
+    assert_balanced(src);
+}
+
+#[test]
+fn test_buf_cannot_be_copied() {
+    assert_compile_error("fn main() => int:\n    let b: buf<int> = new_buf(int, 2)\n    let c = b\n    return b[0]\n", "cannot copy resource").unwrap();
+}
+
+#[test]
+fn test_buf_elements_are_plain_values() {
+    assert_compile_error("fn main() => int:\n    let b: buf<str> = new_buf(str, 2)\n    return 0\n", "buf<T> needs one element type").unwrap();
+}
+
+#[test]
+fn test_buf_sized_element_and_raw_pointer_escape() {
+    assert_exit_code("fn main() => int:\n    let b: buf<u8> = new_buf(u8, 4)\n    b[1] = 200\n    return int(b[1])\n", 200).unwrap();
+    let src = "use memset in libc of c\n\nfn main() => int:\n    let b: buf<int> = new_buf(int, 4)\n    memset(buf_ptr(b), 255, 8)\n    if b[0] == 0 - 1:\n        return 0\n    return 1\n";
+    assert_exit_code(src, 0).unwrap();
+}

@@ -484,6 +484,20 @@ match e:
 
 ## 函数
 
+### 安全缓冲区 `buf<T>`
+
+`buf<T>` 是带长度、自动清零、作用域结束自动释放的缓冲区，语言层面不是裸指针；编译后只剩 `{ptr, len}` 一对值和指针算术，检查是内联的比较。元素 `T` 只能是 `int` / `float` / `bool`（含 `u8`、`i32` 等定长写法）。
+
+```coffee
+let b: buf<int> = new_buf(int, 16)   /#/ 16 个元素，全部为 0；长度为负、大小溢出、内存不足都会报错并终止
+b[3] = 7                             /#/ 越界（含负数下标）打印 "Array index out of bounds" 并以退出码 1 终止
+let n = len(b)                       /#/ 元素个数
+b = buf_resize(b, 32)                /#/ 新缓冲区：保留旧内容，多出的部分为 0；旧的被消耗
+memset(buf_ptr(b), 0, 8)             /#/ buf_ptr 显式取出 object 交给 C，调用期间 b 必须还活着
+```
+
+`buf<T>` 是资源：不能 `let c = b` 复制，按值传参或返回就是移动，字段里的 `buf<T>` 随所属类一起释放。不带类型参数的 `buf` 仍是 C 边界上的拥有型裸指针（`let p: buf = malloc(n)`，ABI 是 `void*`），两者不要混用。`buf<T>` 暂时不能 `clone`，也不能在泛型体里用类型参数当元素类型。
+
 ### 指针与整数
 
 整数不会隐式变成指针，指针也不会隐式变成整数：`let n: int = malloc(8)` 和 `free(n)` 都是类型错误，要写 `malloc(8) as int`、`n as object`。字面量 `0` 是唯一能直接当 `object` 的整数（空指针）。`object` 可以隐式变成 `buf` / `str`（接收 C 返回的所有权指针）。

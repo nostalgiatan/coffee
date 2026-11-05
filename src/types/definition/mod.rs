@@ -132,6 +132,21 @@ impl Type {
     }
 
     /// Coffee-owned malloc buffer, not a C handle (`object`).
+    /// Element of a typed, length-carrying `buf<T>`: plain values only, so a buffer's drop is
+    /// one `free` and its bytes can be zero-initialised.
+    pub fn is_buf_element(&self) -> bool {
+        matches!(self, Type::Int { .. } | Type::Float { .. } | Type::Bool)
+    }
+
+    /// `buf<T>` (safe, bounds-checked, `{ptr, len}` once compiled), as opposed to the raw C
+    /// `buf` that is only an owned pointer.
+    pub fn typed_buf_elem(&self) -> Option<&Type> {
+        match self {
+            Type::App { name, args } if name == "buf" && args.len() == 1 => Some(&args[0]),
+            _ => None,
+        }
+    }
+
     pub fn is_buf(&self) -> bool {
         matches!(self, Type::NamedType { name } if name == "buf")
     }

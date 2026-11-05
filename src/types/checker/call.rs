@@ -208,6 +208,66 @@ impl super::TypeChecker {
         self.borrow.pin_unheld_temps();
     }
 
+    /// `new_buf(T, n)` -> `buf<T>` (zeroed), `buf_resize(b, n)` -> `buf<T>`, `buf_ptr(b)` -> `object`.
+    fn check_buf_intrinsic(
+        &mut self,
+        name: &str,
+        args: &[crate::parser::expr::Expression],
+    ) -> Result<Type, TypeSystemError> {
+        let fail = |this: &mut Self, reason: String| {
+            let error = TypeSystemError::ParseError { type_str: name.to_string(), reason };
+            this.add_error(error.clone());
+            Err(error)
+        };
+        let int_arg = |this: &mut Self, e: &crate::parser::expr::Expression| -> Result<bool, TypeSystemError> {
+            Ok(this.check_expression(e)?.is_int())
+        };
+        match name {
+            "new_buf" => {
+                if args.len() != 2 {
+                    return fail(self, "new_buf(T, n) takes an element type and a length".to_string());
+                }
+                let elem = match args[0].kind() {
+                    crate::parser::expr::Expression::Variable(t) => {
+                        self.registry.read().ok().and_then(|r| r.resolve_type(t).ok())
+                    }
+                    _ => None,
+                };
+                let Some(elem) = elem.filter(|e| e.is_buf_element()) else {
+                    return fail(self, "new_buf(T, n): T must be int, float, bool or an alias of one".to_string());
+                };
+                if !int_arg(self, &args[1])? {
+                    return fail(self, "new_buf(T, n): n must be an integer".to_string());
+                }
+                Ok(Type::App { name: "buf".to_string(), args: vec![elem] })
+            }
+            "buf_resize" => {
+                if args.len() != 2 {
+                    return fail(self, "buf_resize(b, n) takes a buffer and a new length".to_string());
+                }
+                let b = self.check_expression(&args[0])?;
+                if b.typed_buf_elem().is_none() {
+                    return fail(self, format!("buf_resize() takes a buf<T>, found {}", b));
+                }
+                if !int_arg(self, &args[1])? {
+                    return fail(self, "buf_resize(b, n): n must be an integer".to_string());
+                }
+                self.consume_last_use_call_args(&[b.clone(), Type::int()], args, false)?;
+                Ok(b)
+            }
+            _ => {
+                if args.len() != 1 {
+                    return fail(self, "buf_ptr(b) takes one buffer".to_string());
+                }
+                let b = self.check_expression(&args[0])?;
+                if b.typed_buf_elem().is_none() {
+                    return fail(self, format!("buf_ptr() takes a buf<T>, found {}", b));
+                }
+                Ok(Type::Variadic)
+            }
+        }
+    }
+
     fn user_defines(&self, name: &str) -> bool {
         self.registry.read().map(|r| r.resolve_type(name).is_ok()).unwrap_or(false)
     }
@@ -224,6 +284,7 @@ impl super::TypeChecker {
             let arg_type = self.check_expression(&args[0])?;
             return match arg_type {
                 Type::String | Type::Slice(_) | Type::Array { .. } => Ok(Type::int()),
+                ref t if t.typed_buf_elem().is_some() => Ok(Type::int()),
                 other => {
                     let error = TypeSystemError::ParseError {
                         type_str: "len".to_string(),
@@ -233,6 +294,10 @@ impl super::TypeChecker {
                     Err(error)
                 }
             };
+        }
+
+        if matches!(name, "new_buf" | "buf_resize" | "buf_ptr") && !self.user_defines(name) {
+            return self.check_buf_intrinsic(name, args);
         }
 
         if let Some(_) = wrapping_op(name) {

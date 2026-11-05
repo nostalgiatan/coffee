@@ -232,6 +232,15 @@ impl TypeRegistry {
                 for a in args {
                     norm_args.push(self.normalize_type(a, origin)?);
                 }
+                if name == "buf" {
+                    return match norm_args.as_slice() {
+                        [elem] if elem.is_buf_element() => Ok(Type::App { name, args: norm_args }),
+                        _ => Err(TypeSystemError::ParseError {
+                            type_str: origin.to_string(),
+                            reason: "buf<T> needs one element type of int, float or bool (sized forms included)".to_string(),
+                        }),
+                    };
+                }
                 self.instantiate_class_app(&name, &norm_args)
             }
             Type::NamedType { name } => {

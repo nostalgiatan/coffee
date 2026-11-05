@@ -243,6 +243,25 @@ where
                         }
                     }
                 }
+                if let Expression::Variable(f) = function.kind() {
+                    if matches!(f.as_str(), "new_buf" | "buf_resize" | "buf_ptr")
+                        && self.lower_expr(function).is_err()
+                    {
+                        // `new_buf(T, n)` carries `T` in the result type, not as an argument.
+                        let skip = usize::from(f == "new_buf");
+                        let lowered = self.lower_expr_list(&args[skip..])?;
+                        return Ok(HirExpr {
+                            ty,
+                            kind: HirExprKind::Call {
+                                function: Box::new(HirExpr {
+                                    ty: Type::Unit,
+                                    kind: HirExprKind::Variable(f.clone()),
+                                }),
+                                args: lowered,
+                            },
+                        });
+                    }
+                }
                 let function_hir = match self.lower_expr(function) {
                     Ok(f) => f,
                     Err(_) if args.len() == 1
@@ -525,6 +544,7 @@ where
                 let ty = match &array.ty {
                     Type::Array { elem, .. } | Type::Slice(elem) => (**elem).clone(),
                     Type::String => Type::Int { bits: 8, signed: false },
+                    t if t.typed_buf_elem().is_some() => t.typed_buf_elem().cloned().unwrap(),
                     Type::Tuple(elems) => match elems.first() {
                         Some(e) => e.clone(),
                         None => return Ok(None),

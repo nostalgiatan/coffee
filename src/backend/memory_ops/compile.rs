@@ -231,7 +231,7 @@ pub fn compile_remove<'ctx>(
                 | Some(crate::types::Type::Array { .. })
                 | Some(crate::types::Type::Slice(_))
         );
-        let is_buf = parsed.as_ref().is_some_and(|t| t.is_buf());
+        let is_buf = parsed.as_ref().is_some_and(|t| t.is_buf() || t.typed_buf_elem().is_some());
 
         // Owned `str` bytes are heap copies. Explicit `rm` frees them; scope-end drops come
         // from `drop_owned_str_locals`, which runs before this function zeroes the slot.
@@ -248,7 +248,7 @@ pub fn compile_remove<'ctx>(
         }
 
         // Check if this is a class instance (struct type)
-        let is_class = matches!(var_type, BasicTypeEnum::StructType(_)) && !composite;
+        let is_class = matches!(var_type, BasicTypeEnum::StructType(_)) && !composite && !is_buf;
         
         // For class instances, call the drop function first
         if is_class {

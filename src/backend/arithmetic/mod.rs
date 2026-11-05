@@ -60,7 +60,7 @@ impl<'ctx> ArithmeticContext<'ctx> {
     /// out-of-bounds index). Without `puts`/`exit` in the module it falls back to a volatile
     /// load through null, which faults deterministically (a bare `unreachable` is undefined
     /// behaviour and at -O0 simply falls through).
-    pub(super) fn trap(
+    pub(crate) fn trap(
         &self,
         builder: &inkwell::builder::Builder<'ctx>,
         reason: &str,
