@@ -157,6 +157,25 @@ fn needs_drop(t: &Tys, g: &Syms, x: int) => bool:
         return g.kind[t.a[x]] == int(Sk.Class)
     return false
 
+/#/ Is `x` a class none of whose fields owns anything? Its drop is then only the free.
+fn class_plain(t: &Tys, g: &Syms, x: int) => bool:
+    if g.kind[t.a[x]] != int(Sk.Class):
+        return false
+    let cur = t.a[x]
+    let n = 0
+    while cur >= 0 && n < 8:
+        for i in 0..g.n:
+            if g.info[i] == cur && g.kind[i] == int(Sk.Field) && g.ty[i] >= 0:
+                if needs_drop(t, g, subst_env(t, g.ty[i], x)):
+                    return false
+        n = n + 1
+        let next = -1
+        for i in 0..g.n:
+            if g.info[i] == cur && g.kind[i] == int(Sk.Parent):
+                next = g.find_class_row(i)
+        cur = next
+    return true
+
 /#/ Is a value of type `x` moved, not copied, when it is used as a value? (Arrays are
 /#/ copied: a copy is a new block.)
 fn is_moved(t: &Tys, g: &Syms, x: int) => bool:
@@ -2179,7 +2198,10 @@ class Lower:
         elif k == int(Ty.Buf):
             self.f.free(self.f.extract(int(Rp.Ptr), v, 0))
         elif k == int(Ty.Array) && !needs_drop(t, g, t.a[x]):
-            self.f.free(v)
+            self.f.free_n(v, st_size(t, g, t.a[x]) * t.b[x])
+        elif k == int(Ty.Named) && class_plain(t, g, x):
+            /#/ nothing inside to release: the drop is the free, no call
+            self.f.free_n(v, st_block(t, g, x))
         elif k == int(Ty.Tuple):
             for i in 0..t.count_of(x):
                 let et = t.arg(x, i)
@@ -2353,7 +2375,7 @@ class Lower:
                     continue
                 if kind == 0:
                     self.glue_drop_fields(t, g, p)
-                    self.f.free(p)
+                    self.f.free_n(p, st_block(t, g, x))
                     self.f.ret_void()
                 else:
                     let q = self.f.alloc(st_block(t, g, x))
@@ -2426,7 +2448,7 @@ class Lower:
             for i in 0..t.b[x]:
                 let v = self.f.load(r, -1, self.f.index(p, self.f.cint(int(Rp.I64), i), size))
                 self.drop_value(t, g, v, et)
-            self.f.free(p)
+            self.f.free_n(p, size * t.b[x])
             self.f.ret_void()
         else:
             let q = self.f.alloc(size * t.b[x])

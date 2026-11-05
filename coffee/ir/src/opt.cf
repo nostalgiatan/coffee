@@ -341,6 +341,82 @@ fn own_opt(f: &Fun) => bool:
             i = nxt
     return changed
 
+/#/ An `alloc` that is freed in its own block and used only by loads and stores through it (and
+/#/ field and index addresses of it) in between does not outlive the block: it becomes a `slot`
+/#/ and the `free` goes. A pointer that is passed, stored, returned or used elsewhere keeps it on the heap.
+fn stack_alloc(f: &Fun) => bool:
+    let ipos: buf<int> = new_buf(int, f.ni + 1)
+    let free_of: buf<int> = new_buf(int, f.ni + 1)
+    let base: buf<int> = new_buf(int, f.ni + 1)
+    let bad: buf<int> = new_buf(int, f.ni + 1)
+    let blk_of: buf<int> = new_buf(int, f.ni + 1)
+    let any = false
+    for i in 0..f.ni:
+        free_of[i] = -1
+        base[i] = -1
+    for b in 0..f.nb:
+        let i = f.bfirst[b]
+        let n = 0
+        while i >= 0:
+            ipos[i] = n
+            blk_of[i] = b
+            n = n + 1
+            i = f.nx[i]
+    for b in 0..f.nb:
+        let i = f.bfirst[b]
+        while i >= 0:
+            if f.op[i] == int(Op.Alloc) && f.fwd[i] < 0 && f.ty[i] > 0 && f.ty[i] <= 4096:
+                let j = f.nx[i]
+                while j >= 0 && !(f.op[j] == int(Op.Free) && f.follow(f.a[j]) == i):
+                    j = f.nx[j]
+                if j >= 0:
+                    free_of[i] = j
+                    base[i] = i
+                    any = true
+            i = f.nx[i]
+    if !any:
+        return false
+    /#/ addresses derived from a candidate
+    for b in 0..f.nb:
+        let i = f.bfirst[b]
+        while i >= 0:
+            if (f.op[i] == int(Op.Field) || f.op[i] == int(Op.Index)) && base[f.follow(f.a[i])] >= 0:
+                base[i] = base[f.follow(f.a[i])]
+            i = f.nx[i]
+    for b in 0..f.nb:
+        let i = f.bfirst[b]
+        while i >= 0:
+            let o = f.op[i]
+            if !(o == int(Op.Alloc) && free_of[i] >= 0):
+                for q in 0..f.nval(i):
+                    let v = f.val_at(i, q)
+                    if v >= 0:
+                        let x = f.follow(v)
+                        let c = base[x]
+                        if c >= 0:
+                            let ok = false
+                            if blk_of[i] == blk_of[c] && ipos[i] > ipos[c] && ipos[i] <= ipos[free_of[c]] && q == 0:
+                                if o == int(Op.Load) || o == int(Op.Store) || o == int(Op.Field) || o == int(Op.Index):
+                                    ok = true
+                                if o == int(Op.Free) && i == free_of[c] && x == c:
+                                    ok = true
+                            if !ok:
+                                bad[c] = 1
+            i = f.nx[i]
+    for e in 0..f.ne:
+        if f.eto[e] >= 0:
+            for k in 0..f.eargn[e]:
+                let c = base[f.follow(f.pool[f.eargs[e] + k])]
+                if c >= 0:
+                    bad[c] = 1
+    let changed = false
+    for c in 0..f.ni:
+        if free_of[c] >= 0 && bad[c] == 0 && f.op[c] == int(Op.Alloc):
+            delete_inst(f, free_of[c])
+            f.op[c] = int(Op.Slot)
+            changed = true
+    return changed
+
 /#/ Runs the passes: cleanup, own-opt, cleanup again for what that exposed.
 fn optimize(f: &Fun) => void:
     let round = 0
@@ -355,6 +431,8 @@ fn optimize(f: &Fun) => void:
         if merge_blocks(f):
             changed = true
         if own_opt(f):
+            changed = true
+        if stack_alloc(f):
             changed = true
         if dead_code(f):
             changed = true

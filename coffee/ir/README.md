@@ -61,3 +61,5 @@ parameter is passed as `{ptr, len}` and stays with its owner (`tests/test_own_ag
 Temporaries inside `&&`/`||` that were only borrowed are not released.
 
 Dropping a long chain does not use a stack frame per node: the drop glue of an enum loops on its last field of the enum's own type, and the glue of a class loops through a `next: Option`-style enum that holds the class again (`tests/test_deep.cf`, a million nodes). Other shapes (a tree's left spine, longer cycles of types, `clone` of a long chain) still recurse.
+
+`free` carries the size of the block (`Free.aux` is size + 1, 0 when unknown) so a backend with its own allocator needs no header; the LLVM and x86 backends ignore it. A class whose fields own nothing is released by a bare `free`, with no drop call. `stack_alloc` (in `opt.cf`) turns an `alloc` into a `slot` when it is freed in its own block and only loaded, stored or addressed in between; a pointer that is passed, stored, returned or used in another block stays on the heap.

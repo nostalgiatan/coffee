@@ -679,6 +679,11 @@ class Fun:
     fn free(self, p: int) => int:
         return self.raw(int(Op.Free), int(Rp.Void), -1, self.follow(p), -1, -1, 0)
 
+    /#/ Releases the block of `p`, which is `n` bytes (the size is what the type says, so a
+    /#/ backend with its own allocator need not keep it in a header).
+    fn free_n(self, p: int, n: int) => int:
+        return self.raw(int(Op.Free), int(Rp.Void), -1, self.follow(p), -1, -1, n + 1)
+
     /#/ Drops the owner `v`; `glue` is the number of the function that does it.
     fn drop_of(self, v: int, glue: int) => int:
         return self.raw(int(Op.Drop), int(Rp.Void), -1, self.follow(v), -1, -1, glue)

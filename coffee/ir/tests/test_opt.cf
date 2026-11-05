@@ -11,6 +11,16 @@ fn count(f: &Fun) => int:
             i = f.nx[i]
     return n
 
+fn count_op(f: &Fun, op: int) => int:
+    let n = 0
+    for b in 0..f.nb:
+        let i = f.bfirst[b]
+        while i >= 0:
+            if f.op[i] == op:
+                n = n + 1
+            i = f.nx[i]
+    return n
+
 fn expect(what: int, got: int, want: int) => int:
     if got != want:
         printf("MISS #%d: got %d, want %d\n", what, got, want)
@@ -102,6 +112,53 @@ fn main() => int:
     optimize(&h)
     m = m + sound(10, &h)
     m = m + expect(11, count(&h), 1)
+    /#/ a block used and freed in one place goes to the stack: no alloc, no free, one slot
+    let sa = new_fun("stack", i64)
+    let sa0 = sa.new_block()
+    sa.set_block(sa0)
+    let sp = sa.alloc(16)
+    sa.store(sa.field(sp, 8), sa.cint(i64, 5))
+    let sl = sa.load(i64, -1, sa.field(sp, 8))
+    sa.free_n(sp, 16)
+    sa.ret(sl)
+    optimize(&sa)
+    m = m + sound(30, &sa)
+    m = m + expect(31, count_op(&sa, int(Op.Alloc)), 0)
+    m = m + expect(32, count_op(&sa, int(Op.Free)), 0)
+    m = m + expect(33, count_op(&sa, int(Op.Slot)), 1)
+    /#/ one that is passed to a call, or stored, stays on the heap
+    let sb = new_fun("escapes", i64)
+    let sb0 = sb.new_block()
+    sb.set_block(sb0)
+    let sq = sb.alloc(16)
+    sb.arg(sq)
+    sb.ccall(i64, 1, 1, 0)
+    sb.free_n(sq, 16)
+    sb.ret(sb.cint(i64, 0))
+    optimize(&sb)
+    m = m + sound(34, &sb)
+    m = m + expect(35, count_op(&sb, int(Op.Alloc)), 1)
+    m = m + expect(36, count_op(&sb, int(Op.Free)), 1)
+    /#/ a block freed in another block than it was made in stays too
+    let sc = new_fun("far", i64)
+    let sc0 = sc.new_block()
+    let sc1 = sc.new_block()
+    let sc2 = sc.new_block()
+    sc.set_block(sc0)
+    let sflag = sc.param(sc0, int(Rp.I8), -1)
+    let sr = sc.alloc(16)
+    sc.store(sr, sc.cint(i64, 1))
+    let se1 = sc.mk_edge(sc1)
+    let se2 = sc.mk_edge(sc2)
+    sc.condbr(sflag, se1, se2)
+    sc.set_block(sc1)
+    sc.free_n(sr, 16)
+    sc.ret(sc.cint(i64, 0))
+    sc.set_block(sc2)
+    sc.ret(sc.cint(i64, 1))
+    optimize(&sc)
+    m = m + sound(38, &sc)
+    m = m + expect(37, count_op(&sc, int(Op.Alloc)) + count_op(&sc, int(Op.Free)), 2)
     /#/ `clone x` whose original is dropped at once is `x`
     let c = new_fun("copy", int(Rp.Ptr))
     let c0 = c.new_block()
