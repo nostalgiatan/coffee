@@ -2,6 +2,18 @@
 use * in lower
 use fopen, fputc, fclose, system, putchar, printf, fflush in libc of c
 
+/#/ Says which node the lowering could not handle: its kind, line, and the text of its token.
+fn report_unsupported(a: &Ast, n: int) => void:
+    let tk = a.tok[n]
+    printf("unsupported: node kind %d at line %d, near '", a.kind[n], a.toks.line[tk])
+    let k = 0
+    for i in a.toks.start[tk]..a.toks.end[tk]:
+        if k < 40:
+            putchar(a.byte_at(i))
+        k = k + 1
+    printf("'\n")
+    fflush(0)
+
 /#/ `src` through our front end and IR as LLVM text, the optimizer on or off; empty when it
 /#/ did not lower.
 fn build_src(src: str, opt: int) => Txt:
@@ -12,7 +24,13 @@ fn build_src(src: str, opt: int) => Txt:
     declare_types(&t, &g, &a, m)
     let ty = check_types(&t, &g, &a, m)
     if ty.diags.n > 0 || a.err_count > 0:
-        printf("front end: %d type findings (first code %d), %d parse errors\n", ty.diags.n, te_number(ty.diags.code[0]), a.err_count)
+        printf("front end: %d type findings, %d parse errors\n", ty.diags.n, a.err_count)
+        for k in 0..a.err_count:
+            if k < 20:
+                printf("  parse error %d at line %d\n", a.err_code[k], a.toks.line[a.err_tok[k]])
+        for k in 0..ty.diags.n:
+            if k < 20:
+                printf("  type finding E%d at line %d\n", te_number(ty.diags.code[k]), a.toks.line[ty.diags.tok[k]])
         fflush(0)
         return new_txt()
     let lw = new_lower()
@@ -25,7 +43,7 @@ fn build_src(src: str, opt: int) => Txt:
         if a.kind[it] == int(Nk.Fn) && type_param_count(&a, it) == 0:
             lw.function(&t, &g, &ty, &a, it, -1)
             if lw.bad > 0:
-                printf("unsupported: node kind %d at line %d\n", a.kind[lw.bad_node], a.toks.line[a.tok[lw.bad_node]])
+                report_unsupported(&a, lw.bad_node)
                 return new_txt()
             lw.keep_current()
         elif a.kind[it] == int(Nk.Class) && type_param_count(&a, it) == 0:
@@ -35,14 +53,14 @@ fn build_src(src: str, opt: int) => Txt:
                 if a.kind[c] == int(Nk.Fn):
                     lw.function(&t, &g, &ty, &a, c, row)
                     if lw.bad > 0:
-                        printf("unsupported: node kind %d at line %d\n", a.kind[lw.bad_node], a.toks.line[a.tok[lw.bad_node]])
+                        report_unsupported(&a, lw.bad_node)
                         return new_txt()
                     lw.keep_current()
                 c = a.next[c]
         it = a.next[it]
     lw.run_instances(&t, &g, &ty, &a, &body)
     if lw.bad > 0:
-        printf("unsupported: node kind %d at line %d\n", a.kind[lw.bad_node], a.toks.line[a.tok[lw.bad_node]])
+        report_unsupported(&a, lw.bad_node)
         return new_txt()
     lw.finish(&body)
     o.put_all(&lw.globals)
@@ -104,10 +122,10 @@ fn expect_exit_early(src: str, want: int) => int:
     return expect_with(src, want, false)
 
 fn expect_with(src: str, want: int, leaks: bool) => int:
-    let copy = clone src
+    let dup = clone src
     let r = run_src(src, leaks)
     if r != want:
-        printf("FAIL: got %d, want %d\n%s\n", r, want, copy)
+        printf("FAIL: got %d, want %d\n%s\n", r, want, dup)
         fflush(0)
         return 1
     return 0

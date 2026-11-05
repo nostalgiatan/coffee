@@ -101,7 +101,10 @@ fn float_bits(a: &Ast, tok: int, single: bool) => int:
         if neg:
             x = 0 - x
         scale = scale + x
-    if digits > 15 || scale > 22 || scale < -22:
+    while scale < 0 && m > 0 && m % 10 == 0:
+        m = m // 10
+        scale = scale + 1
+    if digits > 18 || m > 9007199254740992 || scale > 22 || scale < -22:
         return -1
     if m == 0:
         return 0
@@ -631,7 +634,7 @@ class Lower:
         if rr < 0 || t.kind[res] == int(Ty.Object):
             self.unsupported(n)
             return self.f.undef(int(Rp.I64))
-        let float = rp_is_float(rr)
+        let is_flt = rp_is_float(rr)
         if op == int(Bop.Shl) || op == int(Bop.Shr):
             let amount = self.coerce(t, g, y, rt, res)
             let v = self.coerce(t, g, x, lt, res)
@@ -644,15 +647,15 @@ class Lower:
         let w = self.coerce(t, g, y, rt, res)
         let sg = is_signed(t, res)
         if op == int(Bop.Add):
-            if float:
+            if is_flt:
                 return self.f.bin(int(Op.FAdd), v, w)
             return self.f.bin(int(Op.Add), v, w)
         if op == int(Bop.Sub):
-            if float:
+            if is_flt:
                 return self.f.bin(int(Op.FSub), v, w)
             return self.f.bin(int(Op.Sub), v, w)
         if op == int(Bop.Mul):
-            if float:
+            if is_flt:
                 return self.f.bin(int(Op.FMul), v, w)
             return self.f.bin(int(Op.Mul), v, w)
         if op == int(Bop.Div):
@@ -662,7 +665,7 @@ class Lower:
                 return self.f.bin(int(Op.SDiv), v, w)
             return self.f.bin(int(Op.UDiv), v, w)
         if op == int(Bop.Rem):
-            if float:
+            if is_flt:
                 return self.f.bin(int(Op.FRem), v, w)
             if sg:
                 return self.f.bin(int(Op.SRem), v, w)
@@ -795,6 +798,8 @@ class Lower:
                 return self.len_call(t, g, ty, a, n)
             if tok_is(a, a.tok[callee], "new_buf"):
                 return self.new_buf_call(t, g, ty, a, n)
+            if tok_is(a, a.tok[callee], "buf_resize"):
+                return self.buf_resize_call(t, g, ty, a, n)
             return self.cast_call(t, g, ty, a, n)
         if k != int(Sk.Fn) && k != int(Sk.Extern):
             self.unsupported(n)
@@ -958,6 +963,8 @@ class Lower:
         if k == int(Nk.Member):
             return self.member(t, g, ty, a, n)
         if k == int(Nk.Index):
+            if t.kind[self.strip_refs(t, self.nd(t, ty, a.pa[n]))] == int(Ty.Str):
+                return self.str_byte(t, g, ty, a, n)
             let p = self.element_addr(t, g, ty, a, n)
             return self.f.load(self.rep(t, g, self.fty), -1, p)
         if k == int(Nk.StructLit):
@@ -1821,6 +1828,27 @@ class Lower:
 
     /#/ The address of element `n` (an Index node), after a bounds check; the element type is
     /#/ left in `fty`.
+    /#/ `s[i]` on a string: the byte, after a check against the length (as the Rust compiler does).
+    fn str_byte(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => int:
+        let it = self.nd(t, ty, a.pb[n])
+        let r = self.rep(t, g, self.nd(t, ty, n))
+        if !t.is_int(it) || r < 0:
+            self.unsupported(n)
+            return self.f.undef(int(Rp.I8))
+        let base = self.exb(t, g, ty, a, a.pa[n])
+        let i = self.coerce(t, g, self.ex(t, g, ty, a, a.pb[n]), it, t.int_ty(8, true))
+        self.f.arg(base)
+        let count = self.f.ccall(int(Rp.I64), 1, self.rt_strlen, 0)
+        let good = self.new_block()
+        let bad = self.new_block()
+        self.branch(self.f.cmp(int(Pr.ULt), i, count), good, bad)
+        self.seal(good)
+        self.seal(bad)
+        self.f.set_block(bad)
+        self.trap()
+        self.f.set_block(good)
+        return self.f.load(r, -1, self.f.index(base, i, 1))
+
     fn element_addr(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => int:
         let o = a.pa[n]
         let ot = self.strip_refs(t, self.nd(t, ty, o))
@@ -1948,6 +1976,36 @@ class Lower:
         self.f.arg(cnt)
         self.f.arg(self.f.cint(int(Rp.I64), st_size(t, g, t.a[x])))
         let p = self.f.ccall(int(Rp.Ptr), 2, self.rt_calloc, 0)
+        let agg = self.f.insert(self.f.undef(r), p, 0)
+        return self.f.insert(agg, cnt, 1)
+
+    /#/ `buf_resize(b, n)`: a zeroed block of `n` elements with the first elements of `b` copied in.
+    /#/ `b` is left as it is, so the assignment `b = buf_resize(b, n)` drops (frees) the old block.
+    fn buf_resize_call(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => int:
+        let x = self.nd(t, ty, n)
+        let r = self.rep(t, g, x)
+        let old = a.child[n]
+        let c = -1
+        if old >= 0:
+            c = a.next[old]
+        if r < 0 || t.kind[x] != int(Ty.Buf) || t.a[x] < 0 || c < 0 || self.rep(t, g, t.a[x]) < 0:
+            self.unsupported(n)
+            return self.f.undef(int(Rp.I64))
+        let size = st_size(t, g, t.a[x])
+        let ov = self.ex(t, g, ty, a, old)
+        let odata = self.f.extract(int(Rp.Ptr), ov, 0)
+        let olen = self.f.extract(int(Rp.I64), ov, 1)
+        let cnt = self.coerce(t, g, self.ex(t, g, ty, a, c), self.nd(t, ty, c), t.int_ty(8, true))
+        self.f.arg(cnt)
+        self.f.arg(self.f.cint(int(Rp.I64), size))
+        let p = self.f.ccall(int(Rp.Ptr), 2, self.rt_calloc, 0)
+        /#/ the elements kept: the shorter of the two lengths
+        let lt = self.f.conv(int(Op.ZExt), int(Rp.I64), self.f.cmp(int(Pr.ULt), olen, cnt))
+        let keep = self.f.bin(int(Op.Add), cnt, self.f.bin(int(Op.Mul), self.f.bin(int(Op.Sub), olen, cnt), lt))
+        self.f.arg(p)
+        self.f.arg(odata)
+        self.f.arg(self.f.bin(int(Op.Mul), keep, self.f.cint(int(Rp.I64), size)))
+        self.f.ccall(int(Rp.Ptr), 3, self.rt_memcpy, 0)
         let agg = self.f.insert(self.f.undef(r), p, 0)
         return self.f.insert(agg, cnt, 1)
 

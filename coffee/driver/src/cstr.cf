@@ -1,0 +1,215 @@
+/#/ Strings built at run time from bytes. There is no way to make a `str` from a buffer, so a byte
+/#/ becomes a one-character literal and the pieces are joined pairwise (O(n log n), not O(n^2)).
+use * in drive
+
+/#/ The one-character string of byte `c` (anything outside printable ASCII, tab and newline is `?`).
+fn ch_str(c: int) => str:
+    if c == 32:
+        return " "
+    if c == 33:
+        return "!"
+    if c == 34:
+        return "\""
+    if c == 35:
+        return "#"
+    if c == 36:
+        return "$"
+    if c == 37:
+        return "%"
+    if c == 38:
+        return "&"
+    if c == 39:
+        return "'"
+    if c == 40:
+        return "("
+    if c == 41:
+        return ")"
+    if c == 42:
+        return "*"
+    if c == 43:
+        return "+"
+    if c == 44:
+        return ","
+    if c == 45:
+        return "-"
+    if c == 46:
+        return "."
+    if c == 47:
+        return "/"
+    if c == 48:
+        return "0"
+    if c == 49:
+        return "1"
+    if c == 50:
+        return "2"
+    if c == 51:
+        return "3"
+    if c == 52:
+        return "4"
+    if c == 53:
+        return "5"
+    if c == 54:
+        return "6"
+    if c == 55:
+        return "7"
+    if c == 56:
+        return "8"
+    if c == 57:
+        return "9"
+    if c == 58:
+        return ":"
+    if c == 59:
+        return ";"
+    if c == 60:
+        return "<"
+    if c == 61:
+        return "="
+    if c == 62:
+        return ">"
+    if c == 63:
+        return "?"
+    if c == 64:
+        return "@"
+    if c == 65:
+        return "A"
+    if c == 66:
+        return "B"
+    if c == 67:
+        return "C"
+    if c == 68:
+        return "D"
+    if c == 69:
+        return "E"
+    if c == 70:
+        return "F"
+    if c == 71:
+        return "G"
+    if c == 72:
+        return "H"
+    if c == 73:
+        return "I"
+    if c == 74:
+        return "J"
+    if c == 75:
+        return "K"
+    if c == 76:
+        return "L"
+    if c == 77:
+        return "M"
+    if c == 78:
+        return "N"
+    if c == 79:
+        return "O"
+    if c == 80:
+        return "P"
+    if c == 81:
+        return "Q"
+    if c == 82:
+        return "R"
+    if c == 83:
+        return "S"
+    if c == 84:
+        return "T"
+    if c == 85:
+        return "U"
+    if c == 86:
+        return "V"
+    if c == 87:
+        return "W"
+    if c == 88:
+        return "X"
+    if c == 89:
+        return "Y"
+    if c == 90:
+        return "Z"
+    if c == 91:
+        return "["
+    if c == 92:
+        return "\\"
+    if c == 93:
+        return "]"
+    if c == 94:
+        return "^"
+    if c == 95:
+        return "_"
+    if c == 96:
+        return "`"
+    if c == 97:
+        return "a"
+    if c == 98:
+        return "b"
+    if c == 99:
+        return "c"
+    if c == 100:
+        return "d"
+    if c == 101:
+        return "e"
+    if c == 102:
+        return "f"
+    if c == 103:
+        return "g"
+    if c == 104:
+        return "h"
+    if c == 105:
+        return "i"
+    if c == 106:
+        return "j"
+    if c == 107:
+        return "k"
+    if c == 108:
+        return "l"
+    if c == 109:
+        return "m"
+    if c == 110:
+        return "n"
+    if c == 111:
+        return "o"
+    if c == 112:
+        return "p"
+    if c == 113:
+        return "q"
+    if c == 114:
+        return "r"
+    if c == 115:
+        return "s"
+    if c == 116:
+        return "t"
+    if c == 117:
+        return "u"
+    if c == 118:
+        return "v"
+    if c == 119:
+        return "w"
+    if c == 120:
+        return "x"
+    if c == 121:
+        return "y"
+    if c == 122:
+        return "z"
+    if c == 123:
+        return "{"
+    if c == 124:
+        return "|"
+    if c == 125:
+        return "}"
+    if c == 126:
+        return "~"
+    if c == 10:
+        return "\n"
+    if c == 9:
+        return "\t"
+    return "?"
+
+fn span_str(t: &Txt, lo: int, hi: int) => str:
+    if hi <= lo:
+        return ""
+    if hi - lo == 1:
+        return ch_str(t.b[lo])
+    let mid = (lo + hi) // 2
+    let left = span_str(t, lo, mid)
+    let right = span_str(t, mid, hi)
+    return left + right
+
+/#/ The bytes of `t` as a `str`.
+fn txt_str(t: &Txt) => str:
+    return span_str(t, 0, t.n)

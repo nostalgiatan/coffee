@@ -93,20 +93,20 @@ class Reader:
                 ret = self.read_ty(t, a, end)
             return t.intern(int(Ty.Fn), 0, items, ret, start)
         if k == int(Tk.KwInt) || k == int(Tk.KwFloat):
-            let float = k == int(Tk.KwFloat)
+            let is_flt = k == int(Tk.KwFloat)
             t.set_pos(t.pos + 1)
             let bytes = 8
             let signed = true
             if t.pos + 2 < end && a.toks.kind[t.pos] == int(Tk.LParen) && a.toks.kind[t.pos + 1] == int(Tk.Int):
                 bytes = tok_number(a, t.pos + 1)
                 t.set_pos(t.pos + 3)
-                if !float && t.pos < end:
+                if !is_flt && t.pos < end:
                     if a.toks.kind[t.pos] == int(Tk.Minus):
                         signed = false
                         t.set_pos(t.pos + 1)
                     elif a.toks.kind[t.pos] == int(Tk.Plus):
                         t.set_pos(t.pos + 1)
-            if float:
+            if is_flt:
                 return t.float_ty(bytes)
             return t.int_ty(bytes, signed)
         let name = t.pos

@@ -1,0 +1,132 @@
+/#/ Imports of Coffee modules, resolved the way the Rust compiler does it: the module's text
+/#/ goes in front of the file that imports it, once, and the `use` line is dropped. Lines that
+/#/ import from C stay.
+use * in files
+use printf in libc of c
+
+class Flat:
+    out: Txt
+    /#/ the module names already included, one per line
+    seen: Txt
+    /#/ the directories to search, one per line
+    dirs: Txt
+    errs: int
+
+    fn add_dir(self, w: &Txt) => void:
+        self.dirs.put_all(w)
+        self.dirs.put_byte(10)
+
+    fn out_str(self) => str:
+        return txt_str(&self.out)
+
+    fn write_to(self, path: &Txt) => void:
+        write_file(path, &self.out)
+
+    fn count_error(self) => void:
+        self.errs = self.errs + 1
+
+    /#/ The text of `module`: first next to the file that imports it (`dir`), then in each search
+    /#/ directory. `found` gets the directory it was found in.
+    fn find_module(self, dir: &Txt, module: &Txt, found: &Txt) => Txt:
+        let ext = txt_of(".cf")
+        let src = new_txt()
+        src.n = 0 - 1
+        let all = new_txt()
+        all.put_all(dir)
+        all.put_byte(10)
+        all.put_all(&self.dirs)
+        let s = 0
+        for i in 0..all.n + 1:
+            if i == all.n || all.b[i] == 10:
+                if i > s && src.n < 0:
+                    let d = slice(&all, s, i)
+                    let p = copy_txt(&d)
+                    p.put_byte(47)
+                    p.put_all(module)
+                    p.put_all(&ext)
+                    let got = read_file(&p)
+                    if got.n >= 0:
+                        src = got
+                        found.clear()
+                        found.put_all(&d)
+                s = i + 1
+        return src
+
+    /#/ Adds `src`, whose file is in `dir`, to the output with its imports in front.
+    fn flatten(self, src: &Txt, dir: &Txt) => void:
+        let start = 0
+        for i in 0..src.n + 1:
+            if i == src.n || src.b[i] == 10:
+                let module = use_module(src, start, i)
+                if module.n == 0:
+                    for k in start..i:
+                        self.out.put_byte(src.b[k])
+                    self.out.put_byte(10)
+                elif !has_line(&self.seen, &module):
+                    self.seen.put_all(&module)
+                    self.seen.put_byte(10)
+                    let found = new_txt()
+                    let text = self.find_module(dir, &module, &found)
+                    if text.n < 0:
+                        self.count_error()
+                        printf("error: module '%s' not found\n", txt_str(&module))
+                    else:
+                        self.flatten(&text, &found)
+                else:
+                    self.out.put_byte(10)
+                start = i + 1
+
+fn new_flat() => Flat:
+    return Flat { out: new_txt(), seen: new_txt(), dirs: new_txt(), errs: 0 }
+
+/#/ Is `w` in the lines of `t` (a line equal to it)?
+fn has_line(t: &Txt, w: &Txt) => bool:
+    let start = 0
+    for i in 0..t.n + 1:
+        if i == t.n || t.b[i] == 10:
+            if i - start == w.n:
+                let same = true
+                for k in 0..w.n:
+                    if t.b[start + k] != w.b[k]:
+                        same = false
+                if same:
+                    return true
+            start = i + 1
+    return false
+
+/#/ The bytes of `t` from `lo` up to `hi`.
+fn slice(t: &Txt, lo: int, hi: int) => Txt:
+    let r = new_txt()
+    for i in lo..hi:
+        r.put_byte(t.b[i])
+    return r
+
+/#/ Does the line of `t` that starts at `lo` and ends at `hi` have `w` in it, at `at` or after?
+fn find_in(t: &Txt, lo: int, hi: int, w: &str) => int:
+    for i in lo..hi:
+        let k = 0
+        while k < len(w) && i + k < hi && t.b[i + k] == int(w[k]):
+            k = k + 1
+        if k == len(w):
+            return i
+    return -1
+
+/#/ The module a `use` line (from `lo` to `hi`) names; empty when the line is not a `use`
+/#/ of a Coffee module.
+fn use_module(t: &Txt, lo: int, hi: int) => Txt:
+    let m = new_txt()
+    if hi - lo < 5 || t.b[lo] != int('u') || t.b[lo + 1] != int('s') || t.b[lo + 2] != int('e') || t.b[lo + 3] != 32:
+        return m
+    if find_in(t, lo, hi, " of c") >= 0:
+        return m
+    let at = lo + 4
+    let inn = find_in(t, lo, hi, " in ")
+    if inn >= 0:
+        at = inn + 4
+    while at < hi && t.b[at] == 32:
+        at = at + 1
+    while at < hi && t.b[at] != 32 && t.b[at] != 13 && t.b[at] != 44:
+        m.put_byte(t.b[at])
+        at = at + 1
+    return m
+

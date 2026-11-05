@@ -1,0 +1,57 @@
+use * in flat
+use printf, fflush in libc of c
+
+fn expect(what: int, got: int, want: int) => int:
+    if got != want:
+        printf("MISS #%d: got %d, want %d\n", what, got, want)
+        fflush(0)
+        return 1
+    return 0
+
+/#/ The length of the module name the line imports.
+fn module_len(line: &str) => int:
+    let t = txt_of(line)
+    let m = use_module(&t, 0, t.n)
+    return m.n
+
+fn b2i(b: bool) => int:
+    if b:
+        return 1
+    return 0
+
+fn main() => int:
+    let m = 0
+    /#/ strings built from bytes
+    let t = txt_of("a \"b\"\n\tc")
+    let s = txt_str(&t)
+    m = m + expect(1, len(s), 8)
+    m = m + expect(2, int(s[2]), 34)
+    m = m + expect(3, int(s[5]), 10)
+    let big = new_txt()
+    for i in 0..5000:
+        big.put_byte(97 + i % 26)
+    let bs = txt_str(&big)
+    m = m + expect(4, len(bs), 5000)
+    m = m + expect(5, int(bs[4999]), 97 + 4999 % 26)
+    /#/ which `use` lines name a Coffee module
+    m = m + expect(6, module_len("use * in lower"), 5)
+    m = m + expect(7, module_len("use a, b in util"), 4)
+    m = m + expect(8, module_len("use util"), 4)
+    m = m + expect(9, module_len("use printf in libc of c"), 0)
+    m = m + expect(10, module_len("let used = 1"), 0)
+    /#/ files: write, read back, missing
+    let p = txt_of("/tmp/coffee_driver_test.txt")
+    let w = txt_of("hello\nworld")
+    write_file(&p, &w)
+    let r = read_file(&p)
+    m = m + expect(11, r.n, 11)
+    remove_file(&p)
+    let gone = read_file(&p)
+    m = m + expect(12, gone.n, 0 - 1)
+    /#/ the lines of a set
+    let seen = txt_of("a\nbc\n")
+    let want = txt_of("bc")
+    let nope = txt_of("b")
+    m = m + expect(13, b2i(has_line(&seen, &want)), 1)
+    m = m + expect(14, b2i(has_line(&seen, &nope)), 0)
+    return m
