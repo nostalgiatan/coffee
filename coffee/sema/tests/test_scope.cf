@@ -15,4 +15,8 @@ fn main() => int:
     m = m + miss_diag("class A:\n    x: int\n\nfn f(a: &A) => int:\n    return a.y\n", fld, 1)
     m = m + miss_diag("class A:\n    x: int\n\n    fn g(self) => int:\n        return 1\n\nfn f(a: &A) => int:\n    return a.x + a.g()\n", fld, 0)
     m = m + miss_diag("class A:\n    x: int\n\nclass B of A:\n    y: int\n\nfn f(b: &B) => int:\n    return b.x + b.y\n", fld, 0)
+    /#/ a literal of a child class must give the parent's fields too
+    let mis = int(Sc.MissingField)
+    m = m + miss_diag("class A:\n    x: int\n\nclass B of A:\n    y: int\n\nfn f() => int:\n    let b = B { y: 1 }\n    return b.y\n", mis, 1)
+    m = m + miss_diag("class A:\n    x: int\n\nclass B of A:\n    y: int\n\nfn f() => int:\n    let b = B { x: 1, y: 1 }\n    return b.y\n", mis, 0)
     return m

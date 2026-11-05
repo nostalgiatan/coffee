@@ -35,5 +35,5 @@ Type errors are out of scope; that is the next stage.
 `tools/corpus.py` runs the analyzer over every `.cf` file in the repository (expects no errors).
 `tools/differential.py` compares it with the Rust compiler on the programs embedded in the
 Rust test suite: it expects no false positives (`MISSED=1` lists what it does not catch).
-Current numbers: 892 programs, 668 both accept, 60 both reject, 0 false positives, 10 missed
+Current numbers: 895 programs, 672 both accept, 62 both reject, 0 false positives, 8 missed
 (type errors and missing `.cfc` libraries).

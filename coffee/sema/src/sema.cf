@@ -383,16 +383,26 @@ class Checker:
 
     /#/ Every field of class `ci` must be given in struct literal `n`.
     fn missing_fields(self, a: &Ast, g: &Syms, ci: int, n: int) => void:
-        for i in 0..g.n:
-            if g.kind[i] == int(Sk.Field) && g.info[i] == ci:
-                let found = false
-                let f = a.child[n]
-                while f >= 0:
-                    if g.same_span(i, a, a.toks.start[a.tok[f]], a.toks.end[a.tok[f]], g.span_hash(a, a.toks.start[a.tok[f]], a.toks.end[a.tok[f]])):
-                        found = true
-                    f = a.next[f]
-                if !found:
-                    self.diag(a.tok[n], int(Sc.MissingField))
+        let cur = ci
+        let depth = 0
+        while cur >= 0 && depth < 32:
+            let next = -1
+            for i in 0..g.n:
+                if g.info[i] != cur:
+                    continue
+                if g.kind[i] == int(Sk.Parent):
+                    next = g.find_class_row(i)
+                if g.kind[i] == int(Sk.Field):
+                    let found = false
+                    let f = a.child[n]
+                    while f >= 0:
+                        if g.same_span(i, a, a.toks.start[a.tok[f]], a.toks.end[a.tok[f]], g.span_hash(a, a.toks.start[a.tok[f]], a.toks.end[a.tok[f]])):
+                            found = true
+                        f = a.next[f]
+                    if !found:
+                        self.diag(a.tok[n], int(Sc.MissingField))
+            cur = next
+            depth = depth + 1
 
     /#/ `{name}` inside an f-string reads `name`. Only marks it used: the text is not parsed.
     fn fstr(self, a: &Ast, n: int) => void:
