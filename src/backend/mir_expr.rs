@@ -219,6 +219,23 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                         )
                     })?;
             }
+            inkwell::types::BasicTypeEnum::StructType(t) => {
+                // `buf` / slices are `{ptr, len}`: a function-end drop on a path that never
+                // reached the declaration must see a null pointer, not an undefined slot.
+                let insert_block = self.backend.builder.get_insert_block();
+                if let Some(entry) = insert_block
+                    .and_then(|b| b.get_parent())
+                    .and_then(|f| f.get_first_basic_block())
+                {
+                    if let Some(term) = entry.get_terminator() {
+                        self.backend.builder.position_before(&term);
+                        let _ = self.backend.builder.build_store(alloca, t.const_zero());
+                        if let Some(b) = insert_block {
+                            self.backend.builder.position_at_end(b);
+                        }
+                    }
+                }
+            }
             _ => {}
         }
         self.variables.insert(name.to_string(), (alloca, llvm_type));

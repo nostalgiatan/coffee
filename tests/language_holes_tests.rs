@@ -599,3 +599,8 @@ fn test_early_return_of_a_string_is_balanced() {
 fn test_buf_stored_into_a_field_is_moved_not_freed_twice() {
     assert_balanced("class H:\n    nm: buf<int>\n\n    fn set(self, k: int) => void:\n        let b: buf<int> = new_buf(int, k)\n        for i in 0..k:\n            b[i] = i\n        self.nm = b\n\nfn main() => int:\n    let h = H { nm: new_buf(int, 2) }\n    h.set(5)\n    return len(h.nm) - 5\n");
 }
+
+#[test]
+fn test_buf_declared_in_a_branch_is_not_freed_when_the_branch_is_skipped() {
+    assert_balanced("fn f(k: int, v: int) => int:\n    if k == 2:\n        if v < 0:\n            return 1\n        let offs: buf<int> = new_buf(int, 4)\n        offs[0] = 3\n        return offs[0]\n    return 0\n\nfn main() => int:\n    return f(1, 1) + f(2, -1) + f(2, 1) - 4\n");
+}

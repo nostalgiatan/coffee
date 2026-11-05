@@ -1,0 +1,18 @@
+use * in drive
+use putchar in libc of c
+
+fn main() => int:
+    let m = 0
+    /#/ an enum without payloads: values, match, a binder arm
+    m = m + expect_exit("enum Color:\n    Red\n    Green\n    Blue\n\nfn code(c: Color) => int:\n    match c:\n        Color.Red =>\n            return 1\n        Color.Green =>\n            return 2\n        _ =>\n            return 3\n\nfn main() => int:\n    return code(Color.Red) * 100 + code(Color.Green) * 10 + code(Color.Blue)\n", 123)
+    /#/ payloads: construction, binding, a guard
+    m = m + expect_exit("enum Shape:\n    Circle(int)\n    Rect(int, int)\n    Dot\n\nfn area(s: &Shape) => int:\n    match s:\n        Shape.Circle(r) =>\n            return r * 3\n        Shape.Rect(w, h) =>\n            return w * h\n        Shape.Dot =>\n            return 0\n\nfn main() => int:\n    let a = Shape.Circle(4)\n    let b = Shape.Rect(3, 5)\n    let c = Shape.Dot\n    return area(&a) + area(&b) + area(&c)\n", 27)
+    m = m + expect_exit("enum V:\n    N(int)\n    Z\n\nfn f(v: &V) => int:\n    match v:\n        V.N(k) if k > 10 =>\n            return 1\n        V.N(k) =>\n            return k\n        V.Z =>\n            return 100\n\nfn main() => int:\n    let a = V.N(50)\n    let b = V.N(7)\n    let c = V.Z\n    return f(&a) + f(&b) + f(&c)\n", 108)
+    /#/ a payload that owns a string: released with the enum, copied out by a binding
+    m = m + expect_exit("enum Msg:\n    Text(str)\n    Num(int)\n\nfn size(m: &Msg) => int:\n    match m:\n        Msg.Text(s) =>\n            return len(&s)\n        Msg.Num(n) =>\n            return n\n\nfn main() => int:\n    let a = Msg.Text(\"hello\")\n    let b = Msg.Num(2)\n    return size(&a) + size(&b)\n", 7)
+    m = m + expect_exit("enum Msg:\n    Text(str)\n    Num(int)\n\nfn main() => int:\n    let a = Msg.Text(\"hey\")\n    let b = clone a\n    match b:\n        Msg.Text(s) =>\n            return len(&s)\n        Msg.Num(n) =>\n            return n\n", 3)
+    /#/ matching integers and booleans
+    m = m + expect_exit("fn kind(n: int) => int:\n    match n:\n        0 =>\n            return 10\n        1 =>\n            return 20\n        _ =>\n            return 30\n\nfn main() => int:\n    return kind(0) + kind(1) + kind(7)\n", 60)
+    /#/ for over an array, a buffer and a slice
+    m = m + expect_exit("fn total(b: &buf<int>) => int:\n    let s = 0\n    for x in b:\n        s = s + x\n    return s\n\nfn main() => int:\n    let a = [1, 2, 3]\n    let s = 0\n    for x in a:\n        s = s + x\n    let b: buf<int> = new_buf(int, 4)\n    b[1] = 5\n    b[3] = 6\n    return s + total(&b)\n", 17)
+    return m

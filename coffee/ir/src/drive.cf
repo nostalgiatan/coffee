@@ -12,6 +12,8 @@ fn run_src(src: str, leaks: bool) => int:
     declare_types(&t, &g, &a, m)
     let ty = check_types(&t, &g, &a, m)
     if ty.diags.n > 0 || a.err_count > 0:
+        printf("front end: %d type findings (first code %d), %d parse errors\n", ty.diags.n, te_number(ty.diags.code[0]), a.err_count)
+        fflush(0)
         return -2
     let lw = new_lower()
     let o = new_txt()

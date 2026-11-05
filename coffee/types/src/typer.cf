@@ -1328,10 +1328,14 @@ class Typer:
 
     /#/ A pattern of type `st`: names bind, `E.V(p, ...)` binds the payload, anything else is
     /#/ a value of that type.
-    fn pattern(self, t: &Tys, g: &Syms, a: &Ast, p: int, st: int) => void:
+    fn pattern(self, t: &Tys, g: &Syms, a: &Ast, p: int, st0: int) => void:
         if p < 0:
             return
         let k = a.kind[p]
+        /#/ a variant pattern looks through a reference to the enum it matches
+        let st = st0
+        if k == int(Nk.Call) || k == int(Nk.Member):
+            st = self.strip_refs(t, st0)
         if k == int(Nk.Name):
             if tok_is(a, a.tok[p], "_"):
                 return

@@ -45,7 +45,9 @@ fn rep_of(t: &Tys, g: &Syms, x: int) => int:
     if k == int(Ty.Named):
         if g.kind[t.a[x]] == int(Sk.Class):
             return int(Rp.Ptr)
-        if g.kind[t.a[x]] == int(Sk.Enum) && !has_payload(t, g, t.a[x]):
+        if g.kind[t.a[x]] == int(Sk.Enum):
+            if has_payload(t, g, t.a[x]):
+                return int(Rp.Ptr)
             return int(Rp.I64)
     return -1
 
@@ -142,6 +144,8 @@ fn needs_drop(t: &Tys, g: &Syms, x: int) => bool:
     if k == int(Ty.Buf):
         return t.a[x] >= 0
     if k == int(Ty.Named):
+        if g.kind[t.a[x]] == int(Sk.Enum):
+            return has_payload(t, g, t.a[x])
         return g.kind[t.a[x]] == int(Sk.Class)
     return false
 
@@ -456,7 +460,7 @@ class Lower:
     /#/ ---- expressions ---------------------------------------------------------
 
     /#/ The bytes of string literal token `tok`, escapes resolved, as a global `@sN`.
-    fn string(self, a: &Ast, tok: int) => int:
+    fn str_lit(self, a: &Ast, tok: int) => int:
         let s = a.toks.start[tok] + 1
         let e = a.toks.end[tok] - 1
         let body = new_txt()
@@ -661,6 +665,8 @@ class Lower:
         let callee = a.pa[n]
         let res = ty.node[n]
         if callee >= 0 && a.kind[callee] == int(Nk.Member):
+            if self.enum_row(ty, a, a.pa[callee]) >= 0:
+                return self.variant(t, g, ty, a, callee, n)
             return self.member_call(t, g, ty, a, n)
         if callee < 0 || a.kind[callee] != int(Nk.Name):
             self.unsupported(n)
@@ -776,7 +782,7 @@ class Lower:
                 v = 1
             return self.f.cint(int(Rp.I8), v)
         if k == int(Nk.Str):
-            let lit = self.f.strlit(self.string(a, a.tok[n]))
+            let lit = self.f.strlit(self.str_lit(a, a.tok[n]))
             if t.kind[x] == int(Ty.Str):
                 self.f.arg(lit)
                 return self.f.ccall(int(Rp.Ptr), 1, self.rt_strdup, 0)
@@ -931,6 +937,8 @@ class Lower:
                 self.drop_scope(t, g, a, 0)
                 self.f.ret_void()
             self.dead_block()
+        elif k == int(Nk.Match):
+            self.match_stmt(t, g, ty, a, n)
         elif k == int(Nk.Rm):
             self.rm_stmt(t, g, ty, a, a.pa[n])
             let extra = a.child[n]
@@ -1078,17 +1086,43 @@ class Lower:
     /#/ `for i in a..b`: a counter that runs from `a` to `b - 1`; `i` is its value each time.
     fn for_stmt(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => void:
         let it = a.pb[n]
-        if a.kind[it] != int(Nk.Range) || a.pa[n] < 0:
+        if a.pa[n] < 0:
             self.unsupported(n)
             return
         let vt = ty.node[n]
         let vr = self.rep(t, g, vt)
-        if vr < 0 || !rp_is_int(vr):
+        if vr < 0 || vr == int(Rp.Void):
             self.unsupported(n)
             return
-        let lo = self.coerce(t, g, self.ex(t, g, ty, a, a.pa[it]), ty.node[a.pa[it]], vt)
-        let hi = self.coerce(t, g, self.ex(t, g, ty, a, a.pb[it]), ty.node[a.pb[it]], vt)
-        let counter = self.new_var(a, -1, vr, vt)
+        let lo = -1
+        let hi = -1
+        let data = -1
+        let cr = vr
+        let ct = vt
+        if a.kind[it] == int(Nk.Range):
+            if !rp_is_int(vr):
+                self.unsupported(n)
+                return
+            lo = self.coerce(t, g, self.ex(t, g, ty, a, a.pa[it]), ty.node[a.pa[it]], vt)
+            hi = self.coerce(t, g, self.ex(t, g, ty, a, a.pb[it]), ty.node[a.pb[it]], vt)
+        else:
+            /#/ the elements of an array, buffer or slice, taken one by one (copies only)
+            let ot = self.strip_refs(t, ty.node[it])
+            let k = t.kind[ot]
+            if !(k == int(Ty.Array) || (k == int(Ty.Buf) && t.a[ot] >= 0) || k == int(Ty.Slice)) || needs_drop(t, g, vt):
+                self.unsupported(n)
+                return
+            cr = int(Rp.I64)
+            ct = t.int_ty(8, true)
+            lo = self.f.cint(cr, 0)
+            if k == int(Ty.Array):
+                data = self.exb(t, g, ty, a, it)
+                hi = self.f.cint(cr, t.b[ot])
+            else:
+                let agg = self.agg_of(t, g, ty, a, it)
+                data = self.f.extract(int(Rp.Ptr), agg, 0)
+                hi = self.f.extract(cr, agg, 1)
+        let counter = self.new_var(a, -1, cr, ct)
         self.write_var(counter, self.f.cur, lo)
         let head = self.new_block()
         let body = self.new_block()
@@ -1098,13 +1132,16 @@ class Lower:
         self.f.set_block(head)
         let i = self.read_var(counter, head)
         let lt = int(Pr.SLt)
-        if !is_signed(t, vt):
+        if !is_signed(t, ct):
             lt = int(Pr.ULt)
         self.branch(self.f.cmp(lt, i, hi), body, exit)
         self.seal(body)
         self.f.set_block(body)
         let mark = self.sc.n
-        self.bind_var(t, g, a, a.pa[n], vt, self.read_var(counter, body))
+        let cv = self.read_var(counter, body)
+        if data >= 0:
+            cv = self.f.load(vr, -1, self.f.index(data, cv, st_size(t, g, vt)))
+        self.bind_var(t, g, a, a.pa[n], vt, cv)
         self.push_loop(latch, exit)
         self.block(t, g, ty, a, a.pc[n])
         self.nloops = self.nloops - 1
@@ -1113,11 +1150,283 @@ class Lower:
         self.seal(latch)
         self.f.set_block(latch)
         let cur = self.read_var(counter, latch)
-        self.write_var(counter, latch, self.f.bin(int(Op.Add), cur, self.f.cint(vr, 1)))
+        self.write_var(counter, latch, self.f.bin(int(Op.Add), cur, self.f.cint(cr, 1)))
         self.jump(head)
         self.seal(head)
         self.seal(exit)
         self.f.set_block(exit)
+
+    /#/ ---- enums and match -----------------------------------------------------
+
+    /#/ The enum row `o` (a Name) names, or -1.
+    fn enum_row(self, ty: &Typer, a: &Ast, o: int) => int:
+        if o < 0 || a.kind[o] != int(Nk.Name):
+            return -1
+        let r = ty.lookup(a, a.tok[o])
+        if r < 0 || ty.rd.sc.loc.kind[r] != int(Sk.Enum):
+            return -1
+        return ty.rd.sc.loc.info[r]
+
+    /#/ Position of variant row `v` among the variants of its enum.
+    fn variant_index(self, g: &Syms, v: int) => int:
+        let k = 0
+        for i in 0..v:
+            if g.info[i] == g.info[v] && g.kind[i] == int(Sk.Variant):
+                k = k + 1
+        return k
+
+    /#/ The payload of variant row `v` of enum type `x`: types in `lay_ty`, offsets in `lay_off`
+    /#/ (after the 8-byte tag).
+    fn payload_layout(self, t: &Tys, g: &Syms, x: int, v: int) => void:
+        self.lay_n = 0
+        let sig = g.ty[v]
+        if sig < 0 || t.kind[sig] != int(Ty.Fn):
+            return
+        let off = 8
+        for i in 0..t.count_of(sig):
+            let ft = subst_env(t, t.arg(sig, i), x)
+            off = align_up(off, st_align(t, g, ft))
+            if self.lay_n >= len(self.lay_ty):
+                self.lay_ty = buf_resize(self.lay_ty, (self.lay_n + 1) * 2)
+                self.lay_off = buf_resize(self.lay_off, (self.lay_n + 1) * 2)
+            self.lay_ty[self.lay_n] = ft
+            self.lay_off[self.lay_n] = off
+            self.lay_n = self.lay_n + 1
+            off = off + st_size(t, g, ft)
+
+    /#/ `Enum::Variant` and `Enum::Variant(args)`; `callee` is the Member node, `n` the whole.
+    fn variant(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, callee: int, n: int) => int:
+        let x = ty.node[n]
+        let er = self.enum_row(ty, a, a.pa[callee])
+        let v = -1
+        if er >= 0:
+            v = member_of(g, a, er, a.tok[callee], int(Sk.Variant))
+        if v < 0 || t.kind[x] != int(Ty.Named):
+            self.unsupported(n)
+            return self.f.undef(int(Rp.I64))
+        let tag = self.variant_index(g, v)
+        if !has_payload(t, g, er):
+            return self.f.cint(int(Rp.I64), tag)
+        let p = self.f.alloc(st_block(t, g, x))
+        self.f.store(self.f.field(p, 0), self.f.cint(int(Rp.I64), tag))
+        if n != callee:
+            self.payload_layout(t, g, x, v)
+            let offs: buf<int> = new_buf(int, self.lay_n + 1)
+            let tys: buf<int> = new_buf(int, self.lay_n + 1)
+            let cnt = self.lay_n
+            for i in 0..cnt:
+                offs[i] = self.lay_off[i]
+                tys[i] = self.lay_ty[i]
+            let c = a.child[n]
+            let i = 0
+            while c >= 0 && i < cnt:
+                let val = self.sink(t, g, ty, a, c, tys[i])
+                self.f.store(self.f.field(p, offs[i]), val)
+                i = i + 1
+                c = a.next[c]
+        return p
+
+    /#/ A test that the scrutinee `tag` (the variant number, or the value) matches pattern `p`.
+    fn pattern_test(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, p: int, tag: int, en: int) => int:
+        let k = a.kind[p]
+        let yes = self.f.cint(int(Rp.I8), 1)
+        if k == int(Nk.Name):
+            return yes
+        if k == int(Nk.Member) && en >= 0:
+            let v = member_of(g, a, en, a.tok[p], int(Sk.Variant))
+            if v >= 0:
+                return self.f.cmp(int(Pr.Eq), tag, self.f.cint(int(Rp.I64), self.variant_index(g, v)))
+        if k == int(Nk.Call) && en >= 0 && a.pa[p] >= 0 && a.kind[a.pa[p]] == int(Nk.Member):
+            let v = member_of(g, a, en, a.tok[a.pa[p]], int(Sk.Variant))
+            if v >= 0:
+                return self.f.cmp(int(Pr.Eq), tag, self.f.cint(int(Rp.I64), self.variant_index(g, v)))
+        if (k == int(Nk.Int) || k == int(Nk.Char) || k == int(Nk.Bool)) && en < 0:
+            let r = self.f.rep[tag]
+            if rp_is_int(r):
+                let lit = 0
+                if k == int(Nk.Int):
+                    lit = lit_digits(a, a.tok[p])
+                elif k == int(Nk.Char):
+                    lit = char_value(a, a.tok[p])
+                elif a.byte_at(a.toks.start[a.tok[p]]) == 't':
+                    lit = 1
+                return self.f.cmp(int(Pr.Eq), tag, self.f.cint(r, lit))
+        self.unsupported(p)
+        return yes
+
+    /#/ Is `p` a name that binds the matched value (not `_`, not a constant)?
+    fn is_binder(self, ty: &Typer, a: &Ast, p: int) => bool:
+        if a.kind[p] != int(Nk.Name) || tok_is(a, a.tok[p], "_"):
+            return false
+        return self.lookup(a, a.tok[p]) >= 0 || ty.lookup(a, a.tok[p]) < 0
+
+    /#/ Binds the names of pattern `p` in the arm. `v` is the scrutinee value, `x` its type.
+    fn pattern_bind(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, p: int, v: int, x: int, en: int) => void:
+        let k = a.kind[p]
+        if k == int(Nk.Name):
+            if self.is_binder(ty, a, p):
+                let val = v
+                if needs_drop(t, g, x):
+                    val = self.clone_value(t, g, v, x)
+                self.bind_var(t, g, a, a.tok[p], x, val)
+        elif k == int(Nk.Call) && en >= 0:
+            self.bind_variant(t, g, ty, a, p, v, x, en)
+
+    /#/ Binds the payload names of the variant pattern `p`.
+    fn bind_variant(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, p: int, v: int, x: int, en: int) => void:
+        let vr = member_of(g, a, en, a.tok[a.pa[p]], int(Sk.Variant))
+        if vr < 0:
+            return
+        self.payload_layout(t, g, x, vr)
+        let offs: buf<int> = new_buf(int, self.lay_n + 1)
+        let tys: buf<int> = new_buf(int, self.lay_n + 1)
+        let cnt = self.lay_n
+        for i in 0..cnt:
+            offs[i] = self.lay_off[i]
+            tys[i] = self.lay_ty[i]
+        let c = a.child[p]
+        let i = 0
+        while c >= 0 && i < cnt:
+            if a.kind[c] != int(Nk.Name):
+                self.unsupported(c)
+            elif self.is_binder(ty, a, c):
+                let r = self.rep(t, g, tys[i])
+                if r < 0:
+                    self.unsupported(c)
+                else:
+                    let fv = self.f.load(r, -1, self.f.field(v, offs[i]))
+                    self.pattern_bind(t, g, ty, a, c, fv, tys[i], -1)
+            i = i + 1
+            c = a.next[c]
+
+    /#/ `match`: the arms are tried in order; a name or `_` matches anything. A payload that is
+    /#/ bound is a copy owned by the arm.
+    fn match_stmt(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => void:
+        let s = a.pa[n]
+        let st = self.strip_refs(t, ty.node[s])
+        let en = -1
+        let tag = -1
+        let sv = self.exb(t, g, ty, a, s)
+        if t.kind[ty.node[s]] == int(Ty.Ref) && !is_handle(t, g, st) && self.rep(t, g, st) >= 0:
+            sv = self.f.load(self.rep(t, g, st), -1, sv)
+        if t.kind[st] == int(Ty.Named) && g.kind[t.a[st]] == int(Sk.Enum):
+            en = t.a[st]
+            if has_payload(t, g, en):
+                tag = self.f.load(int(Rp.I64), -1, self.f.field(sv, 0))
+            else:
+                tag = sv
+        elif t.kind[st] == int(Ty.Int) || t.kind[st] == int(Ty.Bool):
+            tag = sv
+        else:
+            self.unsupported(n)
+            return
+        let join = self.new_block()
+        let arm = a.child[n]
+        while arm >= 0:
+            let p = a.pa[arm]
+            let body = self.new_block()
+            let next = self.new_block()
+            self.branch(self.pattern_test(t, g, ty, a, p, tag, en), body, next)
+            self.seal(body)
+            self.f.set_block(body)
+            let own_mark = self.own_n
+            let mark = self.sc.n
+            self.pattern_bind(t, g, ty, a, p, sv, st, en)
+            if a.pc[arm] >= 0:
+                let ok = self.new_block()
+                let gf = self.new_block()
+                self.branch(self.ex(t, g, ty, a, a.pc[arm]), ok, gf)
+                self.seal(ok)
+                self.seal(gf)
+                self.f.set_block(gf)
+                self.drop_scope(t, g, a, own_mark)
+                self.jump(next)
+                self.f.set_block(ok)
+            self.block(t, g, ty, a, a.pb[arm])
+            if !self.f.terminated(self.f.cur):
+                self.drop_scope(t, g, a, own_mark)
+            self.own_n = own_mark
+            self.sc.truncate(mark)
+            self.jump(join)
+            self.seal(next)
+            self.f.set_block(next)
+            arm = a.next[arm]
+        self.jump(join)
+        self.seal(join)
+        self.f.set_block(join)
+
+    /#/ Drop glue of an enum with payloads: the fields of the live variant, then the block.
+    fn glue_enum_drop(self, t: &Tys, g: &Syms, x: int, p: int) => void:
+        let en = t.a[x]
+        let tag = self.f.load(int(Rp.I64), -1, self.f.field(p, 0))
+        let end = self.f.new_block()
+        let nv = 0
+        let rows: buf<int> = new_buf(int, 8)
+        let blocks: buf<int> = new_buf(int, 8)
+        for i in 0..g.n:
+            if g.info[i] == en && g.kind[i] == int(Sk.Variant):
+                self.payload_layout(t, g, x, i)
+                let owned = false
+                for k in 0..self.lay_n:
+                    if needs_drop(t, g, self.lay_ty[k]):
+                        owned = true
+                if owned:
+                    if nv >= len(rows):
+                        rows = buf_resize(rows, nv * 2)
+                        blocks = buf_resize(blocks, nv * 2)
+                    rows[nv] = i
+                    blocks[nv] = self.f.new_block()
+                    nv = nv + 1
+        for k in 0..nv:
+            self.f.sw_case(self.variant_index(g, rows[k]), self.f.mk_edge(blocks[k]))
+        self.f.switch(tag, self.f.mk_edge(end))
+        for k in 0..nv:
+            self.f.set_block(blocks[k])
+            self.payload_layout(t, g, x, rows[k])
+            for q in 0..self.lay_n:
+                let ft = self.lay_ty[q]
+                if needs_drop(t, g, ft):
+                    self.drop_value(t, g, self.f.load(self.rep(t, g, ft), -1, self.f.field(p, self.lay_off[q])), ft)
+            self.f.br(end)
+        self.f.set_block(end)
+        self.f.free(p)
+        self.f.ret_void()
+
+    /#/ Clone glue of an enum with payloads: the tag, and the fields of the live variant.
+    fn glue_enum_clone(self, t: &Tys, g: &Syms, x: int, p: int) => void:
+        let en = t.a[x]
+        let q = self.f.alloc(st_block(t, g, x))
+        let tag = self.f.load(int(Rp.I64), -1, self.f.field(p, 0))
+        self.f.store(self.f.field(q, 0), tag)
+        let end = self.f.new_block()
+        let nv = 0
+        let rows: buf<int> = new_buf(int, 8)
+        let blocks: buf<int> = new_buf(int, 8)
+        for i in 0..g.n:
+            if g.info[i] == en && g.kind[i] == int(Sk.Variant):
+                self.payload_layout(t, g, x, i)
+                if self.lay_n > 0:
+                    if nv >= len(rows):
+                        rows = buf_resize(rows, nv * 2)
+                        blocks = buf_resize(blocks, nv * 2)
+                    rows[nv] = i
+                    blocks[nv] = self.f.new_block()
+                    nv = nv + 1
+        for k in 0..nv:
+            self.f.sw_case(self.variant_index(g, rows[k]), self.f.mk_edge(blocks[k]))
+        self.f.switch(tag, self.f.mk_edge(end))
+        for k in 0..nv:
+            self.f.set_block(blocks[k])
+            self.payload_layout(t, g, x, rows[k])
+            for j in 0..self.lay_n:
+                let ft = self.lay_ty[j]
+                let v = self.f.load(self.rep(t, g, ft), -1, self.f.field(p, self.lay_off[j]))
+                if needs_drop(t, g, ft):
+                    v = self.clone_value(t, g, v, ft)
+                self.f.store(self.f.field(q, self.lay_off[j]), v)
+            self.f.br(end)
+        self.f.set_block(end)
+        self.f.ret(q)
 
     /#/ ---- representations, slots, places ---------------------------------------
 
@@ -1239,7 +1548,7 @@ class Lower:
 
     /#/ The value of an aggregate (`buf<T>`, slice, tuple) held by `o`, which may be a reference.
     fn agg_of(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, o: int) => int:
-        let v = self.ex(t, g, ty, a, o)
+        let v = self.exb(t, g, ty, a, o)
         let ot = ty.node[o]
         if t.kind[ot] == int(Ty.Ref):
             return self.f.load(self.rep(t, g, t.a[ot]), -1, v)
@@ -1339,6 +1648,8 @@ class Lower:
     /#/ `a.b`: a field of a class, or an element of a tuple.
     fn member(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => int:
         let o = a.pa[n]
+        if self.enum_row(ty, a, o) >= 0:
+            return self.variant(t, g, ty, a, n, n)
         let ot = self.strip_refs(t, ty.node[o])
         let r = self.rep(t, g, ty.node[n])
         if r < 0:
@@ -1446,7 +1757,7 @@ class Lower:
     /#/ owns something is released at the end of the statement.
     fn exb(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => int:
         if a.kind[n] == int(Nk.Str):
-            return self.f.strlit(self.string(a, a.tok[n]))
+            return self.f.strlit(self.str_lit(a, a.tok[n]))
         let v = self.ex(t, g, ty, a, n)
         let x = ty.node[n]
         let k = a.kind[n]
@@ -1643,15 +1954,21 @@ class Lower:
             let b = self.f.new_block()
             self.f.set_block(b)
             let p = self.f.param(b, int(Rp.Ptr), -1)
-            self.layout(t, g, x)
-            if kind == 0:
-                self.glue_drop_fields(t, g, p)
-                self.f.free(p)
-                self.f.ret_void()
+            if g.kind[t.a[x]] == int(Sk.Enum):
+                if kind == 0:
+                    self.glue_enum_drop(t, g, x, p)
+                else:
+                    self.glue_enum_clone(t, g, x, p)
             else:
-                let q = self.f.alloc(st_block(t, g, x))
-                self.glue_clone_fields(t, g, p, q)
-                self.f.ret(q)
+                self.layout(t, g, x)
+                if kind == 0:
+                    self.glue_drop_fields(t, g, p)
+                    self.f.free(p)
+                    self.f.ret_void()
+                else:
+                    let q = self.f.alloc(st_block(t, g, x))
+                    self.glue_clone_fields(t, g, p, q)
+                    self.f.ret(q)
             self.emit_current(o)
 
     fn glue_drop_fields(self, t: &Tys, g: &Syms, p: int) => void:
