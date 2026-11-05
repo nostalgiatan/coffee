@@ -22,6 +22,8 @@ Modules a module imports from are declared (both `declare_module` and `declare_t
 - `src/reader.cf` — `Reader`: spelled types (`&mut [u8]`, `(int, str)`, `Box<int>`) to ids,
   and the signature of a function in a module's scope.
 - `src/declare.cf` — the declaration pass; types go in `ty` of the symbol rows.
+- `src/storage.cf` — the storage of every type (representation, size, ownership, drop, clone),
+  one table described in [STORAGE.md](STORAGE.md); no stage decides these for itself.
 - `src/typer.cf` — `Typer`: expressions, statements, calls, generics.
 - `src/types_diag.cf` — findings (the Rust compiler's E100…E112 numbers).
 - `src/types_probe.cf` — helpers for tests.

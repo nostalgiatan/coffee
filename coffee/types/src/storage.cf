@@ -1,0 +1,337 @@
+/#/ The storage of every type, computed in one place. See STORAGE.md for the table this
+/#/ implements; every function here is that table, row by row.
+use * in declare
+
+enum Own:
+    Copy
+    Move
+    Borrow
+    Unknown
+
+enum Drop:
+    Nothing
+    Free
+    Elems
+    Fields
+    Variant
+    Unknown
+
+enum Clone:
+    Bit
+    Deep
+    Shallow
+    Never
+    Unknown
+
+/#/ `ty` with the type parameters replaced by the type arguments of `env`, a `Name<A, B>`.
+fn subst_env(t: &Tys, ty: int, env: int) => int:
+    if env < 0 || ty < 0 || t.kind[env] != int(Ty.Named):
+        return ty
+    let k = t.kind[ty]
+    if k == int(Ty.Param):
+        if t.a[ty] < t.count_of(env):
+            return t.arg(env, t.a[ty])
+        return 0
+    if k == int(Ty.Ref):
+        return t.ref_to(subst_env(t, t.a[ty], env), t.b[ty] == 1)
+    if k == int(Ty.Slice):
+        return t.slice_of(subst_env(t, t.a[ty], env))
+    if k == int(Ty.Buf):
+        if t.a[ty] < 0:
+            return ty
+        return t.buf_of(subst_env(t, t.a[ty], env))
+    if k == int(Ty.Array):
+        return t.array_of(subst_env(t, t.a[ty], env), t.b[ty])
+    if k == int(Ty.Tuple) || k == int(Ty.Fn) || k == int(Ty.Named):
+        let count = t.count_of(ty)
+        let items = new_buf(int, count + 1)
+        for i in 0..count:
+            items[i] = subst_env(t, t.arg(ty, i), env)
+        let start = t.args_n
+        for i in 0..count:
+            t.push_arg(items[i])
+        if k == int(Ty.Tuple):
+            return t.intern(int(Ty.Tuple), 0, count, 0, start)
+        if k == int(Ty.Fn):
+            return t.intern(int(Ty.Fn), 0, count, subst_env(t, t.c[ty], env), start)
+        return t.intern(int(Ty.Named), t.a[ty], 0, count, start)
+    return ty
+
+/#/ Is `x` an enum type?
+fn is_enum(t: &Tys, g: &Syms, x: int) => bool:
+    return t.kind[x] == int(Ty.Named) && g.kind[t.a[x]] == int(Sk.Enum)
+
+/#/ Does enum `e` (a row of `g`) have a variant that carries values?
+fn has_payload(t: &Tys, g: &Syms, e: int) => bool:
+    for i in 0..g.n:
+        if g.info[i] == e && g.kind[i] == int(Sk.Variant) && g.ty[i] >= 0 && t.kind[g.ty[i]] == int(Ty.Fn):
+            return true
+    return false
+
+/#/ Is the value of `x` a single pointer to a block it stands for?
+fn is_handle(t: &Tys, g: &Syms, x: int) => bool:
+    let k = t.kind[x]
+    if k == int(Ty.Str) || k == int(Ty.Object) || k == int(Ty.Array):
+        return true
+    if k == int(Ty.Buf):
+        return t.a[x] < 0
+    if k == int(Ty.Named):
+        if g.kind[t.a[x]] == int(Sk.Enum):
+            return has_payload(t, g, t.a[x])
+        return true
+    return false
+
+fn align_up(n: int, a: int) => int:
+    if a <= 1:
+        return n
+    return (n + a - 1) // a * a
+
+/#/ The alignment of a value of `x`; 1 when it has none.
+fn st_align(t: &Tys, g: &Syms, x: int) => int:
+    let k = t.kind[x]
+    if k == int(Ty.Void) || k == int(Ty.Bool) || k == int(Ty.Error):
+        return 1
+    if k == int(Ty.Int) || k == int(Ty.Float):
+        return t.a[x]
+    if k == int(Ty.Tuple):
+        let a = 1
+        for i in 0..t.count_of(x):
+            let fa = st_align(t, g, t.arg(x, i))
+            if fa > a:
+                a = fa
+        return a
+    return 8
+
+/#/ The size of a value of `x`: what it takes in a register, a variable or a field.
+fn st_size(t: &Tys, g: &Syms, x: int) => int:
+    let k = t.kind[x]
+    if k == int(Ty.Void) || k == int(Ty.Error):
+        return 0
+    if k == int(Ty.Bool):
+        return 1
+    if k == int(Ty.Int) || k == int(Ty.Float):
+        return t.a[x]
+    if k == int(Ty.Slice):
+        return 16
+    if k == int(Ty.Buf):
+        if t.a[x] < 0:
+            return 8
+        return 16
+    if k == int(Ty.Tuple):
+        let n = 0
+        for i in 0..t.count_of(x):
+            let f = t.arg(x, i)
+            n = align_up(n, st_align(t, g, f)) + st_size(t, g, f)
+        return align_up(n, st_align(t, g, x))
+    if k == int(Ty.Named) && g.kind[t.a[x]] == int(Sk.Enum) && !has_payload(t, g, t.a[x]):
+        return 8
+    return 8
+
+/#/ The size of the block a handle points at; -1 when it is not known statically.
+fn st_block(t: &Tys, g: &Syms, x: int) => int:
+    let k = t.kind[x]
+    if k == int(Ty.Array):
+        if t.b[x] < 0:
+            return -1
+        return t.b[x] * st_size(t, g, t.a[x])
+    if k == int(Ty.Named):
+        if g.kind[t.a[x]] == int(Sk.Enum):
+            return enum_block(t, g, x)
+        return class_block(t, g, x, 0)
+    return -1
+
+/#/ A class's block: the fields of its ancestors, then its own. `mode` 0 gives the size, 1 the
+/#/ alignment.
+fn class_block(t: &Tys, g: &Syms, x: int, mode: int) => int:
+    let chain = new_buf(int, 8)
+    let n = 0
+    let cur = t.a[x]
+    while cur >= 0 && n < 8:
+        chain[n] = cur
+        n = n + 1
+        let next = -1
+        for i in 0..g.n:
+            if g.info[i] == cur && g.kind[i] == int(Sk.Parent):
+                next = g.find_class_row(i)
+        cur = next
+    let size = 0
+    let align = 1
+    let c = n - 1
+    while c >= 0:
+        for i in 0..g.n:
+            if g.info[i] == chain[c] && g.kind[i] == int(Sk.Field) && g.ty[i] >= 0:
+                let f = subst_env(t, g.ty[i], x)
+                let fa = st_align(t, g, f)
+                size = align_up(size, fa) + st_size(t, g, f)
+                if fa > align:
+                    align = fa
+        c = c - 1
+    if mode == 1:
+        return align
+    return align_up(size, align)
+
+/#/ An enum with payloads is `{i64 tag, payload}`, as big as its biggest variant.
+fn enum_block(t: &Tys, g: &Syms, x: int) => int:
+    let best = 8
+    for i in 0..g.n:
+        if g.info[i] == t.a[x] && g.kind[i] == int(Sk.Variant) && g.ty[i] >= 0 && t.kind[g.ty[i]] == int(Ty.Fn):
+            let v = g.ty[i]
+            let n = 8
+            for k in 0..t.count_of(v):
+                let f = subst_env(t, t.arg(v, k), x)
+                n = align_up(n, st_align(t, g, f)) + st_size(t, g, f)
+            n = align_up(n, 8)
+            if n > best:
+                best = n
+    return best
+
+/#/ Copy, move or borrow.
+fn st_own(t: &Tys, g: &Syms, x: int) => int:
+    let k = t.kind[x]
+    if k == int(Ty.Void) || k == int(Ty.Bool) || k == int(Ty.Int) || k == int(Ty.Float) || k == int(Ty.Fn):
+        return int(Own.Copy)
+    if k == int(Ty.Ref):
+        return int(Own.Borrow)
+    if k == int(Ty.Str) || k == int(Ty.Object) || k == int(Ty.Buf) || k == int(Ty.Slice):
+        return int(Own.Move)
+    if k == int(Ty.Array):
+        return st_own(t, g, t.a[x])
+    if k == int(Ty.Tuple):
+        for i in 0..t.count_of(x):
+            if st_own(t, g, t.arg(x, i)) != int(Own.Copy):
+                return int(Own.Move)
+        return int(Own.Copy)
+    if k == int(Ty.Named):
+        if g.kind[t.a[x]] == int(Sk.Enum) && !has_payload(t, g, t.a[x]):
+            return int(Own.Copy)
+        return int(Own.Move)
+    return int(Own.Unknown)
+
+/#/ What dropping a value of `x` does.
+fn st_drop(t: &Tys, g: &Syms, x: int) => int:
+    let k = t.kind[x]
+    if k == int(Ty.Void) || k == int(Ty.Bool) || k == int(Ty.Int) || k == int(Ty.Float) || k == int(Ty.Fn) || k == int(Ty.Ref) || k == int(Ty.Object):
+        return int(Drop.Nothing)
+    if k == int(Ty.Str) || k == int(Ty.Buf):
+        return int(Drop.Free)
+    if k == int(Ty.Slice):
+        return int(Drop.Elems)
+    if k == int(Ty.Array):
+        if st_own(t, g, x) == int(Own.Copy):
+            return int(Drop.Nothing)
+        return int(Drop.Elems)
+    if k == int(Ty.Tuple):
+        if st_own(t, g, x) == int(Own.Copy):
+            return int(Drop.Nothing)
+        return int(Drop.Fields)
+    if k == int(Ty.Named):
+        if g.kind[t.a[x]] == int(Sk.Enum):
+            if has_payload(t, g, t.a[x]):
+                return int(Drop.Variant)
+            return int(Drop.Nothing)
+        return int(Drop.Fields)
+    return int(Drop.Unknown)
+
+/#/ What `clone` of a value of `x` does.
+fn st_clone(t: &Tys, g: &Syms, x: int) => int:
+    let k = t.kind[x]
+    if st_own(t, g, x) == int(Own.Copy):
+        return int(Clone.Bit)
+    if k == int(Ty.Buf):
+        return int(Clone.Never)
+    if k == int(Ty.Object) || k == int(Ty.Ref) || k == int(Ty.Slice):
+        return int(Clone.Shallow)
+    if k == int(Ty.Str) || k == int(Ty.Array) || k == int(Ty.Tuple) || k == int(Ty.Named):
+        return int(Clone.Deep)
+    return int(Clone.Unknown)
+
+/#/ The LLVM type of a value of `x`, spelled out.
+fn st_repr(o: &Out, t: &Tys, g: &Syms, x: int) => void:
+    let k = t.kind[x]
+    if k == int(Ty.Void):
+        o.put("none")
+    elif k == int(Ty.Bool):
+        o.put("i8")
+    elif k == int(Ty.Int):
+        o.put("i")
+        o.put_int(t.a[x] * 8)
+    elif k == int(Ty.Float):
+        o.put("f")
+        o.put_int(t.a[x] * 8)
+    elif k == int(Ty.Slice) || (k == int(Ty.Buf) && t.a[x] >= 0):
+        o.put("{ptr, i64}")
+    elif k == int(Ty.Tuple):
+        o.put("{")
+        for i in 0..t.count_of(x):
+            if i > 0:
+                o.put(", ")
+            st_repr(o, t, g, t.arg(x, i))
+        o.put("}")
+    elif k == int(Ty.Named) && g.kind[t.a[x]] == int(Sk.Enum) && !has_payload(t, g, t.a[x]):
+        o.put("i64")
+    elif k == int(Ty.Error) || k == int(Ty.Param):
+        o.put("?")
+    else:
+        o.put("ptr")
+
+fn put_own(o: &Out, own: int) => void:
+    if own == int(Own.Copy):
+        o.put("copy")
+        return
+    if own == int(Own.Move):
+        o.put("move")
+        return
+    if own == int(Own.Borrow):
+        o.put("borrow")
+        return
+    o.put("?")
+
+fn put_drop(o: &Out, d: int) => void:
+    if d == int(Drop.Nothing):
+        o.put("nothing")
+        return
+    if d == int(Drop.Free):
+        o.put("free")
+        return
+    if d == int(Drop.Elems):
+        o.put("elems")
+        return
+    if d == int(Drop.Fields):
+        o.put("fields")
+        return
+    if d == int(Drop.Variant):
+        o.put("variant")
+        return
+    o.put("?")
+
+fn put_clone(o: &Out, c: int) => void:
+    if c == int(Clone.Bit):
+        o.put("bit")
+        return
+    if c == int(Clone.Deep):
+        o.put("deep")
+        return
+    if c == int(Clone.Shallow):
+        o.put("shallow")
+        return
+    if c == int(Clone.Never):
+        o.put("never")
+        return
+    o.put("?")
+
+/#/ `repr size/align own drop clone`, and `block N` for a handle with a known block.
+fn describe(o: &Out, t: &Tys, g: &Syms, x: int) => void:
+    st_repr(o, t, g, x)
+    o.put(" ")
+    o.put_int(st_size(t, g, x))
+    o.put("/")
+    o.put_int(st_align(t, g, x))
+    o.put(" ")
+    put_own(o, st_own(t, g, x))
+    o.put(" ")
+    put_drop(o, st_drop(t, g, x))
+    o.put(" ")
+    put_clone(o, st_clone(t, g, x))
+    if is_handle(t, g, x) && st_block(t, g, x) >= 0:
+        o.put(" block ")
+        o.put_int(st_block(t, g, x))
