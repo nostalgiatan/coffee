@@ -246,6 +246,19 @@ impl<'ctx> MemoryContext<'ctx> {
         }
     }
 
+    /// A moved-from variable that is assigned a fresh value owns something again (`s = f(s)`),
+    /// so its scope-end drop must be armed once more.
+    pub fn reinit(&mut self, var_name: &str) {
+        self.moved_variables.remove(var_name);
+        if let Some(info) = self.lifetimes.get_mut(var_name) {
+            if info.state == VariableState::Moved {
+                info.state = VariableState::Initialized;
+                info.death_line = None;
+                info.properly_cleaned = false;
+            }
+        }
+    }
+
     /// Mark a variable as dropped/freed
     /// 
     /// Updates the memory context to indicate that a variable has been explicitly

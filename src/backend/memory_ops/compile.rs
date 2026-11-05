@@ -166,6 +166,12 @@ pub fn compile_move<'ctx>(
                 builder.build_store(src_ptr, zero)
                     .map_err(|e| format!("memory move: failed to invalidate '{}': {}", source, e))?;
             }
+            // `buf<T>` and tuples: a moved-from pair must not keep its data pointer, or the
+            // scope-end drop would free the buffer the target now owns.
+            BasicTypeEnum::StructType(t) => {
+                builder.build_store(src_ptr, t.const_zero())
+                    .map_err(|e| format!("memory move: failed to invalidate '{}': {}", source, e))?;
+            }
             _ => {
                 // For other types, try to zero them generically
                 // This is a best-effort approach

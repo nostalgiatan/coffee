@@ -299,6 +299,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         }
 
         let hir_value_ty = value.ty.clone();
+        let consumer = value;
         let value = self.compile_hir_expr_owned(value).map_err(|e| {
             self.error(
                 "compile_assignment_from_ast",
@@ -311,7 +312,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
 
         self.used_variables.insert(var_name.to_string());
 
-        if std::mem::take(&mut self.reassign_slot) {
+        if std::mem::take(&mut self.reassign_slot) && !self.call_consumes_var(consumer, var_name) {
             let ty = hir_value_ty.clone();
             self.drop_old_slot_value(var_name, &ty)?;
         }
@@ -327,6 +328,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                         format!("failed to store value in variable '{}': {}", var_name, e),
                     )
                 })?;
+            self.memory_ctx.reinit(var_name);
             Ok(())
         } else {
             let available = if self.variables.is_empty() {
@@ -2095,5 +2097,34 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+
+impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
+    /// `x = f(x)` with a Coffee `f`: see [`hir_call_consumes_var`]. A C callee only borrows a
+    /// `str`, so the old value is still this scope's to drop.
+    fn call_consumes_var(&self, value: &HirExpr, name: &str) -> bool {
+        if !hir_call_consumes_var(value, name) {
+            return false;
+        }
+        match &value.kind {
+            HirExprKind::Call { function, .. } => match &function.kind {
+                HirExprKind::Variable(f) => !(value.ty == Type::String && self.is_c_library_function(f)),
+                _ => true,
+            },
+            _ => false,
+        }
+    }
+}
+
+/// `x = f(x)`: the call takes `x` by value and returns its replacement, so the slot's old value
+/// now belongs to the callee and must not be dropped again by the assignment.
+fn hir_call_consumes_var(value: &HirExpr, name: &str) -> bool {
+    match &value.kind {
+        HirExprKind::Call { args, .. } => args
+            .iter()
+            .any(|a| matches!(&a.kind, HirExprKind::Variable(n) if n == name)),
+        _ => false,
     }
 }

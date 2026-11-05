@@ -401,3 +401,20 @@ fn test_subslice_out_of_range_stops_the_program() {
 fn test_subslice_cannot_be_stored() {
     assert_compile_error("fn main() => int:\n    let b: buf<int> = new_buf(int, 4)\n    let s = b[1..3]\n    return 0\n", "a subslice cannot be stored").unwrap();
 }
+
+#[test]
+fn test_reassigning_a_moved_variable_rearms_its_drop() {
+    assert_balanced("fn id(s: str) => str:\n    return s\n\nfn main() => int:\n    let s: str = \"a\" + \"b\"\n    s = id(s)\n    return 0\n");
+    let src = "fn grow(toks: buf<int>, need: int) => buf<int>:\n    let t = toks\n    if need > len(t):\n        t = buf_resize(t, need * 2)\n    return t\n\nfn main() => int:\n    let b: buf<int> = new_buf(int, 2)\n    b = grow(b, 5)\n    b = grow(b, 1)\n    return len(b)\n";
+    assert_exit_code(src, 10).unwrap();
+    assert_balanced(src);
+}
+
+/// A lexer written in Coffee (`tests/coffee_programs/lexer.cf`): bytes of a `str`, a growing
+/// `buf<int>` of token triples, and no leaks. 13 = the sum of the token kinds in the input.
+#[test]
+fn test_lexer_written_in_coffee() {
+    let src = include_str!("coffee_programs/lexer.cf");
+    assert_exit_code(src, 13).unwrap();
+    assert_balanced(src);
+}
