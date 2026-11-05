@@ -8,6 +8,7 @@ in columns. See `DESIGN.md` for the design and the order of work.
 - `src/fun.cf` — `Fun`: the columns and the builder; smart constructors fold, simplify and share
 - `src/print.cf` — text form (what tests compare against)
 - `src/verify.cf` — well-formedness: terminators, edge arity/types, op types, dominance
+- `src/emit.cf` — LLVM text: phis for block parameters, slots in the entry block, `Syms` for callee names
 
-Step 1 of the plan is done (builder, printer, verifier). Test with
+Steps 1 (builder, printer, verifier) and 2 (emitter, run through clang) are done. Test with
 `coffee test --test-mode -I src` in this directory.

@@ -1,0 +1,390 @@
+/#/ LLVM text from a function: one block of text per IR block, block parameters as `phi`.
+/#/
+/#/ Names: value `%vN` is IR value N; block `bbN`. Callees are `@name` from a `Syms` table, a
+/#/ string literal `#N` is the global `@sN`. A `slot`'s `ty` is its size in bytes for now; the
+/#/ storage table of the types stage replaces that when lowering exists.
+use * in print
+
+/#/ Names of functions, by number.
+class Syms:
+    b: buf<int>
+    n: int
+    off: buf<int>
+    cnt: int
+
+    fn add(self, name: &str) => int:
+        if self.cnt + 1 >= len(self.off):
+            self.off = buf_resize(self.off, (self.cnt + 2) * 2)
+        self.off[self.cnt] = self.n
+        for i in 0..len(name):
+            if self.n >= len(self.b):
+                self.b = buf_resize(self.b, (self.n + 1) * 2)
+            self.b[self.n] = ch(name, i)
+            self.n = self.n + 1
+        self.off[self.cnt + 1] = self.n
+        self.cnt = self.cnt + 1
+        return self.cnt - 1
+
+    fn put(self, o: &Txt, id: int) => void:
+        for k in self.off[id]..self.off[id + 1]:
+            o.put_byte(self.b[k])
+
+fn new_syms() => Syms:
+    return Syms { b: new_buf(int, 64), n: 0, off: new_buf(int, 16), cnt: 0 }
+
+/#/ `malloc` and `free`, which `alloc` and `free` use.
+fn emit_prelude(o: &Txt) => void:
+    o.put("declare ptr @malloc(i64)\ndeclare void @free(ptr)\n")
+
+/#/ An LLVM type.
+fn put_ty(o: &Txt, rs: &Reps, r: int) => void:
+    if r == int(Rp.F32):
+        o.put("float")
+    elif r == int(Rp.F64):
+        o.put("double")
+    elif r >= rp_first_agg():
+        o.put("{ ")
+        for i in 0..rs.elems(r):
+            if i > 0:
+                o.put(", ")
+            put_ty(o, rs, rs.elem(r, i))
+        o.put(" }")
+    else:
+        put_rep(o, rs, r)
+
+fn put_hex(o: &Txt, v: int) => void:
+    o.put("0x")
+    for k in 0..16:
+        let d = (v >> (60 - 4 * k)) & 15
+        if d < 10:
+            o.put_byte('0' + d)
+        else:
+            o.put_byte('A' + d - 10)
+
+/#/ The bits of the double with the value of the float whose bits are `b`.
+fn f32_as_f64(b: int) => int:
+    let bits = b & 4294967295
+    let sign = (bits >> 31) & 1
+    let e = (bits >> 23) & 255
+    let m = bits & 8388607
+    let out = sign << 63
+    if e == 255:
+        return out | (2047 << 52) | (m << 29)
+    if e == 0:
+        if m == 0:
+            return out
+        /#/ a subnormal float is a normal double
+        let x = 1023 - 126
+        while (m & 8388608) == 0:
+            m = m << 1
+            x = x - 1
+        return out | (x << 52) | ((m & 8388607) << 29)
+    return out | ((e + 896) << 52) | (m << 29)
+
+fn put_name(o: &Txt, f: &Fun, v: int) => void:
+    let x = f.follow(v)
+    while f.op[x] == int(Op.OwnMove):
+        x = f.follow(f.a[x])
+    o.put("%v")
+    o.put_int(x)
+
+/#/ An operand: a constant inline, anything else by name.
+fn put_opnd(o: &Txt, f: &Fun, v: int) => void:
+    let x = f.follow(v)
+    while f.op[x] == int(Op.OwnMove):
+        x = f.follow(f.a[x])
+    let k = f.op[x]
+    if k == int(Op.Const):
+        let r = f.rep[x]
+        if r == int(Rp.Ptr):
+            o.put("null")
+        elif r == int(Rp.F64):
+            put_hex(o, f.aux[x])
+        elif r == int(Rp.F32):
+            put_hex(o, f32_as_f64(f.aux[x]))
+        else:
+            o.put_int(f.aux[x])
+    elif k == int(Op.Undef):
+        o.put("undef")
+    elif k == int(Op.StrLit):
+        o.put("@s")
+        o.put_int(f.aux[x])
+    else:
+        put_name(o, f, x)
+
+/#/ `T operand`
+fn put_typed(o: &Txt, f: &Fun, rs: &Reps, v: int) => void:
+    let x = f.follow(v)
+    while f.op[x] == int(Op.OwnMove):
+        x = f.follow(f.a[x])
+    put_ty(o, rs, f.rep[x])
+    o.put(" ")
+    put_opnd(o, f, x)
+
+fn put_label(o: &Txt, b: int) => void:
+    o.put("label %bb")
+    o.put_int(b)
+
+fn put_call_args(o: &Txt, f: &Fun, rs: &Reps, start: int, n: int) => void:
+    o.put("(")
+    for k in 0..n:
+        if k > 0:
+            o.put(", ")
+        put_typed(o, f, rs, f.pool[start + k])
+    o.put(")")
+
+fn emit_inst(o: &Txt, f: &Fun, rs: &Reps, sy: &Syms, i: int) => void:
+    let op = f.op[i]
+    let r = f.rep[i]
+    if op == int(Op.Param) || op == int(Op.Slot) || op == int(Op.OwnMove):
+        return
+    o.put("  ")
+    if op == int(Op.Cmp) || op == int(Op.FCmp):
+        put_name(o, f, i)
+        o.put(".c = ")
+        if op == int(Op.Cmp):
+            o.put("icmp ")
+        else:
+            o.put("fcmp ")
+        put_pred(o, f.aux[i])
+        o.put(" ")
+        put_ty(o, rs, f.rep[f.follow(f.a[i])])
+        o.put(" ")
+        put_opnd(o, f, f.a[i])
+        o.put(", ")
+        put_opnd(o, f, f.b[i])
+        o.put("\n  ")
+        put_name(o, f, i)
+        o.put(" = zext i1 ")
+        put_name(o, f, i)
+        o.put(".c to i8\n")
+        return
+    if op == int(Op.Index):
+        put_name(o, f, i)
+        o.put(".o = mul i64 ")
+        put_opnd(o, f, f.b[i])
+        o.put(", ")
+        o.put_int(f.aux[i])
+        o.put("\n  ")
+        put_name(o, f, i)
+        o.put(" = getelementptr inbounds i8, ptr ")
+        put_opnd(o, f, f.a[i])
+        o.put(", i64 ")
+        put_name(o, f, i)
+        o.put(".o\n")
+        return
+    if op == int(Op.Store):
+        o.put("store ")
+        put_typed(o, f, rs, f.b[i])
+        o.put(", ptr ")
+        put_opnd(o, f, f.a[i])
+        o.put("\n")
+        return
+    if op == int(Op.Free):
+        o.put("call void @free(ptr ")
+        put_opnd(o, f, f.a[i])
+        o.put(")\n")
+        return
+    if op == int(Op.Drop) || op == int(Op.Clone):
+        o.put("; ownership glue not expanded yet\n")
+        return
+    if op == int(Op.Br):
+        o.put("br ")
+        put_label(o, f.eto[f.aux[i]])
+        o.put("\n")
+        return
+    if op == int(Op.CondBr):
+        o.put("%t")
+        o.put_int(i)
+        o.put(" = icmp ne i8 ")
+        put_opnd(o, f, f.a[i])
+        o.put(", 0\n  br i1 %t")
+        o.put_int(i)
+        o.put(", ")
+        put_label(o, f.eto[f.b[i]])
+        o.put(", ")
+        put_label(o, f.eto[f.c[i]])
+        o.put("\n")
+        return
+    if op == int(Op.Switch):
+        o.put("switch ")
+        put_typed(o, f, rs, f.a[i])
+        o.put(", ")
+        put_label(o, f.eto[f.c[i]])
+        o.put(" [")
+        for k in 0..f.b[i]:
+            o.put(" ")
+            put_ty(o, rs, f.rep[f.follow(f.a[i])])
+            o.put(" ")
+            o.put_int(f.pool[f.aux[i] + k * 2])
+            o.put(", ")
+            put_label(o, f.eto[f.pool[f.aux[i] + k * 2 + 1]])
+        o.put(" ]\n")
+        return
+    if op == int(Op.Ret):
+        if f.a[i] >= 0:
+            o.put("ret ")
+            put_typed(o, f, rs, f.a[i])
+            o.put("\n")
+        else:
+            o.put("ret void\n")
+        return
+    if op == int(Op.Unreachable):
+        o.put("unreachable\n")
+        return
+    if op == int(Op.Call) || op == int(Op.CCall) || op == int(Op.CallI):
+        if r != int(Rp.Void):
+            put_name(o, f, i)
+            o.put(" = ")
+        o.put("call ")
+        if r == int(Rp.Void):
+            o.put("void")
+        else:
+            put_ty(o, rs, r)
+        if op == int(Op.CCall) && f.c[i] != 0:
+            o.put(" (ptr, ...)")
+        o.put(" ")
+        if op == int(Op.CallI):
+            put_opnd(o, f, f.c[i])
+        else:
+            o.put("@")
+            sy.put(o, f.aux[i])
+        put_call_args(o, f, rs, f.a[i], f.b[i])
+        o.put("\n")
+        return
+    if op == int(Op.Alloc):
+        put_name(o, f, i)
+        o.put(" = call ptr @malloc(i64 ")
+        o.put_int(f.ty[i])
+        o.put(")\n")
+        return
+    put_name(o, f, i)
+    o.put(" = ")
+    if op == int(Op.Const) || op == int(Op.StrLit) || op == int(Op.Undef):
+        o.put("; constant\n")
+        return
+    if op == int(Op.Neg):
+        o.put("sub ")
+        put_ty(o, rs, r)
+        o.put(" 0, ")
+        put_opnd(o, f, f.a[i])
+    elif op == int(Op.Not):
+        o.put("xor ")
+        put_ty(o, rs, r)
+        o.put(" ")
+        put_opnd(o, f, f.a[i])
+        o.put(", -1")
+    elif op == int(Op.FNeg):
+        o.put("fneg ")
+        put_ty(o, rs, r)
+        o.put(" ")
+        put_opnd(o, f, f.a[i])
+    elif op == int(Op.Extract):
+        o.put("extractvalue ")
+        put_typed(o, f, rs, f.a[i])
+        o.put(", ")
+        o.put_int(f.aux[i])
+    elif op == int(Op.Insert):
+        o.put("insertvalue ")
+        put_typed(o, f, rs, f.a[i])
+        o.put(", ")
+        put_typed(o, f, rs, f.b[i])
+        o.put(", ")
+        o.put_int(f.aux[i])
+    elif op == int(Op.Load):
+        o.put("load ")
+        put_ty(o, rs, r)
+        o.put(", ptr ")
+        put_opnd(o, f, f.a[i])
+    elif op == int(Op.Field):
+        o.put("getelementptr inbounds i8, ptr ")
+        put_opnd(o, f, f.a[i])
+        o.put(", i64 ")
+        o.put_int(f.aux[i])
+    elif f.tab.nargs[op] == 2:
+        for k in 0..f.tab.size[op]:
+            o.put_byte(f.tab.pool[f.tab.off[op] + k])
+        o.put(" ")
+        put_ty(o, rs, r)
+        o.put(" ")
+        put_opnd(o, f, f.a[i])
+        o.put(", ")
+        put_opnd(o, f, f.b[i])
+    else:
+        /#/ a conversion: `sext i32 %x to i64`
+        for k in 0..f.tab.size[op]:
+            o.put_byte(f.tab.pool[f.tab.off[op] + k])
+        o.put(" ")
+        put_typed(o, f, rs, f.a[i])
+        o.put(" to ")
+        put_ty(o, rs, r)
+    o.put("\n")
+
+/#/ The phis of block `b`: one per block parameter, one entry per edge that reaches it.
+fn emit_phis(o: &Txt, f: &Fun, rs: &Reps, b: int) => void:
+    let p = f.pfirst[b]
+    let k = 0
+    while p >= 0:
+        o.put("  ")
+        put_name(o, f, p)
+        o.put(" = phi ")
+        put_ty(o, rs, f.rep[p])
+        let first = true
+        for e in 0..f.ne:
+            if f.eto[e] == b:
+                if first:
+                    o.put(" ")
+                else:
+                    o.put(", ")
+                first = false
+                o.put("[ ")
+                put_opnd(o, f, f.pool[f.eargs[e] + k])
+                o.put(", %bb")
+                o.put_int(f.efrom[e])
+                o.put(" ]")
+        o.put("\n")
+        p = f.nx[p]
+        k = k + 1
+
+fn emit_fun(o: &Txt, f: &Fun, rs: &Reps, sy: &Syms) => void:
+    o.put("define ")
+    if f.ret == int(Rp.Void):
+        o.put("void")
+    else:
+        put_ty(o, rs, f.ret)
+    o.put(" @")
+    for k in 0..len(f.nm):
+        o.put_byte(f.nm[k])
+    o.put("(")
+    let p = f.pfirst[0]
+    while p >= 0:
+        if p != f.pfirst[0]:
+            o.put(", ")
+        put_ty(o, rs, f.rep[p])
+        o.put(" ")
+        put_name(o, f, p)
+        p = f.nx[p]
+    o.put(") {\n")
+    for b in 0..f.nb:
+        o.put("bb")
+        o.put_int(b)
+        o.put(":\n")
+        if b == 0:
+            /#/ every slot is allocated in the entry block
+            for i in 0..f.ni:
+                if f.op[i] == int(Op.Slot) && f.fwd[i] < 0:
+                    o.put("  ")
+                    put_name(o, f, i)
+                    o.put(" = alloca [")
+                    if f.ty[i] > 0:
+                        o.put_int(f.ty[i])
+                    else:
+                        o.put("1")
+                    o.put(" x i8], align 8\n")
+        else:
+            emit_phis(o, f, rs, b)
+        let i = f.bfirst[b]
+        while i >= 0:
+            emit_inst(o, f, rs, sy, i)
+            i = f.nx[i]
+    o.put("}\n")

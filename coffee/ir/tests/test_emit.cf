@@ -1,0 +1,135 @@
+use * in emit
+use fopen, fputc, fclose, system, putchar in libc of c
+
+/#/ Writes the module to a file, compiles it with clang and runs it; the exit code, or -1.
+fn run(m: &Txt) => int:
+    let fp = fopen("/tmp/ir_emit_test.ll", "w")
+    for k in 0..m.n:
+        fputc(m.b[k], fp)
+    fclose(fp)
+    if system("clang -w -o /tmp/ir_emit_test /tmp/ir_emit_test.ll") != 0:
+        return -1
+    let st = system("/tmp/ir_emit_test")
+    return (st >> 8) & 255
+
+/#/ fn count(n) = 0 + 1 + ... + (n - 1), a loop with a block parameter
+fn count() => Fun:
+    let i64 = int(Rp.I64)
+    let g = new_fun("count", i64)
+    let e = g.new_block()
+    let head = g.new_block()
+    let body = g.new_block()
+    let done = g.new_block()
+    g.set_block(e)
+    let n = g.param(e, i64, -1)
+    g.arg(g.cint(i64, 0))
+    g.arg(g.cint(i64, 0))
+    g.br(head)
+    g.set_block(head)
+    let i = g.param(head, i64, -1)
+    let acc = g.param(head, i64, -1)
+    let c = g.cmp(int(Pr.SLt), i, n)
+    g.arg(acc)
+    let t = g.mk_edge(done)
+    let fl = g.mk_edge(body)
+    g.condbr(c, fl, t)
+    g.set_block(body)
+    g.arg(g.bin(int(Op.Add), i, g.cint(i64, 1)))
+    g.arg(g.bin(int(Op.Add), acc, i))
+    g.br(head)
+    g.set_block(done)
+    let r = g.param(done, i64, -1)
+    g.ret(r)
+    return g
+
+/#/ memory, floats and conversions: ((7 + 5) as f64 * 1.5 + 1.5f32 as f64) as int = 19
+fn mix() => Fun:
+    let i64 = int(Rp.I64)
+    let g = new_fun("mix", i64)
+    let b0 = g.new_block()
+    g.set_block(b0)
+    let s = g.slot(16)
+    g.store(g.field(s, 0), g.cint(i64, 7))
+    g.store(g.field(s, 8), g.cint(i64, 5))
+    let sum = g.bin(int(Op.Add), g.load(i64, -1, g.field(s, 0)), g.load(i64, -1, g.index(s, g.cint(i64, 1), 8)))
+    let x = g.conv(int(Op.SiToFp), int(Rp.F64), sum)
+    let y = g.bin(int(Op.FMul), x, g.cfloat(int(Rp.F64), 4609434218613702656))
+    let z = g.bin(int(Op.FAdd), y, g.conv(int(Op.FpExt), int(Rp.F64), g.cfloat(int(Rp.F32), 1069547520)))
+    g.ret(g.conv(int(Op.FpToSi), i64, z))
+    return g
+
+/#/ fn pick(x): switch to 10, 20 or 30, merged in a block with a parameter
+fn pick() => Fun:
+    let i64 = int(Rp.I64)
+    let g = new_fun("pick", i64)
+    let b0 = g.new_block()
+    let one = g.new_block()
+    let two = g.new_block()
+    let other = g.new_block()
+    let join = g.new_block()
+    g.set_block(b0)
+    let x = g.param(b0, i64, -1)
+    let e1 = g.mk_edge(one)
+    let e2 = g.mk_edge(two)
+    let e3 = g.mk_edge(other)
+    g.sw_case(1, e1)
+    g.sw_case(2, e2)
+    g.switch(x, e3)
+    g.set_block(one)
+    g.arg(g.cint(i64, 10))
+    g.br(join)
+    g.set_block(two)
+    g.arg(g.cint(i64, 20))
+    g.br(join)
+    g.set_block(other)
+    g.arg(g.cint(i64, 30))
+    g.br(join)
+    g.set_block(join)
+    g.ret(g.param(join, i64, -1))
+    return g
+
+fn main() => int:
+    let m = 0
+    let rs = new_reps()
+    let sy = new_syms()
+    let i64 = int(Rp.I64)
+    let i32 = int(Rp.I32)
+    let fcount = sy.add("count")
+    let fmix = sy.add("mix")
+    let fpick = sy.add("pick")
+    let cabs = sy.add("abs")
+    let cnt = count()
+    let mx = mix()
+    let pk = pick()
+    /#/ main: count(10) + mix() + pick(2) + abs(-7) = 45 + 19 + 20 + 7 = 91
+    let mn = new_fun("main", i32)
+    let b0 = mn.new_block()
+    mn.set_block(b0)
+    mn.arg(mn.cint(i64, 10))
+    let a = mn.call(i64, -1, fcount)
+    mn.call(i64, -1, fmix)
+    let b = mn.call(i64, -1, fmix)
+    mn.arg(mn.cint(i64, 2))
+    let c = mn.call(i64, -1, fpick)
+    mn.arg(mn.cint(i32, -7))
+    let d = mn.ccall(i32, -1, cabs, 0)
+    let t = mn.bin(int(Op.Add), mn.bin(int(Op.Add), a, b), mn.bin(int(Op.Add), c, mn.conv(int(Op.SExt), i64, d)))
+    mn.ret(mn.conv(int(Op.Trunc), i32, t))
+    let o = new_txt()
+    emit_prelude(&o)
+    o.put("declare i32 @abs(i32)\n")
+    emit_fun(&o, &cnt, &rs, &sy)
+    emit_fun(&o, &mx, &rs, &sy)
+    emit_fun(&o, &pk, &rs, &sy)
+    emit_fun(&o, &mn, &rs, &sy)
+    let r = run(&o)
+    if r != 91:
+        printf_fail(&o, r)
+        m = m + 1
+    return m
+
+fn printf_fail(o: &Txt, r: int) => void:
+    for k in 0..o.n:
+        putchar(o.b[k])
+    putchar(10)
+    putchar(48 + r % 10)

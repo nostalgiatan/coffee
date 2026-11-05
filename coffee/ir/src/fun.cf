@@ -541,8 +541,9 @@ class Fun:
     fn field(self, p: int, off: int) => int:
         return self.share(int(Op.Field), int(Rp.Ptr), -1, self.follow(p), -1, -1, off)
 
-    fn index(self, p: int, i: int) => int:
-        return self.share(int(Op.Index), int(Rp.Ptr), -1, self.follow(p), self.follow(i), -1, 0)
+    /#/ The address of element `i` (an i64) of an array of `size`-byte elements at `p`.
+    fn index(self, p: int, i: int, size: int) => int:
+        return self.share(int(Op.Index), int(Rp.Ptr), -1, self.follow(p), self.follow(i), -1, size)
 
     /#/ ---- calls and ownership -----------------------------------------------
 
