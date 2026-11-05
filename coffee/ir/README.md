@@ -55,6 +55,7 @@ The lowering tests compile with AddressSanitizer: a leak or a double free fails 
 Field offsets and sizes come from the storage table of `coffee/types`; `test_layout.cf` pins them.
 
 Not lowered yet (a function that uses one is reported as `bad`, not emitted): nested patterns, generic
-methods of their own and static functions of generic classes, `for` over owned elements, arrays of resources, tuples that
-own something. `match` is a chain of tests, not a `switch`; LLVM turns it into one.
+methods of their own and static functions of generic classes, `for` over owned elements, slices that own their elements.
+Arrays and tuples of resources are dropped and cloned element by element; an array lent to a `[T]`
+parameter is passed as `{ptr, len}` and stays with its owner (`tests/test_own_agg.cf`). `match` is a chain of tests, not a `switch`; LLVM turns it into one.
 Temporaries inside `&&`/`||` that were only borrowed are not released.

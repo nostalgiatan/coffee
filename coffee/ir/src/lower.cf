@@ -146,6 +146,11 @@ fn needs_drop(t: &Tys, g: &Syms, x: int) => bool:
         return true
     if k == int(Ty.Buf):
         return t.a[x] >= 0
+    if k == int(Ty.Tuple):
+        for i in 0..t.count_of(x):
+            if needs_drop(t, g, t.arg(x, i)):
+                return true
+        return false
     if k == int(Ty.Named):
         if g.kind[t.a[x]] == int(Sk.Enum):
             return has_payload(t, g, t.a[x])
@@ -529,6 +534,10 @@ class Lower:
 
     /#/ `x`, of type `from`, as a value of type `to`.
     fn coerce(self, t: &Tys, g: &Syms, x: int, from: int, to: int) => int:
+        if t.kind[to] == int(Ty.Slice) && t.kind[from] == int(Ty.Array):
+            /#/ an array lent as a slice: its address and its length
+            let sl = self.f.insert(self.f.undef(self.rep(t, g, to)), x, 0)
+            return self.f.insert(sl, self.f.cint(int(Rp.I64), t.b[from]), 1)
         return self.coerce_rep(t, x, from, self.rep(t, g, to), to)
 
     fn coerce_rep(self, t: &Tys, x: int, from: int, tr: int, to: int) => int:
@@ -851,7 +860,7 @@ class Lower:
                 v = self.ex(t, g, ty, a, c)
             if i < fixed:
                 v = self.coerce(t, g, v, at, t.arg(sig, i))
-                if t.kind[t.arg(sig, i)] != int(Ty.Ref) && k != int(Sk.Extern):
+                if t.kind[t.arg(sig, i)] != int(Ty.Ref) && !(t.kind[t.arg(sig, i)] == int(Ty.Slice) && t.kind[at] == int(Ty.Array)) && k != int(Sk.Extern):
                     v = self.consume(t, g, a, c, v, at)
             vals[i] = v
             i = i + 1
@@ -1170,6 +1179,9 @@ class Lower:
     fn sink(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int, to: int) => int:
         let from = self.nd(t, ty, n)
         let v = self.coerce(t, g, self.ex(t, g, ty, a, n), from, to)
+        if t.kind[to] == int(Ty.Slice) && t.kind[from] == int(Ty.Array):
+            /#/ lent, not copied: the array stays with its owner
+            return v
         return self.consume(t, g, a, n, v, from)
 
     fn rm_stmt(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, e: int) => void:
@@ -1919,7 +1931,7 @@ class Lower:
         let c = a.child[n]
         let i = 0
         while c >= 0:
-            let v = self.coerce(t, g, self.ex(t, g, ty, a, c), self.nd(t, ty, c), t.arg(x, i))
+            let v = self.sink(t, g, ty, a, c, t.arg(x, i))
             agg = self.f.insert(agg, v, i)
             i = i + 1
             c = a.next[c]
@@ -2149,6 +2161,11 @@ class Lower:
             self.f.free(self.f.extract(int(Rp.Ptr), v, 0))
         elif k == int(Ty.Array) && !needs_drop(t, g, t.a[x]):
             self.f.free(v)
+        elif k == int(Ty.Tuple):
+            for i in 0..t.count_of(x):
+                let et = t.arg(x, i)
+                if needs_drop(t, g, et):
+                    self.drop_value(t, g, self.f.extract(self.rep(t, g, et), v, i), et)
         else:
             self.f.drop_of(v, self.glue(x, 0))
 
@@ -2166,8 +2183,16 @@ class Lower:
             self.f.arg(self.f.cint(int(Rp.I64), bytes))
             self.f.ccall(int(Rp.Ptr), 3, self.rt_memcpy, 0)
             return p
-        if k == int(Ty.Named):
+        if k == int(Ty.Named) || k == int(Ty.Array):
             return self.f.clone_of(v, self.glue(x, 1))
+        if k == int(Ty.Tuple):
+            let agg = v
+            for i in 0..t.count_of(x):
+                let et = t.arg(x, i)
+                if needs_drop(t, g, et):
+                    let e = self.f.extract(self.rep(t, g, et), v, i)
+                    agg = self.f.insert(agg, self.clone_value(t, g, e, et), i)
+            return agg
         self.f.arg(v)
         return v
 
@@ -2295,7 +2320,9 @@ class Lower:
             let b = self.f.new_block()
             self.f.set_block(b)
             let p = self.f.param(b, int(Rp.Ptr), -1)
-            if g.kind[t.a[x]] == int(Sk.Enum):
+            if t.kind[x] == int(Ty.Array):
+                self.glue_array(t, g, x, p, kind)
+            elif g.kind[t.a[x]] == int(Sk.Enum):
                 if kind == 0:
                     self.glue_enum_drop(t, g, x, p)
                 else:
@@ -2311,6 +2338,26 @@ class Lower:
                     self.glue_clone_fields(t, g, p, q)
                     self.f.ret(q)
             self.emit_current(o)
+
+    /#/ Drop or clone glue of `[T; N]` with owning elements: each element, then the block.
+    fn glue_array(self, t: &Tys, g: &Syms, x: int, p: int, kind: int) => void:
+        let et = t.a[x]
+        let size = st_size(t, g, et)
+        let r = self.rep(t, g, et)
+        if kind == 0:
+            for i in 0..t.b[x]:
+                let v = self.f.load(r, -1, self.f.index(p, self.f.cint(int(Rp.I64), i), size))
+                self.drop_value(t, g, v, et)
+            self.f.free(p)
+            self.f.ret_void()
+        else:
+            let q = self.f.alloc(size * t.b[x])
+            for i in 0..t.b[x]:
+                let v = self.f.load(r, -1, self.f.index(p, self.f.cint(int(Rp.I64), i), size))
+                if needs_drop(t, g, et):
+                    v = self.clone_value(t, g, v, et)
+                self.f.store(self.f.index(q, self.f.cint(int(Rp.I64), i), size), v)
+            self.f.ret(q)
 
     fn glue_drop_fields(self, t: &Tys, g: &Syms, p: int) => void:
         for i in 0..self.lay_n:
