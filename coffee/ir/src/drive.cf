@@ -17,8 +17,14 @@ fn report_unsupported(a: &Ast, n: int) => void:
 /#/ `src` through our front end and IR as LLVM text, the optimizer on or off; empty when it
 /#/ did not lower.
 fn build_src(src: str, opt: int) => Txt:
+    return build_with_cfc(src, opt, "")
+
+/#/ Like `build_src`, with the text of the program's own `.cfc` files (empty for none).
+fn build_with_cfc(src: str, opt: int, cfc: str) => Txt:
     let t = new_tys()
     let g = new_globals()
+    if len(cfc) > 0:
+        declare_user_cfc(&t, &g, cfc, "user.cfc")
     let a = parse(src)
     let m = declare_module(&g, &a, "t")
     declare_types(&t, &g, &a, m)

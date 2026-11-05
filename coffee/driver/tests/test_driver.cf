@@ -14,6 +14,12 @@ fn module_len(line: &str) => int:
     let m = use_module(&t, 0, t.n)
     return m.n
 
+/#/ The length of the C library name the line imports from.
+fn lib_len(line: &str) => int:
+    let t = txt_of(line)
+    let m = c_lib_name(&t, 0, t.n)
+    return m.n
+
 fn b2i(b: bool) => int:
     if b:
         return 1
@@ -54,4 +60,7 @@ fn main() => int:
     let nope = txt_of("b")
     m = m + expect(13, b2i(has_line(&seen, &want)), 1)
     m = m + expect(14, b2i(has_line(&seen, &nope)), 0)
+    m = m + expect(15, lib_len("use add_two, scale in mylib of c"), 5)
+    m = m + expect(16, lib_len("use * in lower"), 0)
+    m = m + expect(17, lib_len("use printf in libc of c"), 4)
     return m

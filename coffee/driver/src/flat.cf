@@ -11,10 +11,38 @@ class Flat:
     /#/ the directories to search, one per line
     dirs: Txt
     errs: int
+    /#/ the C libraries other than libc and libm, one per line; their `.cfc` text; where they were found
+    libs: Txt
+    cfc: Txt
+    lib_dirs: Txt
 
     fn add_dir(self, w: &Txt) => void:
         self.dirs.put_all(w)
         self.dirs.put_byte(10)
+
+    fn cfc_str(self) => str:
+        return txt_str(&self.cfc)
+
+    /#/ `-L<dir> -Wl,-rpath,<dir>` for each place a `.cfc` was found and `-l<lib>` for each library.
+    fn link_flags(self, cmd: &Txt) => void:
+        let st = 0
+        for i in 0..self.lib_dirs.n:
+            if self.lib_dirs.b[i] == 10:
+                cmd.put(" -L'")
+                for k in st..i:
+                    cmd.put_byte(self.lib_dirs.b[k])
+                cmd.put("' -Wl,-rpath,'")
+                for k in st..i:
+                    cmd.put_byte(self.lib_dirs.b[k])
+                cmd.put("'")
+                st = i + 1
+        st = 0
+        for i in 0..self.libs.n:
+            if self.libs.b[i] == 10:
+                cmd.put(" -l")
+                for k in st..i:
+                    cmd.put_byte(self.libs.b[k])
+                st = i + 1
 
     fn out_str(self) => str:
         return txt_str(&self.out)
@@ -22,19 +50,53 @@ class Flat:
     fn write_to(self, path: &Txt) => void:
         write_file(path, &self.out)
 
+    /#/ A line that imports from a C library other than libc and libm brings that library's `.cfc`.
+    fn note_c_lib(self, src: &Txt, lo: int, hi: int, dir: &Txt) => void:
+        let lib = c_lib_name(src, lo, hi)
+        if lib.n == 0 || lib.is("libc") || lib.is("libm") || has_line(&self.libs, &lib):
+            return
+        self.libs.put_all(&lib)
+        self.libs.put_byte(10)
+        let found = new_txt()
+        let text = self.find_file(dir, &lib, ".cfc", &found)
+        if text.n < 0:
+            self.count_error()
+            printf("error: no %s.cfc next to the program, in lib/ or in an -I directory\n", txt_str(&lib))
+            return
+        self.cfc.put_all(&text)
+        self.cfc.put_byte(10)
+        if !has_line(&self.lib_dirs, &found):
+            self.lib_dirs.put_all(&found)
+            self.lib_dirs.put_byte(10)
+
     fn count_error(self) => void:
         self.errs = self.errs + 1
 
     /#/ The text of `module`: first next to the file that imports it (`dir`), then in each search
     /#/ directory. `found` gets the directory it was found in.
     fn find_module(self, dir: &Txt, module: &Txt, found: &Txt) => Txt:
-        let ext = txt_of(".cf")
+        return self.find_file(dir, module, ".cf", found)
+
+    /#/ File `name` + `ext` in the same places; for `.cfc` also in a `lib` directory of each.
+    fn find_file(self, dir: &Txt, module: &Txt, extension: &str, found: &Txt) => Txt:
+        let ext = txt_of(extension)
         let src = new_txt()
         src.n = 0 - 1
         let all = new_txt()
         all.put_all(dir)
         all.put_byte(10)
         all.put_all(&self.dirs)
+        if len(extension) == 4:
+            let n0 = all.n
+            let st = 0
+            for q in 0..n0 + 1:
+                if q == n0 || all.b[q] == 10:
+                    if q > st:
+                        all.put_byte(10)
+                        for z in st..q:
+                            all.put_byte(all.b[z])
+                        all.put("/lib")
+                    st = q + 1
         let s = 0
         for i in 0..all.n + 1:
             if i == all.n || all.b[i] == 10:
@@ -59,6 +121,7 @@ class Flat:
             if i == src.n || src.b[i] == 10:
                 let module = use_module(src, start, i)
                 if module.n == 0:
+                    self.note_c_lib(src, start, i, dir)
                     for k in start..i:
                         self.out.put_byte(src.b[k])
                     self.out.put_byte(10)
@@ -77,7 +140,7 @@ class Flat:
                 start = i + 1
 
 fn new_flat() => Flat:
-    return Flat { out: new_txt(), seen: new_txt(), dirs: new_txt(), errs: 0 }
+    return Flat { out: new_txt(), seen: new_txt(), dirs: new_txt(), errs: 0, libs: new_txt(), cfc: new_txt(), lib_dirs: new_txt() }
 
 /#/ Is `w` in the lines of `t` (a line equal to it)?
 fn has_line(t: &Txt, w: &Txt) => bool:
@@ -110,6 +173,19 @@ fn find_in(t: &Txt, lo: int, hi: int, w: &str) => int:
         if k == len(w):
             return i
     return -1
+
+/#/ The C library a `use ... in NAME of c` line names; empty for any other line.
+fn c_lib_name(t: &Txt, lo: int, hi: int) => Txt:
+    let m = new_txt()
+    if hi - lo < 5 || t.b[lo] != int('u') || t.b[lo + 1] != int('s') || t.b[lo + 2] != int('e') || t.b[lo + 3] != 32:
+        return m
+    let tail = find_in(t, lo, hi, " of c")
+    let inn = find_in(t, lo, hi, " in ")
+    if tail < 0 || inn < 0 || inn + 4 >= tail:
+        return m
+    for k in inn + 4..tail:
+        m.put_byte(t.b[k])
+    return m
 
 /#/ The module a `use` line (from `lo` to `hi`) names; empty when the line is not a `use`
 /#/ of a Coffee module.

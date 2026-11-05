@@ -15,8 +15,14 @@ tree behind a command line.
 - Strings from bytes: there is no way to make a `str` from a buffer, so `src/cstr.cf` joins
   one-character literals pairwise.
 
-Not here yet: project mode (`coffee.toml`), `.cfc` files for C libraries other than libc and libm,
-packages, `--target`, diagnostics with file names.
+C libraries other than libc and libm: `use f in mylib of c` needs `mylib.cfc` next to the program, in
+its `lib/`, or in an `-I` directory (or its `lib/`), as with the Rust compiler. The signatures of all
+such files are declared together; a name the bundled libc/libm tables have keeps its bundled signature.
+The link line gets `-L` and an rpath for the directory it was found in, and `-lmylib`.
+
+Project mode (`coffee.toml`), packages, `fetch` and the like belong to a toolchain program that calls
+this compiler (as cargo calls rustc), not to the compiler. Not here yet: `--target`, diagnostics with
+file names, `.o` as the default product.
 
 ## Bootstrap
 

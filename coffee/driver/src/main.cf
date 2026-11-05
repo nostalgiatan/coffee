@@ -147,7 +147,7 @@ fn main() => int:
     let opt = 0
     if cli.level > 0:
         opt = 1
-    let ll = build_src(fl.out_str(), opt)
+    let ll = build_with_cfc(fl.out_str(), opt, fl.cfc_str())
     if ll.n == 0:
         return 1
     let out = cli.out_path()
@@ -163,7 +163,9 @@ fn main() => int:
     cmd.put_all(&out)
     cmd.put("' '")
     cmd.put_all(&ll_path)
-    cmd.put("' -lm")
+    cmd.put("'")
+    fl.link_flags(&cmd)
+    cmd.put(" -lm")
     let rc = system(txt_str(&cmd))
     remove_file(&ll_path)
     if rc != 0:

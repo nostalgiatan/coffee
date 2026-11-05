@@ -758,7 +758,7 @@ class Checker:
                 self.import(a, g, it)
             it = a.next[it]
 
-    /#/ A function imported from `libc` or `libm` takes the signature the bundled `.cfc` gave it.
+    /#/ A function imported from a C library takes the signature a `.cfc` (bundled, or the program's own) gave it.
     fn bundled_sig(self, a: &Ast, g: &Syms, r: int, tok: int) => void:
         let st = a.toks.start[tok]
         let en = a.toks.end[tok]
@@ -776,8 +776,7 @@ class Checker:
             while s >= 0:
                 if a.kind[s] == int(Nk.Name):
                     let r = self.loc.add_tok(a, a.tok[s], int(Sk.Extern), -1, -1)
-                    if tok_is(a, a.pa[u], "libc") || tok_is(a, a.pa[u], "libm"):
-                        self.bundled_sig(a, g, r, a.tok[s])
+                    self.bundled_sig(a, g, r, a.tok[s])
                 s = a.next[s]
             return
         let mid = g.find_module(a, a.pa[u])

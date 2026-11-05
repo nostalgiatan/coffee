@@ -23,8 +23,8 @@ fn declare_c(t: &Tys, g: &Syms) => void:
     for i in 0..g.n:
         if g.kind[i] == int(Sk.Extern) && g.mod[i] == -1 && g.ty[i] >= 0:
             return
-    declare_c_lib(t, g, c_libc_source(), "libc.cfc")
-    declare_c_lib(t, g, c_libm_source(), "libm.cfc")
+    declare_c_lib(t, g, c_libc_source(), "libc.cfc", true)
+    declare_c_lib(t, g, c_libm_source(), "libm.cfc", true)
     declare_error(t, g)
 
 /#/ The fields of the builtin class `Error`: `code: int`, `note: str`, `e: object`.
@@ -41,7 +41,14 @@ fn declare_error(t: &Tys, g: &Syms) => void:
                     else:
                         g.ty[f] = t.simple(int(Ty.Object))
 
-fn declare_c_lib(t: &Tys, g: &Syms, src: str, name: &str) => void:
+/#/ The C functions a program's own `.cfc` text declares (the texts of all its C libraries
+/#/ together): they become `Extern` rows like the bundled ones. A name the bundled tables have
+/#/ keeps its signature.
+fn declare_user_cfc(t: &Tys, g: &Syms, src: str, name: &str) => void:
+    declare_c(t, g)
+    declare_c_lib(t, g, src, name, false)
+
+fn declare_c_lib(t: &Tys, g: &Syms, src: str, name: &str, bundled: bool) => void:
     let a = parse(src)
     let m = declare_module(g, &a, name)
     declare_module_types(t, g, &a, m)
@@ -68,11 +75,19 @@ fn declare_c_lib(t: &Tys, g: &Syms, src: str, name: &str) => void:
                         t.push_arg(t.arg(sig, k))
                     sig = t.intern(int(Ty.Fn), 0, count - 1, t.c[sig], start)
                 let tk = a.pa[it]
+                let h = g.span_hash(&a, a.toks.start[tk], a.toks.end[tk])
+                let known = false
                 for e in 0..g.n:
-                    if g.kind[e] == int(Sk.Extern) && g.mod[e] == -1 && g.same_span(e, &a, a.toks.start[tk], a.toks.end[tk], g.span_hash(&a, a.toks.start[tk], a.toks.end[tk])):
-                        g.ty[e] = sig
-                        if variadic:
-                            g.info[e] = 1
+                    if g.kind[e] == int(Sk.Extern) && g.mod[e] == -1 && g.same_span(e, &a, a.toks.start[tk], a.toks.end[tk], h):
+                        known = true
+                if !known:
+                    g.add_tok(&a, tk, int(Sk.Extern), -1, -1)
+                for e in 0..g.n:
+                    if g.kind[e] == int(Sk.Extern) && g.mod[e] == -1 && g.same_span(e, &a, a.toks.start[tk], a.toks.end[tk], h):
+                        if bundled || g.ty[e] < 0:
+                            g.ty[e] = sig
+                            if variadic:
+                                g.info[e] = 1
         it = a.next[it]
 
 fn declare_types(t: &Tys, g: &Syms, a: &Ast, m: int) => void:
