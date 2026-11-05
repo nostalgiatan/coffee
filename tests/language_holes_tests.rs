@@ -496,3 +496,26 @@ fn test_use_in_module_brings_the_types_along() {
     let _ = std::fs::remove_dir_all(&dir);
     assert!(text.contains("exited with code: 0"), "{}", text);
 }
+
+#[test]
+fn test_non_ascii_string_literals_keep_their_utf8_bytes() {
+    // "单行" is 6 bytes; the first is 0xE5, which `int()` must widen as 229, not -27.
+    let src = "fn main() => int:\n    let s = \"\u{5355}\u{884c}\"\n    return len(&s) * 1000 + int(s[0]) - 6229\n";
+    assert_exit_code(src, 0).unwrap();
+}
+
+#[test]
+fn test_non_ascii_text_in_a_let_does_not_panic_the_parser() {
+    assert_exit_code("fn main() => int:\n    let s = \"x /#/ \u{5355}\"\n    return len(&s) - 9\n", 0).unwrap();
+}
+
+#[test]
+fn test_comment_marker_after_an_escaped_quote_in_a_string_is_text() {
+    let src = "fn show(s: &str) => int:\n    return len(s)\n\nfn main() => int:\n    let n = show(\"{ \\\" /#/\")\n    return n - 7\n";
+    assert_exit_code(src, 0).unwrap();
+}
+
+#[test]
+fn test_int_cast_widens_u8_without_sign_extension() {
+    assert_exit_code("fn main() => int:\n    let s = \"\\xffA\"\n    return int(s[0]) - 255 + int(s[1]) - 65\n", 0).unwrap();
+}

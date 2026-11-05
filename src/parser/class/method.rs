@@ -127,14 +127,8 @@ pub(super) fn parse_method(input: &str) -> IResult<&str, MethodDef> {
 }
 
 fn strip_inline_comment(s: &str) -> &str {
-    if let Some(start_pos) = s.find("/#/") {
-        let before = &s[..start_pos];
-        let quote_count = before.matches('"').count() + before.matches('\'').count();
-        if quote_count % 2 == 0 {
-            return before;
-        }
-    }
-    s
+    let (code_len, _) = crate::parser::indent::scan_code(s, &mut false);
+    &s[..code_len]
 }
 
 /// Dedent method body lines by the indent of the first non-empty line, then parse statements.

@@ -44,7 +44,7 @@ fn errors(t: &Tokens) => int:
 /#/ One letter per token class, for compact expectations:
 /#/   N newline  I indent  D dedent  E eof  X error  w identifier  k keyword
 /#/   i int  d float  s string  f f-string  c char  @ listener
-/#/   ( ) [ ] { } , :  the delimiters   o any other operator
+/#/   ( ) [ ] { } , : ;  the delimiters   o any other operator
 fn shape_char(kind: int) => int:
     if kind == int(Tk.Newline):
         return 'N'
@@ -88,6 +88,8 @@ fn shape_char(kind: int) => int:
         return ','
     if kind == int(Tk.Colon):
         return ':'
+    if kind == int(Tk.Semi):
+        return ';'
     return 'o'
 
 /#/ The whole table, spelled in shape letters, equals `shape` (Eof included).
@@ -98,3 +100,51 @@ fn miss_shape(t: &Tokens, shape: &str) => int:
         if shape_char(t.kind[i]) != byte(shape, i):
             return 1
     return 0
+
+/#/ Structural invariants every token table must satisfy. Returns the number
+/#/ of violated ones: Eof is last and only once; ranges are ordered and inside
+/#/ the source; positions never go backwards; Indent and Dedent balance; the
+/#/ text between tokens is whitespace or a comment, never code.
+fn invariants(src: &str, t: &Tokens) => int:
+    let bad = 0
+    let n = len(src)
+    if t.count == 0 || t.kind[t.count - 1] != int(Tk.Eof):
+        return 1
+    let depth = 0
+    let prev_end = 0
+    let prev_line = 1
+    for i in 0..t.count:
+        let k = t.kind[i]
+        if k == int(Tk.Eof) && i != t.count - 1:
+            bad = bad + 1
+        if t.start[i] < prev_end || t.end[i] < t.start[i] || t.end[i] > n:
+            bad = bad + 1
+        if t.line[i] < prev_line || t.col[i] < 1:
+            bad = bad + 1
+        if k == int(Tk.Indent):
+            depth = depth + 1
+        if k == int(Tk.Dedent):
+            depth = depth - 1
+            if depth < 0:
+                bad = bad + 1
+        /#/ the gap before this token holds only blanks and comments
+        let j = prev_end
+        while j < t.start[i]:
+            let c = byte(src, j)
+            if c == ' ' || c == '\t' || c == '\r' || c == '\n':
+                j = j + 1
+            elif starts_line_comment(src, j):
+                j = skip_line_comment(src, j)
+            elif starts_block_comment(src, j):
+                let e = skip_block_comment(src, j)
+                if e < 0:
+                    e = 0 - e
+                j = e
+            else:
+                bad = bad + 1
+                j = t.start[i]
+        prev_end = t.end[i]
+        prev_line = t.line[i]
+    if depth != 0:
+        bad = bad + 1
+    return bad

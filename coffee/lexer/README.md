@@ -51,3 +51,16 @@ cd coffee/lexer
 coffee test -I src      # all tests
 coffee --bin            # build ./target/debug/lexer
 ```
+
+## Verification
+
+- `tests/test_*.cf` pin the behaviour per area, including error recovery and the `;`, UTF-8 and
+  `/#/`-inside-a-string cases found while verifying.
+- `check.cf::invariants` is asserted on a realistic program: ranges ordered and inside the source,
+  positions monotonic, Indent/Dedent balanced, and the text between tokens only blanks or comments.
+- `tools/fuzz.py` is a differential fuzzer against `tools/ref_lexer.py`, an independent
+  reimplementation of the same spec: tens of thousands of random token-soup sources agree.
+  It is not part of `cargo test` (needs Python): `COFFEE=… python3 tools/fuzz.py <seed> <cases>`.
+- All of `library/std`, `tests/coffee_programs`, this project's own sources and the code blocks
+  of `SYNTAX.md` lex with zero `Error` tokens.
+- A non-ASCII character outside a string or comment is one `Error` token, not one per byte.

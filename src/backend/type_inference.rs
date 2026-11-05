@@ -48,14 +48,14 @@ fn process_escape_sequences(s: &str) -> Vec<u8> {
                     _ => {
                         // Unknown escape, keep as-is
                         result.push(b'\\');
-                        result.push(next as u8);
+                        result.extend_from_slice(next.encode_utf8(&mut [0u8; 4]).as_bytes());
                     }
                 }
             } else {
                 result.push(b'\\');
             }
         } else {
-            result.push(c as u8);
+            result.extend_from_slice(c.encode_utf8(&mut [0u8; 4]).as_bytes());
         }
     }
 

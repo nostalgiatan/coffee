@@ -1,0 +1,28 @@
+use * in check
+
+fn shape_of(src: &str, want: &str) => int:
+    let t = lex(src)
+    return miss_shape(&t, want) + invariants(src, &t)
+
+fn main() => int:
+    let bad = 0
+    /#/ array types use `;`
+    bad = bad + shape_of("let a: [int; 5] = [1, 2]\n", "kw:[k;i]o[i,i]NE")
+    /#/ comment markers inside strings are text
+    bad = bad + shape_of("\"a /#/ b\"", "sNE")
+    bad = bad + shape_of("\"/#* x\" y", "swNE")
+    bad = bad + shape_of("\"{ \\\" /#/\"", "sNE")
+    /#/ non-ASCII text: free inside strings and comments, one Error per stray char
+    bad = bad + shape_of("\"\xe5\x8d\x95\xe8\xa1\x8c\"", "sNE")
+    bad = bad + shape_of("a /#/ \xe5\x8d\x95\n", "wNE")
+    bad = bad + shape_of("a \xe5\x8d\x95 b", "wXwNE")
+    bad = bad + shape_of("\xe5\x8d\x95\xe8\xa1\x8c", "XXNE")
+    /#/ bytes are unsigned: 0xFF is 255
+    let hi = "\xff"
+    if byte(&hi, 0) != 255:
+        bad = bad + 1
+    /#/ a realistic program keeps every invariant
+    let prog = "use printf in libc of c\n\nclass P:\n    x: int\n\n    fn get(self) => int:\n        return self.x\n\nfn main() => int:\n    let p = P { x: 4 }\n    let t = [1, 2,\n        3]\n    for i in 0..3:\n        if t[i] > 1 && p.get() == 4:\n            printf(\"%d\\n\", i)\n        elif i == 0:\n            continue\n        else:\n            break\n    return 0\n"
+    let t = lex(&prog)
+    bad = bad + errors(&t) + invariants(&prog, &t)
+    return bad

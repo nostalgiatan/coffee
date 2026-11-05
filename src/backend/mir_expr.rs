@@ -99,7 +99,25 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             }
             HirExprKind::TypeCast { target_type, value } => {
                 let compiled = self.compile_hir_expr_typed(value)?;
-                self.emit_type_cast(target_type, compiled)
+                let cast = self.emit_type_cast(target_type, compiled)?;
+                // `int(x)` of a narrower integer widens by the source's signedness:
+                // a `u8` byte of 0xFF is 255, not -1.
+                if target_type == "int" {
+                    if let BasicValueEnum::IntValue(i) = cast {
+                        let i64_ty = self.backend.context.i64_type();
+                        if i.get_type().get_bit_width() < 64 {
+                            let signed = matches!(value.ty, Type::Int { signed: true, .. });
+                            let wide = if signed {
+                                self.backend.builder.build_int_s_extend(i, i64_ty, "int_sext")
+                            } else {
+                                self.backend.builder.build_int_z_extend(i, i64_ty, "int_zext")
+                            }
+                            .map_err(|e| self.error("compile_expression", format!("failed to widen to int: {}", e)))?;
+                            return Ok(wide.into());
+                        }
+                    }
+                }
+                Ok(cast)
             }
             HirExprKind::Assign {
                 object,

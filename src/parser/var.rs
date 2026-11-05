@@ -222,7 +222,9 @@ fn parse_expression(input: &str) -> IResult<&str, &str> {
         end += 1;
     }
 
-    Ok((&input[end..], &input[..end]))
+    // `end` counts chars; slice by the matching byte offset.
+    let byte_end = chars[..end].iter().map(|c| c.len_utf8()).sum::<usize>();
+    Ok((&input[byte_end..], &input[..byte_end]))
 }
 
 #[cfg(test)]

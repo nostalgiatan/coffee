@@ -141,9 +141,18 @@ impl Default for IndentCache {
     }
 }
 
+/// Byte length of the char literal (`'a'`, `'\n'`, `'\''`) at the start of `b`, or 0.
+fn char_literal_len(b: &[u8]) -> usize {
+    match (b.get(1), b.get(2), b.get(3)) {
+        (Some(b'\\'), Some(_), Some(b'\'')) => 4,
+        (Some(c), Some(b'\''), _) if *c != b'\\' && *c != b'\'' => 3,
+        _ => 0,
+    }
+}
+
 /// Code part of `line` (strings kept, `/#/` comment dropped) and the bracket depth change.
 /// `in_block_comment` carries `/#* … *#/` state across lines.
-fn scan_code(line: &str, in_block_comment: &mut bool) -> (usize, i32) {
+pub(crate) fn scan_code(line: &str, in_block_comment: &mut bool) -> (usize, i32) {
     let bytes = line.as_bytes();
     let mut i = 0;
     let mut in_str = false;
@@ -171,6 +180,10 @@ fn scan_code(line: &str, in_block_comment: &mut bool) -> (usize, i32) {
             continue;
         } else if bytes[i..].starts_with(b"/#/") {
             return (i, depth);
+        } else if c == b'\'' && char_literal_len(&bytes[i..]) > 0 {
+            // `'"'` and `'('` are chars, not a string start or a bracket
+            i += char_literal_len(&bytes[i..]);
+            continue;
         } else {
             match c {
                 b'"' => in_str = true,

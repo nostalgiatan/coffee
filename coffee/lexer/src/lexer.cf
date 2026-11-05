@@ -155,6 +155,8 @@ fn op1_kind(c: int) => int:
         return int(Tk.Dot)
     if c == ',':
         return int(Tk.Comma)
+    if c == ';':
+        return int(Tk.Semi)
     if c == ':':
         return int(Tk.Colon)
     if c == '(':
@@ -486,7 +488,12 @@ fn lex(src: &str) => Tokens:
                 else:
                     let k1 = op1_kind(c)
                     if k1 < 0:
-                        t.push(int(Tk.Error), i, i + 1, line, col)
+                        /#/ one Error per stray character, not per UTF-8 byte
+                        let e = i + 1
+                        while byte(src, e) >= 128 && byte(src, e) < 192:
+                            e = e + 1
+                        t.push(int(Tk.Error), i, e, line, col)
+                        i = e - 1
                     else:
                         if k1 == int(Tk.LParen) || k1 == int(Tk.LBracket) || k1 == int(Tk.LBrace):
                             depth = depth + 1

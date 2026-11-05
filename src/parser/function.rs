@@ -516,16 +516,8 @@ pub fn unique_function_key(name: &str, parent: Option<&str>, taken: impl Fn(&str
 
 /// Strip `/#/` comments that are not inside quotes.
 fn strip_inline_comment(s: &str) -> &str {
-    if let Some(start_pos) = s.find("/#/") {
-        // Check if inside string literal
-        let before = &s[..start_pos];
-        let quote_count = before.matches('"').count() + before.matches('\'').count();
-        if quote_count % 2 == 0 {
-            // Not inside string - this is a comment
-            return before;
-        }
-    }
-    s
+    let (code_len, _) = crate::parser::indent::scan_code(s, &mut false);
+    &s[..code_len]
 }
 
 #[cfg(test)]
