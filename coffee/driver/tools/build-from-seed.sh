@@ -1,0 +1,23 @@
+#!/bin/bash
+# Builds the self-hosted compiler without Rust or LLVM: the committed seed object is linked with
+# the system C compiler, and the result compiles the sources again.
+# Usage: tools/build-from-seed.sh <work dir>      (leaves <work dir>/coffee2)
+# Refresh the seed after a compiler change: tools/build-from-seed.sh <work dir> --refresh
+set -e
+D=$(realpath -m "${1:?work dir}"); H=$(realpath "$(dirname "$0")/.."); CC=${CC:-cc}
+mkdir -p "$D"; cd "$D"
+INC="-I $H/src -I $H/../ir/src -I $H/../types/src -I $H/../sema/src -I $H/../parser/src -I $H/../lexer/src"
+gunzip -c "$H/seed/coffee2-x86_64.o.gz" > seed.o
+$CC -o seed seed.o -lm
+./seed "$H/src/main.cf" $INC --emit-obj -o gen1.o
+$CC -o coffee2 gen1.o -lm
+./coffee2 "$H/src/main.cf" $INC --emit-obj -o gen2.o
+cmp gen1.o gen2.o || { echo "no fixed point: gen1 and gen2 objects differ"; exit 1; }
+if cmp -s seed.o gen1.o; then
+    echo "seed is current; coffee2 built in $D"
+elif [ "$2" = "--refresh" ]; then
+    gzip -9 -n -c gen1.o > "$H/seed/coffee2-x86_64.o.gz"
+    echo "seed refreshed ($(wc -c < gen1.o) bytes); coffee2 built in $D"
+else
+    echo "coffee2 built in $D; the seed is older than the sources (run with --refresh to update it)"
+fi

@@ -4,6 +4,22 @@
 
 前提:已经有 Rust 版编译器(stage0),`clang` 和 LLVM 21.1 在 `PATH` 上。
 
+## 不用 Rust 和 LLVM:从种子构建
+
+x86-64 Linux 上,只要有系统的 C 编译器(默认 `cc`,可用 `CC` 指定):
+
+```bash
+coffee/driver/tools/build-from-seed.sh /tmp/coffee-seed
+```
+
+得到 `/tmp/coffee-seed/coffee2`,约半分钟。脚本把仓库里的种子目标文件 `coffee/driver/seed/coffee2-x86_64.o.gz` 链接成编译器,用它编译源码,再用结果编译一遍,要求两次的目标文件逐字节相同。种子比源码旧时,加 `--refresh` 更新它:
+
+```bash
+coffee/driver/tools/build-from-seed.sh /tmp/coffee-seed --refresh
+```
+
+下面的步骤走 stage0 的路线,只在没有种子或要验证 LLVM 后端时需要。
+
 ## 构建 stage0
 
 在仓库根目录:
