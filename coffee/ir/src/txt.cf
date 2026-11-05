@@ -23,7 +23,12 @@ class Txt:
             self.put_byte(w.b[i])
 
     fn put_int(self, v: int) => void:
-        if v < 0:
+        if v < 0 - 9223372036854775807:
+            /#/ the smallest int has no negation
+            self.put_byte('-')
+            self.put_int(922337203685477580)
+            self.put_byte('8')
+        elif v < 0:
             self.put_byte('-')
             self.put_int(0 - v)
         elif v < 10:

@@ -1,0 +1,51 @@
+use * in drive
+use putchar in libc of c
+
+/#/ the bytes of the code the assembler made, as a list of numbers
+fn code_is(a: &Asm, want: buf<int>) => int:
+    if a.pos() != len(want):
+        printf("FAIL: %d bytes, want %d\n", a.pos(), len(want))
+        return 1
+    for k in 0..len(want):
+        if a.c.b[k] != want[k]:
+            printf("FAIL: byte %d is %d, want %d\n", k, a.c.b[k], want[k])
+            return 1
+    return 0
+
+fn main() => int:
+    let m = 0
+    /#/ encodings
+    let a = new_asm()
+    a.mov_rr(0, 1)
+    let w: buf<int> = new_buf(int, 3)
+    w[0] = 72
+    w[1] = 139
+    w[2] = 193
+    m = m + code_is(&a, w)
+    let b = new_asm()
+    b.ret()
+    let w2: buf<int> = new_buf(int, 1)
+    w2[0] = 195
+    m = m + code_is(&b, w2)
+    /#/ arithmetic, branches, loops
+    m = m + expect_mc("fn main() => int:\n    let a = 7\n    let b = 5\n    return a * b - a // b + a % b\n", 36)
+    m = m + expect_mc("fn main() => int:\n    let s = 0\n    for i in 0..10:\n        if i % 2 == 0:\n            s = s + i\n    return s\n", 20)
+    m = m + expect_mc("fn main() => int:\n    let n = 0\n    while n < 100:\n        n = n + 7\n    return n\n", 105)
+    /#/ bitwise and shifts, negative numbers
+    m = m + expect_mc("fn main() => int:\n    let x = 0 - 8\n    return ((x >> 1) & 255) + (3 << 4) + (6 ^ 3) + (5 | 8)\n", 62)
+    /#/ calls, recursion
+    m = m + expect_mc("fn fib(n: int) => int:\n    if n < 2:\n        return n\n    return fib(n - 1) + fib(n - 2)\n\nfn main() => int:\n    return fib(10)\n", 55)
+    /#/ more arguments than registers
+    m = m + expect_mc("fn f(a: int, b: int, c: int, d: int, e: int, g: int, h: int, i: int) => int:\n    return a + 2 * b + 3 * c + 4 * d + 5 * e + 6 * g + 7 * h + 8 * i\n\nfn main() => int:\n    return f(1, 1, 1, 1, 1, 1, 1, 1) % 100\n", 36)
+    /#/ floats
+    m = m + expect_mc("fn main() => int:\n    let x = 1.5\n    let y = x * 4.0 + 0.5\n    return int(y)\n", 6)
+    /#/ classes, buffers, arrays, strings
+    m = m + expect_mc("class P:\n    x: int\n    y: int\n\n    fn sum(self) => int:\n        return self.x + self.y\n\nfn main() => int:\n    let p = P { x: 3, y: 4 }\n    return p.sum()\n", 7)
+    m = m + expect_mc("fn main() => int:\n    let b: buf<int> = new_buf(int, 6)\n    for i in 0..6:\n        b[i] = i * i\n    return b[5] + b[2] + len(b)\n", 35)
+    m = m + expect_mc("fn main() => int:\n    let a = [4, 5, 6]\n    let s = 0\n    for i in 0..len(a):\n        s = s + a[i]\n    return s\n", 15)
+    m = m + expect_mc("fn main() => int:\n    return len(\"hello\")\n", 5)
+    /#/ match, a chain of tests
+    m = m + expect_mc("fn main() => int:\n    let v = 3\n    match v:\n        1 => return 10\n        3 => return 30\n        _ => return 0\n    return 1\n", 30)
+    /#/ an index out of range stops the program
+    m = m + expect_mc("fn main() => int:\n    let b: buf<int> = new_buf(int, 3)\n    let i = 3\n    return b[i] + 7\n", 1)
+    return m

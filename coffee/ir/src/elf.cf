@@ -1,0 +1,203 @@
+/#/ An x86-64 ELF relocatable object: `.text`, `.rodata`, the relocations of the code, the
+/#/ symbols, and an empty `.note.GNU-stack` (so the linker keeps the stack non-executable).
+/#/
+/#/ Symbol numbers in the object: 0 is null, 1 the `.rodata` section, then the symbols of `Obj`
+/#/ in the order they were made (`2 + k`). All of them are global; the locals before them are the
+/#/ two above.
+use * in asm
+
+class Obj:
+    ro: Txt
+    /#/ the string table: names, each ended by a NUL, after a NUL
+    names: Txt
+    s_name: buf<int>
+    s_def: buf<int>
+    s_size: buf<int>
+    ns: int
+
+    /#/ The symbol (object number) named like `w`, made when new.
+    fn sym(self, w: &Txt) => int:
+        for k in 0..self.ns:
+            let at = self.s_name[k]
+            if at + w.n < self.names.n:
+                let q = 0
+                while q < w.n && self.names.b[at + q] == w.b[q]:
+                    q = q + 1
+                if q == w.n && self.names.b[at + w.n] == 0:
+                    return k + 2
+        if self.ns >= len(self.s_name):
+            let cap = (self.ns + 1) * 2
+            self.s_name = buf_resize(self.s_name, cap)
+            self.s_def = buf_resize(self.s_def, cap)
+            self.s_size = buf_resize(self.s_size, cap)
+        self.s_name[self.ns] = self.names.n
+        self.s_def[self.ns] = 0 - 1
+        self.s_size[self.ns] = 0
+        self.names.put_all(w)
+        self.names.put_byte(0)
+        self.ns = self.ns + 1
+        return self.ns + 1
+
+    fn dump_ro(self, t: &Txt) => void:
+        t.put_all(&self.ro)
+
+    fn dump_str(self, t: &Txt) => void:
+        t.put_all(&self.names)
+
+    fn define(self, sym: int, at: int, size: int) => void:
+        self.s_def[sym - 2] = at
+        self.s_size[sym - 2] = size
+
+    /#/ Adds `bytes` (and a NUL) to `.rodata`; the offset they start at.
+    fn rodata(self, bytes: &Txt) => int:
+        let at = self.ro.n
+        self.ro.put_all(bytes)
+        self.ro.put_byte(0)
+        return at
+
+fn new_obj() => Obj:
+    let nm = new_txt()
+    nm.put_byte(0)
+    let o = Obj { ro: new_txt(), names: nm, s_name: new_buf(int, 16), s_def: new_buf(int, 16), s_size: new_buf(int, 16), ns: 0 }
+    /#/ the zero block that stands in for `undef` aggregates
+    for k in 0..256:
+        o.ro.put_byte(0)
+    return o
+
+fn w16(t: &Txt, v: int) => void:
+    for k in 0..2:
+        t.put_byte((v >> (8 * k)) & 255)
+
+fn w32(t: &Txt, v: int) => void:
+    for k in 0..4:
+        t.put_byte((v >> (8 * k)) & 255)
+
+fn w64(t: &Txt, v: int) => void:
+    for k in 0..8:
+        t.put_byte((v >> (8 * k)) & 255)
+
+fn pad_to(t: &Txt, align: int) => void:
+    while t.n % align != 0:
+        t.put_byte(0)
+
+/#/ One section header.
+fn shdr(t: &Txt, name: int, ty: int, flags: int, off: int, size: int, link: int, info: int, align: int, ent: int) => void:
+    w32(t, name)
+    w32(t, ty)
+    w64(t, flags)
+    w64(t, 0)
+    w64(t, off)
+    w64(t, size)
+    w32(t, link)
+    w32(t, info)
+    w64(t, align)
+    w64(t, ent)
+
+/#/ The object file.
+fn write_elf(o: &Obj, a: &Asm) => Txt:
+    let out = new_txt()
+    /#/ section names
+    let sh = new_txt()
+    sh.put_byte(0)
+    let n_text = sh.n
+    sh.put(".text")
+    sh.put_byte(0)
+    let n_ro = sh.n
+    sh.put(".rodata")
+    sh.put_byte(0)
+    let n_rela = sh.n
+    sh.put(".rela.text")
+    sh.put_byte(0)
+    let n_note = sh.n
+    sh.put(".note.GNU-stack")
+    sh.put_byte(0)
+    let n_sym = sh.n
+    sh.put(".symtab")
+    sh.put_byte(0)
+    let n_str = sh.n
+    sh.put(".strtab")
+    sh.put_byte(0)
+    let n_shs = sh.n
+    sh.put(".shstrtab")
+    sh.put_byte(0)
+    /#/ relocations and symbols
+    let rela = new_txt()
+    for k in 0..a.nrl:
+        w64(&rela, a.rl_at[k])
+        w64(&rela, (a.rl_sym[k] << 32) | a.rl_ty[k])
+        w64(&rela, a.rl_add[k])
+    let syms = new_txt()
+    for k in 0..24:
+        syms.put_byte(0)
+    w32(&syms, 0)
+    syms.put_byte(3)
+    syms.put_byte(0)
+    w16(&syms, 2)
+    w64(&syms, 0)
+    w64(&syms, 0)
+    for k in 0..o.ns:
+        w32(&syms, o.s_name[k])
+        if o.s_def[k] >= 0:
+            syms.put_byte(18)
+            syms.put_byte(0)
+            w16(&syms, 1)
+            w64(&syms, o.s_def[k])
+            w64(&syms, o.s_size[k])
+        else:
+            syms.put_byte(16)
+            syms.put_byte(0)
+            w16(&syms, 0)
+            w64(&syms, 0)
+            w64(&syms, 0)
+    /#/ layout
+    for k in 0..64:
+        out.put_byte(0)
+    let off_text = out.n
+    a.dump(&out)
+    pad_to(&out, 16)
+    let off_ro = out.n
+    o.dump_ro(&out)
+    pad_to(&out, 8)
+    let off_rela = out.n
+    out.put_all(&rela)
+    let off_sym = out.n
+    out.put_all(&syms)
+    let off_str = out.n
+    o.dump_str(&out)
+    let off_shs = out.n
+    out.put_all(&sh)
+    pad_to(&out, 8)
+    let off_sh = out.n
+    shdr(&out, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    shdr(&out, n_text, 1, 6, off_text, a.c.n, 0, 0, 16, 0)
+    shdr(&out, n_ro, 1, 2, off_ro, o.ro.n, 0, 0, 16, 0)
+    shdr(&out, n_rela, 4, 64, off_rela, rela.n, 5, 1, 8, 24)
+    shdr(&out, n_note, 1, 0, off_shs, 0, 0, 0, 1, 0)
+    shdr(&out, n_sym, 2, 0, off_sym, syms.n, 6, 2, 8, 24)
+    shdr(&out, n_str, 3, 0, off_str, o.names.n, 0, 0, 1, 0)
+    shdr(&out, n_shs, 3, 0, off_shs, sh.n, 0, 0, 1, 0)
+    /#/ the file header, over the zeros at the start
+    let h = new_txt()
+    h.put_byte(127)
+    h.put("ELF")
+    h.put_byte(2)
+    h.put_byte(1)
+    h.put_byte(1)
+    for k in 0..9:
+        h.put_byte(0)
+    w16(&h, 1)
+    w16(&h, 62)
+    w32(&h, 1)
+    w64(&h, 0)
+    w64(&h, 0)
+    w64(&h, off_sh)
+    w32(&h, 0)
+    w16(&h, 64)
+    w16(&h, 0)
+    w16(&h, 0)
+    w16(&h, 64)
+    w16(&h, 8)
+    w16(&h, 7)
+    for k in 0..64:
+        out.b[k] = h.b[k]
+    return out

@@ -1,6 +1,6 @@
 /#/ Test support: source text through our front end, IR and clang, and run.
 use * in lower
-use fopen, fputc, fclose, system, putchar, printf, fflush in libc of c
+use fopen, fputc, fclose, system, putchar, printf, fflush, access in libc of c
 
 /#/ Says which node the lowering could not handle: its kind, line, and the text of its token.
 fn report_unsupported(a: &Ast, n: int) => void:
@@ -21,6 +21,13 @@ fn build_src(src: str, opt: int) => Txt:
 
 /#/ Like `build_src`, with the text of the program's own `.cfc` files (empty for none).
 fn build_with_cfc(src: str, opt: int, cfc: str) => Txt:
+    return build_gen(src, opt, cfc, 0)
+
+/#/ Like `build_with_cfc`, but the machine-code backend: the bytes of an ELF object file.
+fn build_obj(src: str, opt: int, cfc: str) => Txt:
+    return build_gen(src, opt, cfc, 1)
+
+fn build_gen(src: str, opt: int, cfc: str, backend: int) => Txt:
     let t = new_tys()
     let g = new_globals()
     if len(cfc) > 0:
@@ -41,6 +48,7 @@ fn build_with_cfc(src: str, opt: int, cfc: str) => Txt:
         return new_txt()
     let lw = new_lower()
     lw.opt = opt
+    lw.backend = backend
     let o = new_txt()
     emit_prelude(&o)
     let body = new_txt()
@@ -69,6 +77,12 @@ fn build_with_cfc(src: str, opt: int, cfc: str) => Txt:
         report_unsupported(&a, lw.bad_node)
         return new_txt()
     lw.finish(&body)
+    if backend == 1:
+        lw.emit_glue(&body, &t, &g)
+        if lw.mc_err > 0:
+            printf("machine code: %d functions could not be translated\n", lw.mc_err)
+            return new_txt()
+        return lw.object()
     o.put_all(&lw.globals)
     lw.emit_decls(&o, &t, &g)
     lw.emit_glue(&body, &t, &g)
@@ -78,9 +92,15 @@ fn build_with_cfc(src: str, opt: int, cfc: str) => Txt:
 /#/ Compiles `src` through our front end and IR, with clang, and runs it: the exit code,
 /#/ or -2 when something did not compile.
 fn run_src(src: str, leaks: bool) => int:
-    let o = build_src(src, 1)
+    /#/ with the file /tmp/coffee_use_obj present the programs go through the machine-code backend
+    let backend = 0
+    if access("/tmp/coffee_use_obj", 0) == 0:
+        backend = 1
+    let o = build_gen(src, 1, "", backend)
     if o.n == 0:
         return -2
+    if backend == 1:
+        return run_object(&o, leaks)
     return compile_and_run(&o, leaks)
 
 /#/ The number of lines of the LLVM text of `src`.
@@ -102,6 +122,20 @@ fn has_verifier_mark(m: &Txt) => bool:
         if k == len(w):
             return true
     return false
+
+/#/ An object file, linked by clang, run.
+fn run_object(o: &Txt, leaks: bool) => int:
+    let fp = fopen("/tmp/ir_lower_test.o", "w")
+    for k in 0..o.n:
+        fputc(o.b[k], fp)
+    fclose(fp)
+    if system("clang -w -fsanitize=address -o /tmp/ir_lower_test /tmp/ir_lower_test.o -lm") != 0:
+        return -1
+    let cmd = "ASAN_OPTIONS=exitcode=99:detect_leaks=1 /tmp/ir_lower_test 2>/tmp/ir_lower_err"
+    if !leaks:
+        cmd = "ASAN_OPTIONS=exitcode=99:detect_leaks=0 /tmp/ir_lower_test 2>/tmp/ir_lower_err"
+    let st = system(cmd)
+    return (st >> 8) & 255
 
 fn compile_and_run(m: &Txt, leaks: bool) => int:
     if has_verifier_mark(m):
@@ -132,6 +166,21 @@ fn expect_with(src: str, want: int, leaks: bool) => int:
     let r = run_src(src, leaks)
     if r != want:
         printf("FAIL: got %d, want %d\n%s\n", r, want, dup)
+        fflush(0)
+        return 1
+    return 0
+
+/#/ Like `expect_exit`, through the machine-code backend whatever the flag file says.
+fn expect_mc(src: str, want: int) => int:
+    let dup = clone src
+    let o = build_gen(src, 1, "", 1)
+    if o.n == 0:
+        printf("FAIL: no object for\n%s\n", dup)
+        fflush(0)
+        return 1
+    let r = run_object(&o, true)
+    if r != want:
+        printf("FAIL (machine code): got %d, want %d\n%s\n", r, want, dup)
         fflush(0)
         return 1
     return 0

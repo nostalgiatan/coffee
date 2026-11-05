@@ -1,0 +1,828 @@
+/#/ From the IR of a function to x86-64, the plainest way: every value has a place in the frame,
+/#/ an instruction loads its operands into registers, computes and stores the result. No register
+/#/ allocation yet; the point is a correct code generator that stands on its own.
+/#/
+/#/ Frame (rbp-relative): [rbp-8] the pointer a function returning an aggregate was given, then one
+/#/ 8-byte-aligned place per value (the memory layout for an aggregate, 8 bytes for a scalar, whose
+/#/ upper bytes are not meaningful), the `slot` areas, and a scratch area for edge copies.
+/#/
+/#/ Calls follow the System V convention for scalars (integers and pointers in rdi, rsi, rdx, rcx,
+/#/ r8, r9, floats in xmm0 to xmm7, the rest on the stack). An aggregate is passed as a pointer to
+/#/ its place in the caller's frame and returned through a pointer in the first integer register.
+use * in elf
+
+fn int_reg(k: int) => int:
+    if k == 0:
+        return 7
+    if k == 1:
+        return 6
+    if k == 2:
+        return 2
+    if k == 3:
+        return 1
+    if k == 4:
+        return 8
+    return 9
+
+/#/ Bytes of a value of representation `r` in memory.
+fn rsize(rs: &Reps, r: int) => int:
+    if r == int(Rp.Void):
+        return 0
+    if r == int(Rp.I8):
+        return 1
+    if r == int(Rp.I16):
+        return 2
+    if r == int(Rp.I32) || r == int(Rp.F32):
+        return 4
+    if r < rp_first_agg():
+        return 8
+    let off = 0
+    let al = 1
+    for i in 0..rs.elems(r):
+        let e = rs.elem(r, i)
+        let ea = ralign(rs, e)
+        off = (off + ea - 1) // ea * ea + rsize(rs, e)
+        if ea > al:
+            al = ea
+    return (off + al - 1) // al * al
+
+fn ralign(rs: &Reps, r: int) => int:
+    if r < rp_first_agg():
+        let s = rsize(rs, r)
+        if s == 0:
+            return 1
+        return s
+    let al = 1
+    for i in 0..rs.elems(r):
+        let ea = ralign(rs, rs.elem(r, i))
+        if ea > al:
+            al = ea
+    return al
+
+/#/ Offset of element `idx` of aggregate `r`.
+fn elem_off(rs: &Reps, r: int, idx: int) => int:
+    let off = 0
+    for i in 0..idx + 1:
+        let e = rs.elem(r, i)
+        let ea = ralign(rs, e)
+        off = (off + ea - 1) // ea * ea
+        if i < idx:
+            off = off + rsize(rs, e)
+    return off
+
+fn round8(n: int) => int:
+    return (n + 7) // 8 * 8
+
+class Gen:
+    a: Asm
+    o: Obj
+    /#/ the place of each value, as the distance below rbp; for a `slot` its area
+    voff: buf<int>
+    tmp: int
+    frame: int
+    err: int
+    av: buf<int>
+    nav: int
+    /#/ where the string literals are in .rodata, by number
+    sbase: int
+    soff: buf<int>
+    nstr: int
+
+    fn add_str(self, off: int) => void:
+        if self.nstr >= len(self.soff):
+            self.soff = buf_resize(self.soff, (self.nstr + 1) * 2)
+        self.soff[self.nstr] = off
+        self.nstr = self.nstr + 1
+
+    fn add_rodata(self, t: &Txt) => void:
+        self.o.ro.put_all(t)
+
+    fn elf(self) => Txt:
+        return write_elf(&self.o, &self.a)
+
+    fn bad(self) => void:
+        self.err = self.err + 1
+
+    fn push_arg(self, v: int) => void:
+        if self.nav >= len(self.av):
+            self.av = buf_resize(self.av, (self.nav + 1) * 2)
+        self.av[self.nav] = v
+        self.nav = self.nav + 1
+
+    /#/ ---- values ------------------------------------------------------------
+
+    /#/ The value an operand stands for, through forwarding and `own.move`.
+    fn res(self, f: &Fun, v: int) => int:
+        let x = f.follow(v)
+        while f.op[x] == int(Op.OwnMove):
+            x = f.follow(f.a[x])
+        return x
+
+    /#/ reg = the value (a scalar, 8 bytes; narrower ones have meaningful low bytes only)
+    fn ld(self, reg: int, f: &Fun, v: int) => void:
+        let x = self.res(f, v)
+        let k = f.op[x]
+        if k == int(Op.Const):
+            let r = f.rep[x]
+            if r == int(Rp.F32):
+                self.a.mov_ri(reg, f.aux[x] & 4294967295)
+            else:
+                self.a.mov_ri(reg, f.aux[x])
+        elif k == int(Op.Undef):
+            self.a.mov_ri(reg, 0)
+        elif k == int(Op.StrLit):
+            self.a.lea_rip(reg, 1, self.sbase + self.so(f.aux[x]))
+        elif k == int(Op.Slot):
+            self.a.lea(reg, 5, 0 - self.voff[x])
+        else:
+            self.a.load(reg, 5, 0 - self.voff[x], 8)
+
+    fn so(self, id: int) => int:
+        return self.soff[id]
+
+    /#/ reg = the value extended from its width
+    fn ld_ext(self, reg: int, f: &Fun, v: int, signed: bool) => void:
+        self.ld(reg, f, v)
+        let x = self.res(f, v)
+        let r = f.rep[x]
+        if r == int(Rp.I8) || r == int(Rp.I16) || r == int(Rp.I32):
+            self.a.extend(reg, reg, rsize_scalar(r), signed)
+
+    /#/ mov [rbp - place of i], reg
+    fn st(self, i: int, reg: int) => void:
+        self.a.store(5, 0 - self.voff[i], reg, 8)
+
+    /#/ For an aggregate value: the base register and displacement of its bytes.
+    fn ab_reg(self, f: &Fun, v: int) => int:
+        let x = self.res(f, v)
+        if f.op[x] == int(Op.Undef):
+            self.a.lea_rip(6, 1, 0)
+            return 6
+        return 5
+
+    fn ab_disp(self, f: &Fun, v: int) => int:
+        let x = self.res(f, v)
+        if f.op[x] == int(Op.Undef):
+            return 0
+        return 0 - self.voff[x]
+
+    /#/ n bytes from [sb + sd] to [db + dd], through rax.
+    fn copy_mem(self, db: int, dd: int, sb: int, sd: int, n: int) => void:
+        let k = 0
+        while k + 8 <= n:
+            self.a.load(0, sb, sd + k, 8)
+            self.a.store(db, dd + k, 0, 8)
+            k = k + 8
+        if k + 4 <= n:
+            self.a.load(0, sb, sd + k, 4)
+            self.a.store(db, dd + k, 0, 4)
+            k = k + 4
+        if k + 2 <= n:
+            self.a.load(0, sb, sd + k, 2)
+            self.a.store(db, dd + k, 0, 2)
+            k = k + 2
+        if k < n:
+            self.a.load(0, sb, sd + k, 1)
+            self.a.store(db, dd + k, 0, 1)
+
+    /#/ Value `v` to [db + dd], in full: a scalar as 8 bytes, an aggregate as its layout.
+    fn val_to(self, f: &Fun, rs: &Reps, db: int, dd: int, v: int) => void:
+        let x = self.res(f, v)
+        let r = f.rep[x]
+        if r >= rp_first_agg():
+            let sb = self.ab_reg(f, x)
+            self.copy_mem(db, dd, sb, self.ab_disp(f, x), rsize(rs, r))
+        else:
+            self.ld(0, f, x)
+            self.a.store(db, dd, 0, 8)
+
+    /#/ ---- frame -------------------------------------------------------------
+
+    fn place_size(self, rs: &Reps, r: int) => int:
+        let s = round8(rsize(rs, r))
+        if s < 8:
+            return 8
+        return s
+
+    /#/ Gives every value its place; the size of the frame.
+    fn layout(self, f: &Fun, rs: &Reps) => void:
+        if len(self.voff) < f.ni + 1:
+            self.voff = new_buf(int, f.ni + 1)
+        let cur = 8
+        let tmp = 0
+        for b in 0..f.nb:
+            let p = f.pfirst[b]
+            while p >= 0:
+                cur = cur + self.place_size(rs, f.rep[p])
+                self.voff[p] = cur
+                p = f.nx[p]
+            let i = f.bfirst[b]
+            while i >= 0:
+                let op = f.op[i]
+                if op == int(Op.Slot):
+                    cur = cur + round8(f.ty[i])
+                    if f.ty[i] < 1:
+                        cur = cur + 8
+                    self.voff[i] = cur
+                elif f.rep[i] != int(Rp.Void) && op != int(Op.OwnMove):
+                    cur = cur + self.place_size(rs, f.rep[i])
+                    self.voff[i] = cur
+                i = f.nx[i]
+        for e in 0..f.ne:
+            if f.eto[e] >= 0:
+                let sum = 0
+                for k in 0..f.eargn[e]:
+                    sum = sum + self.place_size(rs, f.rep[self.res(f, f.pool[f.eargs[e] + k])])
+                if sum > tmp:
+                    tmp = sum
+        cur = cur + tmp
+        self.tmp = cur
+        self.frame = (cur + 15) // 16 * 16
+
+    /#/ ---- edges -------------------------------------------------------------
+
+    /#/ Copies what edge `e` passes into the parameters of the block it enters; through a scratch
+    /#/ area when an argument is itself a parameter of that block (the copies are simultaneous).
+    fn edge_copy(self, f: &Fun, rs: &Reps, e: int) => void:
+        let to = f.eto[e]
+        let n = f.eargn[e]
+        if n == 0:
+            return
+        let hazard = false
+        for k in 0..n:
+            let x = self.res(f, f.pool[f.eargs[e] + k])
+            if f.op[x] == int(Op.Param) && f.blk[x] == to:
+                hazard = true
+        if !hazard:
+            let p = f.pfirst[to]
+            for k in 0..n:
+                self.val_to(f, rs, 5, 0 - self.voff[p], f.pool[f.eargs[e] + k])
+                p = f.nx[p]
+            return
+        let at = 0
+        for k in 0..n:
+            let v = f.pool[f.eargs[e] + k]
+            self.val_to(f, rs, 5, 0 - self.tmp + at, v)
+            at = at + self.place_size(rs, f.rep[self.res(f, v)])
+        let p = f.pfirst[to]
+        at = 0
+        for k in 0..n:
+            let sz = self.place_size(rs, f.rep[p])
+            self.copy_mem(5, 0 - self.voff[p], 5, 0 - self.tmp + at, sz)
+            at = at + sz
+            p = f.nx[p]
+
+    /#/ ---- calls -------------------------------------------------------------
+
+    fn is_int_class(self, r: int) => bool:
+        return r != int(Rp.F32) && r != int(Rp.F64)
+
+    /#/ The call to the symbol `sym` (or the address in r11 when `sym` < 0) with the values queued
+    /#/ in `av`; the result of instruction `i` is stored.
+    fn do_call(self, f: &Fun, rs: &Reps, i: int, sym: int, variadic: bool) => void:
+        let ret = f.rep[i]
+        let sret = ret >= rp_first_agg()
+        /#/ which arguments go on the stack
+        let ni = 0
+        let nx = 0
+        if sret:
+            ni = 1
+        let on_stack = 0
+        for k in 0..self.nav:
+            let r = f.rep[self.res(f, self.av[k])]
+            if r >= rp_first_agg() || self.is_int_class(r):
+                if ni < 6:
+                    ni = ni + 1
+                else:
+                    on_stack = on_stack + 1
+            elif nx < 8:
+                nx = nx + 1
+            else:
+                on_stack = on_stack + 1
+        if on_stack % 2 == 1:
+            self.a.sub_ri(4, 8)
+        /#/ the stack arguments, last first
+        let k = self.nav - 1
+        while k >= 0:
+            let r = f.rep[self.res(f, self.av[k])]
+            let reg_ok = false
+            /#/ recompute whether this one fits in a register: count the ones before it
+            let ci = 0
+            if sret:
+                ci = 1
+            let cx = 0
+            for j in 0..k:
+                let rj = f.rep[self.res(f, self.av[j])]
+                if rj >= rp_first_agg() || self.is_int_class(rj):
+                    ci = ci + 1
+                else:
+                    cx = cx + 1
+            if r >= rp_first_agg() || self.is_int_class(r):
+                reg_ok = ci < 6
+            else:
+                reg_ok = cx < 8
+            if !reg_ok:
+                if r >= rp_first_agg():
+                    let x = self.res(f, self.av[k])
+                    if f.op[x] == int(Op.Undef):
+                        self.a.lea_rip(0, 1, 0)
+                    else:
+                        self.a.lea(0, 5, 0 - self.voff[x])
+                else:
+                    self.ld(0, f, self.av[k])
+                self.a.push(0)
+            k = k - 1
+        if sret:
+            self.a.lea(7, 5, 0 - self.voff[i])
+        let ci = 0
+        if sret:
+            ci = 1
+        let cx = 0
+        for k in 0..self.nav:
+            let v = self.av[k]
+            let x = self.res(f, v)
+            let r = f.rep[x]
+            if r >= rp_first_agg():
+                if ci < 6:
+                    if f.op[x] == int(Op.Undef):
+                        self.a.lea_rip(int_reg(ci), 1, 0)
+                    else:
+                        self.a.lea(int_reg(ci), 5, 0 - self.voff[x])
+                ci = ci + 1
+            elif self.is_int_class(r):
+                if ci < 6:
+                    self.ld(int_reg(ci), f, v)
+                ci = ci + 1
+            else:
+                if cx < 8:
+                    self.ld(0, f, v)
+                    self.a.movq_x(cx, 0, r == int(Rp.F32))
+                cx = cx + 1
+        if variadic:
+            self.a.mov_ri(0, nx)
+        if sym < 0:
+            self.a.call_reg(11)
+        else:
+            self.a.call_sym(sym)
+        let pop = on_stack
+        if on_stack % 2 == 1:
+            pop = pop + 1
+        if pop > 0:
+            self.a.add_ri(4, pop * 8)
+        if ret == int(Rp.Void) || sret:
+            return
+        if self.is_int_class(ret):
+            self.st(i, 0)
+        else:
+            self.a.movq_r(0, 0, ret == int(Rp.F32))
+            self.st(i, 0)
+
+    /#/ The symbol of the function the name number `id` of `sy` stands for.
+    fn callee(self, sy: &Names, id: int) => int:
+        let w = new_txt()
+        sy.put(&w, id)
+        return self.o.sym(&w)
+
+    /#/ ---- instructions ------------------------------------------------------
+
+    fn cc_of(self, p: int) => int:
+        if p == int(Pr.Eq):
+            return cc_e()
+        if p == int(Pr.Ne):
+            return cc_ne()
+        if p == int(Pr.SLt):
+            return cc_l()
+        if p == int(Pr.SLe):
+            return cc_le()
+        if p == int(Pr.SGt):
+            return cc_g()
+        if p == int(Pr.SGe):
+            return cc_ge()
+        if p == int(Pr.ULt):
+            return cc_b()
+        if p == int(Pr.ULe):
+            return cc_be()
+        if p == int(Pr.UGt):
+            return cc_a()
+        return cc_ae()
+
+    fn is_signed_pred(self, p: int) => bool:
+        return p == int(Pr.SLt) || p == int(Pr.SLe) || p == int(Pr.SGt) || p == int(Pr.SGe)
+
+    fn gen_inst(self, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => void:
+        let op = f.op[i]
+        let r = f.rep[i]
+        if op == int(Op.Param) || op == int(Op.Slot) || op == int(Op.OwnMove) || op == int(Op.Const) || op == int(Op.StrLit) || op == int(Op.Undef):
+            return
+        if op == int(Op.Add) || op == int(Op.Sub) || op == int(Op.Mul) || op == int(Op.And) || op == int(Op.Or) || op == int(Op.Xor):
+            self.ld(0, f, f.a[i])
+            self.ld(1, f, f.b[i])
+            if op == int(Op.Add):
+                self.a.add_rr(0, 1)
+            elif op == int(Op.Sub):
+                self.a.sub_rr(0, 1)
+            elif op == int(Op.Mul):
+                self.a.imul_rr(0, 1)
+            elif op == int(Op.And):
+                self.a.and_rr(0, 1)
+            elif op == int(Op.Or):
+                self.a.or_rr(0, 1)
+            else:
+                self.a.xor_rr(0, 1)
+            self.st(i, 0)
+            return
+        if op == int(Op.SDiv) || op == int(Op.SRem) || op == int(Op.UDiv) || op == int(Op.URem):
+            let signed = op == int(Op.SDiv) || op == int(Op.SRem)
+            self.ld_ext(0, f, f.a[i], signed)
+            self.ld_ext(1, f, f.b[i], signed)
+            if signed:
+                self.a.cqo()
+                self.a.idiv(1)
+            else:
+                self.a.mov_ri(2, 0)
+                self.a.div(1)
+            if op == int(Op.SDiv) || op == int(Op.UDiv):
+                self.st(i, 0)
+            else:
+                self.st(i, 2)
+            return
+        if op == int(Op.Shl) || op == int(Op.AShr) || op == int(Op.LShr):
+            self.ld_ext(0, f, f.a[i], op == int(Op.AShr))
+            self.ld(1, f, f.b[i])
+            if op == int(Op.Shl):
+                self.a.shift_cl(4, 0)
+            elif op == int(Op.LShr):
+                self.a.shift_cl(5, 0)
+            else:
+                self.a.shift_cl(7, 0)
+            self.st(i, 0)
+            return
+        if op == int(Op.Neg) || op == int(Op.Not):
+            self.ld(0, f, f.a[i])
+            if op == int(Op.Neg):
+                self.a.neg(0)
+            else:
+                self.a.not_(0)
+            self.st(i, 0)
+            return
+        if op == int(Op.FNeg):
+            self.ld(0, f, f.a[i])
+            if r == int(Rp.F32):
+                self.a.mov_ri(1, 2147483648)
+            else:
+                self.a.mov_ri(1, 0 - 9223372036854775807 - 1)
+            self.a.xor_rr(0, 1)
+            self.st(i, 0)
+            return
+        if op == int(Op.FAdd) || op == int(Op.FSub) || op == int(Op.FMul) || op == int(Op.FDiv):
+            let single = r == int(Rp.F32)
+            self.ld(0, f, f.a[i])
+            self.a.movq_x(0, 0, single)
+            self.ld(0, f, f.b[i])
+            self.a.movq_x(1, 0, single)
+            let code = 88
+            if op == int(Op.FMul):
+                code = 89
+            elif op == int(Op.FSub):
+                code = 92
+            elif op == int(Op.FDiv):
+                code = 94
+            self.a.sse(code, single, 0, 1)
+            self.a.movq_r(0, 0, single)
+            self.st(i, 0)
+            return
+        if op == int(Op.FRem):
+            let single = r == int(Rp.F32)
+            self.ld(0, f, f.a[i])
+            self.a.movq_x(0, 0, single)
+            self.ld(0, f, f.b[i])
+            self.a.movq_x(1, 0, single)
+            let nm = new_txt()
+            if single:
+                nm.put("fmodf")
+            else:
+                nm.put("fmod")
+            self.a.call_sym(self.o.sym(&nm))
+            self.a.movq_r(0, 0, single)
+            self.st(i, 0)
+            return
+        if op == int(Op.Cmp):
+            let p = f.aux[i]
+            let signed = self.is_signed_pred(p)
+            self.ld_ext(0, f, f.a[i], signed)
+            self.ld_ext(1, f, f.b[i], signed)
+            self.a.cmp_rr(0, 1)
+            self.a.setcc(self.cc_of(p), 0)
+            self.st(i, 0)
+            return
+        if op == int(Op.FCmp):
+            let p = f.aux[i]
+            let single = f.rep[self.res(f, f.a[i])] == int(Rp.F32)
+            self.ld(0, f, f.a[i])
+            self.a.movq_x(0, 0, single)
+            self.ld(0, f, f.b[i])
+            self.a.movq_x(1, 0, single)
+            if p == int(Pr.OLt) || p == int(Pr.OLe):
+                self.a.ucomi(single, 1, 0)
+                if p == int(Pr.OLt):
+                    self.a.setcc(cc_a(), 0)
+                else:
+                    self.a.setcc(cc_ae(), 0)
+            elif p == int(Pr.OGt) || p == int(Pr.OGe):
+                self.a.ucomi(single, 0, 1)
+                if p == int(Pr.OGt):
+                    self.a.setcc(cc_a(), 0)
+                else:
+                    self.a.setcc(cc_ae(), 0)
+            else:
+                self.a.ucomi(single, 0, 1)
+                if p == int(Pr.OEq):
+                    self.a.setcc(cc_e(), 0)
+                    self.a.setcc(cc_np(), 1)
+                else:
+                    self.a.setcc(cc_ne(), 0)
+                    self.a.setcc(cc_np(), 1)
+                self.a.and_rr(0, 1)
+            self.st(i, 0)
+            return
+        if op == int(Op.Trunc) || op == int(Op.Bitcast) || op == int(Op.PtrToInt) || op == int(Op.IntToPtr):
+            self.ld(0, f, f.a[i])
+            self.st(i, 0)
+            return
+        if op == int(Op.SExt) || op == int(Op.ZExt):
+            self.ld_ext(0, f, f.a[i], op == int(Op.SExt))
+            self.st(i, 0)
+            return
+        if op == int(Op.SiToFp) || op == int(Op.UiToFp):
+            let single = r == int(Rp.F32)
+            let signed = op == int(Op.SiToFp)
+            self.ld_ext(0, f, f.a[i], signed)
+            if signed || f.rep[self.res(f, f.a[i])] != int(Rp.I64):
+                self.a.cvt_si2f(0, 0, single)
+            else:
+                let pos = self.a.new_label()
+                let done = self.a.new_label()
+                self.a.test_rr(0, 0)
+                self.a.jcc(9, pos)
+                self.a.mov_rr(1, 0)
+                self.a.shift_i(5, 0, 1)
+                self.a.mov_ri(2, 1)
+                self.a.and_rr(1, 2)
+                self.a.or_rr(0, 1)
+                self.a.cvt_si2f(0, 0, single)
+                self.a.sse(88, single, 0, 0)
+                self.a.jmp(done)
+                self.a.bind(pos)
+                self.a.cvt_si2f(0, 0, single)
+                self.a.bind(done)
+            self.a.movq_r(0, 0, single)
+            self.st(i, 0)
+            return
+        if op == int(Op.FpToSi) || op == int(Op.FpToUi):
+            let single = f.rep[self.res(f, f.a[i])] == int(Rp.F32)
+            self.ld(0, f, f.a[i])
+            self.a.movq_x(0, 0, single)
+            if op == int(Op.FpToUi) && r == int(Rp.I64):
+                let small = self.a.new_label()
+                let done = self.a.new_label()
+                if single:
+                    self.a.mov_ri(1, 1593835520)
+                else:
+                    self.a.mov_ri(1, 4890909195324358656)
+                self.a.movq_x(1, 1, single)
+                self.a.ucomi(single, 0, 1)
+                self.a.jcc(cc_b(), small)
+                self.a.sse(92, single, 0, 1)
+                self.a.cvt_f2si(0, 0, single)
+                self.a.mov_ri(1, 0 - 9223372036854775807 - 1)
+                self.a.xor_rr(0, 1)
+                self.a.jmp(done)
+                self.a.bind(small)
+                self.a.cvt_f2si(0, 0, single)
+                self.a.bind(done)
+            else:
+                self.a.cvt_f2si(0, 0, single)
+            self.st(i, 0)
+            return
+        if op == int(Op.FpExt) || op == int(Op.FpTrunc):
+            let to_single = op == int(Op.FpTrunc)
+            self.ld(0, f, f.a[i])
+            self.a.movq_x(0, 0, !to_single)
+            self.a.cvt_ff(0, 0, to_single)
+            self.a.movq_r(0, 0, to_single)
+            self.st(i, 0)
+            return
+        if op == int(Op.Field):
+            self.ld(0, f, f.a[i])
+            self.a.mov_ri(1, f.aux[i])
+            self.a.add_rr(0, 1)
+            self.st(i, 0)
+            return
+        if op == int(Op.Index):
+            self.ld(0, f, f.a[i])
+            self.ld(1, f, f.b[i])
+            self.a.mov_ri(2, f.aux[i])
+            self.a.imul_rr(1, 2)
+            self.a.add_rr(0, 1)
+            self.st(i, 0)
+            return
+        if op == int(Op.Extract):
+            let ar = f.rep[self.res(f, f.a[i])]
+            let eo = elem_off(rs, ar, f.aux[i])
+            let sb = self.ab_reg(f, f.a[i])
+            let sd = self.ab_disp(f, f.a[i]) + eo
+            if r >= rp_first_agg():
+                self.copy_mem(5, 0 - self.voff[i], sb, sd, rsize(rs, r))
+            else:
+                self.a.load(0, sb, sd, rsize(rs, r))
+                self.st(i, 0)
+            return
+        if op == int(Op.Insert):
+            let eo = elem_off(rs, r, f.aux[i])
+            let sb = self.ab_reg(f, f.a[i])
+            self.copy_mem(5, 0 - self.voff[i], sb, self.ab_disp(f, f.a[i]), rsize(rs, r))
+            let er = f.rep[self.res(f, f.b[i])]
+            if er >= rp_first_agg():
+                let eb = self.ab_reg(f, f.b[i])
+                self.copy_mem(5, 0 - self.voff[i] + eo, eb, self.ab_disp(f, f.b[i]), rsize(rs, er))
+            else:
+                self.ld(0, f, f.b[i])
+                self.a.store(5, 0 - self.voff[i] + eo, 0, rsize(rs, er))
+            return
+        if op == int(Op.Load):
+            self.ld(6, f, f.a[i])
+            if r >= rp_first_agg():
+                self.copy_mem(5, 0 - self.voff[i], 6, 0, rsize(rs, r))
+            else:
+                self.a.load(0, 6, 0, rsize(rs, r))
+                self.st(i, 0)
+            return
+        if op == int(Op.Store):
+            let vr = f.rep[self.res(f, f.b[i])]
+            if vr >= rp_first_agg():
+                self.ld(7, f, f.a[i])
+                let sb = self.ab_reg(f, f.b[i])
+                self.copy_mem(7, 0, sb, self.ab_disp(f, f.b[i]), rsize(rs, vr))
+            else:
+                self.ld(0, f, f.b[i])
+                self.ld(1, f, f.a[i])
+                self.a.store(1, 0, 0, rsize(rs, vr))
+            return
+        if op == int(Op.Alloc):
+            self.a.mov_ri(7, f.ty[i])
+            let nm = new_txt()
+            nm.put("malloc")
+            self.a.call_sym(self.o.sym(&nm))
+            self.st(i, 0)
+            return
+        if op == int(Op.Free):
+            self.ld(7, f, f.a[i])
+            let nm = new_txt()
+            nm.put("free")
+            self.a.call_sym(self.o.sym(&nm))
+            return
+        if op == int(Op.Drop) || op == int(Op.Clone):
+            self.nav = 0
+            self.push_arg(f.a[i])
+            self.do_call(f, rs, i, self.callee(sy, f.aux[i]), false)
+            return
+        if op == int(Op.Call) || op == int(Op.CCall) || op == int(Op.CallI):
+            self.nav = 0
+            for k in 0..f.b[i]:
+                self.push_arg(f.pool[f.a[i] + k])
+            if op == int(Op.CallI):
+                self.ld(11, f, f.c[i])
+                self.do_call(f, rs, i, 0 - 1, false)
+            else:
+                self.do_call(f, rs, i, self.callee(sy, f.aux[i]), op == int(Op.CCall) && f.c[i] != 0)
+            return
+        if op == int(Op.Br):
+            let e = f.aux[i]
+            self.edge_copy(f, rs, e)
+            if f.eto[e] != next:
+                self.a.jmp(f.eto[e])
+            return
+        if op == int(Op.CondBr):
+            let e1 = f.b[i]
+            let e2 = f.c[i]
+            self.ld_ext(0, f, f.a[i], false)
+            self.a.extend(0, 0, 1, false)
+            self.a.test_rr(0, 0)
+            let yes = self.a.new_label()
+            self.a.jcc(cc_ne(), yes)
+            self.edge_copy(f, rs, e2)
+            self.a.jmp(f.eto[e2])
+            self.a.bind(yes)
+            self.edge_copy(f, rs, e1)
+            self.a.jmp(f.eto[e1])
+            return
+        if op == int(Op.Switch):
+            self.ld_ext(0, f, f.a[i], true)
+            for k in 0..f.b[i]:
+                let skip = self.a.new_label()
+                let e = f.pool[f.aux[i] + k * 2 + 1]
+                self.a.mov_ri(1, f.pool[f.aux[i] + k * 2])
+                self.a.cmp_rr(0, 1)
+                self.a.jcc(cc_ne(), skip)
+                self.edge_copy(f, rs, e)
+                self.a.jmp(f.eto[e])
+                self.a.bind(skip)
+            self.edge_copy(f, rs, f.c[i])
+            self.a.jmp(f.eto[f.c[i]])
+            return
+        if op == int(Op.Ret):
+            if f.a[i] >= 0:
+                let vr = f.rep[self.res(f, f.a[i])]
+                if vr >= rp_first_agg():
+                    self.a.load(7, 5, 0 - 8, 8)
+                    let sb = self.ab_reg(f, f.a[i])
+                    self.copy_mem(7, 0, sb, self.ab_disp(f, f.a[i]), rsize(rs, vr))
+                elif self.is_int_class(vr):
+                    self.ld(0, f, f.a[i])
+                else:
+                    self.ld(0, f, f.a[i])
+                    self.a.movq_x(0, 0, vr == int(Rp.F32))
+            self.a.leave()
+            self.a.ret()
+            return
+        if op == int(Op.Unreachable):
+            self.a.ud2()
+            return
+        self.bad()
+
+    /#/ ---- functions ---------------------------------------------------------
+
+    /#/ Generates function `f`; returns false if something could not be translated.
+    fn gen_fun(self, f: &Fun, rs: &Reps, sy: &Names) => bool:
+        self.err = 0
+        self.a.begin_fun()
+        self.layout(f, rs)
+        let start = self.a.pos()
+        for b in 0..f.nb:
+            self.a.new_label()
+        self.a.push(5)
+        self.a.mov_rr(5, 4)
+        self.a.sub_ri(4, self.frame)
+        /#/ the parameters of the entry block
+        let ci = 0
+        let cx = 0
+        let cs = 0
+        if f.ret >= rp_first_agg():
+            self.a.store(5, 0 - 8, 7, 8)
+            ci = 1
+        let p = f.pfirst[0]
+        while p >= 0:
+            let r = f.rep[p]
+            if r >= rp_first_agg() || self.is_int_class(r):
+                if ci < 6:
+                    if r >= rp_first_agg():
+                        self.copy_mem(5, 0 - self.voff[p], int_reg(ci), 0, rsize(rs, r))
+                    else:
+                        self.st(p, int_reg(ci))
+                else:
+                    self.a.load(0, 5, 16 + 8 * cs, 8)
+                    if r >= rp_first_agg():
+                        self.a.mov_rr(6, 0)
+                        self.copy_mem(5, 0 - self.voff[p], 6, 0, rsize(rs, r))
+                    else:
+                        self.st(p, 0)
+                    cs = cs + 1
+                ci = ci + 1
+            else:
+                if cx < 8:
+                    self.a.movq_r(0, cx, r == int(Rp.F32))
+                    self.st(p, 0)
+                else:
+                    self.a.load(0, 5, 16 + 8 * cs, 8)
+                    self.st(p, 0)
+                    cs = cs + 1
+                cx = cx + 1
+            p = f.nx[p]
+        for b in 0..f.nb:
+            self.a.bind(b)
+            let i = f.bfirst[b]
+            while i >= 0:
+                let nxt = -1
+                if f.nx[i] < 0:
+                    nxt = b + 1
+                self.gen_inst(f, rs, sy, i, nxt)
+                i = f.nx[i]
+        let ok = self.a.end_fun()
+        let w = new_txt()
+        for k in 0..len(f.nm):
+            w.put_byte(f.nm[k])
+        let sym = self.o.sym(&w)
+        self.o.define(sym, start, self.a.pos() - start)
+        return ok && self.err == 0
+
+fn new_gen() => Gen:
+    return Gen { a: new_asm(), o: new_obj(), voff: new_buf(int, 64), tmp: 0, frame: 0, err: 0, av: new_buf(int, 16), nav: 0, sbase: 256, soff: new_buf(int, 16), nstr: 0 }
+
+fn rsize_scalar(r: int) => int:
+    if r == int(Rp.I8):
+        return 1
+    if r == int(Rp.I16):
+        return 2
+    if r == int(Rp.I32) || r == int(Rp.F32):
+        return 4
+    return 8

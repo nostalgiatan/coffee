@@ -1,0 +1,418 @@
+/#/ An x86-64 assembler for the instructions the code generator uses: byte by byte into a `Txt`,
+/#/ jumps by label with the offsets patched when a function ends, calls and string addresses as
+/#/ relocations for the object file.
+/#/
+/#/ Registers are numbered as the hardware does: rax 0, rcx 1, rdx 2, rbx 3, rsp 4, rbp 5, rsi 6,
+/#/ rdi 7, r8 to r15 as 8 to 15; xmm registers by their own number. A memory operand is always
+/#/ `[base + disp32]`, and the base is never rsp or r12 (those need an index byte).
+/#/ (It imports `modopt` for the IR modules below it: a module cannot be imported by two routes.)
+use * in modopt
+
+fn cc_e() => int:
+    return 4
+
+fn cc_ne() => int:
+    return 5
+
+fn cc_b() => int:
+    return 2
+
+fn cc_ae() => int:
+    return 3
+
+fn cc_be() => int:
+    return 6
+
+fn cc_a() => int:
+    return 7
+
+fn cc_p() => int:
+    return 10
+
+fn cc_np() => int:
+    return 11
+
+fn cc_l() => int:
+    return 12
+
+fn cc_ge() => int:
+    return 13
+
+fn cc_le() => int:
+    return 14
+
+fn cc_g() => int:
+    return 15
+
+/#/ Relocation types of the System V x86-64 ABI.
+fn r_pc32() => int:
+    return 2
+
+fn r_plt32() => int:
+    return 4
+
+class Asm:
+    c: Txt
+    /#/ labels of the function being assembled: absolute positions in `c`, -1 while unbound
+    lab: buf<int>
+    nlab: int
+    fx_at: buf<int>
+    fx_lab: buf<int>
+    nfx: int
+    /#/ relocations of the whole object
+    rl_at: buf<int>
+    rl_sym: buf<int>
+    rl_ty: buf<int>
+    rl_add: buf<int>
+    nrl: int
+
+    fn dump(self, t: &Txt) => void:
+        t.put_all(&self.c)
+
+    fn byte(self, x: int) => void:
+        self.c.put_byte(x & 255)
+
+    fn le32(self, v: int) => void:
+        for k in 0..4:
+            self.c.put_byte((v >> (8 * k)) & 255)
+
+    fn le64(self, v: int) => void:
+        for k in 0..8:
+            self.c.put_byte((v >> (8 * k)) & 255)
+
+    fn pos(self) => int:
+        return self.c.n
+
+    /#/ ---- labels ------------------------------------------------------------
+
+    fn begin_fun(self) => void:
+        while self.c.n % 16 != 0:
+            self.c.put_byte(204)
+        self.nlab = 0
+        self.nfx = 0
+
+    fn new_label(self) => int:
+        if self.nlab >= len(self.lab):
+            self.lab = buf_resize(self.lab, (self.nlab + 1) * 2)
+        self.lab[self.nlab] = 0 - 1
+        self.nlab = self.nlab + 1
+        return self.nlab - 1
+
+    fn bind(self, l: int) => void:
+        self.lab[l] = self.c.n
+
+    /#/ A 32-bit offset to label `l`, from the end of the field.
+    fn rel_to(self, l: int) => void:
+        if self.nfx >= len(self.fx_at):
+            self.fx_at = buf_resize(self.fx_at, (self.nfx + 1) * 2)
+            self.fx_lab = buf_resize(self.fx_lab, (self.nfx + 1) * 2)
+        self.fx_at[self.nfx] = self.c.n
+        self.fx_lab[self.nfx] = l
+        self.nfx = self.nfx + 1
+        self.le32(0)
+
+    /#/ Patches the jumps of the function just assembled; false if a label was never bound.
+    fn end_fun(self) => bool:
+        let ok = true
+        for k in 0..self.nfx:
+            let to = self.lab[self.fx_lab[k]]
+            if to < 0:
+                ok = false
+            else:
+                let at = self.fx_at[k]
+                let d = to - (at + 4)
+                for q in 0..4:
+                    self.c.b[at + q] = (d >> (8 * q)) & 255
+        return ok
+
+    fn reloc(self, sym: int, ty: int, addend: int) => void:
+        if self.nrl >= len(self.rl_at):
+            let cap = (self.nrl + 1) * 2
+            self.rl_at = buf_resize(self.rl_at, cap)
+            self.rl_sym = buf_resize(self.rl_sym, cap)
+            self.rl_ty = buf_resize(self.rl_ty, cap)
+            self.rl_add = buf_resize(self.rl_add, cap)
+        self.rl_at[self.nrl] = self.c.n
+        self.rl_sym[self.nrl] = sym
+        self.rl_ty[self.nrl] = ty
+        self.rl_add[self.nrl] = addend
+        self.nrl = self.nrl + 1
+        self.le32(0)
+
+    /#/ ---- encoding ----------------------------------------------------------
+
+    /#/ A REX prefix when one is needed (or `force`d, to reach sil/dil as byte registers).
+    fn rex(self, w: int, reg: int, base: int, force: bool) => void:
+        let v = 64 | (w << 3) | ((reg >> 3) << 2) | (base >> 3)
+        if v != 64 || force:
+            self.byte(v)
+
+    /#/ `opc` (one or two bytes, the second -1 when absent) with a register and a register.
+    fn rr(self, w: int, opc: int, opc2: int, reg: int, rmr: int, force: bool) => void:
+        self.rex(w, reg, rmr, force)
+        self.byte(opc)
+        if opc2 >= 0:
+            self.byte(opc2)
+        self.byte(192 | ((reg & 7) << 3) | (rmr & 7))
+
+    /#/ `opc` with a register and the memory operand `[base + disp]`.
+    fn rmem(self, w: int, opc: int, opc2: int, reg: int, base: int, disp: int, force: bool) => void:
+        self.rex(w, reg, base, force)
+        self.byte(opc)
+        if opc2 >= 0:
+            self.byte(opc2)
+        self.byte(128 | ((reg & 7) << 3) | (base & 7))
+        self.le32(disp)
+
+    /#/ ---- moves -------------------------------------------------------------
+
+    fn mov_rr(self, dst: int, src: int) => void:
+        self.rr(1, 139, 0 - 1, dst, src, false)
+
+    fn mov_ri(self, dst: int, v: int) => void:
+        if v >= 0 && v < 4294967296:
+            self.rex(0, 0, dst, false)
+            self.byte(184 + (dst & 7))
+            self.le32(v)
+        elif v >= 0 - 2147483648 && v < 0:
+            self.rex(1, 0, dst, false)
+            self.byte(199)
+            self.byte(192 | (dst & 7))
+            self.le32(v)
+        else:
+            self.rex(1, 0, dst, false)
+            self.byte(184 + (dst & 7))
+            self.le64(v)
+
+    /#/ dst = the `n` bytes at [base + disp], zero-extended.
+    fn load(self, dst: int, base: int, disp: int, n: int) => void:
+        if n == 1:
+            self.rmem(0, 15, 182, dst, base, disp, false)
+        elif n == 2:
+            self.rmem(0, 15, 183, dst, base, disp, false)
+        elif n == 4:
+            self.rmem(0, 139, 0 - 1, dst, base, disp, false)
+        else:
+            self.rmem(1, 139, 0 - 1, dst, base, disp, false)
+
+    /#/ The low `n` bytes of src to [base + disp].
+    fn store(self, base: int, disp: int, src: int, n: int) => void:
+        if n == 1:
+            self.rmem(0, 136, 0 - 1, src, base, disp, true)
+        elif n == 2:
+            self.byte(102)
+            self.rmem(0, 137, 0 - 1, src, base, disp, false)
+        elif n == 4:
+            self.rmem(0, 137, 0 - 1, src, base, disp, false)
+        else:
+            self.rmem(1, 137, 0 - 1, src, base, disp, false)
+
+    fn lea(self, dst: int, base: int, disp: int) => void:
+        self.rmem(1, 141, 0 - 1, dst, base, disp, false)
+
+    /#/ dst = the address of rodata offset `off` (the symbol `rosym` is the section).
+    fn lea_rip(self, dst: int, rosym: int, off: int) => void:
+        self.rex(1, dst, 0, false)
+        self.byte(141)
+        self.byte(5 | ((dst & 7) << 3))
+        self.reloc(rosym, r_pc32(), off - 4)
+
+    /#/ dst = src extended from its low `n` bytes.
+    fn extend(self, dst: int, src: int, n: int, signed: bool) => void:
+        if n == 8:
+            if dst != src:
+                self.mov_rr(dst, src)
+        elif n == 4:
+            if signed:
+                self.rr(1, 99, 0 - 1, dst, src, false)
+            else:
+                self.rr(0, 139, 0 - 1, dst, src, false)
+        elif n == 2:
+            if signed:
+                self.rr(1, 15, 191, dst, src, false)
+            else:
+                self.rr(0, 15, 183, dst, src, false)
+        else:
+            if signed:
+                self.rr(1, 15, 190, dst, src, true)
+            else:
+                self.rr(0, 15, 182, dst, src, true)
+
+    /#/ ---- integer arithmetic ------------------------------------------------
+
+    fn add_rr(self, dst: int, src: int) => void:
+        self.rr(1, 3, 0 - 1, dst, src, false)
+
+    fn sub_rr(self, dst: int, src: int) => void:
+        self.rr(1, 43, 0 - 1, dst, src, false)
+
+    fn and_rr(self, dst: int, src: int) => void:
+        self.rr(1, 35, 0 - 1, dst, src, false)
+
+    fn or_rr(self, dst: int, src: int) => void:
+        self.rr(1, 11, 0 - 1, dst, src, false)
+
+    fn xor_rr(self, dst: int, src: int) => void:
+        self.rr(1, 51, 0 - 1, dst, src, false)
+
+    fn cmp_rr(self, a: int, b: int) => void:
+        self.rr(1, 59, 0 - 1, a, b, false)
+
+    fn test_rr(self, a: int, b: int) => void:
+        self.rr(1, 133, 0 - 1, b, a, false)
+
+    fn imul_rr(self, dst: int, src: int) => void:
+        self.rr(1, 15, 175, dst, src, false)
+
+    /#/ reg += imm32 (sub with `sub_ri`)
+    fn add_ri(self, r: int, v: int) => void:
+        self.rex(1, 0, r, false)
+        self.byte(129)
+        self.byte(192 | (r & 7))
+        self.le32(v)
+
+    fn sub_ri(self, r: int, v: int) => void:
+        self.rex(1, 0, r, false)
+        self.byte(129)
+        self.byte(192 | (5 << 3) | (r & 7))
+        self.le32(v)
+
+    /#/ the group-3 instructions: not 2, neg 3, div 6, idiv 7
+    fn grp3(self, ext: int, r: int) => void:
+        self.rex(1, 0, r, false)
+        self.byte(247)
+        self.byte(192 | (ext << 3) | (r & 7))
+
+    fn neg(self, r: int) => void:
+        self.grp3(3, r)
+
+    fn not_(self, r: int) => void:
+        self.grp3(2, r)
+
+    fn div(self, r: int) => void:
+        self.grp3(6, r)
+
+    fn idiv(self, r: int) => void:
+        self.grp3(7, r)
+
+    fn cqo(self) => void:
+        self.byte(72)
+        self.byte(153)
+
+    /#/ r shifted by cl: shl 4, shr 5, sar 7
+    fn shift_cl(self, ext: int, r: int) => void:
+        self.rex(1, 0, r, false)
+        self.byte(211)
+        self.byte(192 | (ext << 3) | (r & 7))
+
+    /#/ r shifted by the immediate (shr 5)
+    fn shift_i(self, ext: int, r: int, n: int) => void:
+        self.rex(1, 0, r, false)
+        self.byte(193)
+        self.byte(192 | (ext << 3) | (r & 7))
+        self.byte(n)
+
+    /#/ al-style: the byte register `r` = condition `cc`, then zero-extended
+    fn setcc(self, cc: int, r: int) => void:
+        self.rex(0, 0, r, true)
+        self.byte(15)
+        self.byte(144 + cc)
+        self.byte(192 | (r & 7))
+        self.extend(r, r, 1, false)
+
+    /#/ ---- control flow ------------------------------------------------------
+
+    fn jmp(self, l: int) => void:
+        self.byte(233)
+        self.rel_to(l)
+
+    fn jcc(self, cc: int, l: int) => void:
+        self.byte(15)
+        self.byte(128 + cc)
+        self.rel_to(l)
+
+    fn call_sym(self, sym: int) => void:
+        self.byte(232)
+        self.reloc(sym, r_plt32(), 0 - 4)
+
+    fn call_reg(self, r: int) => void:
+        self.rex(0, 0, r, false)
+        self.byte(255)
+        self.byte(192 | (2 << 3) | (r & 7))
+
+    fn push(self, r: int) => void:
+        self.rex(0, 0, r, false)
+        self.byte(80 + (r & 7))
+
+    fn pop(self, r: int) => void:
+        self.rex(0, 0, r, false)
+        self.byte(88 + (r & 7))
+
+    fn leave(self) => void:
+        self.byte(201)
+
+    fn ret(self) => void:
+        self.byte(195)
+
+    fn ud2(self) => void:
+        self.byte(15)
+        self.byte(11)
+
+    /#/ ---- scalar floating point (values travel through the general registers) ----
+
+    /#/ xmm = the bits in r (a double, or a float in the low 32 bits)
+    fn movq_x(self, x: int, r: int, single: bool) => void:
+        self.byte(102)
+        if single:
+            self.rr(0, 15, 110, x, r, false)
+        else:
+            self.rr(1, 15, 110, x, r, false)
+
+    /#/ r = the bits of xmm
+    fn movq_r(self, r: int, x: int, single: bool) => void:
+        self.byte(102)
+        if single:
+            self.rr(0, 15, 126, x, r, false)
+        else:
+            self.rr(1, 15, 126, x, r, false)
+
+    /#/ the arithmetic ops: add 88, mul 89, sub 92, div 94 on xmm registers
+    fn sse(self, op: int, single: bool, dst: int, src: int) => void:
+        if single:
+            self.byte(243)
+        else:
+            self.byte(242)
+        self.rr(0, 15, op, dst, src, false)
+
+    /#/ ucomisd / ucomiss
+    fn ucomi(self, single: bool, a: int, b: int) => void:
+        if !single:
+            self.byte(102)
+        self.rr(0, 15, 46, a, b, false)
+
+    /#/ xmm = (double or float) of the signed 64-bit integer in r
+    fn cvt_si2f(self, x: int, r: int, single: bool) => void:
+        if single:
+            self.byte(243)
+        else:
+            self.byte(242)
+        self.rr(1, 15, 42, x, r, false)
+
+    /#/ r = the 64-bit integer of the double or float in xmm, truncated
+    fn cvt_f2si(self, r: int, x: int, single: bool) => void:
+        if single:
+            self.byte(243)
+        else:
+            self.byte(242)
+        self.rr(1, 15, 44, r, x, false)
+
+    /#/ double <-> float
+    fn cvt_ff(self, dst: int, src: int, to_single: bool) => void:
+        if to_single:
+            self.byte(242)
+        else:
+            self.byte(243)
+        self.rr(0, 15, 90, dst, src, false)
+
+fn new_asm() => Asm:
+    return Asm { c: new_txt(), lab: new_buf(int, 64), nlab: 0, fx_at: new_buf(int, 64), fx_lab: new_buf(int, 64), nfx: 0, rl_at: new_buf(int, 64), rl_sym: new_buf(int, 64), rl_ty: new_buf(int, 64), rl_add: new_buf(int, 64), nrl: 0 }

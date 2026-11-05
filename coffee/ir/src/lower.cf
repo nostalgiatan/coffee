@@ -10,7 +10,7 @@
 /#/ What is lowered: scalars (`int`, `bool`, `float`, strings as pointers), locals, `if`/`elif`/
 /#/ `else`, `while`, `for` over a range, `break`/`continue`/`return`, calls of plain functions
 /#/ and C functions. Anything else sets `bad` and the function is not emitted.
-use * in modopt
+use * in gen
 use * in typer
 
 /#/ The IR representation of a type; -1 when it has none yet.
@@ -229,6 +229,11 @@ class Lower:
     rt_write: int
     /#/ 0: the function is emitted as lowered; above: the optimizer runs first
     opt: int
+    /#/ 0: LLVM text, 1: x86-64 machine code in an object file
+    backend: int
+    mc: Gen
+    sbytes: Txt
+    mc_err: int
     /#/ the functions lowered so far, kept as IR until `finish`
     lib: Lib
     /#/ the name number of the function in `f`
@@ -597,6 +602,9 @@ class Lower:
     fn text_global(self, body: &Txt) => int:
         let id = self.nstr
         self.nstr = id + 1
+        self.mc.add_str(self.sbytes.n)
+        self.sbytes.put_all(body)
+        self.sbytes.put_byte(0)
         let o = &self.globals
         o.put("@s")
         o.put_int(id)
@@ -2447,7 +2455,20 @@ class Lower:
                 o.put("; verifier: ")
                 o.put_int(d.code[0])
                 o.put("\n")
+            self.put_fun(o)
+
+    /#/ The function in `self.f`, in the text or in the object.
+    fn put_fun(self, o: &Txt) => void:
+        if self.backend == 1:
+            if !self.mc.gen_fun(&self.f, &self.rs, &self.names):
+                self.mc_err = self.mc_err + 1
+        else:
             emit_fun(o, &self.f, &self.rs, &self.names)
+
+    /#/ The object file, when the backend is the machine-code one.
+    fn object(self) => Txt:
+        self.mc.add_rodata(&self.sbytes)
+        return self.mc.elf()
 
     /#/ The function in `self.f` as LLVM text; a verifier finding is marked in the text.
     fn emit_current(self, o: &Txt) => void:
@@ -2458,7 +2479,7 @@ class Lower:
             o.put("; verifier: ")
             o.put_int(d.code[0])
             o.put("\n")
-        emit_fun(o, &self.f, &self.rs, &self.names)
+        self.put_fun(o)
 
 fn put_hex_byte(o: &Txt, c: int) => void:
     o.put("\\")
@@ -2507,4 +2528,4 @@ fn new_lower() => Lower:
     return lw
 
 fn make_lower() => Lower:
-    return Lower { f: new_fun("", 0), rs: new_reps(), names: new_names(), globals: new_txt(), nstr: 0, cd_name: new_buf(int, 8), cd_sig: new_buf(int, 8), cd_var: new_buf(int, 8), cd_n: 0, sc: new_syms(), v_rep: new_buf(int, 16), v_ty: new_buf(int, 16), v_slot: new_buf(int, 16), v_flag: new_buf(int, 16), tmp_v: new_buf(int, 8), tmp_ty: new_buf(int, 8), tmp_n: 0, no_own: 0, own_st: new_buf(int, 16), own_n: 0, ld: new_buf(int, 8), glue_ty: new_buf(int, 8), glue_kind: new_buf(int, 8), glue_n: 0, glue_done: 0, lay_ty: new_buf(int, 8), lay_off: new_buf(int, 8), lay_n: 0, addr: new_names(), scanned: 0, fty: 0, rt_exit: 0, rt_calloc: 0, rt_strlen: 0, rt_malloc: 0, rt_free: 0, rt_strdup: 0, rt_memcpy: 0, rt_strcmp: 0, rt_write: 0, opt: 1, lib: new_lib(), cur_id: -1, penv: -1, ue: new_buf(int, 16), iq_node: new_buf(int, 8), iq_env: new_buf(int, 8), iq_cls: new_buf(int, 8), iq_n: 0, iq_done: 0, lis: -1, nv: 0, dk: new_buf(int, 64), dv: new_buf(int, 64), dn: 0, sealed: new_buf(int, 16), inc_head: new_buf(int, 16), inc_var: new_buf(int, 16), inc_par: new_buf(int, 16), inc_next: new_buf(int, 16), inc_n: 0, pe_head: new_buf(int, 16), pe_next: new_buf(int, 16), lc: new_buf(int, 8), lb: new_buf(int, 8), nloops: 0, ret_ty: 0, bad: 0, bad_node: -1 }
+    return Lower { f: new_fun("", 0), rs: new_reps(), names: new_names(), globals: new_txt(), nstr: 0, cd_name: new_buf(int, 8), cd_sig: new_buf(int, 8), cd_var: new_buf(int, 8), cd_n: 0, sc: new_syms(), v_rep: new_buf(int, 16), v_ty: new_buf(int, 16), v_slot: new_buf(int, 16), v_flag: new_buf(int, 16), tmp_v: new_buf(int, 8), tmp_ty: new_buf(int, 8), tmp_n: 0, no_own: 0, own_st: new_buf(int, 16), own_n: 0, ld: new_buf(int, 8), glue_ty: new_buf(int, 8), glue_kind: new_buf(int, 8), glue_n: 0, glue_done: 0, lay_ty: new_buf(int, 8), lay_off: new_buf(int, 8), lay_n: 0, addr: new_names(), scanned: 0, fty: 0, rt_exit: 0, rt_calloc: 0, rt_strlen: 0, rt_malloc: 0, rt_free: 0, rt_strdup: 0, rt_memcpy: 0, rt_strcmp: 0, rt_write: 0, opt: 1, backend: 0, mc: new_gen(), sbytes: new_txt(), mc_err: 0, lib: new_lib(), cur_id: -1, penv: -1, ue: new_buf(int, 16), iq_node: new_buf(int, 8), iq_env: new_buf(int, 8), iq_cls: new_buf(int, 8), iq_n: 0, iq_done: 0, lis: -1, nv: 0, dk: new_buf(int, 64), dv: new_buf(int, 64), dn: 0, sealed: new_buf(int, 16), inc_head: new_buf(int, 16), inc_var: new_buf(int, 16), inc_par: new_buf(int, 16), inc_next: new_buf(int, 16), inc_n: 0, pe_head: new_buf(int, 16), pe_next: new_buf(int, 16), lc: new_buf(int, 8), lb: new_buf(int, 8), nloops: 0, ret_ty: 0, bad: 0, bad_node: -1 }
