@@ -705,6 +705,20 @@ class Gen:
     fn is_signed_pred(self, p: int) => bool:
         return p == int(Pr.SLt) || p == int(Pr.SLe) || p == int(Pr.SGt) || p == int(Pr.SGe)
 
+    /#/ Is the compare `i` used only by the branch right after it? Then the flags carry it.
+    fn fused(self, f: &Fun, i: int) => bool:
+        let n = f.nx[i]
+        if n < 0 || f.op[n] != int(Op.CondBr) || f.uses[i] != 1:
+            return false
+        return self.res(f, f.a[n]) == i
+
+    /#/ Sets the flags for the integer compare `i`.
+    fn cmp_flags(self, f: &Fun, i: int) => void:
+        let signed = self.is_signed_pred(f.aux[i])
+        self.ld_ext(0, f, f.a[i], signed)
+        self.ld_ext(1, f, f.b[i], signed)
+        self.a.cmp_rr(0, 1)
+
     fn gen_inst(self, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => void:
         let op = f.op[i]
         let r = f.rep[i]
@@ -803,12 +817,10 @@ class Gen:
             self.st(i, 0)
             return
         if op == int(Op.Cmp):
-            let p = f.aux[i]
-            let signed = self.is_signed_pred(p)
-            self.ld_ext(0, f, f.a[i], signed)
-            self.ld_ext(1, f, f.b[i], signed)
-            self.a.cmp_rr(0, 1)
-            self.a.setcc(self.cc_of(p), 0)
+            if self.fused(f, i):
+                return
+            self.cmp_flags(f, i)
+            self.a.setcc(self.cc_of(f.aux[i]), 0)
             self.st(i, 0)
             return
         if op == int(Op.FCmp):
@@ -1001,16 +1013,33 @@ class Gen:
         if op == int(Op.CondBr):
             let e1 = f.b[i]
             let e2 = f.c[i]
-            self.ld_ext(0, f, f.a[i], false)
-            self.a.extend(0, 0, 1, false)
-            self.a.test_rr(0, 0)
+            let c = self.res(f, f.a[i])
+            let cc = cc_ne()
+            if f.op[c] == int(Op.Cmp) && self.fused(f, c):
+                self.cmp_flags(f, c)
+                cc = self.cc_of(f.aux[c])
+            else:
+                self.ld_ext(0, f, f.a[i], false)
+                self.a.extend(0, 0, 1, false)
+                self.a.test_rr(0, 0)
+            if f.eto[e2] == next && f.eto[e1] != next:
+                /#/ the false edge falls through: branch away on the opposite condition
+                let no = self.a.new_label()
+                self.a.jcc(cc ^ 1, no)
+                self.edge_copy(f, rs, e1)
+                self.a.jmp(f.eto[e1])
+                self.a.bind(no)
+                self.edge_copy(f, rs, e2)
+                return
             let yes = self.a.new_label()
-            self.a.jcc(cc_ne(), yes)
+            self.a.jcc(cc, yes)
             self.edge_copy(f, rs, e2)
-            self.a.jmp(f.eto[e2])
+            if f.eto[e2] != next:
+                self.a.jmp(f.eto[e2])
             self.a.bind(yes)
             self.edge_copy(f, rs, e1)
-            self.a.jmp(f.eto[e1])
+            if f.eto[e1] != next:
+                self.a.jmp(f.eto[e1])
             return
         if op == int(Op.Switch):
             self.ld_ext(0, f, f.a[i], true)
