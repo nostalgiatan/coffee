@@ -117,6 +117,13 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                         if !name.contains('.') && self.memory_ctx.is_dropped(name) {
                             self.memory_ctx.unmark_dropped(name);
                         }
+                        // The same name can be declared again in a disjoint scope with another
+                        // type (`let n = 1` in one arm, `let n = make_text()` in the next). That is
+                        // a new variable, not a store into the old slot.
+                        if !name.contains('.') && self.mir_name_is_redeclared_with_other_type(name, &value.ty) {
+                            self.variables.remove(name);
+                            self.variable_types.remove(name);
+                        }
                         let already_stored = !name.contains('.')
                             && self.variables.contains_key(name)
                             && !self.memory_ctx.is_moved(name);
@@ -199,6 +206,31 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         }
         self.mir_name_uses_left.clear();
         Ok(())
+    }
+
+    /// Does `name` already have a slot whose kind cannot hold a `ty`: a number against a
+    /// pointer, an aggregate against either, or a `str` against another pointer (the drop
+    /// differs)? Then `name` in this scope is a different variable.
+    fn mir_name_is_redeclared_with_other_type(&self, name: &str, ty: &crate::types::Type) -> bool {
+        use inkwell::types::BasicTypeEnum as B;
+        let Some(&(_, old)) = self.variables.get(name) else {
+            return false;
+        };
+        let Ok(new) = self.coffee_type_to_llvm(&ty.to_string()) else {
+            return false;
+        };
+        if std::mem::discriminant(&old) != std::mem::discriminant(&new) {
+            return true;
+        }
+        if matches!(old, B::PointerType(_)) {
+            let old_is_str = self
+                .memory_ctx
+                .get_variable_type(name)
+                .is_some_and(|t| t == "str");
+            let new_is_str = matches!(ty, crate::types::Type::String);
+            return old_is_str != new_is_str && self.memory_ctx.get_variable_type(name).is_some();
+        }
+        false
     }
 
     fn mir_forget_name(mir_scopes: &mut Vec<Vec<String>>, name: &str) {

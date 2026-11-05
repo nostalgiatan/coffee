@@ -604,3 +604,8 @@ fn test_buf_stored_into_a_field_is_moved_not_freed_twice() {
 fn test_buf_declared_in_a_branch_is_not_freed_when_the_branch_is_skipped() {
     assert_balanced("fn f(k: int, v: int) => int:\n    if k == 2:\n        if v < 0:\n            return 1\n        let offs: buf<int> = new_buf(int, 4)\n        offs[0] = 3\n        return offs[0]\n    return 0\n\nfn main() => int:\n    return f(1, 1) + f(2, -1) + f(2, 1) - 4\n");
 }
+
+#[test]
+fn test_same_name_declared_with_another_type_in_a_disjoint_scope_gets_its_own_slot() {
+    assert_balanced("class T:\n    n: int\n    b: buf<int>\n\nfn mk(k: int) => T:\n    return T { n: k, b: new_buf(int, 2) }\n\nfn f(k: int) => int:\n    if k == 1:\n        let x = 5\n        return x\n    if k == 2:\n        let x = mk(3)\n        return x.n\n    let x = \"ab\" + \"cd\"\n    return len(x)\n\nfn main() => int:\n    return f(1) + f(2) + f(3) - 12\n");
+}
