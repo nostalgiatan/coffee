@@ -5,12 +5,12 @@
 Coffee is a modern programming language compiler written in Rust, using LLVM as its backend. It is an experimental statically-typed language with Python-like indentation syntax, supporting both functional and object-oriented programming paradigms, along with perfect bidirectional interoperability with C.
 
 - **Project Name**: Coffee
-- **Version**: 0.3.9 (**not 1.0**; ten patches per minor. 1.0 needs an honest product bar — see the root [README](../../README.md).)
+- **Version**: 0.3.9 (**not 1.0**; ten patches per minor. 1.0 needs an honest product bar — see the root [README](../../../README.md).)
 - **Development Environment**: Rust 2024 edition (Termux on Android)
 - **Compiler Backend**: LLVM (via inkwell crate)
 - **Parser**: Custom parser using nom library
 
-See the repository [README](../../README.md) for build prerequisites and the live pipeline (MIR-required bodies, `stmt_spans`, `NestedDecl`).
+See the repository [README](../../../README.md) for build prerequisites and the live pipeline (MIR-required bodies, `stmt_spans`, `NestedDecl`).
 
 ## Documentation Structure
 

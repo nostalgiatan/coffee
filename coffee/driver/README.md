@@ -30,7 +30,7 @@ file names, `.o` as the default product.
 
 The Rust compiler builds `coffee2`; `coffee2` compiles the driver's own sources (about 12k lines) to
 LLVM text, `clang` makes `gen3` of that, and `gen3` compiles the sources again: the two texts are
-byte for byte the same (4.7 MB), so the compiler reproduces itself. It takes about 30 s.
+byte for byte the same, so the compiler reproduces itself. It takes several minutes, most of it the Rust compiler building `coffee2` (one measurement: about 4 minutes).
 
 Known costs: `s[i]` on a string calls `strlen` (as in the Rust compiler), so scanning 12k lines is
 quadratic: the front end needs about 10 s of the 12 s for the whole run.

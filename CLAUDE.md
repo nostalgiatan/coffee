@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Coffee is a compiler for a statically-typed language with Python-like indentation syntax, written in Rust and targeting LLVM. The language uses `.cf` source files and `coffee.toml` for project config. Its headline feature is **bidirectional C interop** via `.cfc` (C function declaration) files, allowing C libraries to be linked without the original headers.
 
-For language syntax/type-system reference, see `SYNTAX.md`. For architecture prose, see `IFLOW.md` and `docs/{en,zh}/`. This file captures only what is not obvious from those.
+For language syntax/type-system reference, see `SYNTAX.md`. For architecture prose, see `IFLOW.md` and `docs/` (the self-hosted compiler in `coffee/` is the main line; the Rust compiler is stage0, documented in `docs/legacy-rust/`). This file captures only what is not obvious from those.
 
 ## Build & prerequisites
 

@@ -5,12 +5,12 @@
 Coffee 是一个用 Rust 编写的现代编程语言编译器，使用 LLVM 作为后端。它是一个实验性的静态类型语言，具有类似 Python 的缩进语法，支持函数式和面向对象编程特性，以及与 C 语言的完美双向互操作性。
 
 - **项目名称**: Coffee
-- **版本**: 0.3.9（**不是 1.0**；每个中版本满 10 个 patch 再升。1.0 需要产品门槛，见仓库根 [README](../../README.md)。）
+- **版本**: 0.3.9（**不是 1.0**；每个中版本满 10 个 patch 再升。1.0 需要产品门槛，见仓库根 [README](../../../README.md)。）
 - **开发环境**: Rust 2024 edition (Termux on Android)
 - **编译器后端**: LLVM (通过 inkwell crate)
 - **解析器**: 使用 nom 库的自定义解析器
 
-仓库根目录 [README](../../README.md) 写了构建依赖和当前管线（函数体必须走 MIR、`stmt_spans`、`NestedDecl`）。
+仓库根目录 [README](../../../README.md) 写了构建依赖和当前管线（函数体必须走 MIR、`stmt_spans`、`NestedDecl`）。
 
 ## 文档结构
 

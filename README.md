@@ -5,7 +5,7 @@ Statically typed language with Python-like indentation, compiled with Rust to LL
 - **Version:** **0.3.9** — **not 1.0**. Experimental compiler you can already write programs with. `coffee --version` prints `0.3.9+` plus 12 hex digits of the compiler source hash (same Cargo patch still rebuilds user `.o` files after `cargo install`).
 - **Versioning:** one landed feature → one patch. Ten patches on a minor → next minor (`0.3.10` becomes `0.4.0`). `1.0.0` is a product decision, not a rename. Do **not** bump the patch only to bust incremental cache — that is the hash suffix.
 - **Catch-up from 0.2.2:** many landings were never tagged. Counted as ten features → `0.3.0`, then six more → `0.3.6`, then AST `compile_expr` trap → `0.3.7`, C header types → `0.3.8`, C dep graph → `0.3.9` (memory contract, borrow, `Error` base, listeners, MIR-only bodies, last-use move, composite drop, deep clone, `buf` vs `object`, slice fat pointer, package fetch, generics v1, official std, unified type parser + one C symbol table, multi/`*` import, `IntBuf`).
-- **Docs:** [English](docs/en/README.md) · [中文](docs/zh/README.md)
+- **Docs:** [docs/](docs/README.md) (中文; tutorial, how-to, reference, explanation). The Rust compiler in `src/` is stage0: it builds the self-hosted compiler in `coffee/` and runs `coffee test`, and only gets fixes. Its old docs are in [docs/legacy-rust](docs/legacy-rust/README.md).
 - **Syntax:** [SYNTAX.md](SYNTAX.md)
 - **Architecture notes:** [IFLOW.md](IFLOW.md) · contributor map [CLAUDE.md](CLAUDE.md)
 
