@@ -712,10 +712,23 @@ class Gen:
             return false
         return self.res(f, f.a[n]) == i
 
+    /#/ Is `v` a 64-bit constant that fits the sign-extended 32-bit immediate of an instruction?
+    fn small_imm(self, f: &Fun, v: int) => bool:
+        let x = self.res(f, v)
+        if f.op[x] != int(Op.Const):
+            return false
+        let r = f.rep[x]
+        if r != int(Rp.I64) && r != int(Rp.Ptr):
+            return false
+        return f.aux[x] >= 0 - 2147483648 && f.aux[x] <= 2147483647
+
     /#/ Sets the flags for the integer compare `i`.
     fn cmp_flags(self, f: &Fun, i: int) => void:
         let signed = self.is_signed_pred(f.aux[i])
         self.ld_ext(0, f, f.a[i], signed)
+        if self.small_imm(f, f.b[i]):
+            self.a.cmp_ri(0, f.aux[self.res(f, f.b[i])])
+            return
         self.ld_ext(1, f, f.b[i], signed)
         self.a.cmp_rr(0, 1)
 
@@ -726,6 +739,13 @@ class Gen:
             return
         if op == int(Op.Add) || op == int(Op.Sub) || op == int(Op.Mul) || op == int(Op.And) || op == int(Op.Or) || op == int(Op.Xor):
             self.ld(0, f, f.a[i])
+            if (op == int(Op.Add) || op == int(Op.Sub)) && self.small_imm(f, f.b[i]):
+                if op == int(Op.Add):
+                    self.a.add_ri(0, f.aux[self.res(f, f.b[i])])
+                else:
+                    self.a.sub_ri(0, f.aux[self.res(f, f.b[i])])
+                self.st(i, 0)
+                return
             self.ld(1, f, f.b[i])
             if op == int(Op.Add):
                 self.a.add_rr(0, 1)
@@ -1022,20 +1042,10 @@ class Gen:
                 self.ld_ext(0, f, f.a[i], false)
                 self.a.extend(0, 0, 1, false)
                 self.a.test_rr(0, 0)
-            if f.eto[e2] == next && f.eto[e1] != next:
-                /#/ the false edge falls through: branch away on the opposite condition
-                let no = self.a.new_label()
-                self.a.jcc(cc ^ 1, no)
-                self.edge_copy(f, rs, e1)
-                self.a.jmp(f.eto[e1])
-                self.a.bind(no)
-                self.edge_copy(f, rs, e2)
-                return
             let yes = self.a.new_label()
             self.a.jcc(cc, yes)
             self.edge_copy(f, rs, e2)
-            if f.eto[e2] != next:
-                self.a.jmp(f.eto[e2])
+            self.a.jmp(f.eto[e2])
             self.a.bind(yes)
             self.edge_copy(f, rs, e1)
             if f.eto[e1] != next:

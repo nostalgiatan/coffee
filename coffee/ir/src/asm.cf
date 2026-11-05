@@ -277,6 +277,12 @@ class Asm:
         self.byte(192 | (5 << 3) | (r & 7))
         self.le32(v)
 
+    fn cmp_ri(self, r: int, v: int) => void:
+        self.rex(1, 0, r, false)
+        self.byte(129)
+        self.byte(192 | (7 << 3) | (r & 7))
+        self.le32(v)
+
     /#/ the group-3 instructions: not 2, neg 3, div 6, idiv 7
     fn grp3(self, ext: int, r: int) => void:
         self.rex(1, 0, r, false)
