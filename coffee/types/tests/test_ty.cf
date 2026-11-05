@@ -1,0 +1,55 @@
+use * in reader
+use putchar, fflush in libc of c
+
+/#/ 1 when the type of `let x: <ty>` after `decls` is not spelled `want`.
+fn miss(decls: str, ty: str, want: &str) => int:
+    let a = parse(decls + "let x: " + ty + " = 0\n")
+    let g = new_globals()
+    let m = declare_module(&g, &a, "t")
+    let t = new_tys()
+    let it = a.child[a.root]
+    let last = it
+    while it >= 0:
+        last = it
+        it = a.next[it]
+    let rd = Reader { sc: scope_of(&a, &g, m) }
+    let id = rd.from_ref(&t, &a, a.pb[last])
+    let o = new_out()
+    show(&o, &t, &g, id)
+    if o.is(want):
+        return 0
+    for i in 0..o.n:
+        putchar(o.b[i])
+    putchar(10)
+    fflush(0)
+    return 1
+
+fn main() => int:
+    let m = 0
+    m = m + miss("", "int", "int(8)+")
+    m = m + miss("", "int(4)+", "int(4)+")
+    m = m + miss("", "int(1)-", "int(1)-")
+    m = m + miss("", "u8", "int(1)-")
+    m = m + miss("", "i32", "int(4)+")
+    m = m + miss("", "float", "float(8)")
+    m = m + miss("", "float(4)", "float(4)")
+    m = m + miss("", "bool", "bool")
+    m = m + miss("", "string", "str")
+    m = m + miss("", "object", "object")
+    m = m + miss("", "buf", "buf")
+    m = m + miss("", "buf<int>", "buf<int(8)+>")
+    m = m + miss("", "&str", "&str")
+    m = m + miss("", "&mut int", "&mut int(8)+")
+    m = m + miss("", "[int]", "[int(8)+]")
+    m = m + miss("", "[int; 5]", "[int(8)+; 5]")
+    m = m + miss("", "(int, str)", "(int(8)+, str)")
+    m = m + miss("", "(int, (bool, str), float)", "(int(8)+, (bool, str), float(8))")
+    m = m + miss("", "fn(int, str) => bool", "fn(int(8)+, str) => bool")
+    m = m + miss("", "fn() => void", "fn() => void")
+    m = m + miss("", "&[u8]", "&[int(1)-]")
+    m = m + miss("class A:\n    x: int\n\n", "A", "A")
+    m = m + miss("class A:\n    x: int\n\n", "&mut A", "&mut A")
+    m = m + miss("class A:\n    x: int\n\n", "List<A>", "?")
+    m = m + miss("", "Nope", "?")
+    m = m + miss("enum E:\n    P\n    Q\n\n", "[E]", "[E]")
+    return m

@@ -76,7 +76,13 @@ fn declare_module(g: &Syms, a: &Ast, name: &str) => int:
                     g.add_tok(a, a.pa[f], int(Sk.Method), ci, m)
                 f = a.next[f]
         elif k == int(Nk.Enum) && a.pa[it] >= 0:
-            g.add_tok(a, a.pa[it], int(Sk.Enum), 0, m)
+            let ei = g.add_tok(a, a.pa[it], int(Sk.Enum), 0, m)
+            g.info[ei] = ei
+            let v = a.child[it]
+            while v >= 0:
+                if a.kind[v] == int(Nk.Variant):
+                    g.add_tok(a, a.tok[v], int(Sk.Variant), ei, m)
+                v = a.next[v]
         elif k == int(Nk.Let) && a.pa[it] >= 0:
             g.add_tok(a, a.pa[it], int(Sk.Global), 0, m)
         elif k == int(Nk.TypeAlias) && a.pa[it] >= 0:
@@ -846,6 +852,14 @@ class Checker:
             elif k != int(Nk.Use):
                 self.stmt(a, g, it)
             it = a.next[it]
+
+/#/ A checker holding only the names module `m` sees (the module's own, imported ones and
+/#/ the builtins): the scope the type checker reads signatures in.
+fn scope_of(a: &Ast, g: &Syms, m: int) => Checker:
+    let c = Checker { loc: new_syms(), diags: new_diags(), fn_base: 0, loops: 0, in_fn: 0, ret_void: true, cur: m, seen: new_buf(int, 8), seen_n: 0, capture_lo: -1, capture_named: true, cur_class: -1 }
+    c.cur = m
+    c.prelude(a, g, m)
+    return c
 
 /#/ Checks module `m` of `g` (see `declare_module`) whose tree is `a`; the findings are in
 /#/ the result's `diags`.

@@ -1,0 +1,45 @@
+use * in declare
+use putchar, fflush in libc of c
+
+/#/ 1 when the declared type of the global named `name` in `src` is not spelled `want`.
+fn miss(src: str, name: &str, want: &str) => int:
+    let a = parse(src)
+    let g = new_globals()
+    let m = declare_module(&g, &a, "t")
+    let t = new_tys()
+    declare_types(&t, &g, &a, m)
+    let o = new_out()
+    let found = false
+    for i in 0..g.n:
+        if g.mod[i] == m && g.kind[i] != int(Sk.Module) && g.ty[i] >= 0 && row_is(&g, i, name):
+            show(&o, &t, &g, g.ty[i])
+            found = true
+    if found && o.is(want):
+        return 0
+    for i in 0..o.n:
+        putchar(o.b[i])
+    putchar(10)
+    fflush(0)
+    return 1
+
+fn row_is(g: &Syms, i: int, name: &str) => bool:
+    if g.size[i] != len(name):
+        return false
+    for k in 0..len(name):
+        if g.pool[g.off[i] + k] != byte(name, k):
+            return false
+    return true
+
+fn main() => int:
+    let m = 0
+    m = m + miss("fn f(a: int, b: str) => bool:\n    return true\n", "f", "fn(int(8)+, str) => bool")
+    m = m + miss("fn f() => void:\n    return\n", "f", "fn() => void")
+    m = m + miss("fn f(a: &mut [u8]) => (int, str):\n    return (1, \"\")\n", "f", "fn(&mut [int(1)-]) => (int(8)+, str)")
+    m = m + miss("fn g(b: B) => B:\n    return b\n\nclass B:\n    x: int\n", "g", "fn(B) => B")
+    m = m + miss("class B:\n    x: float\n    s: str\n", "x", "float(8)")
+    m = m + miss("class B:\n    x: float\n\n    fn get(self, k: int) => float:\n        return self.x\n", "get", "fn(&mut B, int(8)+) => float(8)")
+    m = m + miss("enum E:\n    A\n    B(int, str)\n", "A", "E")
+    m = m + miss("enum E:\n    A\n    B(int, str)\n", "B", "fn(int(8)+, str) => E")
+    m = m + miss("type H: object\n\nfn f(h: H) => void:\n    return\n", "f", "fn(object) => void")
+    m = m + miss("let K: int = 5\n", "K", "int(8)+")
+    return m

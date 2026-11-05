@@ -1,0 +1,159 @@
+/#/ Reads types in the scope of a module: the names that module sees, aliases and type
+/#/ parameters included, with their types in `ty`.
+use * in type_ref
+
+class Reader:
+    sc: Checker
+
+    /#/ The type spelled by the name `tok` in a scope: a builtin, class, enum or alias. Error when
+    /#/ it names none of them (the analyzer reports that).
+    fn named_ty(self, t: &Tys, a: &Ast, tok: int) => int:
+        if tok_is(a, tok, "int") || tok_is(a, tok, "i64"):
+            return t.int_ty(8, true)
+        if tok_is(a, tok, "i8"):
+            return t.int_ty(1, true)
+        if tok_is(a, tok, "i16"):
+            return t.int_ty(2, true)
+        if tok_is(a, tok, "i32"):
+            return t.int_ty(4, true)
+        if tok_is(a, tok, "u8"):
+            return t.int_ty(1, false)
+        if tok_is(a, tok, "u16"):
+            return t.int_ty(2, false)
+        if tok_is(a, tok, "u32"):
+            return t.int_ty(4, false)
+        if tok_is(a, tok, "u64"):
+            return t.int_ty(8, false)
+        if tok_is(a, tok, "float") || tok_is(a, tok, "f64"):
+            return t.float_ty(8)
+        if tok_is(a, tok, "f32"):
+            return t.float_ty(4)
+        if tok_is(a, tok, "bool"):
+            return t.simple(int(Ty.Bool))
+        if tok_is(a, tok, "str") || tok_is(a, tok, "string"):
+            return t.simple(int(Ty.Str))
+        if tok_is(a, tok, "void"):
+            return t.simple(int(Ty.Void))
+        if tok_is(a, tok, "object"):
+            return t.simple(int(Ty.Object))
+        if tok_is(a, tok, "buf"):
+            return t.buf_of(-1)
+        let r = self.sc.loc.find_tok(a, tok, 0)
+        if r < 0:
+            return 0
+        if self.sc.loc.kind[r] == int(Sk.Class) || self.sc.loc.kind[r] == int(Sk.Enum):
+            return t.named(self.sc.loc.info[r])
+        if self.sc.loc.kind[r] == int(Sk.Alias) && self.sc.loc.ty[r] >= 0:
+            return self.sc.loc.ty[r]
+        if self.sc.loc.kind[r] == int(Sk.TypeParam) && self.sc.loc.ty[r] >= 0:
+            return self.sc.loc.ty[r]
+        return 0
+
+    /#/ Reads one type at `t.pos`.
+    fn read_ty(self, t: &Tys, a: &Ast, end: int) => int:
+        if t.pos >= end:
+            return 0
+        let k = a.toks.kind[t.pos]
+        if k == int(Tk.Amp):
+            t.set_pos(t.pos + 1)
+            let mutable = false
+            if t.pos < end && tok_is(a, t.pos, "mut"):
+                mutable = true
+                t.set_pos(t.pos + 1)
+            let target = self.read_ty(t, a, end)
+            return t.ref_to(target, mutable)
+        if k == int(Tk.LBracket):
+            t.set_pos(t.pos + 1)
+            let elem = self.read_ty(t, a, end)
+            let result = t.slice_of(elem)
+            if t.pos < end && a.toks.kind[t.pos] == int(Tk.Semi):
+                t.set_pos(t.pos + 1)
+                let count = -1
+                if t.pos < end && a.toks.kind[t.pos] == int(Tk.Int):
+                    count = tok_number(a, t.pos)
+                t.set_pos(t.pos + 1)
+                result = t.array_of(elem, count)
+            if t.pos < end && a.toks.kind[t.pos] == int(Tk.RBracket):
+                t.set_pos(t.pos + 1)
+            return result
+        if k == int(Tk.LParen):
+            t.set_pos(t.pos + 1)
+            let items = self.read_list(t, a, end, int(Tk.RParen))
+            return t.intern(int(Ty.Tuple), 0, items, 0, t.args_n - items)
+        if k == int(Tk.KwFn):
+            t.set_pos(t.pos + 1)
+            let items = 0
+            if t.pos < end && a.toks.kind[t.pos] == int(Tk.LParen):
+                t.set_pos(t.pos + 1)
+                items = self.read_list(t, a, end, int(Tk.RParen))
+            let start = t.args_n - items
+            let ret = t.simple(int(Ty.Void))
+            if t.pos < end && a.toks.kind[t.pos] == int(Tk.Arrow):
+                t.set_pos(t.pos + 1)
+                ret = self.read_ty(t, a, end)
+            return t.intern(int(Ty.Fn), 0, items, ret, start)
+        if k == int(Tk.KwInt) || k == int(Tk.KwFloat):
+            let float = k == int(Tk.KwFloat)
+            t.set_pos(t.pos + 1)
+            let bytes = 8
+            let signed = true
+            if t.pos + 2 < end && a.toks.kind[t.pos] == int(Tk.LParen) && a.toks.kind[t.pos + 1] == int(Tk.Int):
+                bytes = tok_number(a, t.pos + 1)
+                t.set_pos(t.pos + 3)
+                if !float && t.pos < end:
+                    if a.toks.kind[t.pos] == int(Tk.Minus):
+                        signed = false
+                        t.set_pos(t.pos + 1)
+                    elif a.toks.kind[t.pos] == int(Tk.Plus):
+                        t.set_pos(t.pos + 1)
+            if float:
+                return t.float_ty(bytes)
+            return t.int_ty(bytes, signed)
+        let name = t.pos
+        t.set_pos(t.pos + 1)
+        if t.pos < end && a.toks.kind[t.pos] == int(Tk.Lt):
+            t.set_pos(t.pos + 1)
+            let before = t.args_n
+            let items = self.read_list(t, a, end, int(Tk.Gt))
+            let start = t.args_n - items
+            if tok_is(a, name, "buf") && items == 1:
+                let elem = t.args[start]
+                t.set_args_n(start)
+                return t.buf_of(elem)
+            let base = self.named_ty(t, a, name)
+            if t.kind[base] == int(Ty.Named):
+                return t.intern(int(Ty.Named), t.a[base], 0, items, start)
+            t.set_args_n(before)
+            return 0
+        return self.named_ty(t, a, name)
+
+    /#/ Reads comma-separated types up to the token `close`, pushes them as arguments and returns
+    /#/ how many there were.
+    fn read_list(self, t: &Tys, a: &Ast, end: int, close: int) => int:
+        /#/ nested lists push their own arguments while this one is being read, so each
+        /#/ element is collected first and pushed after
+        let found = new_buf(int, 8)
+        let count = 0
+        while t.pos < end && a.toks.kind[t.pos] != close:
+            let before = t.pos
+            let item = self.read_ty(t, a, end)
+            if count >= len(found):
+                found = buf_resize(found, count * 2 + 2)
+            found[count] = item
+            count = count + 1
+            if t.pos < end && a.toks.kind[t.pos] == int(Tk.Comma):
+                t.set_pos(t.pos + 1)
+            if t.pos == before:
+                break
+        if t.pos < end && a.toks.kind[t.pos] == close:
+            t.set_pos(t.pos + 1)
+        for i in 0..count:
+            t.push_arg(found[i])
+        return count
+
+    /#/ The type a TypeRef node spells.
+    fn from_ref(self, t: &Tys, a: &Ast, node: int) => int:
+        if node < 0:
+            return 0
+        t.set_pos(a.tok[node])
+        return self.read_ty(t, a, a.end[node])

@@ -1,0 +1,67 @@
+/#/ What the type checker reports. The numbers are the Rust compiler's.
+enum Te:
+    Mismatch
+    UnknownType
+    ArityMismatch
+    InvalidOperation
+    NotCallable
+    FieldNotFound
+    MethodNotFound
+    VariantNotFound
+    InvalidType
+    ControlFlow
+    NonExhaustive
+
+fn te_number(code: int) => int:
+    if code == int(Te.Mismatch):
+        return 100
+    if code == int(Te.UnknownType):
+        return 101
+    if code == int(Te.ArityMismatch):
+        return 103
+    if code == int(Te.InvalidOperation):
+        return 104
+    if code == int(Te.NotCallable):
+        return 105
+    if code == int(Te.FieldNotFound):
+        return 106
+    if code == int(Te.MethodNotFound):
+        return 107
+    if code == int(Te.VariantNotFound):
+        return 108
+    if code == int(Te.InvalidType):
+        return 110
+    if code == int(Te.ControlFlow):
+        return 111
+    return 112
+
+/#/ A finding: the token it is about, its code and, for a mismatch, the two types.
+class TDiags:
+    tok: buf<int>
+    code: buf<int>
+    want: buf<int>
+    found: buf<int>
+    n: int
+
+    fn add(self, tok: int, code: int, want: int, found: int) => void:
+        if self.n >= len(self.tok):
+            let cap = (self.n + 1) * 2
+            self.tok = buf_resize(self.tok, cap)
+            self.code = buf_resize(self.code, cap)
+            self.want = buf_resize(self.want, cap)
+            self.found = buf_resize(self.found, cap)
+        self.tok[self.n] = tok
+        self.code[self.n] = code
+        self.want[self.n] = want
+        self.found[self.n] = found
+        self.n = self.n + 1
+
+    fn count(self, code: int) => int:
+        let c = 0
+        for i in 0..self.n:
+            if self.code[i] == code:
+                c = c + 1
+        return c
+
+fn new_tdiags() => TDiags:
+    return TDiags { tok: new_buf(int, 8), code: new_buf(int, 8), want: new_buf(int, 8), found: new_buf(int, 8), n: 0 }

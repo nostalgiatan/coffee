@@ -1,0 +1,142 @@
+/#/ The declaration pass: every function, method, field, variant and alias of a module gets
+/#/ its type before any body is checked, so bodies may use names declared later. The type is
+/#/ stored in `ty` of the symbol's row in the globals table.
+use * in reader
+use * in types_diag
+
+/#/ The row of `g` that declares the member of class or enum `owner` named by `tok`, of kind
+/#/ `kind`; -1 when there is none.
+fn member_of(g: &Syms, a: &Ast, owner: int, tok: int, kind: int) => int:
+    let s = a.toks.start[tok]
+    let e = a.toks.end[tok]
+    let h = g.span_hash(a, s, e)
+    for i in 0..g.n:
+        if g.info[i] == owner && g.kind[i] == kind && g.same_span(i, a, s, e, h):
+            return i
+    return -1
+
+/#/ Gives the type parameters among `f`'s children the numbers 0, 1, … in `scope` and returns
+/#/ the scope mark to pop back to.
+fn bind_params(t: &Tys, rd: &Reader, a: &Ast, f: int) => int:
+    let mark = rd.sc.loc.n
+    let k = 0
+    let p = a.child[f]
+    while p >= 0:
+        if a.kind[p] == int(Nk.TypeParam):
+            let r = rd.sc.loc.add_tok(a, a.tok[p], int(Sk.TypeParam), -1, -1)
+            rd.sc.loc.ty[r] = t.param_ty(k)
+            k = k + 1
+        p = a.next[p]
+    return mark
+
+/#/ The function type of `f` seen from `scope`; a method gets `&mut Class` first.
+fn fn_sig(t: &Tys, rd: &Reader, a: &Ast, f: int, class_ty: int) => int:
+    let mark = bind_params(t, rd, a, f)
+    let items = new_buf(int, 8)
+    let count = 0
+    if class_ty >= 0:
+        items[0] = t.ref_to(class_ty, true)
+        count = 1
+    let p = a.child[f]
+    while p >= 0:
+        if a.kind[p] == int(Nk.Param):
+            if count >= len(items):
+                items = buf_resize(items, count * 2)
+            items[count] = rd.from_ref(t, a, a.pa[p])
+            count = count + 1
+        elif a.kind[p] == int(Nk.SelfParam) && class_ty < 0:
+            if count >= len(items):
+                items = buf_resize(items, count * 2)
+            items[count] = 0
+            count = count + 1
+        p = a.next[p]
+    let ret = t.simple(int(Ty.Void))
+    if a.pb[f] >= 0:
+        ret = rd.from_ref(t, a, a.pb[f])
+    let start = t.args_n
+    for i in 0..count:
+        t.push_arg(items[i])
+    rd.sc.loc.truncate(mark)
+    return t.intern(int(Ty.Fn), 0, count, ret, start)
+
+/#/ Declares the types of module `m`, whose tree is `a`. The modules it imports from must be
+/#/ declared first.
+fn declare_types(t: &Tys, g: &Syms, a: &Ast, m: int) => void:
+    let rd = Reader { sc: scope_of(a, g, m) }
+    let it = a.child[a.root]
+    /#/ aliases first: signatures may spell them
+    while it >= 0:
+        if a.kind[it] == int(Nk.TypeAlias) && a.pa[it] >= 0:
+            let r = g.find_in_module(a, a.pa[it], m)
+            let aty = rd.from_ref(t, a, a.pb[it])
+            if r >= 0:
+                g.ty[r] = aty
+            let s = rd.sc.loc.find_tok(a, a.pa[it], 0)
+            if s >= 0:
+                rd.sc.loc.ty[s] = aty
+        it = a.next[it]
+    it = a.child[a.root]
+    while it >= 0:
+        let k = a.kind[it]
+        if k == int(Nk.Fn) && a.pa[it] >= 0:
+            let r = g.find_in_module(a, a.pa[it], m)
+            if r >= 0:
+                g.ty[r] = fn_sig(t, &rd, a, it, -1)
+        elif k == int(Nk.Class) && a.pa[it] >= 0:
+            declare_class(t, g, &rd, a, it, m)
+        elif k == int(Nk.Enum) && a.pa[it] >= 0:
+            declare_enum(t, g, &rd, a, it, m)
+        elif k == int(Nk.Let) && a.pa[it] >= 0 && a.pb[it] >= 0:
+            let r = g.find_in_module(a, a.pa[it], m)
+            if r >= 0:
+                g.ty[r] = rd.from_ref(t, a, a.pb[it])
+        it = a.next[it]
+
+fn declare_class(t: &Tys, g: &Syms, rd: &Reader, a: &Ast, cl: int, m: int) => void:
+    let ci = g.find_in_module(a, a.pa[cl], m)
+    if ci < 0:
+        return
+    let self_ty = t.named(g.info[ci])
+    let mark = bind_params(t, rd, a, cl)
+    let f = a.child[cl]
+    while f >= 0:
+        if a.kind[f] == int(Nk.Field):
+            let r = member_of(g, a, ci, a.tok[f], int(Sk.Field))
+            if r >= 0:
+                g.ty[r] = rd.from_ref(t, a, a.pa[f])
+        elif a.kind[f] == int(Nk.Fn) && a.pa[f] >= 0:
+            let r = member_of(g, a, ci, a.pa[f], int(Sk.Method))
+            if r >= 0:
+                g.ty[r] = fn_sig(t, rd, a, f, self_ty)
+        f = a.next[f]
+    rd.sc.loc.truncate(mark)
+
+/#/ A variant is a value of the enum, or a function from its payload to the enum.
+fn declare_enum(t: &Tys, g: &Syms, rd: &Reader, a: &Ast, en: int, m: int) => void:
+    let ei = g.find_in_module(a, a.pa[en], m)
+    if ei < 0:
+        return
+    let enum_ty = t.named(g.info[ei])
+    let v = a.child[en]
+    while v >= 0:
+        if a.kind[v] == int(Nk.Variant):
+            let r = member_of(g, a, ei, a.tok[v], int(Sk.Variant))
+            let items = new_buf(int, 4)
+            let count = 0
+            let f = a.child[v]
+            while f >= 0:
+                if a.kind[f] == int(Nk.VField):
+                    if count >= len(items):
+                        items = buf_resize(items, count * 2)
+                    items[count] = rd.from_ref(t, a, a.pa[f])
+                    count = count + 1
+                f = a.next[f]
+            if r >= 0:
+                if count == 0:
+                    g.ty[r] = enum_ty
+                else:
+                    let start = t.args_n
+                    for i in 0..count:
+                        t.push_arg(items[i])
+                    g.ty[r] = t.intern(int(Ty.Fn), 0, count, enum_ty, start)
+        v = a.next[v]

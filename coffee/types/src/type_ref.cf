@@ -1,0 +1,126 @@
+/#/ From the tokens of a TypeRef to a type id, and back to text for messages and tests.
+use * in ty
+
+/#/ The number spelled by integer token `tok`.
+fn tok_number(a: &Ast, tok: int) => int:
+    let n = 0
+    for k in a.toks.start[tok]..a.toks.end[tok]:
+        let b = a.byte_at(k)
+        if b >= '0' && b <= '9':
+            n = n * 10 + (b - '0')
+    return n
+
+/#/ Text built a byte at a time.
+class Out:
+    b: buf<int>
+    n: int
+
+    fn put_byte(self, c: int) => void:
+        if self.n >= len(self.b):
+            self.b = buf_resize(self.b, (self.n + 1) * 2)
+        self.b[self.n] = c
+        self.n = self.n + 1
+
+    fn put(self, s: &str) => void:
+        for i in 0..len(s):
+            self.put_byte(byte(s, i))
+
+    fn put_int(self, v: int) => void:
+        if v < 0:
+            self.put_byte('-')
+            self.put_int(0 - v)
+        elif v < 10:
+            self.put_byte('0' + v)
+        else:
+            self.put_int(v // 10)
+            self.put_byte('0' + v % 10)
+
+    fn put_row(self, g: &Syms, i: int) => void:
+        for k in 0..g.size[i]:
+            self.put_byte(g.pool[g.off[i] + k])
+
+    /#/ Does the text equal `want`?
+    fn is(self, want: &str) => bool:
+        if self.n != len(want):
+            return false
+        for i in 0..self.n:
+            if self.b[i] != byte(want, i):
+                return false
+        return true
+
+fn new_out() => Out:
+    return Out { b: new_buf(int, 64), n: 0 }
+
+/#/ Writes a readable spelling of type `x`, for messages and tests.
+fn show(o: &Out, t: &Tys, g: &Syms, x: int) => void:
+    let k = t.kind[x]
+    if k == int(Ty.Error):
+        o.put("?")
+    elif k == int(Ty.Void):
+        o.put("void")
+    elif k == int(Ty.Bool):
+        o.put("bool")
+    elif k == int(Ty.Str):
+        o.put("str")
+    elif k == int(Ty.Object):
+        o.put("object")
+    elif k == int(Ty.Int):
+        o.put("int(")
+        o.put_int(t.a[x])
+        if t.b[x] == 1:
+            o.put(")+")
+        else:
+            o.put(")-")
+    elif k == int(Ty.Float):
+        o.put("float(")
+        o.put_int(t.a[x])
+        o.put(")")
+    elif k == int(Ty.Buf):
+        if t.a[x] < 0:
+            o.put("buf")
+        else:
+            o.put("buf<")
+            show(o, t, g, t.a[x])
+            o.put(">")
+    elif k == int(Ty.Slice):
+        o.put("[")
+        show(o, t, g, t.a[x])
+        o.put("]")
+    elif k == int(Ty.Array):
+        o.put("[")
+        show(o, t, g, t.a[x])
+        o.put("; ")
+        o.put_int(t.b[x])
+        o.put("]")
+    elif k == int(Ty.Ref):
+        if t.b[x] == 1:
+            o.put("&mut ")
+        else:
+            o.put("&")
+        show(o, t, g, t.a[x])
+    elif k == int(Ty.Tuple):
+        o.put("(")
+        show_list(o, t, g, x)
+        o.put(")")
+    elif k == int(Ty.Fn):
+        o.put("fn(")
+        show_list(o, t, g, x)
+        o.put(") => ")
+        show(o, t, g, t.c[x])
+    elif k == int(Ty.Named):
+        o.put_row(g, t.a[x])
+        if t.c[x] > 0:
+            o.put("<")
+            show_list(o, t, g, x)
+            o.put(">")
+    elif k == int(Ty.Param):
+        o.put("T")
+        o.put_int(t.a[x])
+    else:
+        o.put("?")
+
+fn show_list(o: &Out, t: &Tys, g: &Syms, x: int) => void:
+    for i in 0..t.count_of(x):
+        if i > 0:
+            o.put(", ")
+        show(o, t, g, t.arg(x, i))

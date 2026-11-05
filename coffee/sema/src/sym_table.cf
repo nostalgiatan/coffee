@@ -23,6 +23,7 @@ enum Sk:
     Parent
     Alias
     Method
+    Variant
 
 /#/ A name is hashed before its bytes are compared. Kept small so it cannot overflow.
 fn hash_step(h: int, b: int) => int:
@@ -37,6 +38,7 @@ class Syms:
     mod: buf<int>
     used: buf<int>
     tok: buf<int>
+    ty: buf<int>
     n: int
     pool: buf<int>
     pool_n: int
@@ -53,6 +55,7 @@ class Syms:
         self.mod = buf_resize(self.mod, cap)
         self.used = buf_resize(self.used, cap)
         self.tok = buf_resize(self.tok, cap)
+        self.ty = buf_resize(self.ty, cap)
 
     fn put_byte(self, b: int) => void:
         if self.pool_n >= len(self.pool):
@@ -72,6 +75,7 @@ class Syms:
         self.mod[i] = mod
         self.used[i] = 0
         self.tok[i] = tok
+        self.ty[i] = -1
         self.n = i + 1
         return i
 
@@ -102,7 +106,9 @@ class Syms:
         let start = self.pool_n
         for k in 0..o.size[i]:
             self.put_byte(o.pool[o.off[i] + k])
-        return self.push_row(start, o.hash[i], o.kind[i], o.info[i], o.mod[i], o.tok[i])
+        let r = self.push_row(start, o.hash[i], o.kind[i], o.info[i], o.mod[i], o.tok[i])
+        self.ty[r] = o.ty[i]
+        return r
 
     /#/ Row `i` is named by bytes [s, e) of `a`'s source.
     fn same_span(self, i: int, a: &Ast, s: int, e: int, h: int) => bool:
@@ -139,7 +145,7 @@ class Syms:
         let h = self.span_hash(a, s, e)
         let i = self.n - 1
         while i >= 0:
-            if self.mod[i] == mod && self.kind[i] != int(Sk.Field) && self.kind[i] != int(Sk.Module) && self.kind[i] != int(Sk.Import) && self.kind[i] != int(Sk.Parent) && self.same_span(i, a, s, e, h):
+            if self.mod[i] == mod && self.kind[i] != int(Sk.Field) && self.kind[i] != int(Sk.Module) && self.kind[i] != int(Sk.Import) && self.kind[i] != int(Sk.Parent) && self.kind[i] != int(Sk.Method) && self.kind[i] != int(Sk.Variant) && self.same_span(i, a, s, e, h):
                 return i
             i = i - 1
         return -1
@@ -197,4 +203,4 @@ class Syms:
         return self.pool[self.off[i]]
 
 fn new_syms() => Syms:
-    return Syms { hash: new_buf(int, 64), off: new_buf(int, 64), size: new_buf(int, 64), kind: new_buf(int, 64), info: new_buf(int, 64), mod: new_buf(int, 64), used: new_buf(int, 64), tok: new_buf(int, 64), n: 0, pool: new_buf(int, 256), pool_n: 0 }
+    return Syms { hash: new_buf(int, 64), off: new_buf(int, 64), size: new_buf(int, 64), kind: new_buf(int, 64), info: new_buf(int, 64), mod: new_buf(int, 64), used: new_buf(int, 64), tok: new_buf(int, 64), ty: new_buf(int, 64), n: 0, pool: new_buf(int, 256), pool_n: 0 }
