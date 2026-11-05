@@ -282,7 +282,7 @@ impl<'ctx> Backend<'ctx> {
             ("generic", "")
         };
 
-        let reloc = if is_native && cleaned_triple.contains("-android") {
+        let reloc = if is_native {
             RelocMode::PIC
         } else {
             RelocMode::Default

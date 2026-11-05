@@ -187,6 +187,11 @@ fn inlinable(f: &Fun, lib: &Lib, c: int, cur: int) => int:
         return -1
     if live_count(lib, n) > 40:
         return -1
+    /#/ a function that calls itself would only unroll
+    let i0 = lib.f_i0[n]
+    for k in 0..lib.f_ni[n]:
+        if lib.op[i0 + k] == int(Op.Call) && lib.aux[i0 + k] == lib.f_id[n] && lib.blk[i0 + k] >= 0:
+            return -1
     return n
 
 /#/ Replaces the call `c` (in block `B`) by the body of function `n`: the block is split at the

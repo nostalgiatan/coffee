@@ -1,0 +1,12 @@
+fn main() => int:
+    let n = 20000000
+    let s: buf<int> = new_buf(int, n)
+    let c = 0
+    for i in 2..n:
+        if s[i] == 0:
+            c = c + 1
+            let j = i * 2
+            while j < n:
+                s[j] = 1
+                j = j + i
+    return c % 256

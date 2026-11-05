@@ -1,0 +1,14 @@
+class Acc:
+    t: int
+
+    fn add(self, x: int) => void:
+        self.t = self.t + x
+
+fn sq(x: int) => int:
+    return x * x % 7
+
+fn main() => int:
+    let a = Acc { t: 0 }
+    for i in 0..400000000:
+        a.add(sq(i))
+    return a.t % 256
