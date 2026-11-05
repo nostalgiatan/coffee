@@ -1643,9 +1643,16 @@ class Lower:
         self.f.set_block(join)
 
     /#/ Drop glue of an enum with payloads: the fields of the live variant, then the block.
-    fn glue_enum_drop(self, t: &Tys, g: &Syms, x: int, p: int) => void:
+    fn glue_enum_drop(self, t: &Tys, g: &Syms, x: int, p0: int) => void:
         let en = t.a[x]
-        let tag = self.f.load(int(Rp.I64), -1, self.f.field(p, 0))
+        /#/ the last field of a variant that is the enum itself is released by looping, not by
+        /#/ a call: a long list does not use a stack frame per node
+        let top = self.f.new_block()
+        self.f.arg(p0)
+        self.f.br(top)
+        self.f.set_block(top)
+        let cur = self.f.param(top, int(Rp.Ptr), -1)
+        let tag = self.f.load(int(Rp.I64), -1, self.f.field(cur, 0))
         let end = self.f.new_block()
         let nv = 0
         let rows: buf<int> = new_buf(int, 8)
@@ -1670,13 +1677,25 @@ class Lower:
         for k in 0..nv:
             self.f.set_block(blocks[k])
             self.payload_layout(t, g, x, rows[k])
+            let tail = -1
+            for q in 0..self.lay_n:
+                if self.lay_ty[q] == x:
+                    tail = q
+            let nxt = -1
+            if tail >= 0:
+                nxt = self.f.load(int(Rp.Ptr), -1, self.f.field(cur, self.lay_off[tail]))
             for q in 0..self.lay_n:
                 let ft = self.lay_ty[q]
-                if needs_drop(t, g, ft):
-                    self.drop_value(t, g, self.f.load(self.rep(t, g, ft), -1, self.f.field(p, self.lay_off[q])), ft)
-            self.f.br(end)
+                if q != tail && needs_drop(t, g, ft):
+                    self.drop_value(t, g, self.f.load(self.rep(t, g, ft), -1, self.f.field(cur, self.lay_off[q])), ft)
+            self.f.free(cur)
+            if tail >= 0:
+                self.f.arg(nxt)
+                self.f.br(top)
+            else:
+                self.f.ret_void()
         self.f.set_block(end)
-        self.f.free(p)
+        self.f.free(cur)
         self.f.ret_void()
 
     /#/ Clone glue of an enum with payloads: the tag, and the fields of the live variant.
@@ -2329,6 +2348,9 @@ class Lower:
                     self.glue_enum_clone(t, g, x, p)
             else:
                 self.layout(t, g, x)
+                if kind == 0 && self.glue_class_loop(t, g, x, p):
+                    self.emit_current(o)
+                    continue
                 if kind == 0:
                     self.glue_drop_fields(t, g, p)
                     self.f.free(p)
@@ -2338,6 +2360,62 @@ class Lower:
                     self.glue_clone_fields(t, g, p, q)
                     self.f.ret(q)
             self.emit_current(o)
+
+    /#/ Drop glue of a class whose last owned field is an enum that holds the class again
+    /#/ (`next: Option` with `Some(L)`): the chain is released by looping. False, with nothing
+    /#/ emitted, when the class has no such field.
+    fn glue_class_loop(self, t: &Tys, g: &Syms, x: int, p0: int) => bool:
+        let n = self.lay_n
+        let ftys: buf<int> = new_buf(int, n + 1)
+        let foffs: buf<int> = new_buf(int, n + 1)
+        for i in 0..n:
+            ftys[i] = self.lay_ty[i]
+            foffs[i] = self.lay_off[i]
+        let tail = -1
+        let var = -1
+        let vfield = -1
+        for i in 0..n:
+            let et = ftys[i]
+            if t.kind[et] == int(Ty.Named) && g.kind[t.a[et]] == int(Sk.Enum) && has_payload(t, g, t.a[et]):
+                for v in 0..g.n:
+                    if g.info[v] == t.a[et] && g.kind[v] == int(Sk.Variant) && var < 0:
+                        self.payload_layout(t, g, et, v)
+                        for q in 0..self.lay_n:
+                            if self.lay_ty[q] == x:
+                                tail = i
+                                var = v
+                                vfield = q
+        if tail < 0:
+            return false
+        let et = ftys[tail]
+        let top = self.f.new_block()
+        self.f.arg(p0)
+        self.f.br(top)
+        self.f.set_block(top)
+        let cur = self.f.param(top, int(Rp.Ptr), -1)
+        for i in 0..n:
+            if i != tail && needs_drop(t, g, ftys[i]):
+                self.drop_value(t, g, self.f.load(self.rep(t, g, ftys[i]), -1, self.f.field(cur, foffs[i])), ftys[i])
+        let e = self.f.load(int(Rp.Ptr), -1, self.f.field(cur, foffs[tail]))
+        self.f.free(cur)
+        let tag = self.f.load(int(Rp.I64), -1, self.f.field(e, 0))
+        let hit = self.f.new_block()
+        let other = self.f.new_block()
+        self.f.sw_case(self.variant_index(g, var), self.f.mk_edge(hit))
+        self.f.switch(tag, self.f.mk_edge(other))
+        self.f.set_block(other)
+        self.drop_value(t, g, e, et)
+        self.f.ret_void()
+        self.f.set_block(hit)
+        self.payload_layout(t, g, et, var)
+        let nxt = self.f.load(int(Rp.Ptr), -1, self.f.field(e, self.lay_off[vfield]))
+        for q in 0..self.lay_n:
+            if q != vfield && needs_drop(t, g, self.lay_ty[q]):
+                self.drop_value(t, g, self.f.load(self.rep(t, g, self.lay_ty[q]), -1, self.f.field(e, self.lay_off[q])), self.lay_ty[q])
+        self.f.free(e)
+        self.f.arg(nxt)
+        self.f.br(top)
+        return true
 
     /#/ Drop or clone glue of `[T; N]` with owning elements: each element, then the block.
     fn glue_array(self, t: &Tys, g: &Syms, x: int, p: int, kind: int) => void:

@@ -1,0 +1,13 @@
+use * in drive
+
+fn main() => int:
+    let m = 0
+    /#/ a list of a million nodes is released without a frame per node
+    m = m + expect_exit("enum L:\n    Nil\n    Cons(int, L)\n\nfn main() => int:\n    let l = L.Nil\n    for i in 0..1000000:\n        l = L.Cons(i, l)\n    return 7\n", 7)
+    /#/ owned fields before the tail are still released
+    m = m + expect_exit("enum S:\n    End\n    Item(str, S)\n\nfn main() => int:\n    let l = S.End\n    for i in 0..100000:\n        l = S.Item(\"ab\", l)\n    return 8\n", 8)
+    /#/ a tree: both children released
+    m = m + expect_exit("enum T:\n    Leaf\n    Node(T, int, T)\n\nfn main() => int:\n    let t = T.Node(T.Node(T.Leaf, 1, T.Leaf), 2, T.Node(T.Leaf, 3, T.Leaf))\n    return 9\n", 9)
+    /#/ a chain through a class and an enum that holds the class again
+    m = m + expect_exit("enum Option:\n    None\n    Some(L)\n\nclass L:\n    name: str\n    next: Option\n\nfn main() => int:\n    let l = L { name: \"a\", next: Option.None }\n    for i in 0..300000:\n        l = L { name: \"bc\", next: Option.Some(l) }\n    return 10\n", 10)
+    return m

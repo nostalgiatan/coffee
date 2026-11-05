@@ -59,3 +59,5 @@ methods of their own and static functions of generic classes, `for` over owned e
 Arrays and tuples of resources are dropped and cloned element by element; an array lent to a `[T]`
 parameter is passed as `{ptr, len}` and stays with its owner (`tests/test_own_agg.cf`). `match` is a chain of tests, not a `switch`; LLVM turns it into one.
 Temporaries inside `&&`/`||` that were only borrowed are not released.
+
+Dropping a long chain does not use a stack frame per node: the drop glue of an enum loops on its last field of the enum's own type, and the glue of a class loops through a `next: Option`-style enum that holds the class again (`tests/test_deep.cf`, a million nodes). Other shapes (a tree's left spine, longer cycles of types, `clone` of a long chain) still recurse.
