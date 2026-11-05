@@ -1,0 +1,31 @@
+use * in types_probe
+
+/#/ a program that imports the C functions it calls, then `body` in `main`
+fn prog(body: str) => str:
+    return "use printf, puts, malloc, free, strlen, sqrt, memcpy, atoi, getenv in libc of c\nfn main() => int:\n" + body + "    return 0\n"
+
+fn main() => int:
+    let m = 0
+    let mis = int(Te.Mismatch)
+    let ar = int(Te.ArityMismatch)
+    /#/ the result has the declared type
+    m = m + miss_ok(prog("    let n: int = strlen(\"abc\")\n    let k: int(4)+ = strlen(\"abc\")\n"))
+    m = m + miss_t(prog("    let s: str = strlen(\"abc\")\n"), mis, 1)
+    m = m + miss_t(prog("    let b: bool = atoi(\"1\")\n"), mis, 1)
+    m = m + miss_ok(prog("    let f: float = sqrt(2.0)\n"))
+    m = m + miss_t(prog("    let n: int = sqrt(2.0)\n"), mis, 1)
+    /#/ arguments are checked
+    m = m + miss_t(prog("    let n = strlen(5)\n"), mis, 1)
+    m = m + miss_t(prog("    let f = sqrt(\"x\")\n"), mis, 1)
+    m = m + miss_t(prog("    let n = strlen(\"a\", \"b\")\n"), ar, 1)
+    m = m + miss_t(prog("    let n = atoi()\n"), ar, 1)
+    /#/ widths do not matter to C, pointers go where pointers are wanted
+    m = m + miss_ok(prog("    let i: int(2)+ = 7\n    let p = malloc(i)\n    free(p)\n    let q = getenv(\"HOME\")\n    let s = \"hi\"\n    let r = memcpy(p, s, 2)\n"))
+    m = m + miss_ok(prog("    let p = malloc(8)\n    let q = memcpy(p, 0, 0)\n    free(p)\n"))
+    m = m + miss_t(prog("    let p = malloc(8)\n    let q = memcpy(p, 5, 1)\n    free(p)\n"), mis, 1)
+    /#/ a variadic function takes what it is given
+    m = m + miss_ok(prog("    printf(\"%d %s\\n\", 5, \"x\")\n    printf(\"hi\\n\")\n"))
+    m = m + miss_t(prog("    printf()\n"), ar, 1)
+    /#/ a void result is not a value
+    m = m + miss_t(prog("    let x = free(malloc(8))\n"), mis, 1)
+    return m

@@ -17,7 +17,54 @@ fn member_of(g: &Syms, a: &Ast, owner: int, tok: int, kind: int) => int:
 
 /#/ Declares the types of module `m`, whose tree is `a`. The modules it imports from must be
 /#/ declared first.
+/#/ Signatures of the bundled C functions go to their `Extern` rows (`info` is 1 for a variadic
+/#/ one), once per table; they come from the `.cfc` text the way a module's own do.
+fn declare_c(t: &Tys, g: &Syms) => void:
+    for i in 0..g.n:
+        if g.kind[i] == int(Sk.Extern) && g.mod[i] == -1 && g.ty[i] >= 0:
+            return
+    declare_c_lib(t, g, c_libc_source(), "libc.cfc")
+    declare_c_lib(t, g, c_libm_source(), "libm.cfc")
+
+fn declare_c_lib(t: &Tys, g: &Syms, src: str, name: &str) => void:
+    let a = parse(src)
+    let m = declare_module(g, &a, name)
+    declare_module_types(t, g, &a, m)
+    let it = a.child[a.root]
+    while it >= 0:
+        if a.kind[it] == int(Nk.Fn) && a.pa[it] >= 0:
+            let r = g.find_in_module(&a, a.pa[it], m)
+            if r >= 0 && g.ty[r] >= 0:
+                let sig = g.ty[r]
+                let count = t.count_of(sig)
+                let variadic = false
+                if count > 0 && t.kind[t.arg(sig, count - 1)] == int(Ty.Object):
+                    let last = a.child[it]
+                    let name_tok = -1
+                    while last >= 0:
+                        if a.kind[last] == int(Nk.Param):
+                            name_tok = a.tok[last]
+                        last = a.next[last]
+                    if name_tok >= 0 && tok_is(&a, name_tok, "args"):
+                        variadic = true
+                if variadic:
+                    let start = t.args_n
+                    for k in 0..count - 1:
+                        t.push_arg(t.arg(sig, k))
+                    sig = t.intern(int(Ty.Fn), 0, count - 1, t.c[sig], start)
+                let tk = a.pa[it]
+                for e in 0..g.n:
+                    if g.kind[e] == int(Sk.Extern) && g.mod[e] == -1 && g.same_span(e, &a, a.toks.start[tk], a.toks.end[tk], g.span_hash(&a, a.toks.start[tk], a.toks.end[tk])):
+                        g.ty[e] = sig
+                        if variadic:
+                            g.info[e] = 1
+        it = a.next[it]
+
 fn declare_types(t: &Tys, g: &Syms, a: &Ast, m: int) => void:
+    declare_c(t, g)
+    declare_module_types(t, g, a, m)
+
+fn declare_module_types(t: &Tys, g: &Syms, a: &Ast, m: int) => void:
     let rd = Reader { sc: scope_of(a, g, m) }
     let it = a.child[a.root]
     /#/ aliases first: signatures may spell them

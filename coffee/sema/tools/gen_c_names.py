@@ -1,4 +1,5 @@
-"""Writes src/c_names.cf: the names of the bundled libc/libm functions and C type aliases.
+"""Writes src/c_names.cf: the names of the bundled libc/libm functions and C type aliases, and
+the text of the two .cfc files (comments left out) for the type checker to read.
 The Rust compiler resolves these without a `use`, so the analyzer does too.
 
     python3 tools/gen_c_names.py
@@ -35,6 +36,15 @@ for name, words in (('c_function_names', funcs), ('c_type_names', types)):
     out.append('    let s = "%s"' % ' '.join(words[:1]))
     for chunk in wrap(words[1:]):
         out.append('    s = s + " %s"' % chunk)
+    out.append('    return s')
+    out.append('')
+for name, lib in (('c_libc_source', 'libc.cfc'), ('c_libm_source', 'libm.cfc')):
+    lines = [l.rstrip() for l in open(os.path.join(CFC, lib), encoding='utf8') if l.strip() and not l.startswith('//')]
+    out.append('fn %s() => str:' % name)
+    out.append('    let s = ""')
+    for l in lines:
+        assert '"' not in l and '\\' not in l, l
+        out.append('    s = s + "%s\\n"' % l)
     out.append('    return s')
     out.append('')
 open(os.path.join(HERE, '..', 'src', 'c_names.cf'), 'w').write('\n'.join(out))

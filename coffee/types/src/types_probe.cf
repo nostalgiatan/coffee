@@ -1,5 +1,6 @@
 /#/ Helpers for tests and tools: type-check a source and count what was found.
 use * in typer
+use printf, fflush in libc of c
 
 /#/ Declares and checks `src` as a module of its own.
 fn tcheck(src: str) => Typer:
@@ -12,12 +13,17 @@ fn tcheck(src: str) => Typer:
 
 /#/ 1 when `src` does not yield exactly `want` findings with `code`, else 0.
 fn miss_t(src: str, code: int, want: int) => int:
-    let r = tcheck(src)
+    let r = tcheck(clone src)
     if r.diags.count(code) != want:
+        printf("MISS want %d x %d, found %d, of %d findings in:\n%s\n", want, te_number(code), r.diags.count(code), r.diags.n, src)
+        fflush(0)
         return 1
     return 0
 
 /#/ 1 when `src` yields any finding, else 0.
 fn miss_ok(src: str) => int:
-    let r = tcheck(src)
+    let r = tcheck(clone src)
+    if r.diags.n > 0:
+        printf("MISS expected clean, %d findings (first %d) in:\n%s\n", r.diags.n, te_number(r.diags.code[0]), src)
+        fflush(0)
     return r.diags.n

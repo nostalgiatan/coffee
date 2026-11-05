@@ -758,6 +758,16 @@ class Checker:
                 self.import(a, g, it)
             it = a.next[it]
 
+    /#/ A function imported from `libc` or `libm` takes the signature the bundled `.cfc` gave it.
+    fn bundled_sig(self, a: &Ast, g: &Syms, r: int, tok: int) => void:
+        let st = a.toks.start[tok]
+        let en = a.toks.end[tok]
+        let h = g.span_hash(a, st, en)
+        for i in 0..g.n:
+            if g.kind[i] == int(Sk.Extern) && g.mod[i] == -1 && g.same_span(i, a, st, en, h):
+                self.loc.ty[r] = g.ty[i]
+                self.loc.info[r] = g.info[i]
+
     fn import(self, a: &Ast, g: &Syms, u: int) => void:
         if a.pa[u] < 0:
             return
@@ -765,7 +775,9 @@ class Checker:
             let s = a.child[u]
             while s >= 0:
                 if a.kind[s] == int(Nk.Name):
-                    self.loc.add_tok(a, a.tok[s], int(Sk.Extern), -1, -1)
+                    let r = self.loc.add_tok(a, a.tok[s], int(Sk.Extern), -1, -1)
+                    if tok_is(a, a.pa[u], "libc") || tok_is(a, a.pa[u], "libm"):
+                        self.bundled_sig(a, g, r, a.tok[s])
                 s = a.next[s]
             return
         let mid = g.find_module(a, a.pa[u])

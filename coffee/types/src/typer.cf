@@ -667,6 +667,53 @@ class Typer:
             c = a.next[c]
         return self.subst(t, t.c[fty])
 
+    /#/ A call of a C function: the signature of the `.cfc` file, with the leniency C needs. Any
+    /#/ integer or float width goes, an `object` takes any pointer-like value or a literal `0`,
+    /#/ a `string` takes a string or a pointer. A variadic function takes more arguments.
+    fn extern_call(self, t: &Tys, g: &Syms, a: &Ast, n: int, sig: int, variadic: bool, tok: int) => int:
+        let params = t.count_of(sig)
+        let given = 0
+        let c = a.child[n]
+        while c >= 0:
+            given = given + 1
+            c = a.next[c]
+        if given < params || (given > params && !variadic):
+            self.err(tok, int(Te.ArityMismatch), params, given)
+            self.args_untyped(t, g, a, n)
+            return t.c[sig]
+        let i = 0
+        c = a.child[n]
+        while c >= 0:
+            if i < params:
+                let p = t.arg(sig, i)
+                let want = -1
+                if t.kind[p] == int(Ty.Int) || t.kind[p] == int(Ty.Float) || t.kind[p] == int(Ty.Bool):
+                    want = p
+                let x = self.value(t, g, a, c, want)
+                if !self.extern_fits(t, g, a, c, p, x):
+                    self.err(a.tok[c], int(Te.Mismatch), p, x)
+            else:
+                self.value(t, g, a, c, -1)
+            i = i + 1
+            c = a.next[c]
+        return t.c[sig]
+
+    fn extern_fits(self, t: &Tys, g: &Syms, a: &Ast, c: int, p: int, x: int) => bool:
+        if t.is_error(p) || t.is_error(x):
+            return true
+        let pk = t.kind[p]
+        let xk = t.kind[x]
+        if pk == int(Ty.Int):
+            return xk == int(Ty.Int)
+        if pk == int(Ty.Float):
+            return xk == int(Ty.Float)
+        let pointer = xk == int(Ty.Str) || xk == int(Ty.Ref) || xk == int(Ty.Object) || xk == int(Ty.Buf) || xk == int(Ty.Slice) || xk == int(Ty.Array) || xk == int(Ty.Named)
+        if pk == int(Ty.Str):
+            return pointer && xk != int(Ty.Named)
+        if pk == int(Ty.Object):
+            return pointer || (a.kind[c] == int(Nk.Int) && tok_is(a, a.tok[c], "0"))
+        return self.fits(t, g, x, p)
+
     fn args_untyped(self, t: &Tys, g: &Syms, a: &Ast, n: int) => void:
         let c = a.child[n]
         while c >= 0:
@@ -715,6 +762,9 @@ class Typer:
             if k == int(Sk.Builtin):
                 return self.builtin_call(t, g, a, n, tok)
             if k == int(Sk.Extern):
+                let sig = self.rd.sc.loc.ty[r]
+                if sig >= 0 && t.kind[sig] == int(Ty.Fn):
+                    return self.extern_call(t, g, a, n, sig, self.rd.sc.loc.info[r] == 1, tok)
                 self.args_untyped(t, g, a, n)
                 return 0
             if k == int(Sk.Class) || k == int(Sk.Enum) || k == int(Sk.Module):
