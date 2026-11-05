@@ -1,0 +1,128 @@
+use * in verify
+use putchar, printf, fflush in libc of c
+
+/#/ a well-formed loop: sum 0..n
+fn good() => Fun:
+    let i64 = int(Rp.I64)
+    let g = new_fun("count", i64)
+    let e = g.new_block()
+    let head = g.new_block()
+    let body = g.new_block()
+    let done = g.new_block()
+    g.set_block(e)
+    let n = g.param(e, i64, -1)
+    g.arg(g.cint(i64, 0))
+    g.br(head)
+    g.set_block(head)
+    let i = g.param(head, i64, -1)
+    let c = g.cmp(int(Pr.SLt), i, n)
+    let t = g.mk_edge(body)
+    let fl = g.mk_edge(done)
+    g.condbr(c, t, fl)
+    g.set_block(body)
+    g.arg(g.bin(int(Op.Add), i, g.cint(i64, 1)))
+    g.br(head)
+    g.set_block(done)
+    g.ret(i)
+    return g
+
+fn miss(f: &Fun, code: int, want: int) => int:
+    let d = verify(f)
+    if d.count(code) != want:
+        printf("MISS want %d x code %d, found %d of %d\n", want, code, d.count(code), d.n)
+        fflush(0)
+        return 1
+    return 0
+
+fn main() => int:
+    let m = 0
+    let i64 = int(Rp.I64)
+    let i32 = int(Rp.I32)
+    let g = good()
+    let d = verify(&g)
+    if d.n != 0:
+        printf("good has %d findings, first code %d\n", d.n, d.code[0])
+        fflush(0)
+        m = m + 1
+    /#/ a block with no terminator
+    let a = new_fun("a", int(Rp.Void))
+    let a0 = a.new_block()
+    a.set_block(a0)
+    a.param(a0, i64, -1)
+    m = m + miss(&a, int(Ve.NoTerminator), 1)
+    /#/ code after a terminator
+    let b = new_fun("b", int(Rp.Void))
+    let b0 = b.new_block()
+    b.set_block(b0)
+    b.ret_void()
+    b.raw(int(Op.Unreachable), int(Rp.Void), -1, -1, -1, -1, 0)
+    m = m + miss(&b, int(Ve.MidTerminator), 1)
+    /#/ an edge with the wrong number or type of arguments
+    let c = new_fun("c", int(Rp.Void))
+    let c0 = c.new_block()
+    let c1 = c.new_block()
+    c.set_block(c0)
+    let cp = c.param(c0, i64, -1)
+    c.br(c1)
+    c.set_block(c1)
+    c.param(c1, i64, -1)
+    c.ret_void()
+    m = m + miss(&c, int(Ve.EdgeArity), 1)
+    let e2 = new_fun("e2", int(Rp.Void))
+    let e20 = e2.new_block()
+    let e21 = e2.new_block()
+    e2.set_block(e20)
+    let p32 = e2.param(e20, i32, -1)
+    e2.arg(p32)
+    e2.br(e21)
+    e2.set_block(e21)
+    e2.param(e21, i64, -1)
+    e2.ret_void()
+    m = m + miss(&e2, int(Ve.EdgeType), 1)
+    /#/ operands of different types
+    let f = new_fun("f", int(Rp.Void))
+    let f0 = f.new_block()
+    f.set_block(f0)
+    let fx = f.param(f0, i64, -1)
+    let fy = f.param(f0, i32, -1)
+    f.raw(int(Op.Add), i64, -1, fx, fy, -1, 0)
+    f.ret_void()
+    m = m + miss(&f, int(Ve.OpType), 1)
+    /#/ a returned value of the wrong type
+    let h = new_fun("h", i64)
+    let h0 = h.new_block()
+    h.set_block(h0)
+    let hp = h.param(h0, i32, -1)
+    h.ret(hp)
+    m = m + miss(&h, int(Ve.RetType), 1)
+    /#/ a value used in a block its definition does not dominate
+    let k = new_fun("k", i64)
+    let k0 = k.new_block()
+    let k1 = k.new_block()
+    let k2 = k.new_block()
+    let k3 = k.new_block()
+    k.set_block(k0)
+    let kc = k.param(k0, int(Rp.I8), -1)
+    let kp = k.param(k0, i64, -1)
+    let ke1 = k.mk_edge(k1)
+    let ke2 = k.mk_edge(k2)
+    k.condbr(kc, ke1, ke2)
+    k.set_block(k1)
+    let inside = k.bin(int(Op.Add), kp, k.cint(i64, 5))
+    k.br(k3)
+    k.set_block(k2)
+    k.br(k3)
+    k.set_block(k3)
+    k.ret(inside)
+    m = m + miss(&k, int(Ve.NotDominated), 1)
+    /#/ and a use before the definition in one block
+    let q = new_fun("q", i64)
+    let q0 = q.new_block()
+    q.set_block(q0)
+    let qp = q.param(q0, i64, -1)
+    let first = q.raw(int(Op.Neg), i64, -1, qp, -1, -1, 0)
+    let later = q.raw(int(Op.Add), i64, -1, first, first, -1, 0)
+    q.a[first] = later
+    q.ret(first)
+    m = m + miss(&q, int(Ve.NotDominated), 1)
+    return m

@@ -1,0 +1,61 @@
+use * in fun
+
+fn main() => int:
+    let m = 0
+    let f = new_fun("f", int(Rp.I64))
+    let b0 = f.new_block()
+    f.set_block(b0)
+    let x = f.param(b0, int(Rp.I64), -1)
+    let i64 = int(Rp.I64)
+    /#/ constants fold
+    let c = f.bin(int(Op.Add), f.cint(i64, 2), f.cint(i64, 3))
+    if !f.is_const(c) || f.cval(c) != 5:
+        m = m + 1
+    /#/ narrow constants wrap
+    let w = f.bin(int(Op.Add), f.cint(int(Rp.I8), 127), f.cint(int(Rp.I8), 1))
+    if f.cval(w) != -128:
+        m = m + 1
+    /#/ identities
+    if f.bin(int(Op.Add), x, f.cint(i64, 0)) != x:
+        m = m + 1
+    if f.bin(int(Op.Mul), f.cint(i64, 1), x) != x:
+        m = m + 1
+    if !f.is_const(f.bin(int(Op.Sub), x, x)):
+        m = m + 1
+    /#/ equal expressions are one value, whichever way round
+    let s1 = f.bin(int(Op.Add), x, f.cint(i64, 7))
+    let s2 = f.bin(int(Op.Add), f.cint(i64, 7), x)
+    if s1 != s2:
+        m = m + 1
+    /#/ constants are shared
+    if f.cint(i64, 9) != f.cint(i64, 9):
+        m = m + 1
+    /#/ comparisons fold and mirror
+    let t = f.cmp(int(Pr.SLt), f.cint(i64, 1), f.cint(i64, 2))
+    if f.cval(t) != 1:
+        m = m + 1
+    let u = f.cmp(int(Pr.ULt), f.cint(i64, -1), f.cint(i64, 2))
+    if f.cval(u) != 0:
+        m = m + 1
+    if f.cval(f.cmp(int(Pr.ULt), f.cint(int(Rp.I8), -1), f.cint(int(Rp.I8), 2))) != 0:
+        m = m + 1
+    if f.cmp(int(Pr.SGt), f.cint(i64, 3), x) != f.cmp(int(Pr.SLt), x, f.cint(i64, 3)):
+        m = m + 1
+    /#/ division rounds toward zero
+    if f.cval(f.bin(int(Op.SDiv), f.cint(i64, -7), f.cint(i64, 2))) != -3:
+        m = m + 1
+    if f.cval(f.bin(int(Op.SRem), f.cint(i64, -7), f.cint(i64, 2))) != -1:
+        m = m + 1
+    /#/ a constant condition is a plain jump
+    let b1 = f.new_block()
+    let b2 = f.new_block()
+    let e1 = f.mk_edge(b1)
+    let e2 = f.mk_edge(b2)
+    f.condbr(f.cint(int(Rp.I8), 1), e1, e2)
+    if f.op[f.blast[b0]] != int(Op.Br) || f.nsucc(b0) != 1:
+        m = m + 1
+    f.set_block(b1)
+    f.ret(s1)
+    f.set_block(b2)
+    f.ret(x)
+    return m

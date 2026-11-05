@@ -222,6 +222,12 @@ impl super::TypeChecker {
                     return self.check_method_call(&class_name, field, args);
                 }
 
+                // `x.name` is a field read when the class has that field, even if a method of
+                // the same name (which takes arguments) exists; only otherwise a method call.
+                if let Ok(field_ty) = self.lookup_field_type(&class_name, field) {
+                    return Ok(field_ty);
+                }
+
                 if self.lookup_method(&class_name, field).is_some() {
                     return self.check_method_call(&class_name, field, args);
                 }

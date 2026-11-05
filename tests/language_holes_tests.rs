@@ -578,3 +578,19 @@ fn test_class_may_define_a_method_named_assign() {
     // `assign` is built in for `p.assign("field", v)`; a method of the class wins
     assert_exit_code("class A:\n    n: int\n\n    fn assign(self, a: int, b: int, c: int, d: int, e: int) => int:\n        return a + b + c + d + e + self.n\n\n    fn go(self) => int:\n        return self.assign(1, 2, 3, 4, 5)\n\nfn main() => int:\n    let a = A { n: 1 }\n    return a.go()\n", 16).unwrap();
 }
+
+#[test]
+fn test_field_read_wins_over_a_method_of_the_same_name() {
+    // `f.ret` reads the field; `f.ret(4)` calls the method
+    assert_exit_code("class F:\n    ret: int\n\n    fn ret(self, v: int) => int:\n        return v + self.ret\n\nfn make() => F:\n    return F { ret: 3 }\n\nfn main() => int:\n    let f = F { ret: 5 }\n    return f.ret + f.ret(4) + make().ret\n", 17).unwrap();
+}
+
+#[test]
+fn test_early_return_of_a_class_does_not_move_it_for_later_code() {
+    assert_exit_code("class D:\n    n: int\n\nfn make(nb: int) => D:\n    let d = D { n: 1 }\n    if nb == 0:\n        return d\n    d.n = 4\n    return d\n\nfn main() => int:\n    let a = make(0)\n    let b = make(3)\n    return a.n * 10 + b.n\n", 14).unwrap();
+}
+
+#[test]
+fn test_early_return_of_a_string_is_balanced() {
+    assert_balanced("fn pick(n: int) => str:\n    let s = \"a\" + \"b\"\n    if n == 0:\n        return s\n    let t = s + \"c\"\n    return t\n\nfn main() => int:\n    let x = pick(0)\n    let y = pick(1)\n    return len(&x) + len(&y) - 5\n");
+}

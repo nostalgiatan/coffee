@@ -1,0 +1,214 @@
+/#/ The operations of the IR and the one table that defines them. The printer, the verifier,
+/#/ the folder and the emitter ask this table; none of them lists operations on its own.
+
+enum Op:
+    Param
+    Const
+    StrLit
+    Undef
+    Add
+    Sub
+    Mul
+    SDiv
+    UDiv
+    SRem
+    URem
+    And
+    Or
+    Xor
+    Shl
+    AShr
+    LShr
+    Neg
+    Not
+    FAdd
+    FSub
+    FMul
+    FDiv
+    FRem
+    FNeg
+    Cmp
+    FCmp
+    Trunc
+    SExt
+    ZExt
+    FpToSi
+    FpToUi
+    SiToFp
+    UiToFp
+    FpExt
+    FpTrunc
+    Bitcast
+    PtrToInt
+    IntToPtr
+    Extract
+    Insert
+    Slot
+    Load
+    Store
+    Field
+    Index
+    Call
+    CCall
+    CallI
+    Alloc
+    Free
+    Drop
+    Clone
+    OwnMove
+    Br
+    CondBr
+    Switch
+    Ret
+    Unreachable
+
+/#/ Comparison predicates; the signedness of an integer compare is in the predicate.
+enum Pr:
+    Eq
+    Ne
+    SLt
+    SLe
+    SGt
+    SGe
+    ULt
+    ULe
+    UGt
+    UGe
+    OEq
+    ONe
+    OLt
+    OLe
+    OGt
+    OGe
+
+/#/ Properties of an operation, as bits.
+fn f_pure() => int:
+    return 1
+
+fn f_comm() => int:
+    return 2
+
+fn f_reads() => int:
+    return 4
+
+fn f_writes() => int:
+    return 8
+
+fn f_term() => int:
+    return 16
+
+fn f_consumes() => int:
+    return 32
+
+fn f_trap() => int:
+    return 64
+
+fn f_allocs() => int:
+    return 128
+
+/#/ Byte `i` of a string.
+fn ch(src: &str, i: int) => int:
+    if i < 0 || i >= len(src):
+        return 0
+    return int(src[i])
+
+/#/ Operand count of an operation whose number of operands varies (calls).
+fn var_args() => int:
+    return -1
+
+class OpTab:
+    pool: buf<int>
+    pool_n: int
+    off: buf<int>
+    size: buf<int>
+    nargs: buf<int>
+    flags: buf<int>
+    n: int
+
+    fn def(self, name: &str, nargs: int, flags: int) => void:
+        if self.n >= len(self.off):
+            let cap = (self.n + 1) * 2
+            self.off = buf_resize(self.off, cap)
+            self.size = buf_resize(self.size, cap)
+            self.nargs = buf_resize(self.nargs, cap)
+            self.flags = buf_resize(self.flags, cap)
+        self.off[self.n] = self.pool_n
+        self.size[self.n] = len(name)
+        self.nargs[self.n] = nargs
+        self.flags[self.n] = flags
+        for i in 0..len(name):
+            if self.pool_n >= len(self.pool):
+                self.pool = buf_resize(self.pool, (self.pool_n + 1) * 2)
+            self.pool[self.pool_n] = ch(name, i)
+            self.pool_n = self.pool_n + 1
+        self.n = self.n + 1
+
+    fn has(self, op: int, flag: int) => bool:
+        return (self.flags[op] & flag) != 0
+
+/#/ The table, one row per `Op` in the order of the enum.
+fn new_optab() => OpTab:
+    let t = OpTab { pool: new_buf(int, 256), pool_n: 0, off: new_buf(int, 64), size: new_buf(int, 64), nargs: new_buf(int, 64), flags: new_buf(int, 64), n: 0 }
+    let p = f_pure()
+    let c = f_pure() | f_comm()
+    let pt = f_pure() | f_trap()
+    t.def("param", 0, p)
+    t.def("const", 0, p)
+    t.def("str.lit", 0, p)
+    t.def("undef", 0, p)
+    t.def("add", 2, c)
+    t.def("sub", 2, p)
+    t.def("mul", 2, c)
+    t.def("sdiv", 2, pt)
+    t.def("udiv", 2, pt)
+    t.def("srem", 2, pt)
+    t.def("urem", 2, pt)
+    t.def("and", 2, c)
+    t.def("or", 2, c)
+    t.def("xor", 2, c)
+    t.def("shl", 2, p)
+    t.def("ashr", 2, p)
+    t.def("lshr", 2, p)
+    t.def("neg", 1, p)
+    t.def("not", 1, p)
+    t.def("fadd", 2, c)
+    t.def("fsub", 2, p)
+    t.def("fmul", 2, c)
+    t.def("fdiv", 2, p)
+    t.def("frem", 2, p)
+    t.def("fneg", 1, p)
+    t.def("cmp", 2, p)
+    t.def("fcmp", 2, p)
+    t.def("trunc", 1, p)
+    t.def("sext", 1, p)
+    t.def("zext", 1, p)
+    t.def("fptosi", 1, p)
+    t.def("fptoui", 1, p)
+    t.def("sitofp", 1, p)
+    t.def("uitofp", 1, p)
+    t.def("fpext", 1, p)
+    t.def("fptrunc", 1, p)
+    t.def("bitcast", 1, p)
+    t.def("ptrtoint", 1, p)
+    t.def("inttoptr", 1, p)
+    t.def("extract", 1, p)
+    t.def("insert", 2, p)
+    t.def("slot", 0, f_allocs())
+    t.def("load", 1, f_reads())
+    t.def("store", 2, f_writes())
+    t.def("field", 1, p)
+    t.def("index", 2, p)
+    t.def("call", var_args(), f_reads() | f_writes() | f_allocs())
+    t.def("ccall", var_args(), f_reads() | f_writes() | f_allocs())
+    t.def("calli", var_args(), f_reads() | f_writes() | f_allocs())
+    t.def("alloc", 0, f_allocs())
+    t.def("free", 1, f_writes() | f_consumes())
+    t.def("drop", 1, f_writes() | f_consumes())
+    t.def("clone", 1, f_reads() | f_allocs())
+    t.def("own.move", 1, f_consumes())
+    t.def("br", 0, f_term())
+    t.def("condbr", 1, f_term())
+    t.def("switch", 1, f_term())
+    t.def("ret", 1, f_term())
+    t.def("unreachable", 0, f_term())
+    return t

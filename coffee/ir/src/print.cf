@@ -1,0 +1,219 @@
+/#/ The text form of the IR: what tests compare against and what a person reads.
+/#/
+/#/     fn name(%0: i64, %1: ptr) -> i64:
+    /#/ consts:
+    /#/   %2 = const i64 7
+    /#/ bb0:
+    /#/   %3 = add i64 %0, %2
+    /#/   condbr %4, bb1(%3), bb2()
+use * in fun
+
+fn put_pred(o: &Txt, p: int) => void:
+    if p == int(Pr.Eq):
+        o.put("eq")
+        return
+    if p == int(Pr.Ne):
+        o.put("ne")
+        return
+    if p == int(Pr.SLt):
+        o.put("slt")
+        return
+    if p == int(Pr.SLe):
+        o.put("sle")
+        return
+    if p == int(Pr.SGt):
+        o.put("sgt")
+        return
+    if p == int(Pr.SGe):
+        o.put("sge")
+        return
+    if p == int(Pr.ULt):
+        o.put("ult")
+        return
+    if p == int(Pr.ULe):
+        o.put("ule")
+        return
+    if p == int(Pr.UGt):
+        o.put("ugt")
+        return
+    if p == int(Pr.UGe):
+        o.put("uge")
+        return
+    if p == int(Pr.OEq):
+        o.put("oeq")
+        return
+    if p == int(Pr.ONe):
+        o.put("one")
+        return
+    if p == int(Pr.OLt):
+        o.put("olt")
+        return
+    if p == int(Pr.OLe):
+        o.put("ole")
+        return
+    if p == int(Pr.OGt):
+        o.put("ogt")
+        return
+    o.put("oge")
+
+fn put_rep(o: &Txt, rs: &Reps, r: int) => void:
+    if r == int(Rp.Void):
+        o.put("void")
+    elif r == int(Rp.I8):
+        o.put("i8")
+    elif r == int(Rp.I16):
+        o.put("i16")
+    elif r == int(Rp.I32):
+        o.put("i32")
+    elif r == int(Rp.I64):
+        o.put("i64")
+    elif r == int(Rp.F32):
+        o.put("f32")
+    elif r == int(Rp.F64):
+        o.put("f64")
+    elif r == int(Rp.Ptr):
+        o.put("ptr")
+    elif r >= rp_first_agg():
+        o.put("{")
+        for i in 0..rs.elems(r):
+            if i > 0:
+                o.put(", ")
+            put_rep(o, rs, rs.elem(r, i))
+        o.put("}")
+    else:
+        o.put("?")
+
+fn put_val(o: &Txt, f: &Fun, v: int) => void:
+    o.put("%")
+    o.put_int(f.follow(v))
+
+fn put_edge(o: &Txt, f: &Fun, e: int) => void:
+    o.put("bb")
+    o.put_int(f.eto[e])
+    o.put("(")
+    for k in 0..f.eargn[e]:
+        if k > 0:
+            o.put(", ")
+        put_val(o, f, f.pool[f.eargs[e] + k])
+    o.put(")")
+
+fn put_args(o: &Txt, f: &Fun, start: int, n: int) => void:
+    o.put("(")
+    for k in 0..n:
+        if k > 0:
+            o.put(", ")
+        put_val(o, f, f.pool[start + k])
+    o.put(")")
+
+fn put_inst(o: &Txt, f: &Fun, rs: &Reps, i: int) => void:
+    let op = f.op[i]
+    o.put("  ")
+    if f.rep[i] != int(Rp.Void):
+        put_val(o, f, i)
+        o.put(" = ")
+    for k in 0..f.tab.size[op]:
+        o.put_byte(f.tab.pool[f.tab.off[op] + k])
+    if op == int(Op.Cmp) || op == int(Op.FCmp):
+        o.put(".")
+        put_pred(o, f.aux[i])
+    if f.rep[i] != int(Rp.Void):
+        o.put(" ")
+        put_rep(o, rs, f.rep[i])
+    if op == int(Op.Const):
+        o.put(" ")
+        o.put_int(f.aux[i])
+    elif op == int(Op.StrLit):
+        o.put(" #")
+        o.put_int(f.aux[i])
+    elif op == int(Op.Call) || op == int(Op.CCall):
+        o.put(" @")
+        o.put_int(f.aux[i])
+        put_args(o, f, f.a[i], f.b[i])
+        if op == int(Op.CCall) && f.c[i] != 0:
+            o.put(" variadic")
+    elif op == int(Op.CallI):
+        o.put(" ")
+        put_val(o, f, f.c[i])
+        put_args(o, f, f.a[i], f.b[i])
+    elif op == int(Op.Br):
+        o.put(" ")
+        put_edge(o, f, f.aux[i])
+    elif op == int(Op.CondBr):
+        o.put(" ")
+        put_val(o, f, f.a[i])
+        o.put(", ")
+        put_edge(o, f, f.b[i])
+        o.put(", ")
+        put_edge(o, f, f.c[i])
+    elif op == int(Op.Switch):
+        o.put(" ")
+        put_val(o, f, f.a[i])
+        o.put(", default ")
+        put_edge(o, f, f.c[i])
+        for k in 0..f.b[i]:
+            o.put(", ")
+            o.put_int(f.pool[f.aux[i] + k * 2])
+            o.put(": ")
+            put_edge(o, f, f.pool[f.aux[i] + k * 2 + 1])
+    elif op == int(Op.Ret):
+        if f.a[i] >= 0:
+            o.put(" ")
+            put_val(o, f, f.a[i])
+    else:
+        let n = f.nval(i)
+        for k in 0..n:
+            if k > 0:
+                o.put(",")
+            o.put(" ")
+            put_val(o, f, f.val_at(i, k))
+        if op == int(Op.Extract) || op == int(Op.Insert):
+            o.put(", ")
+            o.put_int(f.aux[i])
+        elif op == int(Op.Field):
+            o.put(", +")
+            o.put_int(f.aux[i])
+    o.put("\n")
+
+fn put_fun(o: &Txt, f: &Fun, rs: &Reps) => void:
+    o.put("fn ")
+    for k in 0..len(f.nm):
+        o.put_byte(f.nm[k])
+    o.put("(")
+    if f.nb > 0:
+        let p = f.pfirst[0]
+        while p >= 0:
+            if p != f.pfirst[0]:
+                o.put(", ")
+            put_val(o, f, p)
+            o.put(": ")
+            put_rep(o, rs, f.rep[p])
+            p = f.nx[p]
+    o.put(") -> ")
+    put_rep(o, rs, f.ret)
+    o.put(":\n")
+    let any = false
+    for i in 0..f.ni:
+        if f.blk[i] < 0 && f.fwd[i] < 0 && f.uses[i] > 0:
+            if !any:
+                o.put("consts:\n")
+                any = true
+            put_inst(o, f, rs, i)
+    for b in 0..f.nb:
+        o.put("bb")
+        o.put_int(b)
+        if b > 0 && f.npar[b] > 0:
+            o.put("(")
+            let p = f.pfirst[b]
+            while p >= 0:
+                if p != f.pfirst[b]:
+                    o.put(", ")
+                put_val(o, f, p)
+                o.put(": ")
+                put_rep(o, rs, f.rep[p])
+                p = f.nx[p]
+            o.put(")")
+        o.put(":\n")
+        let i = f.bfirst[b]
+        while i >= 0:
+            put_inst(o, f, rs, i)
+            i = f.nx[i]

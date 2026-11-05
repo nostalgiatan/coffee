@@ -1,0 +1,80 @@
+/#/ The representations an IR value can have: what the storage table of coffee/types calls
+/#/ the value of a type. A closed set, so the IR never parses a type name.
+/#/
+/#/ 0 is `void` (no value), 1..7 are the scalars, and a number from 8 up is an aggregate
+/#/ `{r1, r2, ...}` of other representations (tuples, and the `{ptr, i64}` of `buf<T>`).
+
+enum Rp:
+    Void
+    I8
+    I16
+    I32
+    I64
+    F32
+    F64
+    Ptr
+
+fn rp_first_agg() => int:
+    return 8
+
+fn rp_bits(r: int) => int:
+    if r == int(Rp.I8):
+        return 8
+    if r == int(Rp.I16):
+        return 16
+    if r == int(Rp.I32):
+        return 32
+    if r == int(Rp.I64):
+        return 64
+    return 0
+
+fn rp_is_int(r: int) => bool:
+    return r >= int(Rp.I8) && r <= int(Rp.I64)
+
+fn rp_is_float(r: int) => bool:
+    return r == int(Rp.F32) || r == int(Rp.F64)
+
+/#/ Aggregate representations are shared: equal element lists, equal id.
+class Reps:
+    start: buf<int>
+    count: buf<int>
+    pool: buf<int>
+    pool_n: int
+    n: int
+
+    fn find(self, items: &buf<int>, k: int) => int:
+        for r in 0..self.n:
+            if self.count[r] == k:
+                let same = true
+                for i in 0..k:
+                    if self.pool[self.start[r] + i] != items[i]:
+                        same = false
+                if same:
+                    return r + rp_first_agg()
+        return -1
+
+    fn agg(self, items: &buf<int>, k: int) => int:
+        let f = self.find(items, k)
+        if f >= 0:
+            return f
+        if self.n >= len(self.start):
+            self.start = buf_resize(self.start, (self.n + 1) * 2)
+            self.count = buf_resize(self.count, (self.n + 1) * 2)
+        self.start[self.n] = self.pool_n
+        self.count[self.n] = k
+        for i in 0..k:
+            if self.pool_n >= len(self.pool):
+                self.pool = buf_resize(self.pool, (self.pool_n + 1) * 2)
+            self.pool[self.pool_n] = items[i]
+            self.pool_n = self.pool_n + 1
+        self.n = self.n + 1
+        return self.n - 1 + rp_first_agg()
+
+    fn elem(self, r: int, i: int) => int:
+        return self.pool[self.start[r - rp_first_agg()] + i]
+
+    fn elems(self, r: int) => int:
+        return self.count[r - rp_first_agg()]
+
+fn new_reps() => Reps:
+    return Reps { start: new_buf(int, 8), count: new_buf(int, 8), pool: new_buf(int, 16), pool_n: 0, n: 0 }

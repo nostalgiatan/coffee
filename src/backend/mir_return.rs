@@ -5,6 +5,9 @@ use crate::hir::{HirExpr, HirExprKind};
 
 impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
     pub(crate) fn compile_mir_return(&mut self, value: Option<&HirExpr>) -> Result<(), String> {
+        // A `return v` moves `v` out only on its own path: code compiled after it (the other
+        // branch, the rest of the function) still owns `v`.
+        let mut moved_by_return: Option<String> = None;
         if let Some(expr) = value {
             if let HirExprKind::Variable(var_name) = &expr.kind {
                 self.memory_ctx.record_use(var_name);
@@ -17,6 +20,9 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
 
             if let HirExprKind::Variable(var_name) = &expr.kind {
                 if self.ty_is_owned_resource(&expr.ty) {
+                    if !self.memory_ctx.is_moved(var_name) {
+                        moved_by_return = Some(var_name.clone());
+                    }
                     self.memory_ctx.mark_moved(var_name.clone());
                 }
             }
@@ -60,6 +66,9 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                     self.backend.builder.build_return(None).map_err(|e| e.to_string())?;
                 }
             }
+        }
+        if let Some(name) = moved_by_return {
+            self.memory_ctx.reinit(&name);
         }
         Ok(())
     }

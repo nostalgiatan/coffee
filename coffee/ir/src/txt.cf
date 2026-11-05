@@ -1,0 +1,39 @@
+/#/ Text built a byte at a time: the buffer the printer and the emitter write to.
+use * in op
+
+class Txt:
+    b: buf<int>
+    n: int
+
+    fn put_byte(self, c: int) => void:
+        if self.n >= len(self.b):
+            self.b = buf_resize(self.b, (self.n + 1) * 2)
+        self.b[self.n] = c
+        self.n = self.n + 1
+
+    fn put(self, s: &str) => void:
+        for i in 0..len(s):
+            self.put_byte(ch(s, i))
+
+    fn put_int(self, v: int) => void:
+        if v < 0:
+            self.put_byte('-')
+            self.put_int(0 - v)
+        elif v < 10:
+            self.put_byte('0' + v)
+        else:
+            self.put_int(v // 10)
+            self.put_byte('0' + v % 10)
+
+    /#/ Does the text equal `want`?
+    fn is(self, want: &str) => bool:
+        if self.n != len(want):
+            return false
+        for i in 0..self.n:
+            if self.b[i] != ch(want, i):
+                return false
+        return true
+
+fn new_txt() => Txt:
+    return Txt { b: new_buf(int, 256), n: 0 }
+

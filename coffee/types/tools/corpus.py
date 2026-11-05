@@ -10,8 +10,8 @@ import glob, os, subprocess, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJECT = os.path.join(HERE, '..')
 ROOT = os.path.join(PROJECT, '..', '..')
-MODULE_GLOBS = ['library/std/src/*.cf', 'coffee/lexer/src/*.cf', 'coffee/parser/src/*.cf', 'coffee/sema/src/*.cf', 'coffee/types/src/*.cf', 'coffee/own/src/*.cf']
-OTHER_GLOBS = ['coffee/lexer/tests/*.cf', 'coffee/parser/tests/test_*.cf', 'coffee/sema/tests/test_*.cf', 'coffee/types/tests/test_*.cf', 'coffee/own/tests/test_*.cf', 'tests/coffee_programs/*.cf']
+MODULE_GLOBS = ['library/std/src/*.cf', 'coffee/lexer/src/*.cf', 'coffee/parser/src/*.cf', 'coffee/sema/src/*.cf', 'coffee/types/src/*.cf', 'coffee/own/src/*.cf', 'coffee/ir/src/*.cf']
+OTHER_GLOBS = ['coffee/lexer/tests/*.cf', 'coffee/parser/tests/test_*.cf', 'coffee/sema/tests/test_*.cf', 'coffee/types/tests/test_*.cf', 'coffee/own/tests/test_*.cf', 'coffee/ir/tests/test_*.cf', 'tests/coffee_programs/*.cf']
 modules = [f for g in MODULE_GLOBS for f in sorted(glob.glob(os.path.join(ROOT, g)))]
 others = [f for g in OTHER_GLOBS for f in sorted(glob.glob(os.path.join(ROOT, g)))]
 if len(sys.argv) > 1:

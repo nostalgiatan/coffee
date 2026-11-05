@@ -1054,6 +1054,10 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         if let Some(class_name) = hir_named_type(&object.ty) {
             let mut current = Some(class_name.to_string());
             while let Some(name) = current {
+                // a field of that name wins over a method of the same name
+                if self.classes.get(&name).map_or(false, |c| c.fields.iter().any(|f| f.name == field)) {
+                    break;
+                }
                 if self.functions.contains_key(&format!("{}_{}", name, field)) {
                     let result = self.emit_method_call(field, class_name, field, object_value, vec![])?;
                     self.drop_temporary_receiver(object, object_value)?;

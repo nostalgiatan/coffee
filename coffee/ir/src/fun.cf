@@ -1,0 +1,700 @@
+/#/ A function of the IR and its builder.
+/#/
+/#/ Instruction `i` is a row of the columns `op rep ty a b c aux`; its result is the value `i`.
+/#/ A constant, a `str.lit` or an `undef` belongs to no block (`blk` is -1): it is available
+/#/ everywhere. Everything else sits in one block's list (`nx`/`pv`), and a block's parameters
+/#/ are `param` instructions in a list of their own. `fwd[i]` points to the value that replaced
+/#/ `i`; read operands through `res`.
+/#/
+/#/ Operands: a b c for the plain operations. A call keeps its arguments in `pool` from `a`, `b`
+/#/ of them. Terminators leave through *edges* (`eto`, and the arguments the target's
+/#/ parameters receive, in `pool`): `br` has one in `aux`, `condbr` two in `b` and `c`, `switch`
+/#/ a default in `c` and `b` pairs (value, edge) in `pool` from `aux`.
+use * in txt
+use * in rep
+
+/#/ 64-bit values are kept as they are; narrower ones as the signed value in their range.
+fn wrap(r: int, v: int) => int:
+    let n = rp_bits(r)
+    if n == 64 || n == 0:
+        return v
+    let m = 1 << n
+    let x = v % m
+    if x < 0:
+        x = x + m
+    if x >= m // 2:
+        x = x - m
+    return x
+
+/#/ The unsigned value of a narrow integer.
+fn unsigned_of(r: int, v: int) => int:
+    let n = rp_bits(r)
+    if v < 0 && n < 64:
+        return v + (1 << n)
+    return v
+
+/#/ Division that rounds toward zero, as the hardware does.
+fn tdiv(x: int, y: int) => int:
+    let ax = x
+    let ay = y
+    if ax < 0:
+        ax = 0 - ax
+    if ay < 0:
+        ay = 0 - ay
+    let q = ax // ay
+    if (x < 0) != (y < 0):
+        return 0 - q
+    return q
+
+/#/ Unsigned `x < y` on 64-bit patterns.
+fn ult64(x: int, y: int) => bool:
+    if (x < 0) == (y < 0):
+        return x < y
+    return x >= 0
+
+fn mirror_pred(p: int) => int:
+    if p == int(Pr.SLt):
+        return int(Pr.SGt)
+    if p == int(Pr.SLe):
+        return int(Pr.SGe)
+    if p == int(Pr.SGt):
+        return int(Pr.SLt)
+    if p == int(Pr.SGe):
+        return int(Pr.SLe)
+    if p == int(Pr.ULt):
+        return int(Pr.UGt)
+    if p == int(Pr.ULe):
+        return int(Pr.UGe)
+    if p == int(Pr.UGt):
+        return int(Pr.ULt)
+    if p == int(Pr.UGe):
+        return int(Pr.ULe)
+    return p
+
+fn hmix(h: int, v: int) => int:
+    return (h * 31 + v % 1000003 + 1000003) % 1000003
+
+class Fun:
+    nm: buf<int>
+    ret: int
+    tab: OpTab
+    op: buf<int>
+    rep: buf<int>
+    ty: buf<int>
+    a: buf<int>
+    b: buf<int>
+    c: buf<int>
+    aux: buf<int>
+    nx: buf<int>
+    pv: buf<int>
+    uses: buf<int>
+    fwd: buf<int>
+    blk: buf<int>
+    ni: int
+    bfirst: buf<int>
+    blast: buf<int>
+    pfirst: buf<int>
+    plast: buf<int>
+    npar: buf<int>
+    nb: int
+    efrom: buf<int>
+    eto: buf<int>
+    eargs: buf<int>
+    eargn: buf<int>
+    ne: int
+    pool: buf<int>
+    np: int
+    pend: buf<int>
+    pn: int
+    cv: buf<int>
+    ce: buf<int>
+    cn: int
+    cur: int
+    vn: buf<int>
+    vn_n: int
+
+    /#/ ---- storage -----------------------------------------------------------
+
+    fn follow(self, v: int) => int:
+        let x = v
+        while x >= 0 && self.fwd[x] >= 0:
+            x = self.fwd[x]
+        return x
+
+    fn grow_i(self) => void:
+        if self.ni >= len(self.op):
+            let cap = (self.ni + 1) * 2
+            self.op = buf_resize(self.op, cap)
+            self.rep = buf_resize(self.rep, cap)
+            self.ty = buf_resize(self.ty, cap)
+            self.a = buf_resize(self.a, cap)
+            self.b = buf_resize(self.b, cap)
+            self.c = buf_resize(self.c, cap)
+            self.aux = buf_resize(self.aux, cap)
+            self.nx = buf_resize(self.nx, cap)
+            self.pv = buf_resize(self.pv, cap)
+            self.uses = buf_resize(self.uses, cap)
+            self.fwd = buf_resize(self.fwd, cap)
+            self.blk = buf_resize(self.blk, cap)
+
+    fn pool_put(self, v: int) => int:
+        if self.np >= len(self.pool):
+            self.pool = buf_resize(self.pool, (self.np + 1) * 2)
+        self.pool[self.np] = v
+        self.np = self.np + 1
+        return self.np - 1
+
+    /#/ ---- operands ----------------------------------------------------------
+
+    /#/ How many value operands instruction `i` has, not counting what its edges pass.
+    fn nval(self, i: int) => int:
+        let o = self.op[i]
+        if o == int(Op.Call) || o == int(Op.CCall):
+            return self.b[i]
+        if o == int(Op.CallI):
+            return self.b[i] + 1
+        if o == int(Op.Ret):
+            if self.a[i] >= 0:
+                return 1
+            return 0
+        let n = self.tab.nargs[o]
+        if n < 0:
+            return 0
+        return n
+
+    fn val_at(self, i: int, k: int) => int:
+        let o = self.op[i]
+        if o == int(Op.Call) || o == int(Op.CCall):
+            return self.pool[self.a[i] + k]
+        if o == int(Op.CallI):
+            if k == 0:
+                return self.c[i]
+            return self.pool[self.a[i] + k - 1]
+        if k == 0:
+            return self.a[i]
+        if k == 1:
+            return self.b[i]
+        return self.c[i]
+
+    fn bump_uses(self, i: int, d: int) => void:
+        for k in 0..self.nval(i):
+            let v = self.val_at(i, k)
+            if v >= 0:
+                self.uses[v] = self.uses[v] + d
+
+    /#/ ---- blocks ------------------------------------------------------------
+
+    fn new_block(self) => int:
+        if self.nb >= len(self.bfirst):
+            let cap = (self.nb + 1) * 2
+            self.bfirst = buf_resize(self.bfirst, cap)
+            self.blast = buf_resize(self.blast, cap)
+            self.pfirst = buf_resize(self.pfirst, cap)
+            self.plast = buf_resize(self.plast, cap)
+            self.npar = buf_resize(self.npar, cap)
+        let n = self.nb
+        self.bfirst[n] = -1
+        self.blast[n] = -1
+        self.pfirst[n] = -1
+        self.plast[n] = -1
+        self.npar[n] = 0
+        self.nb = n + 1
+        return n
+
+    fn set_block(self, b: int) => void:
+        self.cur = b
+
+    fn terminated(self, b: int) => bool:
+        let l = self.blast[b]
+        return l >= 0 && self.tab.has(self.op[l], f_term())
+
+    /#/ A new parameter of block `b`; its value is the instruction.
+    fn param(self, b: int, rep: int, ty: int) => int:
+        let i = self.mk(int(Op.Param), rep, ty, -1, -1, -1, self.npar[b])
+        self.blk[i] = b
+        self.pv[i] = self.plast[b]
+        if self.plast[b] >= 0:
+            self.nx[self.plast[b]] = i
+        else:
+            self.pfirst[b] = i
+        self.plast[b] = i
+        self.npar[b] = self.npar[b] + 1
+        return i
+
+    /#/ The `k`-th parameter of block `b`.
+    fn param_at(self, b: int, k: int) => int:
+        let p = self.pfirst[b]
+        for j in 0..k:
+            p = self.nx[p]
+        return p
+
+    /#/ ---- instructions ------------------------------------------------------
+
+    /#/ A new instruction, in no block yet.
+    fn mk(self, op: int, rep: int, ty: int, a: int, b: int, c: int, aux: int) => int:
+        self.grow_i()
+        let i = self.ni
+        self.op[i] = op
+        self.rep[i] = rep
+        self.ty[i] = ty
+        self.a[i] = a
+        self.b[i] = b
+        self.c[i] = c
+        self.aux[i] = aux
+        self.nx[i] = -1
+        self.pv[i] = -1
+        self.uses[i] = 0
+        self.fwd[i] = -1
+        self.blk[i] = -1
+        self.ni = i + 1
+        self.bump_uses(i, 1)
+        return i
+
+    fn link(self, i: int) => void:
+        let b = self.cur
+        self.blk[i] = b
+        self.pv[i] = self.blast[b]
+        self.nx[i] = -1
+        if self.blast[b] >= 0:
+            self.nx[self.blast[b]] = i
+        else:
+            self.bfirst[b] = i
+        self.blast[b] = i
+
+    /#/ A new instruction at the end of the current block.
+    fn raw(self, op: int, rep: int, ty: int, a: int, b: int, c: int, aux: int) => int:
+        let i = self.mk(op, rep, ty, a, b, c, aux)
+        self.link(i)
+        return i
+
+    /#/ ---- sharing -----------------------------------------------------------
+
+    fn key_hash(self, op: int, rep: int, a: int, b: int, c: int, aux: int) => int:
+        let h = hmix(op, rep)
+        h = hmix(h, a)
+        h = hmix(h, b)
+        h = hmix(h, c)
+        return hmix(h, aux)
+
+    fn vn_put(self, i: int) => void:
+        let cap = len(self.vn)
+        let h = self.key_hash(self.op[i], self.rep[i], self.a[i], self.b[i], self.c[i], self.aux[i]) % cap
+        while self.vn[h] >= 0:
+            h = (h + 1) % cap
+        self.vn[h] = i
+
+    fn vn_grow(self) => void:
+        let ids: buf<int> = new_buf(int, self.vn_n + 1)
+        let k = 0
+        for j in 0..len(self.vn):
+            if self.vn[j] >= 0:
+                ids[k] = self.vn[j]
+                k = k + 1
+        let cap = len(self.vn) * 2
+        self.vn = new_buf(int, cap)
+        for j in 0..cap:
+            self.vn[j] = -1
+        for j in 0..k:
+            self.vn_put(ids[j])
+
+    /#/ The instruction with these operands in the current block (or a constant); a new one
+    /#/ when there is none. Only for operations with no effect.
+    fn share(self, op: int, rep: int, ty: int, a: int, b: int, c: int, aux: int) => int:
+        let cap = len(self.vn)
+        let h = self.key_hash(op, rep, a, b, c, aux) % cap
+        while self.vn[h] >= 0:
+            let e = self.vn[h]
+            if self.op[e] == op && self.rep[e] == rep && self.a[e] == a && self.b[e] == b && self.c[e] == c && self.aux[e] == aux && (self.blk[e] < 0 || self.blk[e] == self.cur):
+                return e
+            h = (h + 1) % cap
+        let i = 0
+        if op == int(Op.Const) || op == int(Op.StrLit) || op == int(Op.Undef):
+            i = self.mk(op, rep, ty, a, b, c, aux)
+        else:
+            i = self.raw(op, rep, ty, a, b, c, aux)
+        self.vn_n = self.vn_n + 1
+        if self.vn_n * 2 > len(self.vn):
+            self.vn_grow()
+        self.vn_put(i)
+        return i
+
+    /#/ ---- constants ---------------------------------------------------------
+
+    fn cint(self, rep: int, v: int) => int:
+        return self.share(int(Op.Const), rep, -1, -1, -1, -1, wrap(rep, v))
+
+    /#/ A float constant, given as its bit pattern.
+    fn cfloat(self, rep: int, bits: int) => int:
+        return self.share(int(Op.Const), rep, -1, -1, -1, -1, bits)
+
+    fn undef(self, rep: int) => int:
+        return self.share(int(Op.Undef), rep, -1, -1, -1, -1, 0)
+
+    fn strlit(self, id: int) => int:
+        return self.share(int(Op.StrLit), int(Rp.Ptr), -1, -1, -1, -1, id)
+
+    fn is_const(self, v: int) => bool:
+        return self.op[v] == int(Op.Const) && rp_is_int(self.rep[v])
+
+    fn cval(self, v: int) => int:
+        return self.aux[v]
+
+    /#/ ---- arithmetic: folded, simplified and shared as it is built ----------
+
+    fn can_fold(self, op: int, rep: int, x: int, y: int) => bool:
+        if op == int(Op.Add) || op == int(Op.Sub) || op == int(Op.Mul) || op == int(Op.And) || op == int(Op.Or) || op == int(Op.Xor):
+            return true
+        let n = rp_bits(rep)
+        if op == int(Op.Shl) || op == int(Op.AShr):
+            return y >= 0 && y < n
+        if op == int(Op.LShr):
+            return y >= 0 && y < n && (n < 64 || x >= 0)
+        if op == int(Op.SDiv) || op == int(Op.SRem):
+            return y != 0 && !(y == -1 && x == wrap(rep, 1 << (n - 1)))
+        if op == int(Op.UDiv) || op == int(Op.URem):
+            return y != 0 && (n < 64 || (x >= 0 && y > 0))
+        return false
+
+    fn fold2(self, op: int, rep: int, x: int, y: int) => int:
+        if op == int(Op.Add):
+            return wrap(rep, x + y)
+        if op == int(Op.Sub):
+            return wrap(rep, x - y)
+        if op == int(Op.Mul):
+            return wrap(rep, x * y)
+        if op == int(Op.And):
+            return wrap(rep, x & y)
+        if op == int(Op.Or):
+            return wrap(rep, x | y)
+        if op == int(Op.Xor):
+            return wrap(rep, x ^ y)
+        if op == int(Op.Shl):
+            return wrap(rep, x << y)
+        if op == int(Op.AShr):
+            return wrap(rep, x >> y)
+        if op == int(Op.LShr):
+            return wrap(rep, unsigned_of(rep, x) >> y)
+        if op == int(Op.SDiv):
+            return wrap(rep, tdiv(x, y))
+        if op == int(Op.SRem):
+            return wrap(rep, x - tdiv(x, y) * y)
+        let ux = unsigned_of(rep, x)
+        let uy = unsigned_of(rep, y)
+        if op == int(Op.UDiv):
+            return wrap(rep, ux // uy)
+        return wrap(rep, ux - (ux // uy) * uy)
+
+    /#/ `x op y`. Constants fold, identities collapse, an equal earlier one is reused.
+    fn bin(self, op: int, x0: int, y0: int) => int:
+        let x = self.follow(x0)
+        let y = self.follow(y0)
+        let rep = self.rep[x]
+        let ty = self.ty[x]
+        if !rp_is_int(rep):
+            return self.share(op, rep, ty, x, y, -1, 0)
+        if self.tab.has(op, f_comm()):
+            let swap = false
+            if self.is_const(x) && !self.is_const(y):
+                swap = true
+            elif !self.is_const(x) && !self.is_const(y) && x > y:
+                swap = true
+            if swap:
+                let t = x
+                x = y
+                y = t
+        let xc = self.is_const(x)
+        let yc = self.is_const(y)
+        if xc && yc && self.can_fold(op, rep, self.cval(x), self.cval(y)):
+            return self.cint(rep, self.fold2(op, rep, self.cval(x), self.cval(y)))
+        let yv = 0
+        if yc:
+            yv = self.cval(y)
+        if op == int(Op.Add) || op == int(Op.Sub) || op == int(Op.Or) || op == int(Op.Xor) || op == int(Op.Shl) || op == int(Op.AShr) || op == int(Op.LShr):
+            if yc && yv == 0:
+                return x
+        if op == int(Op.Mul):
+            if yc && yv == 1:
+                return x
+            if yc && yv == 0:
+                return y
+        if op == int(Op.And):
+            if yc && yv == 0:
+                return y
+            if yc && yv == -1:
+                return x
+        if op == int(Op.Or) && yc && yv == -1:
+            return y
+        if (op == int(Op.SDiv) || op == int(Op.UDiv)) && yc && yv == 1:
+            return x
+        if (op == int(Op.SRem) || op == int(Op.URem)) && yc && yv == 1:
+            return self.cint(rep, 0)
+        if x == y:
+            if op == int(Op.Sub) || op == int(Op.Xor):
+                return self.cint(rep, 0)
+            if op == int(Op.And) || op == int(Op.Or):
+                return x
+        return self.share(op, rep, ty, x, y, -1, 0)
+
+    fn neg(self, x0: int) => int:
+        let x = self.follow(x0)
+        let rep = self.rep[x]
+        if self.is_const(x):
+            return self.cint(rep, 0 - self.cval(x))
+        if self.op[x] == int(Op.Neg):
+            return self.follow(self.a[x])
+        return self.share(int(Op.Neg), rep, self.ty[x], x, -1, -1, 0)
+
+    /#/ Bitwise not.
+    fn bnot(self, x0: int) => int:
+        let x = self.follow(x0)
+        let rep = self.rep[x]
+        if self.is_const(x):
+            return self.cint(rep, 0 - self.cval(x) - 1)
+        if self.op[x] == int(Op.Not):
+            return self.follow(self.a[x])
+        return self.share(int(Op.Not), rep, self.ty[x], x, -1, -1, 0)
+
+    fn cmp_fold(self, p: int, rep: int, x: int, y: int) => bool:
+        if p == int(Pr.Eq):
+            return x == y
+        if p == int(Pr.Ne):
+            return x != y
+        if p == int(Pr.SLt):
+            return x < y
+        if p == int(Pr.SLe):
+            return x <= y
+        if p == int(Pr.SGt):
+            return x > y
+        if p == int(Pr.SGe):
+            return x >= y
+        let ux = unsigned_of(rep, x)
+        let uy = unsigned_of(rep, y)
+        let lt = false
+        if rp_bits(rep) == 64:
+            lt = ult64(ux, uy)
+        else:
+            lt = ux < uy
+        if p == int(Pr.ULt):
+            return lt
+        if p == int(Pr.UGe):
+            return !lt
+        if p == int(Pr.UGt):
+            return ux != uy && !lt
+        return ux == uy || lt
+
+    /#/ An integer comparison; the result is an `i8`.
+    fn cmp(self, p: int, x0: int, y0: int) => int:
+        let x = self.follow(x0)
+        let y = self.follow(y0)
+        let rep = self.rep[x]
+        let i8 = int(Rp.I8)
+        if self.is_const(x) && self.is_const(y):
+            if self.cmp_fold(p, rep, self.cval(x), self.cval(y)):
+                return self.cint(i8, 1)
+            return self.cint(i8, 0)
+        if x == y:
+            if p == int(Pr.Eq) || p == int(Pr.SLe) || p == int(Pr.SGe) || p == int(Pr.ULe) || p == int(Pr.UGe):
+                return self.cint(i8, 1)
+            return self.cint(i8, 0)
+        if self.is_const(x) && !self.is_const(y):
+            let t = x
+            x = y
+            y = t
+            p = mirror_pred(p)
+        return self.share(int(Op.Cmp), i8, -1, x, y, -1, p)
+
+    /#/ A comparison of floats; never folded.
+    fn fcmp(self, p: int, x0: int, y0: int) => int:
+        return self.share(int(Op.FCmp), int(Rp.I8), -1, self.follow(x0), self.follow(y0), -1, p)
+
+    /#/ A conversion to representation `to`.
+    fn conv(self, op: int, to: int, x0: int) => int:
+        let x = self.follow(x0)
+        if self.rep[x] == to:
+            return x
+        if self.is_const(x) && rp_is_int(to):
+            if op == int(Op.Trunc) || op == int(Op.SExt):
+                return self.cint(to, self.cval(x))
+            if op == int(Op.ZExt):
+                return self.cint(to, unsigned_of(self.rep[x], self.cval(x)))
+        return self.share(op, to, -1, x, -1, -1, 0)
+
+    fn extract(self, rep: int, agg: int, idx: int) => int:
+        return self.share(int(Op.Extract), rep, -1, self.follow(agg), -1, -1, idx)
+
+    fn insert(self, agg: int, v: int, idx: int) => int:
+        let g = self.follow(agg)
+        return self.share(int(Op.Insert), self.rep[g], self.ty[g], g, self.follow(v), -1, idx)
+
+    /#/ ---- memory ------------------------------------------------------------
+
+    fn slot(self, ty: int) => int:
+        return self.raw(int(Op.Slot), int(Rp.Ptr), ty, -1, -1, -1, 0)
+
+    fn load(self, rep: int, ty: int, p: int) => int:
+        return self.raw(int(Op.Load), rep, ty, self.follow(p), -1, -1, 0)
+
+    fn store(self, p: int, v: int) => int:
+        return self.raw(int(Op.Store), int(Rp.Void), -1, self.follow(p), self.follow(v), -1, 0)
+
+    /#/ The address of field `idx` (an offset in bytes) of the block `p` points to.
+    fn field(self, p: int, off: int) => int:
+        return self.share(int(Op.Field), int(Rp.Ptr), -1, self.follow(p), -1, -1, off)
+
+    fn index(self, p: int, i: int) => int:
+        return self.share(int(Op.Index), int(Rp.Ptr), -1, self.follow(p), self.follow(i), -1, 0)
+
+    /#/ ---- calls and ownership -----------------------------------------------
+
+    /#/ Queues an argument of the next call or edge.
+    fn arg(self, v: int) => void:
+        if self.pn >= len(self.pend):
+            self.pend = buf_resize(self.pend, (self.pn + 1) * 2)
+        self.pend[self.pn] = self.follow(v)
+        self.pn = self.pn + 1
+
+    fn take_pending(self) => int:
+        let start = self.np
+        for k in 0..self.pn:
+            self.pool_put(self.pend[k])
+        return start
+
+    fn call(self, rep: int, ty: int, callee: int) => int:
+        let n = self.pn
+        let start = self.take_pending()
+        self.pn = 0
+        return self.raw(int(Op.Call), rep, ty, start, n, -1, callee)
+
+    /#/ A C call; `variadic` is kept for the emitter.
+    fn ccall(self, rep: int, ty: int, callee: int, variadic: int) => int:
+        let n = self.pn
+        let start = self.take_pending()
+        self.pn = 0
+        return self.raw(int(Op.CCall), rep, ty, start, n, variadic, callee)
+
+    fn calli(self, rep: int, ty: int, f: int) => int:
+        let n = self.pn
+        let start = self.take_pending()
+        self.pn = 0
+        return self.raw(int(Op.CallI), rep, ty, start, n, self.follow(f), 0)
+
+    fn alloc(self, ty: int) => int:
+        return self.raw(int(Op.Alloc), int(Rp.Ptr), ty, -1, -1, -1, 0)
+
+    fn drop_of(self, v: int) => int:
+        return self.raw(int(Op.Drop), int(Rp.Void), self.ty[self.follow(v)], self.follow(v), -1, -1, 0)
+
+    fn clone_of(self, v: int) => int:
+        let x = self.follow(v)
+        return self.raw(int(Op.Clone), self.rep[x], self.ty[x], x, -1, -1, 0)
+
+    fn own_move(self, v: int) => int:
+        let x = self.follow(v)
+        return self.raw(int(Op.OwnMove), self.rep[x], self.ty[x], x, -1, -1, 0)
+
+    /#/ ---- edges and terminators ---------------------------------------------
+
+    /#/ An edge to `target` passing the queued arguments.
+    fn mk_edge(self, target: int) => int:
+        if self.ne >= len(self.eto):
+            let cap = (self.ne + 1) * 2
+            self.efrom = buf_resize(self.efrom, cap)
+            self.eto = buf_resize(self.eto, cap)
+            self.eargs = buf_resize(self.eargs, cap)
+            self.eargn = buf_resize(self.eargn, cap)
+        let e = self.ne
+        self.efrom[e] = self.cur
+        self.eto[e] = target
+        self.eargn[e] = self.pn
+        self.eargs[e] = self.take_pending()
+        for k in 0..self.pn:
+            let v = self.pool[self.eargs[e] + k]
+            self.uses[v] = self.uses[v] + 1
+        self.pn = 0
+        self.ne = e + 1
+        return e
+
+    fn kill_edge(self, e: int) => void:
+        for k in 0..self.eargn[e]:
+            let v = self.pool[self.eargs[e] + k]
+            self.uses[v] = self.uses[v] - 1
+        self.eargn[e] = 0
+        self.eto[e] = -1
+
+    fn br(self, target: int) => int:
+        let e = self.mk_edge(target)
+        return self.raw(int(Op.Br), int(Rp.Void), -1, -1, -1, -1, e)
+
+    /#/ A branch on `cond`; a constant condition is a plain jump.
+    fn condbr(self, cond: int, e1: int, e2: int) => int:
+        let c = self.follow(cond)
+        if self.is_const(c):
+            if self.cval(c) != 0:
+                self.kill_edge(e2)
+                return self.raw(int(Op.Br), int(Rp.Void), -1, -1, -1, -1, e1)
+            self.kill_edge(e1)
+            return self.raw(int(Op.Br), int(Rp.Void), -1, -1, -1, -1, e2)
+        return self.raw(int(Op.CondBr), int(Rp.Void), -1, c, e1, e2, 0)
+
+    fn sw_case(self, v: int, e: int) => void:
+        if self.cn >= len(self.cv):
+            self.cv = buf_resize(self.cv, (self.cn + 1) * 2)
+            self.ce = buf_resize(self.ce, (self.cn + 1) * 2)
+        self.cv[self.cn] = v
+        self.ce[self.cn] = e
+        self.cn = self.cn + 1
+
+    fn switch(self, v: int, default_edge: int) => int:
+        let n = self.cn
+        let start = self.np
+        for k in 0..n:
+            self.pool_put(self.cv[k])
+            self.pool_put(self.ce[k])
+        self.cn = 0
+        return self.raw(int(Op.Switch), int(Rp.Void), -1, self.follow(v), n, default_edge, start)
+
+    fn ret(self, v: int) => int:
+        return self.raw(int(Op.Ret), int(Rp.Void), -1, self.follow(v), -1, -1, 0)
+
+    fn ret_void(self) => int:
+        return self.raw(int(Op.Ret), int(Rp.Void), -1, -1, -1, -1, 0)
+
+    fn unreachable(self) => int:
+        return self.raw(int(Op.Unreachable), int(Rp.Void), -1, -1, -1, -1, 0)
+
+    /#/ The edges that leave block `b`, in order; `k` counts from 0.
+    fn nsucc(self, b: int) => int:
+        let t = self.blast[b]
+        if t < 0:
+            return 0
+        let o = self.op[t]
+        if o == int(Op.Br):
+            return 1
+        if o == int(Op.CondBr):
+            return 2
+        if o == int(Op.Switch):
+            return self.b[t] + 1
+        return 0
+
+    fn succ_edge(self, b: int, k: int) => int:
+        let t = self.blast[b]
+        let o = self.op[t]
+        if o == int(Op.Br):
+            return self.aux[t]
+        if o == int(Op.CondBr):
+            if k == 0:
+                return self.b[t]
+            return self.c[t]
+        if k == 0:
+            return self.c[t]
+        return self.pool[self.aux[t] + (k - 1) * 2 + 1]
+
+/#/ A function with the result representation `ret` (`Rp.Void` for none).
+fn new_fun(name: &str, ret: int) => Fun:
+    let nm: buf<int> = new_buf(int, len(name))
+    for k in 0..len(name):
+        nm[k] = ch(name, k)
+    let vn: buf<int> = new_buf(int, 64)
+    for k in 0..64:
+        vn[k] = -1
+    return Fun { nm: nm, ret: ret, tab: new_optab(), op: new_buf(int, 32), rep: new_buf(int, 32), ty: new_buf(int, 32), a: new_buf(int, 32), b: new_buf(int, 32), c: new_buf(int, 32), aux: new_buf(int, 32), nx: new_buf(int, 32), pv: new_buf(int, 32), uses: new_buf(int, 32), fwd: new_buf(int, 32), blk: new_buf(int, 32), ni: 0, bfirst: new_buf(int, 8), blast: new_buf(int, 8), pfirst: new_buf(int, 8), plast: new_buf(int, 8), npar: new_buf(int, 8), nb: 0, efrom: new_buf(int, 8), eto: new_buf(int, 8), eargs: new_buf(int, 8), eargn: new_buf(int, 8), ne: 0, pool: new_buf(int, 32), np: 0, pend: new_buf(int, 8), pn: 0, cv: new_buf(int, 8), ce: new_buf(int, 8), cn: 0, cur: -1, vn: vn, vn_n: 0 }
