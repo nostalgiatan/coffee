@@ -1,0 +1,11 @@
+use * in tree_shape
+
+fn main() => int:
+    let m = 0
+    m = m + miss_parse("fn add(a: int, b: int) => int:\n    return a + b\n", "P(F(p(t)p(t)tB(R([+](ww)))))")
+    m = m + miss_parse("fn f() => void:\n    return\n", "P(F(tB(R)))")
+    m = m + miss_parse("fn f<T>(x: T) => T:\n    return x\n", "P(F(qp(t)tB(R(w))))")
+    m = m + miss_parse("use f in m\n", "P(Y(w))")
+    m = m + miss_parse("class P:\n    x: int\n    fn get(self) => int:\n        return self.x\n", "P(C(f(t)F(stB(R(m(w))))))")
+    m = m + miss_parse("enum E:\n    A\n    B\n", "P(E(VV))")
+    return m

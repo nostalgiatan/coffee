@@ -113,7 +113,7 @@ fn parse_class_body(input: &str) -> IResult<&str, (Vec<ClassField>, Vec<MethodDe
             continue;
         }
 
-        let current_indent = line.len() - trimmed.len();
+        let current_indent = line.len() - line.trim_start().len();
 
         // Left the class: following top-level items (`fn main`, another class, …).
         if current_indent == 0

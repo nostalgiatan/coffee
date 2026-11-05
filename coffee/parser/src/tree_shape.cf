@@ -1,0 +1,210 @@
+/#/ Compact text form of a parse tree, for tests and debugging.
+/#/
+/#/ A node is one letter (`node_char`) followed, when it has operands or children, by
+/#/ them in parentheses: `Let(wi)`. Binary and unary operators print their lexeme in
+/#/ brackets instead: `[+](i[*](ii))` is `1 + 2 * 3`. TypeRef prints the tokens' count.
+use * in parser
+
+fn node_char(kind: int) => int:
+    if kind == int(Nk.Program):
+        return 'P'
+    if kind == int(Nk.Use):
+        return 'Y'
+    if kind == int(Nk.Fn):
+        return 'F'
+    if kind == int(Nk.Param):
+        return 'p'
+    if kind == int(Nk.SelfParam):
+        return 's'
+    if kind == int(Nk.TypeParam):
+        return 'q'
+    if kind == int(Nk.Listener):
+        return 'l'
+    if kind == int(Nk.Class):
+        return 'C'
+    if kind == int(Nk.Field):
+        return 'f'
+    if kind == int(Nk.Enum):
+        return 'E'
+    if kind == int(Nk.Variant):
+        return 'V'
+    if kind == int(Nk.VField):
+        return 'v'
+    if kind == int(Nk.TypeRef):
+        return 't'
+    if kind == int(Nk.Block):
+        return 'B'
+    if kind == int(Nk.Let):
+        return 'L'
+    if kind == int(Nk.Assign):
+        return '='
+    if kind == int(Nk.Return):
+        return 'R'
+    if kind == int(Nk.Raise):
+        return 'X'
+    if kind == int(Nk.Rm):
+        return 'r'
+    if kind == int(Nk.Clean):
+        return 'c'
+    if kind == int(Nk.ExprStmt):
+        return ';'
+    if kind == int(Nk.If):
+        return 'I'
+    if kind == int(Nk.While):
+        return 'W'
+    if kind == int(Nk.For):
+        return 'O'
+    if kind == int(Nk.Match):
+        return 'M'
+    if kind == int(Nk.Arm):
+        return 'a'
+    if kind == int(Nk.Break):
+        return 'b'
+    if kind == int(Nk.Continue):
+        return 'n'
+    if kind == int(Nk.Int):
+        return 'i'
+    if kind == int(Nk.Float):
+        return 'd'
+    if kind == int(Nk.Str):
+        return 'S'
+    if kind == int(Nk.FStr):
+        return 'Q'
+    if kind == int(Nk.Char):
+        return 'h'
+    if kind == int(Nk.Bool):
+        return 'z'
+    if kind == int(Nk.Name):
+        return 'w'
+    if kind == int(Nk.Star):
+        return '*'
+    if kind == int(Nk.Call):
+        return 'k'
+    if kind == int(Nk.Index):
+        return 'x'
+    if kind == int(Nk.Member):
+        return 'm'
+    if kind == int(Nk.Range):
+        return 'g'
+    if kind == int(Nk.StructLit):
+        return 'T'
+    if kind == int(Nk.FieldInit):
+        return 'j'
+    if kind == int(Nk.Array):
+        return 'A'
+    if kind == int(Nk.Tuple):
+        return 'N'
+    return '!'
+
+class Shaper:
+    out: buf<int>
+    n: int
+
+    fn put(self, c: int) => void:
+        if self.n >= len(self.out):
+            self.out = buf_resize(self.out, (self.n + 1) * 2)
+        self.out[self.n] = c
+        self.n = self.n + 1
+
+    /#/ The lexeme of token `tok`, in brackets.
+    fn lexeme(self, a: &Ast, tok: int) => void:
+        self.put('[')
+        let i = a.toks.start[tok]
+        while i < a.toks.end[tok]:
+            self.put(a.byte_at(i))
+            i = i + 1
+        self.put(']')
+
+    /#/ One operand slot: a node id when `v` is a node reference.
+    fn operand(self, a: &Ast, v: int) => void:
+        if v >= 0:
+            self.walk(a, v)
+
+    fn walk(self, a: &Ast, n: int) => void:
+        let k = a.kind[n]
+        if k == int(Nk.Binary):
+            self.lexeme(a, a.pd[n])
+        elif k == int(Nk.Unary):
+            self.lexeme(a, a.tok[n])
+            if a.pd[n] == 1:
+                self.put('m')
+        else:
+            self.put(node_char(k))
+        let has = a.child[n] >= 0
+        if k == int(Nk.Binary) || k == int(Nk.Index) || k == int(Nk.Range) || k == int(Nk.Assign) || k == int(Nk.While) || k == int(Nk.Arm):
+            has = true
+        if k == int(Nk.Unary) || k == int(Nk.Return) || k == int(Nk.Raise) || k == int(Nk.Rm) || k == int(Nk.Clean) || k == int(Nk.ExprStmt) || k == int(Nk.Member) || k == int(Nk.Param) || k == int(Nk.Field) || k == int(Nk.VField) || k == int(Nk.FieldInit):
+            has = has || a.pa[n] >= 0
+        if k == int(Nk.If) || k == int(Nk.Let) || k == int(Nk.For) || k == int(Nk.Fn) || k == int(Nk.Match) || k == int(Nk.Call) || k == int(Nk.StructLit):
+            has = true
+        if !has:
+            return
+        self.put('(')
+        if k == int(Nk.Binary) || k == int(Nk.Index) || k == int(Nk.Range) || k == int(Nk.Assign) || k == int(Nk.Arm):
+            self.operand(a, a.pa[n])
+            self.operand(a, a.pb[n])
+        elif k == int(Nk.While):
+            self.operand(a, a.pa[n])
+            self.operand(a, a.pb[n])
+        elif k == int(Nk.Unary) || k == int(Nk.Return) || k == int(Nk.Raise) || k == int(Nk.Rm) || k == int(Nk.Clean) || k == int(Nk.ExprStmt) || k == int(Nk.Member) || k == int(Nk.Param) || k == int(Nk.Field) || k == int(Nk.VField) || k == int(Nk.FieldInit):
+            self.operand(a, a.pa[n])
+        elif k == int(Nk.If):
+            self.operand(a, a.pa[n])
+            self.operand(a, a.pb[n])
+            self.operand(a, a.pc[n])
+        elif k == int(Nk.Let):
+            self.operand(a, a.pb[n])
+            self.operand(a, a.pc[n])
+        elif k == int(Nk.For):
+            self.operand(a, a.pb[n])
+            self.operand(a, a.pc[n])
+        elif k == int(Nk.Fn):
+            /#/ return type and body come after the parameters
+            let c = a.child[n]
+            while c >= 0:
+                self.walk(a, c)
+                c = a.next[c]
+            self.operand(a, a.pb[n])
+            self.operand(a, a.pc[n])
+            self.put(')')
+            return
+        elif k == int(Nk.Match) || k == int(Nk.Call) || k == int(Nk.StructLit):
+            self.operand(a, a.pa[n])
+        let c = a.child[n]
+        while c >= 0:
+            self.walk(a, c)
+            c = a.next[c]
+        self.put(')')
+
+/#/ The shape of the whole tree as a buf of bytes with its length.
+fn shape(a: &Ast) => Shaper:
+    let s = Shaper { out: new_buf(int, 64), n: 0 }
+    if a.root >= 0:
+        s.walk(a, a.root)
+    return s
+
+/#/ 0 when the tree of `a` prints as `want`, else 1.
+fn miss_shape(a: &Ast, want: &str) => int:
+    let s = shape(a)
+    if s.n != len(want):
+        return 1
+    for i in 0..s.n:
+        if s.out[i] != byte(want, i):
+            return 1
+    return 0
+
+/#/ 1 when `src` does not parse to exactly `want` without errors, else 0.
+fn miss_parse(src: str, want: &str) => int:
+    let a = parse(src)
+    if a.err_count != 0:
+        return 1
+    return miss_shape(&a, want)
+
+/#/ 1 when parsing `src` does not record exactly `count` errors, the first being `code`.
+fn miss_error(src: str, code: int, count: int) => int:
+    let a = parse(src)
+    if a.err_count != count:
+        return 1
+    if count > 0 && a.err_code[0] != code:
+        return 1
+    return 0

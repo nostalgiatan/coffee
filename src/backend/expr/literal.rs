@@ -40,6 +40,7 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             }
             if let Some(&(ptr, var_type)) = self.variables.get(expr) {
                 self.memory_ctx.record_use(expr);
+                self.note_mir_name_use(expr);
                 let value = self.backend.builder.build_load(var_type, ptr, expr)
                     .map_err(|e| self.error("compile_expression",
                         format!("failed to load slice '{}': {}", expr, e)))?;

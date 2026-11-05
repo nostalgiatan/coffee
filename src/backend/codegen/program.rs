@@ -134,6 +134,20 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             }
         }
 
+        // Methods compiled below read enum variants (`int(K.B)`), so the enums are known first.
+        // Fieldless enums are plain integers and need no class types, so they are emitted now.
+        let mut early_enums = std::collections::HashSet::new();
+        for stmt in &program.statements {
+            if let Statement::Enum(enum_def) = stmt {
+                if enum_def.variants.iter().all(|v| v.fields.is_empty()) {
+                    self.compile_statement(stmt)?;
+                    early_enums.insert(enum_def.name.clone());
+                } else {
+                    self.enums.insert(enum_def.name.clone(), enum_def.clone());
+                }
+            }
+        }
+
         let mut class_defs = Vec::new();
         for stmt in &program.statements {
             if let Statement::Class(class) = stmt {
@@ -158,6 +172,9 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             // This ensures that top-level statements (like main() calls) are not compiled
             // into the wrong function's basic block
             self.current_function = None;
+            if matches!(stmt, Statement::Enum(e) if early_enums.contains(&e.name)) {
+                continue;
+            }
             self.compile_statement(stmt)?;
         }
 

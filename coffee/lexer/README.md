@@ -24,7 +24,8 @@ lexemes are never copied. Kinds live in `src/token.cf` (`enum Tk`); the keyword 
 
 - Python-style layout: `Newline`, `Indent`, `Dedent` tokens; blank and comment-only lines are
   ignored; a newline inside `()[]{}` or after a trailing binary operator / `=` continues the
-  statement, except after the `int(N)+` / `int(N)-` size suffix.
+  statement, except after the `int(N)+` / `int(N)-` size suffix and after a `>` that closes
+  type arguments (`buf<int>`).
 - Comments: `/#/ line` and `/#* block *#/`.
 - Literals: decimal, `0x`/`0b`/`0o`, `_` separators, floats with exponent, strings with
   `\n \t \r \\ \" \' \0 \xHH`, `f"..."`, char literals, `#name` error listeners.

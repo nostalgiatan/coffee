@@ -739,6 +739,8 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                     )
                 })?;
                 self.used_variables.insert(name.clone());
+                // A borrow is a use: `len(&s)` before `f(s)` must not hide `f(s)` as the last one.
+                self.note_mir_name_use(name);
                 Ok(ptr.into())
             }
             HirExprKind::Member {
@@ -861,6 +863,9 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
         target: &HirExpr,
         value: &HirExpr,
     ) -> Result<BasicValueEnum<'ctx>, String> {
+        // The value first: it may reallocate the buffer the target points into
+        // (`self.a[i] = self.grow()`), so the address is computed after it.
+        let val = self.compile_hir_expr_typed(value)?;
         let ptr = match &target.kind {
             HirExprKind::Index { array, index } if array.ty.buf_elem_viewed().is_some() => {
                 self.buf_element_ptr(array, index)?.0
@@ -878,7 +883,6 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
             }
             _ => return Err(self.error("compile_expression", "invalid assignment target")),
         };
-        let val = self.compile_hir_expr_typed(value)?;
         self.backend
             .builder
             .build_store(ptr, val)

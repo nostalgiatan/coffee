@@ -1,0 +1,5 @@
+use * in parser
+
+fn main() => int:
+    let ast = parse("fn add(a: int, b: int) => int:\n    return a + b\n")
+    return ast.count - ast.count + ast.err_count

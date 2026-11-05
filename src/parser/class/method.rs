@@ -65,7 +65,7 @@ pub(super) fn parse_method(input: &str) -> IResult<&str, MethodDef> {
 
             for line in lines.iter() {
                 let trimmed = line.trim();
-                let current_indent = line.len() - trimmed.len();
+                let current_indent = line.len() - line.trim_start().len();
 
                 if !trimmed.is_empty() {
                     let is_new_definition = trimmed.starts_with("fn ")

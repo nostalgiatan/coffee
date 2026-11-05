@@ -627,7 +627,7 @@ fn collect_multiline_content<'a>(lines: &'a [&str], keyword: &str) -> Option<(Co
 
         let line_num = line_idx + 1;
         let trimmed = line.trim();
-        let current_indent = line.len() - trimmed.len();
+        let current_indent = line.len() - line.trim_start().len();
 
         if lines_consumed == 0 {
             // First line - establish base indent level

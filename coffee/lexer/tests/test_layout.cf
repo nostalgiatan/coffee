@@ -23,6 +23,10 @@ fn main() => int:
     bad = bad + shape_of("let a =\n    2\n", "kwoiNE")
     /#/ the size suffix of int(4)+ is a type, not a continuation
     bad = bad + shape_of("let a: int(4)+\nb\n", "kw:k(i)oNwNE")
+    /#/ `>` that closes type arguments ends the statement; a comparison still continues
+    bad = bad + shape_of("a: buf<int>\nb\n", "w:wokoNwNE")
+    bad = bad + shape_of("a: List<List<int>>\nb\n", "w:wowokoNwNE")
+    bad = bad + shape_of("let a = b >\n    d\n", "kwowowNE")
     /#/ CRLF line endings
     bad = bad + shape_of("a\r\nb\r\n", "wNwNE")
     return bad

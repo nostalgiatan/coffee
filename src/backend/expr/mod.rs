@@ -44,14 +44,14 @@ impl<'a, 'ctx> CodeGenerator<'a, 'ctx> {
                 return Ok(truncated.into());
             }
 
-            // Extend to larger type (sign extension for signed)
+            // Extend to larger type; an i1 bool must stay 0/1, not become -1
             if target_width > current_width {
-                let extended = self.backend.builder.build_int_s_extend(
-                    int_val,
-                    target_int,
-                    &format!("{}_sext", name)
-                ).map_err(|e| self.error("type_conversion",
-                    format!("failed to sign-extend integer: {}", e)))?;
+                let extended = if current_width == 1 {
+                    self.backend.builder.build_int_z_extend(int_val, target_int, &format!("{}_zext", name))
+                } else {
+                    self.backend.builder.build_int_s_extend(int_val, target_int, &format!("{}_sext", name))
+                }.map_err(|e| self.error("type_conversion",
+                    format!("failed to extend integer: {}", e)))?;
                 return Ok(extended.into());
             }
         }

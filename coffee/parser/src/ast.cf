@@ -1,0 +1,97 @@
+/#/ Node kinds and the node table of the Coffee parser.
+/#/
+/#/ The tree is a table, not a pointer graph: node `n` is row `n` of seven `buf<int>`
+/#/ columns. `tok`..`end` is the token range the node covers, `a`/`b`/`c`/`d` are
+/#/ kind-specific payloads (node ids, token ids or flags; -1 means absent), and
+/#/ `child`/`next` thread a node's children as a singly linked list.
+/#/
+/#/   Program   child=items
+/#/   Use       a=module token  b=alias token  c=1 when `of c`  child=Name symbols (Star for `*`)
+/#/   Fn        a=name token  b=return TypeRef  c=body Block  d=1 for `c fn`  child=TypeParam/Param/Listener
+/#/   Param     tok=name  a=TypeRef            SelfParam  tok=`self`
+/#/   TypeParam tok=name                       Listener   tok=`#name`
+/#/   Class     a=name token  b=parent token  c=1 when packed  child=TypeParam/Field/Fn
+/#/   Field     tok=name  a=TypeRef  b=bit-width token
+/#/   Enum      a=name token  child=Variant     Variant  tok=name  child=VField (a=TypeRef b=name token)
+/#/   TypeRef   the tokens tok..end spell the type
+/#/   Block     child=statements
+/#/   Let       a=name token  b=TypeRef  c=init expr
+/#/   Assign    a=target  b=value          Return/Raise/Rm/Clean/ExprStmt  a=expr
+/#/   If        a=cond  b=then Block  c=else Block or If (an `elif`)
+/#/   While     a=cond  b=Block            For  a=variable token  b=iterable  c=Block
+/#/   Match     a=scrutinee  child=Arm     Arm  a=pattern  b=body Block
+/#/   Break, Continue
+/#/   Int, Float, Str, FStr, Char   tok=literal      Bool  tok=true/false      Name  tok=identifier
+/#/   Binary    a=left  b=right  c=operator token kind  d=operator token
+/#/   Unary     a=operand  c=operator token kind  d=1 for `&mut`
+/#/   Call      a=callee  child=arguments        Index  a=object  b=index
+/#/   Member    a=object  tok=field name token   Range  a=from  b=to
+/#/   StructLit a=type name expr  child=FieldInit (tok=name  a=value)
+/#/   Array, Tuple   child=elements
+/#/   Error     tok=where it went wrong  a=error code (Ec)
+enum Nk:
+    Program
+    Use
+    Fn
+    Param
+    SelfParam
+    TypeParam
+    Listener
+    Class
+    Field
+    Enum
+    Variant
+    VField
+    TypeRef
+    Block
+    Let
+    Assign
+    Return
+    Raise
+    Rm
+    Clean
+    ExprStmt
+    If
+    While
+    For
+    Match
+    Arm
+    Break
+    Continue
+    Int
+    Float
+    Str
+    FStr
+    Char
+    Bool
+    Name
+    Star
+    Binary
+    Unary
+    Call
+    Index
+    Member
+    Range
+    StructLit
+    FieldInit
+    Array
+    Tuple
+    Error
+
+/#/ Parse error codes, the `a` payload of an Error node and the code in the error table.
+enum Ec:
+    ExpectedExpr
+    ExpectedName
+    ExpectedType
+    ExpectedColon
+    ExpectedNewline
+    ExpectedIndent
+    ExpectedClose
+    ExpectedArrow
+    ExpectedIn
+    ExpectedAssign
+    ExpectedItem
+    ExpectedStatement
+    UnexpectedToken
+    TooDeep
+    BadPattern

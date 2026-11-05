@@ -519,3 +519,35 @@ fn test_comment_marker_after_an_escaped_quote_in_a_string_is_text() {
 fn test_int_cast_widens_u8_without_sign_extension() {
     assert_exit_code("fn main() => int:\n    let s = \"\\xffA\"\n    return int(s[0]) - 255 + int(s[1]) - 65\n", 0).unwrap();
 }
+
+#[test]
+fn test_bool_assigned_from_comparison_negates_correctly() {
+    // an i1 widened to the bool slot must be 0/1, not -1, or `!b` is true for both
+    assert_exit_code("fn pick(n: int, k: int) => int:\n    let has = n >= 0\n    if k == 1:\n        has = true\n    if !has:\n        return 0\n    return 1\n\nfn main() => int:\n    return pick(2, 5) + pick(2, 1) * 10 + pick(-2, 5) * 100\n", 11).unwrap();
+}
+
+#[test]
+fn test_index_store_evaluates_the_value_before_the_buffer_address() {
+    // the value reallocates the buffer the element lives in; the store must hit the new one
+    assert_exit_code("class H:\n    a: buf<int>\n\n    fn grow(self) => int:\n        self.a = buf_resize(self.a, 100)\n        return 7\n\n    fn put(self) => void:\n        self.a[0] = self.grow()\n\nfn main() => int:\n    let h = H { a: new_buf(int, 2) }\n    h.put()\n    return h.a[0]\n", 7).unwrap();
+}
+
+#[test]
+fn test_string_literal_argument_to_a_str_ref_method_is_lent() {
+    assert_exit_code("class W:\n    s: str\n\n    fn is_word(self, at: int, w: &str) => int:\n        return len(w) + at\n\nfn main() => int:\n    let w = W { s: \"x\" + \"y\" }\n    return w.is_word(4, \"self\")\n", 8).unwrap();
+}
+
+#[test]
+fn test_enum_is_usable_inside_a_class_method() {
+    assert_exit_code("enum K:\n    A\n    B\n\nclass P:\n    n: int\n\n    fn kind(self) => int:\n        return int(K.B) + self.n\n\nfn main() => int:\n    let p = P { n: 1 }\n    return p.kind()\n", 2).unwrap();
+}
+
+#[test]
+fn test_trailing_whitespace_after_an_if_header_keeps_the_next_statement() {
+    assert_exit_code("fn main() => int:\n    let x = 1\n    if x == 1:  \n        x = 5\n    return x\n", 5).unwrap();
+}
+
+#[test]
+fn test_borrowing_a_string_before_moving_it_is_balanced() {
+    assert_balanced("fn eat(s: str) => int:\n    return len(s)\n\nfn main() => int:\n    let s = \"a\" + \"b\"\n    let n = len(&s)\n    return eat(s) + n - 4\n");
+}

@@ -1231,6 +1231,18 @@ fn discover_test_files(project_root: &Path) -> Vec<PathBuf> {
     files
 }
 
+/// Where a project's tests find modules: its own `src/` and the import root of each
+/// declared package dependency, like a project build does.
+fn project_test_import_roots(config_path: &Path) -> Result<Vec<String>, String> {
+    let config = compiler::ProjectConfig::from_file(config_path)?;
+    let root = config_path.parent().unwrap_or(Path::new("."));
+    let mut roots = vec![root.join("src").to_string_lossy().into_owned()];
+    for pkg in compiler::pkg::resolve_packages(&config)? {
+        roots.push(pkg.import_root.to_string_lossy().into_owned());
+    }
+    Ok(roots)
+}
+
 fn cmd_test(
     input_file: Option<String>,
     opt_level: u8,
@@ -1243,6 +1255,7 @@ fn cmd_test(
     show_memory: bool,
     have_c: bool,
 ) -> i32 {
+    let mut extra_includes: Vec<String> = Vec::new();
     let files: Vec<PathBuf> = if let Some(f) = input_file {
         vec![PathBuf::from(f)]
     } else {
@@ -1252,6 +1265,13 @@ fn cmd_test(
             return 1;
         };
         let root = config_path.parent().unwrap_or(Path::new("."));
+        match project_test_import_roots(&config_path) {
+            Ok(roots) => extra_includes = roots,
+            Err(e) => {
+                eprintln!("error: {}", e);
+                return 1;
+            }
+        }
         let found = discover_test_files(root);
         if found.is_empty() {
             eprintln!(
@@ -1262,6 +1282,10 @@ fn cmd_test(
         }
         found
     };
+
+    let mut include_paths: Vec<String> = include_paths.to_vec();
+    include_paths.extend(extra_includes);
+    let include_paths = &include_paths[..];
 
     println!("running {} test{}", files.len(), if files.len() == 1 { "" } else { "s" });
     let mut passed = 0usize;

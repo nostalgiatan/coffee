@@ -1,0 +1,17 @@
+use * in tree_shape
+
+fn main() => int:
+    let m = 0
+    m = m + miss_parse("let x = 1\n", "P(L(i))")
+    m = m + miss_parse("let x: int = 1\n", "P(L(ti))")
+    m = m + miss_parse("let v: List<List<int>> = w\n", "P(L(tw))")
+    m = m + miss_parse("x = y + 1\n", "P(=(w[+](wi)))")
+    m = m + miss_parse("x[0] = 2\n", "P(=(x(wi)i))")
+    m = m + miss_parse("p.x = 2\n", "P(=(m(w)i))")
+    m = m + miss_parse("rm p\n", "P(r(w))")
+    m = m + miss_parse("raise e\n", "P(X(w))")
+    m = m + miss_parse("while a:\n    break\n", "P(W(wB(b)))")
+    m = m + miss_parse("for i in 0..n:\n    continue\n", "P(O(g(iw)B(n)))")
+    m = m + miss_parse("if a:\n    b\nelif cc:\n    d\nelse:\n    e\n", "P(I(wB(;(w))I(wB(;(w))B(;(w)))))")
+    m = m + miss_parse("match x:\n    1 => a\n    _ => b\n", "P(M(wa(iB(;(w)))a(wB(;(w)))))")
+    return m

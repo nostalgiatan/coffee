@@ -1,0 +1,27 @@
+use * in tree_shape
+
+/#/ `n` nested parentheses around a name.
+fn nested(n: int) => str:
+    let s = ""
+    for i in 0..n:
+        s = s + "("
+    s = s + "x"
+    for i in 0..n:
+        s = s + ")"
+    return s + "\n"
+
+fn main() => int:
+    let m = 0
+    /#/ a class field of generic type is followed by another field
+    m = m + miss_parse("class A:\n    a: buf<int>\n    b: int\n", "P(C(f(t)f(t)))")
+    m = m + miss_parse("class A:\n    a: List<List<int>>\n    b: int\n", "P(C(f(t)f(t)))")
+    /#/ `c` is a name except in `c fn`
+    m = m + miss_parse("let c = 1\n", "P(L(i))")
+    m = m + miss_parse("c + c\n", "P(;([+](ww)))")
+    m = m + miss_parse("c fn f(x: int) => int:\n    return x\n", "P(F(p(t)tB(R(w))))")
+    /#/ nested type arguments split `>>`
+    m = m + miss_parse("let v: List<List<List<int>>> = w\n", "P(L(tw))")
+    /#/ nesting within the limit parses, beyond it is one TooDeep error, not a crash
+    m = m + miss_parse(nested(50), "P(;(w))")
+    m = m + miss_error(nested(500), int(Ec.TooDeep), 1)
+    return m

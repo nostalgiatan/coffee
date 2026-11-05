@@ -316,7 +316,8 @@ where
                 args,
             } => {
                 let object = auto_deref_object(self.lower_expr(object)?);
-                let args = self.lower_expr_list(args)?;
+                let mut args = self.lower_expr_list(args)?;
+                self.lend_string_literals_to_method(&object, field, &mut args);
                 Ok(HirExpr {
                     ty,
                     kind: HirExprKind::Member {
@@ -449,7 +450,46 @@ where
         reg.is_exception_type(name)
     }
 
-    /// Failed `Call`: callee `Function` return type (infer, extra_types, or registry).
+    /// A string literal handed to a `&str` method parameter is lent, not moved
+    /// (the same rule `f("x")` gets for plain functions).
+    fn lend_string_literals_to_method(&self, object: &HirExpr, method: &str, args: &mut [HirExpr]) {
+        let class = match &object.ty {
+            Type::NamedType { name } => name.clone(),
+            Type::Ref { elem, .. } => match &**elem {
+                Type::NamedType { name } => name.clone(),
+                _ => return,
+            },
+            _ => return,
+        };
+        let params = self.registry.as_ref().and_then(|r| r.read().ok()).and_then(|reg| {
+            let mut current = Some(class);
+            while let Some(cname) = current {
+                match reg.get_type(&cname) {
+                    Some(TypeDef::Class { methods, parent, .. }) => {
+                        if let Some(m) = methods.iter().find(|m| m.name == method) {
+                            return Some(m.params.clone());
+                        }
+                        current = parent;
+                    }
+                    _ => return None,
+                }
+            }
+            None
+        });
+        let Some(params) = params else { return };
+        // The registry lists the receiver first.
+        for (arg, param) in args.iter_mut().zip(params.iter().skip(1)) {
+            let wants_ref = matches!(param, Type::Ref { elem, .. } if **elem == Type::String);
+            if wants_ref && arg.ty == Type::String && matches!(arg.kind, HirExprKind::Literal(_)) {
+                let literal = std::mem::replace(arg, HirExpr { ty: Type::Unit, kind: HirExprKind::Literal(String::new()) });
+                *arg = HirExpr {
+                    ty: Type::Ref { elem: Box::new(Type::String), mutable: false },
+                    kind: HirExprKind::Unary { op: "&".to_string(), operand: Box::new(literal) },
+                };
+            }
+        }
+    }
+
     /// Result type of a buffer/arith intrinsic whose arguments name locals the
     /// checker's scope no longer holds (declared in a loop or branch body).
     fn intrinsic_return_type(&mut self, function: &Expression, args: &[Expression]) -> Option<Type> {

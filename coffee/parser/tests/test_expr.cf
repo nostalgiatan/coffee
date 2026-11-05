@@ -1,0 +1,21 @@
+use * in tree_shape
+
+fn main() => int:
+    let m = 0
+    m = m + miss_parse("1 + 2 * 3\n", "P(;([+](i[*](ii))))")
+    m = m + miss_parse("a - b - cc\n", "P(;([-]([-](ww)w)))")
+    m = m + miss_parse("a || b && cc\n", "P(;([||](w[&&](ww))))")
+    m = m + miss_parse("a == b < cc\n", "P(;([==](w[<](ww))))")
+    m = m + miss_parse("a | b ^ cc & d\n", "P(;([|](w[^](w[&](ww)))))")
+    m = m + miss_parse("a << 1 + 2\n", "P(;([<<](w[+](ii))))")
+    m = m + miss_parse("-a * b\n", "P(;([*]([-](w)w)))")
+    m = m + miss_parse("!a && b\n", "P(;([&&]([!](w)w)))")
+    m = m + miss_parse("&mut a\n", "P(;([&]m(w)))")
+    m = m + miss_parse("f(a, b)[0].x\n", "P(;(m(x(k(www)i))))")
+    m = m + miss_parse("(1, 2)\n", "P(;(N(ii)))")
+    m = m + miss_parse("(1)\n", "P(;(i))")
+    m = m + miss_parse("(f(a, b) + 1)\n", "P(;([+](k(www)i)))")
+    m = m + miss_parse("[1, 2, 3]\n", "P(;(A(iii)))")
+    m = m + miss_parse("0..n\n", "P(;(g(iw)))")
+    m = m + miss_parse("P { x: 1, y: 2 }\n", "P(;(T(wj(i)j(i))))")
+    return m

@@ -19,6 +19,10 @@ def lex(src):
             # size suffix int(N)+
             if len(out)>=5 and l[2]=='binop' and l[1] in('+','-') and out[-2][1]==')' and out[-3][2]=='int' and out[-4][1]=='(' and out[-5][1] in('int','float') and out[-5][2]=='kw':
                 return False
+            if l[1] in('>','>>'):
+                for q in reversed(out[:-1]):
+                    if q[2] in('nl','indent','dedent'): break
+                    if q[1]=='<': return False
             return True
         return False
     def numscan(i):

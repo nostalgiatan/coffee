@@ -1,0 +1,9 @@
+use * in tree_shape
+
+fn main() => int:
+    let m = 0
+    m = m + miss_error("1 +\n", int(Ec.ExpectedExpr), 1)
+    m = m + miss_error("let = 3\n", int(Ec.ExpectedName), 1)
+    m = m + miss_error("[0; 4]\n", int(Ec.ExpectedClose), 2)
+    m = m + miss_error("let x = 1\n", 0, 0)
+    return m

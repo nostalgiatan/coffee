@@ -190,6 +190,25 @@ fn ends_in_size_suffix(t: &Tokens) => bool:
         return false
     return t.kind[n - 5] == int(Tk.KwInt) || t.kind[n - 5] == int(Tk.KwFloat)
 
+/#/ True when the stream ends in `>` or `>>` that closes a `<` earlier on the same
+/#/ line (`buf<int>`), which is a type, not a trailing comparison.
+fn ends_in_type_args(t: &Tokens) => bool:
+    let n = t.count
+    if n < 2:
+        return false
+    let k = t.kind[n - 1]
+    if k != int(Tk.Gt) && k != int(Tk.Shr):
+        return false
+    let i = n - 2
+    while i >= 0:
+        let q = t.kind[i]
+        if q == int(Tk.Newline) || q == int(Tk.Indent) || q == int(Tk.Dedent):
+            return false
+        if q == int(Tk.Lt):
+            return true
+        i = i - 1
+    return false
+
 /#/ ---- literals ----------------------------------------------------------
 
 /#/ End (exclusive) of the digits/underscores run starting at i that satisfy
@@ -412,7 +431,7 @@ fn lex(src: &str) => Tokens:
             elif c == '\n':
                 let last = t.last_kind()
                 let ends = last != int(Tk.Newline) && last != int(Tk.Indent) && last != int(Tk.Dedent) && last >= 0
-                let cont = continues_line(last) && !ends_in_size_suffix(&t)
+                let cont = continues_line(last) && !ends_in_size_suffix(&t) && !ends_in_type_args(&t)
                 if depth == 0 && ends && !cont:
                     t.push(int(Tk.Newline), i, i + 1, line, col)
                 i = i + 1

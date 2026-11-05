@@ -1,0 +1,985 @@
+/#/ Coffee parser, written in Coffee: tokens in, node table out. See `ast.cf` for the
+/#/ shape of the table. Parsing never aborts: a malformed construct becomes an Error
+/#/ node, is recorded in the error table and parsing resumes at the next statement.
+use * in lexer
+use * in ast
+
+/#/ Nesting beyond this many expressions/blocks is an error, not a stack overflow.
+fn max_depth() => int:
+    return 200
+
+/#/ Binary operator precedence, 1 (`||`) to 10 (`*`); 0 when `kind` is not binary.
+fn bin_prec(kind: int) => int:
+    if kind == int(Tk.PipePipe):
+        return 1
+    if kind == int(Tk.AmpAmp):
+        return 2
+    if kind == int(Tk.EqEq) || kind == int(Tk.NotEq):
+        return 3
+    if kind == int(Tk.Lt) || kind == int(Tk.Le) || kind == int(Tk.Gt) || kind == int(Tk.Ge):
+        return 4
+    if kind == int(Tk.Pipe):
+        return 5
+    if kind == int(Tk.Caret):
+        return 6
+    if kind == int(Tk.Amp):
+        return 7
+    if kind == int(Tk.Shl) || kind == int(Tk.Shr):
+        return 8
+    if kind == int(Tk.Plus) || kind == int(Tk.Minus):
+        return 9
+    if kind == int(Tk.Star) || kind == int(Tk.Slash) || kind == int(Tk.SlashSlash) || kind == int(Tk.Percent):
+        return 10
+    return 0
+
+class Ast:
+    src: str
+    toks: Tokens
+    kind: buf<int>
+    tok: buf<int>
+    end: buf<int>
+    pa: buf<int>
+    pb: buf<int>
+    pc: buf<int>
+    pd: buf<int>
+    child: buf<int>
+    next: buf<int>
+    count: int
+    root: int
+    pos: int
+    half: int
+    depth: int
+    err_tok: buf<int>
+    err_code: buf<int>
+    err_count: int
+
+    /#/ ---- table ---------------------------------------------------------
+
+    fn add(self, kind: int, tok: int) => int:
+        let i = self.count
+        if i >= len(self.kind):
+            let cap = (i + 1) * 2
+            self.kind = buf_resize(self.kind, cap)
+            self.tok = buf_resize(self.tok, cap)
+            self.end = buf_resize(self.end, cap)
+            self.pa = buf_resize(self.pa, cap)
+            self.pb = buf_resize(self.pb, cap)
+            self.pc = buf_resize(self.pc, cap)
+            self.pd = buf_resize(self.pd, cap)
+            self.child = buf_resize(self.child, cap)
+            self.next = buf_resize(self.next, cap)
+        self.kind[i] = kind
+        self.tok[i] = tok
+        self.end[i] = tok
+        self.pa[i] = -1
+        self.pb[i] = -1
+        self.pc[i] = -1
+        self.pd[i] = -1
+        self.child[i] = -1
+        self.next[i] = -1
+        self.count = i + 1
+        return i
+
+    /#/ Closes node n at the current position and returns it.
+    fn fin(self, n: int) => int:
+        self.end[n] = self.pos
+        return n
+
+    fn record(self, tok: int, code: int) => void:
+        let i = self.err_count
+        /#/ too deep ends the parse: everything after it is fallout of the unwinding
+        if i > 0 && self.err_code[i - 1] == int(Ec.TooDeep):
+            return
+        if code == int(Ec.TooDeep):
+            self.pos = self.toks.count - 1
+        if i >= len(self.err_tok):
+            self.err_tok = buf_resize(self.err_tok, (i + 1) * 2)
+            self.err_code = buf_resize(self.err_code, (i + 1) * 2)
+        self.err_tok[i] = tok
+        self.err_code[i] = code
+        self.err_count = i + 1
+
+    /#/ ---- token cursor --------------------------------------------------
+
+    fn peek(self) => int:
+        return self.toks.kind[self.pos]
+
+    fn peek_at(self, ahead: int) => int:
+        let i = self.pos + ahead
+        if i >= self.toks.count:
+            return int(Tk.Eof)
+        return self.toks.kind[i]
+
+    fn bump(self) => void:
+        if self.toks.kind[self.pos] != int(Tk.Eof):
+            self.pos = self.pos + 1
+
+    fn at(self, kind: int) => bool:
+        return self.toks.kind[self.pos] == kind
+
+    fn eat(self, kind: int) => bool:
+        if self.toks.kind[self.pos] == kind:
+            self.bump()
+            return true
+        return false
+
+    fn byte_at(self, i: int) => int:
+        return byte(&self.src, i)
+
+    /#/ The identifier token at `tok` spells `word`.
+    fn is_word(self, tok: int, word: &str) => bool:
+        if self.toks.kind[tok] != int(Tk.Ident):
+            return false
+        let s = self.toks.start[tok]
+        let e = self.toks.end[tok]
+        if e - s != len(word):
+            return false
+        for k in 0..len(word):
+            if self.byte_at(s + k) != byte(word, k):
+                return false
+        return true
+
+    /#/ ---- errors --------------------------------------------------------
+
+    /#/ Records an error at the current token and returns an Error node.
+    fn fail(self, code: int) => int:
+        self.record(self.pos, code)
+        let n = self.add(int(Nk.Error), self.pos)
+        self.pa[n] = code
+        return n
+
+    /#/ Skips to just past the end of the current statement, keeping Indent/Dedent
+    /#/ balanced: a Dedent that closes the enclosing block is left for the caller.
+    fn sync(self) => void:
+        let nest = 0
+        while true:
+            let k = self.peek()
+            if k == int(Tk.Eof):
+                return
+            if k == int(Tk.Newline) && nest == 0:
+                self.bump()
+                return
+            if k == int(Tk.Indent):
+                nest = nest + 1
+            elif k == int(Tk.Dedent):
+                if nest == 0:
+                    return
+                nest = nest - 1
+            self.bump()
+
+    /#/ Ends a simple statement: a Newline, or the Dedent/Eof that also ends the line.
+    fn end_stmt(self) => void:
+        let k = self.peek()
+        if k == int(Tk.Newline):
+            self.bump()
+        elif k != int(Tk.Dedent) && k != int(Tk.Eof):
+            self.record(self.pos, int(Ec.ExpectedNewline))
+            self.sync()
+
+    /#/ ---- types ---------------------------------------------------------
+
+    /#/ Consumes the `>` that closes a type argument list; `>>` closes two lists.
+    fn close_angle(self) => bool:
+        let k = self.peek()
+        if k == int(Tk.Gt):
+            self.bump()
+            return true
+        if k == int(Tk.Shr):
+            if self.half == 0:
+                self.half = 1
+            else:
+                self.half = 0
+                self.bump()
+            return true
+        return false
+
+    /#/ Parses the tokens of a type; the result is a TypeRef over their range.
+    fn parse_type(self) => int:
+        let n = self.add(int(Nk.TypeRef), self.pos)
+        self.type_tokens()
+        return self.fin(n)
+
+    fn type_tokens(self) => void:
+        self.depth = self.depth + 1
+        if self.depth > max_depth():
+            self.record(self.pos, int(Ec.TooDeep))
+            self.depth = self.depth - 1
+            return
+        let k = self.peek()
+        if k == int(Tk.Amp):
+            self.bump()
+            if self.peek() == int(Tk.Ident) && self.is_word(self.pos, "mut"):
+                self.bump()
+            self.type_tokens()
+        elif k == int(Tk.LBracket):
+            self.bump()
+            self.type_tokens()
+            if self.eat(int(Tk.Semi)):
+                let size = self.peek()
+                if size == int(Tk.Int) || size == int(Tk.Ident):
+                    self.bump()
+                else:
+                    self.record(self.pos, int(Ec.ExpectedExpr))
+            if !self.eat(int(Tk.RBracket)):
+                self.record(self.pos, int(Ec.ExpectedClose))
+        elif k == int(Tk.LParen):
+            self.bump()
+            while self.peek() != int(Tk.RParen) && self.peek() != int(Tk.Eof) && self.peek() != int(Tk.Newline):
+                let before = self.pos
+                self.type_tokens()
+                if !self.eat(int(Tk.Comma)):
+                    break
+                if self.pos == before:
+                    break
+            if !self.eat(int(Tk.RParen)):
+                self.record(self.pos, int(Ec.ExpectedClose))
+        elif k == int(Tk.KwFn):
+            self.bump()
+            if self.eat(int(Tk.LParen)):
+                while self.peek() != int(Tk.RParen) && self.peek() != int(Tk.Eof) && self.peek() != int(Tk.Newline):
+                    let before = self.pos
+                    self.type_tokens()
+                    if !self.eat(int(Tk.Comma)):
+                        break
+                    if self.pos == before:
+                        break
+                if !self.eat(int(Tk.RParen)):
+                    self.record(self.pos, int(Ec.ExpectedClose))
+            else:
+                self.record(self.pos, int(Ec.ExpectedClose))
+            if self.eat(int(Tk.Arrow)):
+                self.type_tokens()
+        elif k == int(Tk.KwInt) || k == int(Tk.KwFloat):
+            self.bump()
+            /#/ `int(4)+` is a sized type: `(`, a byte count, `)`, and an optional sign
+            if self.peek() == int(Tk.LParen) && self.peek_at(1) == int(Tk.Int) && self.peek_at(2) == int(Tk.RParen):
+                self.bump()
+                self.bump()
+                self.bump()
+                if self.peek() == int(Tk.Plus) || self.peek() == int(Tk.Minus):
+                    self.bump()
+        elif k == int(Tk.KwBool) || k == int(Tk.KwStr) || k == int(Tk.KwString) || k == int(Tk.KwVoid):
+            self.bump()
+        elif k == int(Tk.Ident):
+            self.bump()
+            if self.peek() == int(Tk.Lt):
+                self.bump()
+                while true:
+                    self.type_tokens()
+                    if !self.eat(int(Tk.Comma)):
+                        break
+                if !self.close_angle():
+                    self.record(self.pos, int(Ec.ExpectedClose))
+        else:
+            self.record(self.pos, int(Ec.ExpectedType))
+        self.depth = self.depth - 1
+
+    /#/ ---- expressions ---------------------------------------------------
+
+    fn parse_expr(self) => int:
+        self.depth = self.depth + 1
+        if self.depth > max_depth():
+            let e = self.fail(int(Ec.TooDeep))
+            self.depth = self.depth - 1
+            return e
+        let start = self.pos
+        let left = self.parse_binary(1)
+        if self.at(int(Tk.DotDot)):
+            let r = self.add(int(Nk.Range), start)
+            self.bump()
+            self.pa[r] = left
+            let k = self.peek()
+            /#/ `a[lo..]` has no upper bound
+            if k != int(Tk.RBracket) && k != int(Tk.Newline) && k != int(Tk.Colon) && k != int(Tk.RParen) && k != int(Tk.Comma) && k != int(Tk.Eof):
+                self.pb[r] = self.parse_binary(1)
+            left = self.fin(r)
+        self.depth = self.depth - 1
+        return left
+
+    fn parse_binary(self, min_prec: int) => int:
+        let start = self.pos
+        let left = self.parse_unary()
+        while true:
+            let op = self.peek()
+            let prec = bin_prec(op)
+            if prec == 0 || prec < min_prec:
+                break
+            let n = self.add(int(Nk.Binary), start)
+            let op_tok = self.pos
+            self.bump()
+            let right = self.parse_binary(prec + 1)
+            self.pa[n] = left
+            self.pb[n] = right
+            self.pc[n] = op
+            self.pd[n] = op_tok
+            left = self.fin(n)
+        return left
+
+    fn parse_unary(self) => int:
+        let k = self.peek()
+        let is_prefix = k == int(Tk.Minus) || k == int(Tk.Bang) || k == int(Tk.Tilde) || k == int(Tk.Star) || k == int(Tk.Amp) || k == int(Tk.KwMv) || k == int(Tk.KwClone) || k == int(Tk.KwCopy)
+        if !is_prefix:
+            return self.parse_postfix()
+        self.depth = self.depth + 1
+        if self.depth > max_depth():
+            let e = self.fail(int(Ec.TooDeep))
+            self.depth = self.depth - 1
+            return e
+        let n = self.add(int(Nk.Unary), self.pos)
+        self.pc[n] = k
+        self.bump()
+        if k == int(Tk.Amp) && self.peek() == int(Tk.Ident) && self.is_word(self.pos, "mut"):
+            self.bump()
+            self.pd[n] = 1
+        self.pa[n] = self.parse_unary()
+        self.depth = self.depth - 1
+        return self.fin(n)
+
+    fn parse_postfix(self) => int:
+        let start = self.pos
+        let left = self.parse_primary()
+        while true:
+            let k = self.peek()
+            if k == int(Tk.LParen):
+                let n = self.add(int(Nk.Call), start)
+                self.bump()
+                self.pa[n] = left
+                self.child[n] = self.parse_list(int(Tk.RParen))
+                left = self.fin(n)
+            elif k == int(Tk.LBracket):
+                let n = self.add(int(Nk.Index), start)
+                self.bump()
+                self.pa[n] = left
+                self.pb[n] = self.parse_expr()
+                if !self.eat(int(Tk.RBracket)):
+                    self.record(self.pos, int(Ec.ExpectedClose))
+                left = self.fin(n)
+            elif k == int(Tk.Dot):
+                let n = self.add(int(Nk.Member), start)
+                self.bump()
+                self.pa[n] = left
+                if self.at(int(Tk.Ident)):
+                    self.tok[n] = self.pos
+                    self.bump()
+                else:
+                    self.record(self.pos, int(Ec.ExpectedName))
+                left = self.fin(n)
+            elif k == int(Tk.LBrace) && self.kind[left] == int(Nk.Name):
+                left = self.parse_struct_lit(left, start)
+            else:
+                break
+        return left
+
+    /#/ `Name { field: value, ... }`, the `{` still ahead.
+    fn parse_struct_lit(self, name: int, start: int) => int:
+        let n = self.add(int(Nk.StructLit), start)
+        self.bump()
+        self.pa[n] = name
+        let first = -1
+        let last = -1
+        while self.peek() != int(Tk.RBrace) && self.peek() != int(Tk.Eof):
+            let f = self.add(int(Nk.FieldInit), self.pos)
+            if self.at(int(Tk.Ident)):
+                self.tok[f] = self.pos
+                self.bump()
+            else:
+                self.record(self.pos, int(Ec.ExpectedName))
+            if self.eat(int(Tk.Colon)):
+                self.pa[f] = self.parse_expr()
+            else:
+                self.record(self.pos, int(Ec.ExpectedColon))
+            self.fin(f)
+            if first < 0:
+                first = f
+            else:
+                self.next[last] = f
+            last = f
+            if !self.eat(int(Tk.Comma)):
+                break
+        if !self.eat(int(Tk.RBrace)):
+            self.record(self.pos, int(Ec.ExpectedClose))
+        self.child[n] = first
+        return self.fin(n)
+
+    /#/ Comma-separated expressions up to and including `close`; the first one is returned.
+    fn parse_list(self, close: int) => int:
+        let first = -1
+        let last = -1
+        while self.peek() != close && self.peek() != int(Tk.Eof):
+            let before = self.pos
+            let e = self.parse_expr()
+            if first < 0:
+                first = e
+            else:
+                self.next[last] = e
+            last = e
+            if !self.eat(int(Tk.Comma)):
+                break
+            if self.pos == before:
+                break
+        if !self.eat(close):
+            self.record(self.pos, int(Ec.ExpectedClose))
+        return first
+
+    fn parse_primary(self) => int:
+        let k = self.peek()
+        if k == int(Tk.Int):
+            return self.leaf(int(Nk.Int))
+        if k == int(Tk.Float):
+            return self.leaf(int(Nk.Float))
+        if k == int(Tk.Str):
+            return self.leaf(int(Nk.Str))
+        if k == int(Tk.FStr):
+            return self.leaf(int(Nk.FStr))
+        if k == int(Tk.Char):
+            return self.leaf(int(Nk.Char))
+        if k == int(Tk.KwTrue) || k == int(Tk.KwFalse):
+            return self.leaf(int(Nk.Bool))
+        /#/ `int(x)`, `str(x)` ... are casts spelled as calls on a type keyword
+        if k == int(Tk.Ident) || k == int(Tk.KwInt) || k == int(Tk.KwFloat) || k == int(Tk.KwBool) || k == int(Tk.KwStr) || k == int(Tk.KwString):
+            return self.leaf(int(Nk.Name))
+        if k == int(Tk.LParen):
+            let start = self.pos
+            self.bump()
+            let first = self.parse_expr()
+            if !self.at(int(Tk.Comma)):
+                if !self.eat(int(Tk.RParen)):
+                    self.record(self.pos, int(Ec.ExpectedClose))
+                /#/ plain grouping: the parenthesised expression itself
+                return first
+            let n = self.add(int(Nk.Tuple), start)
+            self.child[n] = first
+            let last = first
+            while self.eat(int(Tk.Comma)):
+                if self.at(int(Tk.RParen)):
+                    break
+                let e = self.parse_expr()
+                self.next[last] = e
+                last = e
+            if !self.eat(int(Tk.RParen)):
+                self.record(self.pos, int(Ec.ExpectedClose))
+            return self.fin(n)
+        if k == int(Tk.LBracket):
+            let n = self.add(int(Nk.Array), self.pos)
+            self.bump()
+            self.child[n] = self.parse_list(int(Tk.RBracket))
+            return self.fin(n)
+        if k == int(Tk.KwFn):
+            return self.parse_fn(0)
+        return self.fail(int(Ec.ExpectedExpr))
+
+    fn leaf(self, kind: int) => int:
+        let n = self.add(kind, self.pos)
+        self.bump()
+        return self.fin(n)
+
+    /#/ ---- statements ----------------------------------------------------
+
+    /#/ `:` then an indented block, or a single statement on the same line.
+    fn parse_block(self) => int:
+        let n = self.add(int(Nk.Block), self.pos)
+        self.depth = self.depth + 1
+        if self.depth > max_depth():
+            self.record(self.pos, int(Ec.TooDeep))
+            self.depth = self.depth - 1
+            self.sync()
+            return self.fin(n)
+        if !self.eat(int(Tk.Colon)):
+            self.record(self.pos, int(Ec.ExpectedColon))
+        let first = -1
+        let last = -1
+        if self.at(int(Tk.Newline)):
+            self.bump()
+            if !self.eat(int(Tk.Indent)):
+                self.record(self.pos, int(Ec.ExpectedIndent))
+            else:
+                while self.peek() != int(Tk.Dedent) && self.peek() != int(Tk.Eof):
+                    let before = self.pos
+                    let st = self.parse_stmt()
+                    if first < 0:
+                        first = st
+                    else:
+                        self.next[last] = st
+                    last = st
+                    if self.pos == before:
+                        self.bump()
+                self.eat(int(Tk.Dedent))
+        else:
+            first = self.parse_stmt()
+        self.child[n] = first
+        self.depth = self.depth - 1
+        return self.fin(n)
+
+    fn parse_stmt(self) => int:
+        let k = self.peek()
+        let start = self.pos
+        if k == int(Tk.KwLet):
+            return self.parse_let()
+        if k == int(Tk.KwReturn) || k == int(Tk.KwRaise) || k == int(Tk.KwRm) || k == int(Tk.KwClean):
+            let kind = int(Nk.Return)
+            if k == int(Tk.KwRaise):
+                kind = int(Nk.Raise)
+            elif k == int(Tk.KwRm):
+                kind = int(Nk.Rm)
+            elif k == int(Tk.KwClean):
+                kind = int(Nk.Clean)
+            let n = self.add(kind, start)
+            self.bump()
+            let nk = self.peek()
+            if nk != int(Tk.Newline) && nk != int(Tk.Dedent) && nk != int(Tk.Eof):
+                self.pa[n] = self.parse_expr()
+            self.end_stmt()
+            return self.fin(n)
+        if k == int(Tk.KwBreak) || k == int(Tk.KwContinue):
+            let kind = int(Nk.Break)
+            if k == int(Tk.KwContinue):
+                kind = int(Nk.Continue)
+            let n = self.add(kind, start)
+            self.bump()
+            self.end_stmt()
+            return self.fin(n)
+        if k == int(Tk.KwIf):
+            return self.parse_if()
+        if k == int(Tk.KwWhile):
+            let n = self.add(int(Nk.While), start)
+            self.bump()
+            self.pa[n] = self.parse_expr()
+            self.pb[n] = self.parse_block()
+            return self.fin(n)
+        if k == int(Tk.KwFor):
+            return self.parse_for()
+        if k == int(Tk.KwMatch):
+            return self.parse_match()
+        if k == int(Tk.KwFn) || k == int(Tk.KwClass) || k == int(Tk.KwEnum) || k == int(Tk.KwPacked):
+            if k == int(Tk.KwFn) && self.peek_at(1) == int(Tk.LParen):
+                return self.parse_expr_stmt()
+            return self.parse_item()
+        return self.parse_expr_stmt()
+
+    /#/ An expression statement, or an assignment when `=` follows the target.
+    fn parse_expr_stmt(self) => int:
+        let start = self.pos
+        let e = self.parse_expr()
+        if self.at(int(Tk.Assign)):
+            let n = self.add(int(Nk.Assign), start)
+            self.bump()
+            self.pa[n] = e
+            self.pb[n] = self.parse_expr()
+            self.end_stmt()
+            return self.fin(n)
+        let n = self.add(int(Nk.ExprStmt), start)
+        self.pa[n] = e
+        self.end_stmt()
+        return self.fin(n)
+
+    fn parse_let(self) => int:
+        let n = self.add(int(Nk.Let), self.pos)
+        self.bump()
+        if self.at(int(Tk.Ident)):
+            self.pa[n] = self.pos
+            self.bump()
+        else:
+            self.record(self.pos, int(Ec.ExpectedName))
+        if self.eat(int(Tk.Colon)):
+            self.pb[n] = self.parse_type()
+        if self.eat(int(Tk.Assign)):
+            self.pc[n] = self.parse_expr()
+        self.end_stmt()
+        return self.fin(n)
+
+    /#/ `if` or `elif` at the cursor; an `elif` chain nests in the else slot.
+    fn parse_if(self) => int:
+        let n = self.add(int(Nk.If), self.pos)
+        self.bump()
+        self.pa[n] = self.parse_expr()
+        self.pb[n] = self.parse_block()
+        if self.at(int(Tk.KwElif)):
+            self.pc[n] = self.parse_if()
+        elif self.at(int(Tk.KwElse)):
+            self.bump()
+            self.pc[n] = self.parse_block()
+        return self.fin(n)
+
+    fn parse_for(self) => int:
+        let n = self.add(int(Nk.For), self.pos)
+        self.bump()
+        if self.at(int(Tk.Ident)):
+            self.pa[n] = self.pos
+            self.bump()
+        else:
+            self.record(self.pos, int(Ec.ExpectedName))
+        if !self.eat(int(Tk.KwIn)):
+            self.record(self.pos, int(Ec.ExpectedIn))
+        self.pb[n] = self.parse_expr()
+        self.pc[n] = self.parse_block()
+        return self.fin(n)
+
+    fn parse_match(self) => int:
+        let n = self.add(int(Nk.Match), self.pos)
+        self.bump()
+        self.pa[n] = self.parse_expr()
+        if !self.eat(int(Tk.Colon)):
+            self.record(self.pos, int(Ec.ExpectedColon))
+        let first = -1
+        let last = -1
+        if !self.eat(int(Tk.Newline)):
+            self.record(self.pos, int(Ec.ExpectedNewline))
+        if !self.eat(int(Tk.Indent)):
+            self.record(self.pos, int(Ec.ExpectedIndent))
+        else:
+            while self.peek() != int(Tk.Dedent) && self.peek() != int(Tk.Eof):
+                let before = self.pos
+                let arm = self.parse_arm()
+                if first < 0:
+                    first = arm
+                else:
+                    self.next[last] = arm
+                last = arm
+                if self.pos == before:
+                    self.bump()
+            self.eat(int(Tk.Dedent))
+        self.child[n] = first
+        return self.fin(n)
+
+    /#/ `pattern => statement`, or `pattern =>` followed by an indented block.
+    fn parse_arm(self) => int:
+        let n = self.add(int(Nk.Arm), self.pos)
+        self.pa[n] = self.parse_expr()
+        if !self.eat(int(Tk.Arrow)):
+            self.record(self.pos, int(Ec.ExpectedArrow))
+            self.sync()
+            return self.fin(n)
+        let body = self.add(int(Nk.Block), self.pos)
+        if self.at(int(Tk.Newline)):
+            self.bump()
+            if !self.eat(int(Tk.Indent)):
+                self.record(self.pos, int(Ec.ExpectedIndent))
+            else:
+                let first = -1
+                let last = -1
+                while self.peek() != int(Tk.Dedent) && self.peek() != int(Tk.Eof):
+                    let before = self.pos
+                    let st = self.parse_stmt()
+                    if first < 0:
+                        first = st
+                    else:
+                        self.next[last] = st
+                    last = st
+                    if self.pos == before:
+                        self.bump()
+                self.eat(int(Tk.Dedent))
+                self.child[body] = first
+        else:
+            self.child[body] = self.parse_stmt()
+        self.pb[n] = self.fin(body)
+        return self.fin(n)
+
+    /#/ ---- items ---------------------------------------------------------
+
+    fn parse_item(self) => int:
+        let k = self.peek()
+        if k == int(Tk.KwUse):
+            return self.parse_use()
+        if k == int(Tk.KwFn):
+            return self.parse_fn(0)
+        if k == int(Tk.KwC) && self.peek_at(1) == int(Tk.KwFn):
+            self.bump()
+            return self.parse_fn(1)
+        if k == int(Tk.KwClass) || k == int(Tk.KwPacked):
+            return self.parse_class()
+        if k == int(Tk.KwEnum):
+            return self.parse_enum()
+        if k == int(Tk.KwLet):
+            return self.parse_let()
+        /#/ anything else at top level is a statement such as `main(entry())`
+        let before = self.pos
+        let n = self.parse_stmt()
+        if self.pos == before:
+            self.record(self.pos, int(Ec.ExpectedItem))
+            self.bump()
+        return n
+
+    /#/ `use m`, `use m as a`, `use f, g in m [as a] [of c]`, `use * in m`.
+    fn parse_use(self) => int:
+        let n = self.add(int(Nk.Use), self.pos)
+        self.bump()
+        let first = -1
+        let last = -1
+        let names = 0
+        while true:
+            let sym = -1
+            if self.at(int(Tk.Star)):
+                sym = self.leaf(int(Nk.Star))
+            elif self.at(int(Tk.Ident)):
+                sym = self.leaf(int(Nk.Name))
+            else:
+                self.record(self.pos, int(Ec.ExpectedName))
+                break
+            names = names + 1
+            if first < 0:
+                first = sym
+            else:
+                self.next[last] = sym
+            last = sym
+            if !self.eat(int(Tk.Comma)):
+                break
+        if self.eat(int(Tk.KwIn)):
+            if self.at(int(Tk.Ident)):
+                self.pa[n] = self.pos
+                self.bump()
+            else:
+                self.record(self.pos, int(Ec.ExpectedName))
+            self.child[n] = first
+        elif first >= 0:
+            /#/ no `in`: the single name is the module itself
+            if names > 1 || self.kind[first] == int(Nk.Star):
+                self.record(self.pos, int(Ec.ExpectedIn))
+            self.pa[n] = self.tok[first]
+        if self.eat(int(Tk.KwAs)):
+            if self.at(int(Tk.Ident)):
+                self.pb[n] = self.pos
+                self.bump()
+            else:
+                self.record(self.pos, int(Ec.ExpectedName))
+        if self.at(int(Tk.KwOf)):
+            self.bump()
+            if self.eat(int(Tk.KwC)):
+                self.pc[n] = 1
+            else:
+                self.record(self.pos, int(Ec.ExpectedName))
+        self.end_stmt()
+        return self.fin(n)
+
+    /#/ `<T, U>` after a name: TypeParam nodes appended to the list ending at `last`.
+    /#/ Returns the new list tail; `first` is updated through the node's child slot.
+    fn parse_type_params(self, owner: int, last: int) => int:
+        self.bump()
+        while self.at(int(Tk.Ident)):
+            let tp = self.add(int(Nk.TypeParam), self.pos)
+            self.bump()
+            self.fin(tp)
+            if self.child[owner] < 0:
+                self.child[owner] = tp
+            else:
+                self.next[last] = tp
+            last = tp
+            if !self.eat(int(Tk.Comma)):
+                break
+        if !self.close_angle():
+            self.record(self.pos, int(Ec.ExpectedClose))
+        return last
+
+    /#/ `fn name<T>(params) #listener => ret:` body. `c fn` has consumed its `c`.
+    fn parse_fn(self, is_c: int) => int:
+        let n = self.add(int(Nk.Fn), self.pos)
+        self.bump()
+        self.pd[n] = is_c
+        if self.at(int(Tk.Ident)):
+            self.pa[n] = self.pos
+            self.bump()
+        let last = -1
+        if self.at(int(Tk.Lt)):
+            last = self.parse_type_params(n, last)
+        if !self.eat(int(Tk.LParen)):
+            self.record(self.pos, int(Ec.ExpectedClose))
+        while self.peek() != int(Tk.RParen) && self.peek() != int(Tk.Eof) && self.peek() != int(Tk.Newline):
+            let p = -1
+            if self.at(int(Tk.Ident)) && self.is_word(self.pos, "self"):
+                p = self.leaf(int(Nk.SelfParam))
+            elif self.at(int(Tk.Ident)):
+                p = self.add(int(Nk.Param), self.pos)
+                self.bump()
+                if self.eat(int(Tk.Colon)):
+                    self.pa[p] = self.parse_type()
+                else:
+                    self.record(self.pos, int(Ec.ExpectedColon))
+                self.fin(p)
+            else:
+                self.record(self.pos, int(Ec.ExpectedName))
+                break
+            if self.child[n] < 0:
+                self.child[n] = p
+            else:
+                self.next[last] = p
+            last = p
+            if !self.eat(int(Tk.Comma)):
+                break
+        if !self.eat(int(Tk.RParen)):
+            self.record(self.pos, int(Ec.ExpectedClose))
+        if self.at(int(Tk.Listener)):
+            let l = self.leaf(int(Nk.Listener))
+            if self.child[n] < 0:
+                self.child[n] = l
+            else:
+                self.next[last] = l
+            last = l
+        if self.eat(int(Tk.Arrow)):
+            self.pb[n] = self.parse_type()
+        self.pc[n] = self.parse_block()
+        return self.fin(n)
+
+    /#/ `[packed] class Name<T> [of Parent]:` then fields and methods.
+    fn parse_class(self) => int:
+        let n = self.add(int(Nk.Class), self.pos)
+        if self.eat(int(Tk.KwPacked)):
+            self.pc[n] = 1
+        if !self.eat(int(Tk.KwClass)):
+            self.record(self.pos, int(Ec.ExpectedItem))
+        if self.at(int(Tk.Ident)):
+            self.pa[n] = self.pos
+            self.bump()
+        else:
+            self.record(self.pos, int(Ec.ExpectedName))
+        let last = -1
+        if self.at(int(Tk.Lt)):
+            last = self.parse_type_params(n, last)
+        if self.eat(int(Tk.KwOf)):
+            if self.at(int(Tk.Ident)):
+                self.pb[n] = self.pos
+                self.bump()
+            else:
+                self.record(self.pos, int(Ec.ExpectedName))
+        if !self.eat(int(Tk.Colon)):
+            self.record(self.pos, int(Ec.ExpectedColon))
+        if !self.eat(int(Tk.Newline)):
+            self.record(self.pos, int(Ec.ExpectedNewline))
+        if !self.eat(int(Tk.Indent)):
+            self.record(self.pos, int(Ec.ExpectedIndent))
+            return self.fin(n)
+        while self.peek() != int(Tk.Dedent) && self.peek() != int(Tk.Eof):
+            let before = self.pos
+            let m = -1
+            if self.at(int(Tk.KwFn)):
+                m = self.parse_fn(0)
+            elif self.at(int(Tk.Ident)):
+                m = self.add(int(Nk.Field), self.pos)
+                self.bump()
+                if self.eat(int(Tk.Colon)):
+                    self.pa[m] = self.parse_type()
+                else:
+                    self.record(self.pos, int(Ec.ExpectedColon))
+                /#/ packed classes: `field: int:3` is a 3-bit field
+                if self.at(int(Tk.Colon)):
+                    self.bump()
+                    if self.at(int(Tk.Int)):
+                        self.pb[m] = self.pos
+                        self.bump()
+                    else:
+                        self.record(self.pos, int(Ec.ExpectedExpr))
+                self.fin(m)
+                self.end_stmt()
+            else:
+                self.record(self.pos, int(Ec.ExpectedItem))
+                self.sync()
+            if m >= 0:
+                if self.child[n] < 0:
+                    self.child[n] = m
+                else:
+                    self.next[last] = m
+                last = m
+            if self.pos == before:
+                self.bump()
+        self.eat(int(Tk.Dedent))
+        return self.fin(n)
+
+    /#/ `enum Name:` then variants: `A`, `B(type)`, `C(x: type, y: type)`.
+    fn parse_enum(self) => int:
+        let n = self.add(int(Nk.Enum), self.pos)
+        self.bump()
+        if self.at(int(Tk.Ident)):
+            self.pa[n] = self.pos
+            self.bump()
+        else:
+            self.record(self.pos, int(Ec.ExpectedName))
+        if !self.eat(int(Tk.Colon)):
+            self.record(self.pos, int(Ec.ExpectedColon))
+        if !self.eat(int(Tk.Newline)):
+            self.record(self.pos, int(Ec.ExpectedNewline))
+        if !self.eat(int(Tk.Indent)):
+            self.record(self.pos, int(Ec.ExpectedIndent))
+            return self.fin(n)
+        let first = -1
+        let last = -1
+        while self.peek() != int(Tk.Dedent) && self.peek() != int(Tk.Eof):
+            let before = self.pos
+            if self.at(int(Tk.Ident)):
+                let v = self.add(int(Nk.Variant), self.pos)
+                self.bump()
+                if self.eat(int(Tk.LParen)):
+                    let ff = -1
+                    let fl = -1
+                    while self.peek() != int(Tk.RParen) && self.peek() != int(Tk.Eof) && self.peek() != int(Tk.Newline):
+                        let f = self.add(int(Nk.VField), self.pos)
+                        if self.at(int(Tk.Ident)) && self.peek_at(1) == int(Tk.Colon):
+                            self.pb[f] = self.pos
+                            self.bump()
+                            self.bump()
+                        self.pa[f] = self.parse_type()
+                        self.fin(f)
+                        if ff < 0:
+                            ff = f
+                        else:
+                            self.next[fl] = f
+                        fl = f
+                        if !self.eat(int(Tk.Comma)):
+                            break
+                    if !self.eat(int(Tk.RParen)):
+                        self.record(self.pos, int(Ec.ExpectedClose))
+                    self.child[v] = ff
+                self.fin(v)
+                self.end_stmt()
+                if first < 0:
+                    first = v
+                else:
+                    self.next[last] = v
+                last = v
+            else:
+                self.record(self.pos, int(Ec.ExpectedName))
+                self.sync()
+            if self.pos == before:
+                self.bump()
+        self.eat(int(Tk.Dedent))
+        self.child[n] = first
+        return self.fin(n)
+
+    /#/ `c` is a keyword only in `c fn` and after `of` (`use f in lib of c`); elsewhere
+    /#/ it is an ordinary name.
+    fn demote_c(self) => void:
+        for i in 0..self.toks.count:
+            if self.toks.kind[i] == int(Tk.KwC):
+                let after_of = i > 0 && self.toks.kind[i - 1] == int(Tk.KwOf)
+                let before_fn = i + 1 < self.toks.count && self.toks.kind[i + 1] == int(Tk.KwFn)
+                if !after_of && !before_fn:
+                    self.toks.kind[i] = int(Tk.Ident)
+
+    fn parse_program(self) => void:
+        self.demote_c()
+        let n = self.add(int(Nk.Program), 0)
+        let first = -1
+        let last = -1
+        while self.peek() != int(Tk.Eof):
+            let before = self.pos
+            if self.peek() == int(Tk.Dedent) || self.peek() == int(Tk.Indent):
+                self.record(self.pos, int(Ec.UnexpectedToken))
+                self.bump()
+            else:
+                let item = self.parse_item()
+                if first < 0:
+                    first = item
+                else:
+                    self.next[last] = item
+                last = item
+            if self.pos == before:
+                self.bump()
+        self.child[n] = first
+        self.root = self.fin(n)
+
+fn new_ast(src: str, toks: Tokens) => Ast:
+    return Ast { src: src, toks: toks, kind: new_buf(int, 64), tok: new_buf(int, 64), end: new_buf(int, 64), pa: new_buf(int, 64), pb: new_buf(int, 64), pc: new_buf(int, 64), pd: new_buf(int, 64), child: new_buf(int, 64), next: new_buf(int, 64), count: 0, root: -1, pos: 0, half: 0, depth: 0, err_tok: new_buf(int, 8), err_code: new_buf(int, 8), err_count: 0 }
+
+/#/ Lexes and parses `src`; the result owns the source and the tokens.
+fn parse(src: str) => Ast:
+    let toks = lex(&src)
+    let ast = new_ast(src, toks)
+    ast.parse_program()
+    return ast
