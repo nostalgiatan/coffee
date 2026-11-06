@@ -2577,12 +2577,16 @@ class Lower:
             return self.f.undef(int(Rp.Void))
         let off = self.find_field_by(t, g, a, ot, a.toks.start[a.tok[name]] + 1, a.toks.end[a.tok[name]] - 1)
         let ft = self.fty
-        if off < 0 || self.rep(t, g, ft) < 0 || needs_drop(t, g, ft):
+        if off < 0 || self.rep(t, g, ft) < 0:
             self.unsupported(n)
             return self.f.undef(int(Rp.Void))
         let recv = self.exb(t, g, ty, a, o)
         let v = self.sink(t, g, ty, a, val, ft)
-        self.f.store(self.f.field(recv, off), v)
+        let p = self.f.field(recv, off)
+        /#/ what the field owned is released once the new value is known
+        if needs_drop(t, g, ft):
+            self.drop_value(t, g, self.f.load(self.rep(t, g, ft), -1, p), ft)
+        self.f.store(p, v)
         return self.f.undef(int(Rp.Void))
 
     fn member_call(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => int:

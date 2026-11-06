@@ -1,0 +1,30 @@
+/#/ `obj.assign("field", v)` on fields that own something: the old value is released.
+use * in drive
+use printf, fflush in libc of c
+
+fn expect(what: int, got: int, want: int) => int:
+    if got != want:
+        printf("MISS #%d: got %d, want %d\n", what, got, want)
+        fflush(0)
+        return 1
+    return 0
+
+fn strs() => str:
+    return "class Q:\n    name: str\n    n: int\n\nfn main() => int:\n    let q = Q { name: \"a\", n: 1 }\n    q.assign(\"name\", \"bcd\")\n    q.assign(\"n\", 2)\n    return len(q.name) * 10 + q.n - 32\n"
+
+fn from_variable() => str:
+    return "class Q:\n    name: str\n\nfn main() => int:\n    let q = Q { name: \"a\" }\n    let s = \"xy\"\n    q.assign(\"name\", s)\n    return len(q.name) - 2\n"
+
+fn nested_class() => str:
+    return "class In:\n    v: int\n\nclass Out:\n    p: In\n\nfn main() => int:\n    let o = Out { p: In { v: 1 } }\n    o.assign(\"p\", In { v: 7 })\n    return o.p.v - 7\n"
+
+fn twice() => str:
+    return "class Q:\n    name: str\n\nfn main() => int:\n    let q = Q { name: \"a\" }\n    q.assign(\"name\", \"bb\")\n    q.assign(\"name\", \"ccc\")\n    return len(q.name) - 3\n"
+
+fn main() => int:
+    let m = 0
+    m = m + expect(1, run_src(strs(), true), 0)
+    m = m + expect(2, run_src(from_variable(), true), 0)
+    m = m + expect(3, run_src(nested_class(), true), 0)
+    m = m + expect(4, run_src(twice(), true), 0)
+    return m
