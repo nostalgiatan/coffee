@@ -1,0 +1,229 @@
+/#/ `tea test`: compiles every file of `tests/` with coffee2, runs it, and reports.
+/#/
+/#/ Each test gets a directory of its own, `target/test/<name>/`, with the program (`bin`), the
+/#/ output of the compiler (`compile.log`), the output of the run (`run.log`) and `status`. The
+/#/ program runs inside that directory, so tests that write scratch files do not meet each other
+/#/ and several can run at once: `xargs -P` starts `tea test --one <file>` for each.
+/#/
+/#/     tea test [-I dir]... [--compiler path] [-j N] [file.cf]...
+/#/
+/#/ Include directories also come from `tea.toml`: `include = ["../ir/src", "src"]` under `[test]`.
+use * in args
+use system, printf, fflush in libc of c
+
+class Plan:
+    compiler: Txt
+    /#/ ` -I 'dir'` for each include directory
+    inc: Txt
+    /#/ the test files, one per line
+    files: Txt
+    jobs: int
+    one: Txt
+    bad: int
+
+    fn add_inc(self, d: &Txt) => void:
+        self.inc.put(" -I '")
+        self.inc.put_all(d)
+        self.inc.put("'")
+
+    fn add_file(self, f: &Txt) => void:
+        self.files.put_all(f)
+        self.files.put_byte(10)
+
+fn parse_int(w: &Txt) => int:
+    let v = 0
+    for i in 0..w.n:
+        if w.b[i] < 48 || w.b[i] > 57:
+            return 0 - 1
+        v = v * 10 + w.b[i] - 48
+    return v
+
+fn ends_with(w: &Txt, tail: &str) => bool:
+    if w.n < len(tail):
+        return false
+    for i in 0..len(tail):
+        if w.b[w.n - len(tail) + i] != ch(tail, i):
+            return false
+    return true
+
+fn parse_plan(a: &Args) => Plan:
+    let p = Plan { compiler: txt_of("coffee2"), inc: new_txt(), files: new_txt(), jobs: 4, one: new_txt(), bad: 0 }
+    let i = 2
+    while i < a.n:
+        let w = a.get(i)
+        if w.is("-I") && i + 1 < a.n:
+            let d = a.get(i + 1)
+            p.add_inc(&d)
+            i = i + 1
+        elif w.is("--compiler") && i + 1 < a.n:
+            p.compiler = a.get(i + 1)
+            i = i + 1
+        elif w.is("-j") && i + 1 < a.n:
+            let n = a.get(i + 1)
+            p.jobs = parse_int(&n)
+            if p.jobs < 1:
+                printf("tea: -j wants a positive number\n")
+                p.bad = 1
+            i = i + 1
+        elif w.is("--one") && i + 1 < a.n:
+            p.one = a.get(i + 1)
+            i = i + 1
+        elif ends_with(&w, ".cf"):
+            p.add_file(&w)
+        else:
+            printf("tea: unknown option '%s'\n", txt_str(&w))
+            p.bad = 1
+        i = i + 1
+    return p
+
+/#/ The quoted strings of the `include = [...]` list in `tea.toml`, added as include directories.
+fn read_includes(p: &Plan) => void:
+    let path = txt_of("tea.toml")
+    let t = read_file(&path)
+    if t.n <= 0:
+        return
+    let at = 0 - 1
+    for i in 0..t.n:
+        if at < 0 && i + 7 <= t.n && t.b[i] == 'i' && t.b[i + 1] == 'n' && t.b[i + 2] == 'c' && t.b[i + 3] == 'l' && t.b[i + 4] == 'u' && t.b[i + 5] == 'd' && t.b[i + 6] == 'e':
+            at = i
+    if at < 0:
+        return
+    let i = at
+    while i < t.n && t.b[i] != '[':
+        i = i + 1
+    while i < t.n && t.b[i] != ']':
+        if t.b[i] == '"':
+            let d = new_txt()
+            i = i + 1
+            while i < t.n && t.b[i] != '"':
+                d.put_byte(t.b[i])
+                i = i + 1
+            p.add_inc(&d)
+        i = i + 1
+
+/#/ The name of a test: the file name without the directory and the `.cf`.
+fn stem_of(f: &Txt) => Txt:
+    let lo = 0
+    for i in 0..f.n:
+        if f.b[i] == '/':
+            lo = i + 1
+    let hi = f.n
+    if ends_with(f, ".cf"):
+        hi = f.n - 3
+    return cut(f, lo, hi)
+
+fn dir_of_test(stem: &Txt) => Txt:
+    let d = txt_of("target/test/")
+    d.put_all(stem)
+    return d
+
+/#/ Compiles and runs one test; the result is left in `<dir>/status`: `compile` or the exit code.
+fn run_one(p: &Plan) => int:
+    let stem = stem_of(&p.one)
+    let d = dir_of_test(&stem)
+    let cmd = txt_of("mkdir -p '")
+    cmd.put_all(&d)
+    cmd.put("'")
+    system(txt_str(&cmd))
+    let status = copy_txt(&d)
+    status.put("/status")
+    let c = txt_of("'")
+    c.put_all(&p.compiler)
+    c.put("' '")
+    c.put_all(&p.one)
+    c.put("'")
+    c.put_all(&p.inc)
+    c.put(" -o '")
+    c.put_all(&d)
+    c.put("/bin' > '")
+    c.put_all(&d)
+    c.put("/compile.log' 2>&1")
+    if system(txt_str(&c)) != 0:
+        write_file(&status, &txt_of("compile"))
+        return 0
+    let r = txt_of("cd '")
+    r.put_all(&d)
+    r.put("' && ./bin > run.log 2>&1")
+    let st = system(txt_str(&r))
+    let code = new_txt()
+    code.put_int((st >> 8) & 255)
+    write_file(&status, &code)
+    return 0
+
+/#/ Starts `tea test --one` for every listed file, `jobs` at a time.
+fn run_all(p: &Plan, me: &Txt) => void:
+    system("mkdir -p target/test")
+    let list = txt_of("target/test/list")
+    write_file(&list, &p.files)
+    let c = txt_of("xargs -P ")
+    c.put_int(p.jobs)
+    c.put(" -I{} '")
+    c.put_all(me)
+    c.put("' test --one {} --compiler '")
+    c.put_all(&p.compiler)
+    c.put("'")
+    c.put_all(&p.inc)
+    c.put(" < target/test/list")
+    system(txt_str(&c))
+
+/#/ Prints the line of each test and, for a failure, the end of its log. Returns the failures.
+fn report(p: &Plan) => int:
+    let passed = 0
+    let failed = 0
+    let s = 0
+    for i in 0..p.files.n:
+        if p.files.b[i] != 10:
+            continue
+        let f = cut(&p.files, s, i)
+        s = i + 1
+        let stem = stem_of(&f)
+        let d = dir_of_test(&stem)
+        let sp = copy_txt(&d)
+        sp.put("/status")
+        let st = read_file(&sp)
+        if st.is("0"):
+            printf("    %s ... ok\n", txt_str(&f))
+            passed = passed + 1
+            continue
+        failed = failed + 1
+        let log = copy_txt(&d)
+        if st.is("compile"):
+            printf("    %s ... FAILED (compile)\n", txt_str(&f))
+            log.put("/compile.log")
+        elif st.n <= 0:
+            printf("    %s ... FAILED (no result)\n", txt_str(&f))
+            log.put("/compile.log")
+        else:
+            printf("    %s ... FAILED (exit %s)\n", txt_str(&f), txt_str(&st))
+            log.put("/run.log")
+        fflush(0)
+        let tail = txt_of("tail -n 30 '")
+        tail.put_all(&log)
+        tail.put("'")
+        system(txt_str(&tail))
+    if failed == 0:
+        printf("\ntest result: ok. %d passed; 0 failed\n", passed)
+    else:
+        printf("\ntest result: FAILED. %d passed; %d failed\n", passed, failed)
+    fflush(0)
+    return failed
+
+fn run_test(a: &Args) => int:
+    let p = parse_plan(a)
+    if p.bad > 0:
+        return 2
+    read_includes(&p)
+    if p.one.n > 0:
+        return run_one(&p)
+    if p.files.n == 0:
+        system("mkdir -p target/test && ls tests/*.cf > target/test/list 2>/dev/null")
+        let list = txt_of("target/test/list")
+        p.files = read_file(&list)
+        if p.files.n <= 0:
+            printf("tea: no tests in tests/\n")
+            return 1
+    let me = a.get(0)
+    run_all(&p, &me)
+    if report(&p) > 0:
+        return 1
+    return 0

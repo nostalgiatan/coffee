@@ -2,6 +2,7 @@
 /#/ The code generator is our own x86-64 backend; the system `cc` links the object.
 /#/ The standard C library gives a program no arguments, so they are read from /proc/self/cmdline.
 use * in flat
+use * in drive
 use printf, fflush, system, exit in libc of c
 
 class Cli:

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Builds the self-hosted compiler without Rust or LLVM: the committed seed object is linked with
 # the system C compiler, and the result compiles the sources again.
-# Usage: tools/build-from-seed.sh <work dir>      (leaves <work dir>/coffee2)
+# Usage: tools/build-from-seed.sh <work dir>      (leaves <work dir>/coffee2 and <work dir>/tea)
 # Refresh the seed after a compiler change: tools/build-from-seed.sh <work dir> --refresh
 set -e
 D=$(realpath -m "${1:?work dir}"); H=$(realpath "$(dirname "$0")/.."); CC=${CC:-cc}
@@ -13,6 +13,7 @@ $CC -o seed seed.o -lm
 $CC -o coffee2 gen1.o -lm
 ./coffee2 "$H/src/main.cf" $INC --emit-obj -o gen2.o
 cmp gen1.o gen2.o || { echo "no fixed point: gen1 and gen2 objects differ"; exit 1; }
+./coffee2 "$H/../tea/src/main.cf" -I "$H/../tea/src" -I "$H/src" -I "$H/../ir/src" -o tea
 if cmp -s seed.o gen1.o; then
     echo "seed is current; coffee2 built in $D"
 elif [ "$2" = "--refresh" ]; then

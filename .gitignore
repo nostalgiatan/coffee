@@ -30,3 +30,8 @@ test_temp_*
 .claude/
 .iflow/
 .cursor/
+
+# tea and the test harness
+coffee/*/target/
+ir_lower_test*
+ir_lower_err

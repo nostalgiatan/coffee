@@ -148,15 +148,15 @@ fn effects_of(src: str, opt: int, name: str) => int:
 
 /#/ An object file, linked by clang with the address sanitizer, run.
 fn run_object(o: &Txt, leaks: bool) => int:
-    let fp = fopen("/tmp/ir_lower_test.o", "w")
+    let fp = fopen("ir_lower_test.o", "w")
     for k in 0..o.n:
         fputc(o.b[k], fp)
     fclose(fp)
-    if system("clang -w -fsanitize=address -o /tmp/ir_lower_test /tmp/ir_lower_test.o -lm") != 0:
+    if system("clang -w -fsanitize=address -o ./ir_lower_test ir_lower_test.o -lm") != 0:
         return -1
-    let cmd = "ASAN_OPTIONS=exitcode=99:detect_leaks=1 /tmp/ir_lower_test 2>/tmp/ir_lower_err"
+    let cmd = "ASAN_OPTIONS=exitcode=99:detect_leaks=1 ./ir_lower_test 2>ir_lower_err"
     if !leaks:
-        cmd = "ASAN_OPTIONS=exitcode=99:detect_leaks=0 /tmp/ir_lower_test 2>/tmp/ir_lower_err"
+        cmd = "ASAN_OPTIONS=exitcode=99:detect_leaks=0 ./ir_lower_test 2>ir_lower_err"
     let st = system(cmd)
     return (st >> 8) & 255
 

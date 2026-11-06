@@ -181,6 +181,16 @@ fn class_plain(t: &Tys, g: &Syms, x: int) => bool:
 fn is_moved(t: &Tys, g: &Syms, x: int) => bool:
     return needs_drop(t, g, x) && t.kind[x] != int(Ty.Array)
 
+/#/ The value of a hexadecimal digit, -1 for any other byte.
+fn hex_val(c: int) => int:
+    if c >= '0' && c <= '9':
+        return c - '0'
+    if c >= 'a' && c <= 'f':
+        return c - 'a' + 10
+    if c >= 'A' && c <= 'F':
+        return c - 'A' + 10
+    return 0 - 1
+
 class Lower:
     f: Fun
     rs: Reps
@@ -615,6 +625,9 @@ class Lower:
                     c = 13
                 elif d == '0':
                     c = 0
+                elif d == 'x' && k + 2 < e && hex_val(a.byte_at(k + 1)) >= 0 && hex_val(a.byte_at(k + 2)) >= 0:
+                    c = hex_val(a.byte_at(k + 1)) * 16 + hex_val(a.byte_at(k + 2))
+                    k = k + 2
                 else:
                     c = d
             body.put_byte(c)

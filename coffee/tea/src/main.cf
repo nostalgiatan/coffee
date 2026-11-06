@@ -1,0 +1,19 @@
+/#/ tea, the tool around the compiler. Each command is a module of its own; `main` only picks one.
+/#/
+/#/     tea test    run the tests of this directory (src/cmd_test.cf)
+use * in cmd_test
+use printf, fflush in libc of c
+
+fn usage() => int:
+    printf("usage: tea <command> [options]\n\ncommands:\n  test    run the tests of this directory\n")
+    fflush(0)
+    return 2
+
+fn main() => int:
+    let a = read_args()
+    if a.n < 2:
+        return usage()
+    if a.is(1, "test"):
+        return run_test(&a)
+    printf("tea: unknown command\n")
+    return usage()

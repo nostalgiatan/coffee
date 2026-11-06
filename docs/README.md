@@ -28,6 +28,7 @@ Coffee 是带 Python 式缩进语法的静态类型语言,有双向的 C 互操�
 - [编译流水线](reference/pipeline.md)
 - [IR](reference/ir.md)
 - [x86-64 后端](reference/x86-backend.md)
+- [tea](reference/tea.md)
 - 语言语法:[SYNTAX.md](../SYNTAX.md)(按 Rust 版整理,自举编译器接受它的子集)
 - 类型存储表:[coffee/types/STORAGE.md](../coffee/types/STORAGE.md)
 - 所有权规则:[coffee/own/RULES.md](../coffee/own/RULES.md)

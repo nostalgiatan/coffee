@@ -5,13 +5,13 @@ fn prog(body: str) => str:
 
 fn main() => int:
     let m = 0
-    let copy = int(Oe.CopyResource)
+    let cres = int(Oe.CopyResource)
     let moved = int(Oe.UseAfterMove)
     let viol = int(Oe.BorrowViolation)
     let conf = int(Oe.BorrowConflict)
     let ret = int(Oe.ReturnsLocalRef)
-    /#/ a resource cannot be taken out of a field, a copy can
-    m = m + miss_o(prog("    let p = P { name: \"a\" + \"b\", n: 1 }\n    take(p.name)\n"), copy, 1)
+    /#/ a resource cannot be taken out of a field, a cres can
+    m = m + miss_o(prog("    let p = P { name: \"a\" + \"b\", n: 1 }\n    take(p.name)\n"), cres, 1)
     m = m + miss_clean(prog("    let p = P { name: \"a\" + \"b\", n: 1 }\n    let k = p.n\n    take(clone p.name)\n"))
     /#/ match looks at its subject
     m = m + miss_clean(prog("    let e = E.A(1)\n    match e:\n        E.A(x) => x\n        E.B => 0\n    rm e\n"))

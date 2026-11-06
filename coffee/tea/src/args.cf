@@ -1,0 +1,36 @@
+/#/ The command line, word by word. Coffee's `main` has no arguments, so they are read from
+/#/ /proc/self/cmdline, where the words end in NUL bytes.
+use * in files
+
+class Args:
+    text: Txt
+    at: buf<int>
+    n: int
+
+    fn get(self, i: int) => Txt:
+        return cut(&self.text, self.at[i], self.at[i + 1])
+
+    fn is(self, i: int, want: &str) => bool:
+        let w = self.get(i)
+        return w.is(want)
+
+fn cut(t: &Txt, lo: int, hi: int) => Txt:
+    let r = new_txt()
+    for i in lo..hi:
+        r.put_byte(t.b[i])
+    return r
+
+fn read_args() => Args:
+    let p = txt_of("/proc/self/cmdline")
+    let raw = read_file(&p)
+    let a = Args { text: new_txt(), at: new_buf(int, 16), n: 0 }
+    a.at[0] = 0
+    for i in 0..raw.n:
+        if raw.b[i] == 0:
+            a.n = a.n + 1
+            if a.n + 1 >= len(a.at):
+                a.at = buf_resize(a.at, (a.n + 1) * 2)
+            a.at[a.n] = a.text.n
+        else:
+            a.text.put_byte(raw.b[i])
+    return a

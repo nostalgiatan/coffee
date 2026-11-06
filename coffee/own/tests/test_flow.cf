@@ -7,12 +7,12 @@ fn main() => int:
     let m = 0
     let moved = int(Oe.UseAfterMove)
     let dropped = int(Oe.UseAfterDrop)
-    let copy = int(Oe.CopyResource)
+    let cres = int(Oe.CopyResource)
     let viol = int(Oe.BorrowViolation)
     let conf = int(Oe.BorrowConflict)
     let ret = int(Oe.ReturnsLocalRef)
     /#/ a branch that moves makes the variable unusable after the join
-    m = m + miss_o(prog("    let s = \"a\" + \"b\"\n    if 1 < 2:\n        take(s)\n    take(s)\n"), copy, 1)
+    m = m + miss_o(prog("    let s = \"a\" + \"b\"\n    if 1 < 2:\n        take(s)\n    take(s)\n"), cres, 1)
     m = m + miss_o(prog("    let s = \"a\" + \"b\"\n    if 1 < 2:\n        mv s t\n    mv s u\n"), moved, 1)
     m = m + miss_clean(prog("    let s = \"a\" + \"b\"\n    if 1 < 2:\n        take(s)\n    else:\n        take(s)\n"))
     /#/ moving in a loop uses it again on the next turn

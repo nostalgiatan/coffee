@@ -1,0 +1,59 @@
+# tea 参考
+
+`tea` 是编译器外面的工具。命令是模块:每个命令一个文件,在 `coffee/tea/src/` 下。
+
+```
+tea <command> [options]
+```
+
+## 命令
+
+| 命令 | 作用 |
+|---|---|
+| `test` | 运行当前目录 `tests/` 里的测试。 |
+
+## tea test
+
+```
+tea test [-I dir]... [--compiler path] [-j N] [file.cf]...
+```
+
+| 选项 | 含义 |
+|---|---|
+| `-I dir` | 增加一个模块搜索目录,可重复,传给 `coffee2`。 |
+| `--compiler path` | 用哪个 `coffee2`。默认 `PATH` 里的 `coffee2`。 |
+| `-j N` | 同时运行几个测试。默认 4。 |
+| `file.cf` | 只运行这些文件。省略时运行 `tests/*.cf`。 |
+| `--one file.cf` | 内部使用:编译并运行一个测试,结果写进它的目录。 |
+
+## tea.toml
+
+当前目录的 `tea.toml` 可以列出包含目录:
+
+```toml
+[test]
+include = ["../ir/src", "src"]
+```
+
+## 输出
+
+每个测试一行:`ok`、`FAILED (compile)` 或 `FAILED (exit N)`。失败的测试后面跟着对应日志的最后 30 行。最后一行是 `test result: ok. N passed; 0 failed`,或 `FAILED`。
+
+退出码:全部通过 0,有测试失败 1,命令行错误 2。
+
+## 目录
+
+每个测试一个目录 `target/test/<名字>/`:
+
+| 文件 | 内容 |
+|---|---|
+| `bin` | 编译出的程序。 |
+| `compile.log` | 编译器的输出。 |
+| `run.log` | 程序的标准输出和标准错误。 |
+| `status` | `compile`,或程序的退出码。 |
+
+程序在这个目录里运行。`target/test/list` 是本次运行的测试清单。
+
+## 相关
+
+- 操作:[如何运行测试](../how-to/run-the-tests.md)

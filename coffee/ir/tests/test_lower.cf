@@ -19,4 +19,6 @@ fn main() => int:
     m = m + expect_exit("fn main() => int:\n    let r = 0\n    if 0.1 * 10.0 == 1.0:\n        r = r + 3\n    if 0.1 + 0.2 != 0.3:\n        r = r + 4\n    return r + int(100.0) - 100 + int(2.5 * 2.0) - 5\n", 7)
     /#/ a call of a C function with a variadic tail
     m = m + expect_exit("use printf in libc of c\n\nfn main() => int:\n    printf(\"hello %ld\\n\", 3)\n    return 4\n", 4)
+    /#/ \xHH in a string is one byte, unsigned
+    m = m + expect_exit("fn main() => int:\n    let a = \"\\xe5\\x8d\\x95\"\n    let b = \"\\xff\"\n    return len(a) + len(b) + int(b[0]) - 250\n", 9)
     return m

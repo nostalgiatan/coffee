@@ -2,11 +2,34 @@
 
 目标:运行某一阶段的测试,或者全部测试。
 
-测试是 Coffee 写的,由 stage0 的 `coffee test` 运行。每个阶段的测试在自己目录的 `tests/` 下,每个文件的 `main` 返回失败的个数,0 表示全部通过。
+测试是 Coffee 写的,由 `tea test` 运行(stage0 的 `coffee test` 也行)。每个阶段的测试在自己目录的 `tests/` 下,每个文件的 `main` 返回失败的个数,0 表示全部通过。
 
-## 运行一个阶段
+## 用 tea 运行
 
-在该阶段的目录里运行,`-I` 要列出它依赖的阶段:
+先构建 `tea`(和 `coffee2` 一起,不需要 Rust):
+
+```bash
+coffee/driver/tools/build-from-seed.sh /tmp/coffee-seed
+```
+
+在某个阶段的目录里运行,指定刚构建的编译器:
+
+```bash
+cd coffee/ir
+/tmp/coffee-seed/tea test --compiler /tmp/coffee-seed/coffee2
+```
+
+每个阶段依赖哪些阶段写在它自己的 `tea.toml` 里,不需要再列 `-I`。选项见 [tea 参考](../reference/tea.md)。
+
+只运行一个文件,把路径放在命令末尾:
+
+```bash
+/tmp/coffee-seed/tea test --compiler /tmp/coffee-seed/coffee2 tests/test_opt.cf
+```
+
+## 用 stage0 运行
+
+stage0 的 `coffee test` 仍然可用,在该阶段的目录里运行,`-I` 要列出它依赖的阶段:
 
 | 目录 | 命令 |
 |---|---|
@@ -18,19 +41,11 @@
 | `coffee/ir` | `coffee test --test-mode -I ../types/src -I ../sema/src -I ../parser/src -I ../lexer/src -I src` |
 | `coffee/driver` | `coffee test --test-mode -I ../ir/src -I ../types/src -I ../sema/src -I ../parser/src -I ../lexer/src -I src` |
 
-`--test-mode` 跳过进程锁。不加它,同一目录下并发运行两个 `coffee` 会失败。
-
-## 只运行一个文件
-
-在命令末尾加上文件路径:
-
-```bash
-coffee test --test-mode -I ../types/src -I ../sema/src -I ../parser/src -I ../lexer/src -I src tests/test_opt.cf
-```
+`--test-mode` 跳过进程锁。不加它,同一目录下并发运行两个 `coffee` 会失败。stage0 的运行器在阶段目录里留下 `ir_lower_test*` 之类的临时文件,已经加入 `.gitignore`。
 
 ## 运行类测试怎么跑
 
-`coffee/ir` 的运行类测试把程序编成目标文件,用 `clang -fsanitize=address` 链接,再运行并比较退出码。
+`coffee/ir` 的运行类测试把程序编成目标文件,用 `clang -fsanitize=address` 链接,再运行并比较退出码。临时文件写在当前目录。`tea` 让每个测试在自己的目录里运行,所以它们可以并行。
 
 一次传多个文件路径时,我只看到第一个被运行,所以逐个文件运行。
 
