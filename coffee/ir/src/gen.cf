@@ -81,6 +81,9 @@ class Gen:
     am_idx: int
     am_scale: int
     am_disp: int
+    /#/ the shared exit of a function that saves registers: its label, and whether a return jumps there
+    epi: int
+    epi_jump: bool
 
     fn add_str(self, off: int) => void:
         if self.nstr >= len(self.soff):
@@ -248,9 +251,17 @@ class Gen:
 
     /#/ ---- registers -----------------------------------------------------------
 
-    fn restore_saved(self) => void:
-        for k in 0..self.nsaved:
-            self.a.load(self.saved[k], 5, 0 - 16 - 8 * k, 8)
+    /#/ The saved registers come back by pop, from below the frame's locals.
+    fn epilogue(self) => void:
+        if self.nsaved > 0:
+            if self.frame > 8 + 8 * self.nsaved:
+                self.a.lea(4, 5, 0 - 8 - 8 * self.nsaved)
+            let k = self.nsaved - 1
+            while k >= 0:
+                self.a.pop(self.saved[k])
+                k = k - 1
+        self.a.leave()
+        self.a.ret()
 
     /#/ Can value `v` live in a register? Scalars made by instructions or block parameters.
     fn wants_reg(self, f: &Fun, v: int) => bool:
@@ -1658,9 +1669,10 @@ class Gen:
                     else:
                         self.ld(0, f, f.a[i])
                         self.a.movq_x(0, 0, vr == int(Rp.F32))
-            self.restore_saved()
-            self.a.leave()
-            self.a.ret()
+            if self.epi_jump:
+                self.a.jmp(self.epi)
+            else:
+                self.epilogue()
             return
         if op == int(Op.Unreachable):
             self.a.ud2()
@@ -1688,15 +1700,24 @@ class Gen:
             self.a.new_label()
         self.a.push(5)
         self.a.mov_rr(5, 4)
-        self.a.sub_ri(4, self.frame)
+        /#/ [rbp-8] is the place of the pointer for a returned aggregate (rdi); the saved registers
+        /#/ follow, then the locals
+        self.a.push(7)
         for k in 0..self.nsaved:
-            self.a.store(5, 0 - 16 - 8 * k, self.saved[k], 8)
+            self.a.push(self.saved[k])
+        if self.frame > 8 + 8 * self.nsaved:
+            self.a.sub_ri(4, self.frame - 8 - 8 * self.nsaved)
+        let nret = 0
+        for b in 0..f.nb:
+            if f.blast[b] >= 0 && f.op[f.blast[b]] == int(Op.Ret):
+                nret = nret + 1
+        self.epi_jump = self.nsaved > 0 && nret > 1
+        self.epi = self.a.new_label()
         /#/ the parameters of the entry block
         let ci = 0
         let cx = 0
         let cs = 0
         if f.ret >= rp_first_agg():
-            self.a.store(5, 0 - 8, 7, 8)
             ci = 1
         let p = f.pfirst[0]
         while p >= 0:
@@ -1739,6 +1760,9 @@ class Gen:
                     nxt = self.emit[oi + 1]
                 self.gen_inst(f, rs, sy, i, nxt)
                 i = f.nx[i]
+        if self.epi_jump:
+            self.a.bind(self.epi)
+            self.epilogue()
         let ok = self.a.end_fun()
         let w = new_txt()
         for k in 0..len(f.nm):
@@ -1755,7 +1779,7 @@ class Gen:
         return ok && self.err == 0
 
 fn new_gen() => Gen:
-    return Gen { a: new_asm(), o: new_obj(), voff: new_buf(int, 64), tmp: 0, frame: 0, err: 0, av: new_buf(int, 16), nav: 0, sbase: 256, soff: new_buf(int, 16), nstr: 0, home: new_buf(int, 64), xhome: new_buf(int, 64), ord: new_buf(int, 16), emit: new_buf(int, 16), xsg: new_buf(int, 64), did: new_buf(int, 64), nsaved: 0, saved: new_buf(int, 8), ed: new_buf(int, 16), ned: 0, ra_lo: new_buf(int, 1), ra_hi: new_buf(int, 1), ra_wt: new_buf(int, 1), ra_use: new_buf(int, 1), ra_def: new_buf(int, 1), ra_words: 0, ra_cp: new_buf(int, 16), ra_ncp: 0, ra_cm: new_buf(int, 16), cur: -1, msk: new_buf(int, 16), fmask: 0, nuse: new_buf(int, 64), am_base: 0, am_idx: -1, am_scale: 1, am_disp: 0 }
+    return Gen { a: new_asm(), o: new_obj(), voff: new_buf(int, 64), tmp: 0, frame: 0, err: 0, av: new_buf(int, 16), nav: 0, sbase: 256, soff: new_buf(int, 16), nstr: 0, home: new_buf(int, 64), xhome: new_buf(int, 64), ord: new_buf(int, 16), emit: new_buf(int, 16), xsg: new_buf(int, 64), did: new_buf(int, 64), nsaved: 0, saved: new_buf(int, 8), ed: new_buf(int, 16), ned: 0, ra_lo: new_buf(int, 1), ra_hi: new_buf(int, 1), ra_wt: new_buf(int, 1), ra_use: new_buf(int, 1), ra_def: new_buf(int, 1), ra_words: 0, ra_cp: new_buf(int, 16), ra_ncp: 0, ra_cm: new_buf(int, 16), cur: -1, msk: new_buf(int, 16), fmask: 0, nuse: new_buf(int, 64), am_base: 0, am_idx: -1, am_scale: 1, am_disp: 0, epi: 0, epi_jump: false }
 
 /#/ The multiplier that divides by `d` (not a power of two; `l` is the log2 of `d` rounded up):
 /#/ 1 + floor(2^(63 + l) / d), taken as a 64-bit pattern, by long division one bit at a time.
