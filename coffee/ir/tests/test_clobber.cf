@@ -1,0 +1,80 @@
+/#/ Values kept in caller-saved registers across calls to functions that write few or many registers.
+use * in say
+
+/#/ big enough not to be inlined; needs few registers
+fn light(n: int) => int:
+    let s = n
+    s = s * 3 + 1
+    s = s ^ (s >> 2)
+    s = s * 5 + 7
+    s = s ^ (s >> 3)
+    s = s * 7 + 11
+    s = s ^ (s >> 1)
+    s = s * 9 + 13
+    s = s ^ (s >> 4)
+    s = s * 11 + 17
+    s = s ^ (s >> 2)
+    s = s * 13 + 19
+    s = s ^ (s >> 3)
+    s = s * 15 + 23
+    s = s ^ (s >> 1)
+    s = s * 17 + 29
+    s = s ^ (s >> 5)
+    s = s * 19 + 31
+    s = s ^ (s >> 2)
+    s = s * 21 + 37
+    s = s ^ (s >> 3)
+    s = s * 23 + 41
+    s = s ^ (s >> 1)
+    s = s * 25 + 43
+    s = s ^ (s >> 4)
+    return s
+
+/#/ many values at once, so it writes r8, r9 and r10
+fn heavy(a: int, b: int) => int:
+    let x1 = a + 1
+    let x2 = a + 2
+    let x3 = a + 3
+    let x4 = a + 4
+    let x5 = a + 5
+    let x6 = a + 6
+    let x7 = b + 7
+    let x8 = b + 8
+    let x9 = b + 9
+    let x10 = b + 10
+    let t = x1 * x2 + x3 * x4 + x5 * x6 + x7 * x8 + x9 * x10
+    return t + x1 + x2 + x3 + x4 + x5 + x6 + x7 + x8 + x9 + x10
+
+fn six(a: int, b: int, c: int, d: int, e: int, f: int) => int:
+    return a + b * 2 + c * 3 + d * 4 + e * 5 + f * 6
+
+fn mixed(a: int, b: int) => int:
+    let k1 = a * 3
+    let k2 = a + 11
+    let k3 = b * 7
+    let k4 = b - 5
+    let l = light(a + b)
+    let h = heavy(k1, k2)
+    let s = six(k1, k2, k3, k4, l, h)
+    let m = light(k3 + k4)
+    return k1 + k2 * 2 + k3 * 3 + k4 * 4 + l + h + s + m
+
+fn want(a: int, b: int) => int:
+    let k1 = a * 3
+    let k2 = a + 11
+    let k3 = b * 7
+    let k4 = b - 5
+    let l = light(a + b)
+    let h = heavy(k1, k2)
+    let s = k1 + k2 * 2 + k3 * 3 + k4 * 4 + l * 5 + h * 6
+    let m = light(k3 + k4)
+    return k1 + k2 * 2 + k3 * 3 + k4 * 4 + l + h + s + m
+
+fn main() => int:
+    let m = 0
+    for a in 0..30:
+        for b in 0..12:
+            if mixed(a, b) != want(a, b):
+                say(f"MISS {a} {b}\n")
+                m += 1
+    return m

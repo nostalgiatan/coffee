@@ -3399,11 +3399,16 @@ class Lower:
 
     /#/ Generates machine code for the functions kept.
     fn generate(self) => void:
-        for n in 0..self.lib.nf:
+        /#/ callees first: what a function writes is known when its callers are generated
+        let order = call_order(&self.lib)
+        for k in 0..self.lib.nf:
+            let n = order[k]
             if self.ext_slot[n] == 1:
                 continue
             self.lib.restore(n, &self.f)
+            self.mc.cur = self.lib.f_id[n]
             self.put_fun()
+            self.mc.cur = -1
 
     /#/ The function in `self.f` as machine code; a verifier finding is counted.
     fn put_fun(self) => void:
