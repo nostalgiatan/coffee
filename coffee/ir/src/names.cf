@@ -25,6 +25,20 @@ class Names:
         for k in self.off[id]..self.off[id + 1]:
             o.put_byte(self.b[k])
 
+    /#/ Adds the name spelled by `w` without looking for it first.
+    fn add_bytes(self, w: &Txt) => int:
+        if self.cnt + 1 >= len(self.off):
+            self.off = buf_resize(self.off, (self.cnt + 2) * 2)
+        self.off[self.cnt] = self.n
+        for k in 0..w.n:
+            if self.n >= len(self.b):
+                self.b = buf_resize(self.b, (self.n + 1) * 2)
+            self.b[self.n] = w.b[k]
+            self.n = self.n + 1
+        self.off[self.cnt + 1] = self.n
+        self.cnt = self.cnt + 1
+        return self.cnt - 1
+
     /#/ The number of the name spelled by `w`; -1 when there is none.
     fn find(self, w: &Txt) => int:
         for id in 0..self.cnt:

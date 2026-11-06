@@ -1,6 +1,6 @@
 # IR 对象格式(.cir)
 
-状态:设计稿,尚未实现。设计动机见 [JIT 后端的设计](../explanation/jit-design.md)。
+状态:已实现,在 `coffee/ir/src/cir.cf`,往返测试在 `coffee/ir/tests/test_cir.cf`。设计动机见 [JIT 后端的设计](../explanation/jit-design.md)。
 
 ## 约定
 
@@ -52,12 +52,12 @@
 
 列的顺序固定:
 
-1. 指令列(各 `ni` 项):`op rep ty a b c aux`,每项 zigzag varint;`nx pv blk fwd` 按与前一项的差编码。
+1. 指令列(各 `ni` 项),顺序 `op rep ty a b c aux nx pv uses fwd blk`,每项 zigzag varint。`nx` 和 `pv` 存与自己下标的差(链接大多指向相邻指令),`blk` 存与前一项的差,其余原样。
 2. 块列(各 `nb` 项):`bfirst blast pfirst plast npar`。
 3. 边列(各 `ne` 项):`efrom eto eargs eargn`。
 4. 池(`np` 项)。
 
-没有 `uses`、`vn`、`attrs`:读入后调用 `recount_uses`、`reset_vn`、`set_attrs(0)`。
+`uses` 照存(值很小,一个字节),省得读入后再数一遍。`vn`、`attrs`、`f_fx`、`f_done` 不入盘,`restore` 会重置它们。
 
 ## 读入时的检查
 
@@ -66,7 +66,7 @@
 - 魔数、节长度之和等于文件长度、校验和相符。
 - 所有名字号 < `NAME.count`,表示号 < `8 + REPS.count`,字符串号在 `STRS` 里。
 - 每个函数的 `ni nb ne np` 不超过剩余字节数(防止构造巨大分配)。
-- 指令、块、边的下标都在本函数范围内;`bfirst`/`blast` 链上的 `nx`/`pv` 互相一致。
+- `nx`、`pv`、`bfirst`、`blast` 在 -1 到 `ni` 之间,边的端点在 -1 到 `nb` 之间(-1 是被删掉的边)。块链上的指令都属于本函数的某个块,链不成环。链外的指令是死的,可以带任何值,不检查。
 - 当 `flags` 为已优化时,可以再运行 `verify`(`--verify` 打开),发现问题则拒绝。
 
 ## 与 `Lib` 的对应

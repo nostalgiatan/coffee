@@ -53,12 +53,12 @@ JIT 只需要 IR 核心、opt、gen、asm 和一个加载器,约 180 KB;带上�
 
 存:
 
-- `Lib` 每个函数的列 `op rep ty a b c aux nx pv blk` 和 `fwd`。
+- `Lib` 每个函数的列 `op rep ty a b c aux nx pv uses fwd blk`。
 - 基本块 `bfirst blast pfirst plast npar`、边 `efrom eto eargs eargn`、常量池 `pool`。
 - 函数表:返回表示、名字号、每函数的名字(`nm`)。
 - `Names`(调用目标)、`Reps`(聚合表示)、字符串字节 `sbytes`、全局变量(名字、大小)。
 
-不存(读入时重算):`uses`(`recount_uses`)、值编号表 `vn`、`attrs`、`f_fx`、`f_done`、`ext_slot`。派生数据一律不入盘,否则格式要跟着优化器的内部结构变。
+不存(读入时重置):值编号表 `vn`、`attrs`、`f_fx`、`f_done`、`ext_slot`。派生数据一律不入盘,否则格式要跟着优化器的内部结构变。
 
 编码:每列按函数分块,值用 zigzag 加 LEB128。小整数占一个字节;`nx`、`pv`、`blk` 这类相邻值差很小的列按相对前一项的差编码。预计体积是原列(每值 8 字节)的 1/5 到 1/6。
 
@@ -87,7 +87,7 @@ JIT 只需要 IR 核心、opt、gen、asm 和一个加载器,约 180 KB;带上�
 
 ## 阶段
 
-1. **格式。** `coffee/ir/src/cir.cf`:`write_cir(lw) => Txt` 和 `read_cir(bytes) => Module`,单元测试做往返:前端产出 → 写 → 读 → 生成,与直接生成的机器码逐字节相同。
+1. **格式(已完成)。** `coffee/ir/src/cir.cf`:`write_cir(lw) => Txt` 和 `read_cir(bytes) => Module`,单元测试做往返:前端产出 → 写 → 读 → 生成,与直接生成的机器码逐字节相同。
 2. **出口。** `Gen.image()` 和重定位表导出,测试与 `write_elf` 的内容一致。
 3. **加载器与入口。** `coffee/jit/`:`cfjit file.cir args`,先用 `mmap` 加 `mprotect` 直接跑 `compat` 里的程序,用输出和退出码对照普通构建。
 4. **tea。** `tea jit file.cf`:调度 `coffee2 --emit-cir`、缓存、`cfjit`。

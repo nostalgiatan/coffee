@@ -1,0 +1,88 @@
+use * in say
+use * in drive
+use * in cir
+use fflush in libc of c
+
+fn expect(what: int, got: int, want: int) => int:
+    if got != want:
+        say(f"MISS #{what}: got {got}, want {want}\n")
+        fflush(0)
+        return 1
+    return 0
+
+/#/ The object file made straight from the front end's module, and the one made from its `.cir`:
+/#/ 0 when they are the same bytes, 1 when not, 2 when the module did not lower, 3 when the file did not read
+fn round_trip(src: str, opt: int) => int:
+    let t = new_tys()
+    let g = new_globals()
+    let lw = module_of(bytes_of_str(&src), len(src), opt, "", &t, &g)
+    if lw.bad > 0:
+        return 2
+    let cir = write_cir(&lw, opt)
+    lw.generate()
+    let direct = lw.object()
+    let lw2 = new_lower()
+    if read_cir(&cir, &lw2) != 0:
+        return 3
+    lw2.generate()
+    let again = lw2.object()
+    if direct.n != again.n:
+        return 1
+    for k in 0..direct.n:
+        if direct.b[k] != again.b[k]:
+            return 1
+    return 0
+
+fn fib() => str:
+    return "fn fib(n: int) => int:\n    if n < 2:\n        return n\n    return fib(n - 1) + fib(n - 2)\n\nfn main() => int:\n    return fib(10)\n"
+
+fn strings() => str:
+    return "fn main() => int:\n    let s = \"hello\"\n    let t = s + \" world\"\n    return len(t)\n"
+
+fn classes() => str:
+    return "class P:\n    a: int\n    b: float\n\nfn id(p: P) => P:\n    return p\n\nfn main() => int:\n    let q = id(P { a: 5, b: 1.5 })\n    let u = (q.a, 2)\n    return q.a\n"
+
+fn globals() => str:
+    return "let counter = 0\n\nfn bump() => void:\n    counter = counter + 1\n\nfn main() => int:\n    bump()\n    bump()\n    return counter\n"
+
+fn zigzag(v: int) => int:
+    let t = new_txt()
+    put_var(&t, v)
+    let r = Rd { at: 0, end: t.n, bad: 0 }
+    let back = r.var(&t)
+    if back != v || r.at != t.n:
+        return 1
+    return 0
+
+fn main() => int:
+    let m = 0
+    m = m + expect(1, round_trip(fib(), 1), 0)
+    m = m + expect(2, round_trip(fib(), 0), 0)
+    m = m + expect(3, round_trip(strings(), 1), 0)
+    m = m + expect(4, round_trip(classes(), 1), 0)
+    m = m + expect(5, round_trip(globals(), 1), 0)
+    /#/ numbers of both signs and both ends
+    let vs: buf<int> = new_buf(int, 8)
+    vs[0] = 0
+    vs[1] = 1
+    vs[2] = 0 - 1
+    vs[3] = 63
+    vs[4] = 0 - 64
+    vs[5] = 9223372036854775807
+    vs[6] = 0 - 9223372036854775807 - 1
+    vs[7] = 300
+    for k in 0..8:
+        m = m + expect(10 + k, zigzag(vs[k]), 0)
+    /#/ a damaged file is refused
+    let t2 = new_tys()
+    let g2 = new_globals()
+    let src = fib()
+    let lw = module_of(bytes_of_str(&src), len(src), 1, "", &t2, &g2)
+    let cir = write_cir(&lw, 1)
+    let lw3 = new_lower()
+    cir.b[cir.n - 3] = cir.b[cir.n - 3] ^ 1
+    m = m + expect(20, read_cir(&cir, &lw3), cir_bad_sum())
+    let lw4 = new_lower()
+    cir.b[0] = 0
+    m = m + expect(21, read_cir(&cir, &lw4), cir_bad_magic())
+    return m

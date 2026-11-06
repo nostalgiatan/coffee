@@ -1,0 +1,441 @@
+/#/ The IR object (`.cir`): a lowered module written as bytes and read back, so a backend that
+/#/ has no front end can generate code from it. The format is in docs/reference/ir-object.md.
+/#/
+/#/ `write_cir` takes the functions of a `Lower` as they are in its `Lib` (those of other files,
+/#/ kept only for inlining, are left out); `read_cir` fills a fresh `Lower` with them, after which
+/#/ `generate` and `object` work as if the front end had run.
+use * in lower
+
+/#/ error codes of `read_cir`
+fn cir_bad_magic() => int:
+    return 1
+
+fn cir_bad_sum() => int:
+    return 2
+
+fn cir_bad_section() => int:
+    return 3
+
+fn cir_bad_range() => int:
+    return 4
+
+/#/ ---- writing -------------------------------------------------------------
+
+/#/ `v` as a zigzag number in 7-bit groups, low group first, the top bit set while more follow.
+fn put_var(t: &Txt, v: int) => void:
+    let u = (v << 1) ^ (v >> 63)
+    while true:
+        let low = u & 127
+        u = (u >> 7) & 144115188075855871
+        if u == 0:
+            t.put_byte(low)
+            return
+        t.put_byte(low | 128)
+
+fn put_u32(t: &Txt, v: int) => void:
+    for k in 0..4:
+        t.put_byte((v >> (8 * k)) & 255)
+
+fn put_tag(t: &Txt, s: &str) => void:
+    for k in 0..4:
+        t.put_byte(ch(s, k))
+
+/#/ `n` values of `c` from `from`: mode 0 as they are, 1 minus their own index, 2 minus the one before.
+fn put_col(t: &Txt, c: &buf<int>, from: int, n: int, mode: int) => void:
+    let prev = 0
+    for k in 0..n:
+        let v = c[from + k]
+        if mode == 1:
+            put_var(t, v - k)
+        elif mode == 2:
+            put_var(t, v - prev)
+            prev = v
+        else:
+            put_var(t, v)
+
+fn fnv(t: &Txt, from: int) => int:
+    let h = 2166136261
+    for k in from..t.n:
+        h = ((h ^ t.b[k]) * 16777619) & 4294967295
+    return h
+
+fn put_names(t: &Txt, nm: &Names) => void:
+    put_var(t, nm.cnt)
+    for id in 0..nm.cnt:
+        put_var(t, nm.off[id + 1] - nm.off[id])
+        for k in nm.off[id]..nm.off[id + 1]:
+            t.put_byte(nm.b[k])
+
+fn put_reps(t: &Txt, rs: &Reps) => void:
+    put_var(t, rs.n)
+    for r in 0..rs.n:
+        put_var(t, rs.count[r])
+        for k in 0..rs.count[r]:
+            put_var(t, rs.pool[rs.start[r] + k])
+
+fn put_funs(t: &Txt, lw: &Lower) => void:
+    let lib = &lw.lib
+    let count = 0
+    for n in 0..lib.nf:
+        if lw.ext_slot[n] == 0:
+            count = count + 1
+    put_var(t, count)
+    for n in 0..lib.nf:
+        if lw.ext_slot[n] != 0:
+            continue
+        put_var(t, lib.f_id[n] + 1)
+        put_var(t, lib.f_ret[n])
+        put_var(t, lib.f_ni[n])
+        put_var(t, lib.f_nb[n])
+        put_var(t, lib.f_ne[n])
+        put_var(t, lib.f_np[n])
+        put_var(t, lib.f_nn[n])
+        put_col(t, &lib.nm, lib.f_n0[n], lib.f_nn[n], 0)
+        let i0 = lib.f_i0[n]
+        let ni = lib.f_ni[n]
+        put_col(t, &lib.op, i0, ni, 0)
+        put_col(t, &lib.rep, i0, ni, 0)
+        put_col(t, &lib.ty, i0, ni, 0)
+        put_col(t, &lib.a, i0, ni, 0)
+        put_col(t, &lib.b, i0, ni, 0)
+        put_col(t, &lib.c, i0, ni, 0)
+        put_col(t, &lib.aux, i0, ni, 0)
+        put_col(t, &lib.nx, i0, ni, 1)
+        put_col(t, &lib.pv, i0, ni, 1)
+        put_col(t, &lib.uses, i0, ni, 0)
+        put_col(t, &lib.fwd, i0, ni, 0)
+        put_col(t, &lib.blk, i0, ni, 2)
+        let b0 = lib.f_b0[n]
+        let nb = lib.f_nb[n]
+        put_col(t, &lib.bfirst, b0, nb, 0)
+        put_col(t, &lib.blast, b0, nb, 0)
+        put_col(t, &lib.pfirst, b0, nb, 0)
+        put_col(t, &lib.plast, b0, nb, 0)
+        put_col(t, &lib.npar, b0, nb, 0)
+        let e0 = lib.f_e0[n]
+        let ne = lib.f_ne[n]
+        put_col(t, &lib.efrom, e0, ne, 0)
+        put_col(t, &lib.eto, e0, ne, 0)
+        put_col(t, &lib.eargs, e0, ne, 0)
+        put_col(t, &lib.eargn, e0, ne, 0)
+        put_col(t, &lib.pool, lib.f_p0[n], lib.f_np[n], 0)
+
+/#/ The module of `lw` as a `.cir` file; `flags` bit 0 says the IR was optimized.
+fn write_cir(lw: &Lower, flags: int) => Txt:
+    let s_nm = new_txt()
+    put_names(&s_nm, &lw.names)
+    let s_rp = new_txt()
+    put_reps(&s_rp, &lw.rs)
+    let s_st = new_txt()
+    put_var(&s_st, lw.sbytes.n)
+    s_st.put_all(&lw.sbytes)
+    let s_gl = new_txt()
+    put_var(&s_gl, lw.gl_n)
+    for k in 0..lw.gl_n:
+        put_var(&s_gl, lw.gl_name[k])
+        put_var(&s_gl, lw.gl_size[k])
+    let s_fu = new_txt()
+    put_funs(&s_fu, lw)
+    let body = new_txt()
+    body.put_all(&s_nm)
+    body.put_all(&s_rp)
+    body.put_all(&s_st)
+    body.put_all(&s_gl)
+    body.put_all(&s_fu)
+    let out = new_txt()
+    put_tag(&out, "CIR1")
+    put_var(&out, flags)
+    put_var(&out, 5)
+    put_tag(&out, "NAME")
+    put_var(&out, s_nm.n)
+    put_tag(&out, "REPS")
+    put_var(&out, s_rp.n)
+    put_tag(&out, "STRS")
+    put_var(&out, s_st.n)
+    put_tag(&out, "GLOB")
+    put_var(&out, s_gl.n)
+    put_tag(&out, "FUNS")
+    put_var(&out, s_fu.n)
+    put_u32(&out, fnv(&body, 0))
+    out.put_all(&body)
+    return out
+
+/#/ ---- reading -------------------------------------------------------------
+
+/#/ A position in the bytes, inside `[at, end)`; `bad` is set when a read went outside.
+class Rd:
+    at: int
+    end: int
+    bad: int
+
+    fn byte(self, t: &Txt) => int:
+        if self.at >= self.end:
+            self.bad = 1
+            return 0
+        let v = t.b[self.at]
+        self.at = self.at + 1
+        return v
+
+    fn var(self, t: &Txt) => int:
+        let u = 0
+        let sh = 0
+        while true:
+            let b = self.byte(t)
+            if self.bad != 0:
+                return 0
+            if sh < 64:
+                u = u | ((b & 127) << sh)
+            if b < 128:
+                break
+            sh = sh + 7
+            if sh > 70:
+                self.bad = 1
+                return 0
+        return ((u >> 1) & 9223372036854775807) ^ (0 - (u & 1))
+
+    fn left(self) => int:
+        return self.end - self.at
+
+    /#/ A count that `each` bytes per item at least must fit in what is left.
+    fn count(self, t: &Txt, each: int) => int:
+        let n = self.var(t)
+        if n < 0 || n * each > self.left():
+            self.bad = 1
+            return 0
+        return n
+
+fn get_u32(t: &Txt, at: int) => int:
+    let v = 0
+    for k in 0..4:
+        v = v | (t.b[at + k] << (8 * k))
+    return v
+
+fn tag_of(t: &Txt, at: int) => int:
+    return get_u32(t, at)
+
+fn tag_val(s: &str) => int:
+    let v = 0
+    for k in 0..4:
+        v = v | (ch(s, k) << (8 * k))
+    return v
+
+/#/ Reads `n` values into `c` from `to`; the inverse of `put_col`.
+fn get_col(r: &Rd, t: &Txt, c: &buf<int>, to: int, n: int, mode: int) => void:
+    let prev = 0
+    for k in 0..n:
+        let v = r.var(t)
+        if mode == 1:
+            v = v + k
+        elif mode == 2:
+            v = v + prev
+            prev = v
+        c[to + k] = v
+
+/#/ Are the `n` values of `c` from `from` each in `lo..hi`?
+fn in_range(c: &buf<int>, from: int, n: int, lo: int, hi: int) => bool:
+    for k in 0..n:
+        let v = c[from + k]
+        if v < lo || v >= hi:
+            return false
+    return true
+
+/#/ Do the instructions on the block chains (the rest are dead and may hold anything) belong to a
+/#/ block of the function, and do the chains end?
+fn chains_ok(lib: &Lib, i0: int, ni: int, b0: int, nb: int) => bool:
+    for b in 0..nb:
+        let i = lib.bfirst[b0 + b]
+        let steps = 0
+        while i >= 0:
+            steps = steps + 1
+            if steps > ni || lib.blk[i0 + i] < 0 || lib.blk[i0 + i] >= nb:
+                return false
+            i = lib.nx[i0 + i]
+    return true
+
+fn get_funs(r: &Rd, t: &Txt, lw: &Lower, nnames: int, nreps: int) => int:
+    let count = r.count(t, 7)
+    if r.bad != 0:
+        return cir_bad_section()
+    for q in 0..count:
+        let id = r.var(t) - 1
+        let ret = r.var(t)
+        let ni = r.count(t, 12)
+        let nb = r.count(t, 5)
+        let ne = r.count(t, 4)
+        let np = r.count(t, 1)
+        let nn = r.count(t, 1)
+        if r.bad != 0:
+            return cir_bad_section()
+        if id < -1 || id >= nnames || ret < 0 || ret >= 8 + nreps:
+            return cir_bad_range()
+        let lib = &lw.lib
+        lib.grow_cols(ni, nb, ne, np, nn)
+        lib.grow_table()
+        let n = lib.nf
+        lib.nf = lib.nf + 1
+        lib.f_fx[n] = 0
+        lib.f_done[n] = 0
+        lib.f_i0[n] = lib.ni
+        lib.f_ni[n] = ni
+        lib.f_b0[n] = lib.nb
+        lib.f_nb[n] = nb
+        lib.f_e0[n] = lib.ne
+        lib.f_ne[n] = ne
+        lib.f_p0[n] = lib.np
+        lib.f_np[n] = np
+        lib.f_n0[n] = lib.nmn
+        lib.f_nn[n] = nn
+        lib.f_ret[n] = ret
+        lib.f_id[n] = id
+        get_col(r, t, &lib.nm, lib.nmn, nn, 0)
+        let i0 = lib.ni
+        get_col(r, t, &lib.op, i0, ni, 0)
+        get_col(r, t, &lib.rep, i0, ni, 0)
+        get_col(r, t, &lib.ty, i0, ni, 0)
+        get_col(r, t, &lib.a, i0, ni, 0)
+        get_col(r, t, &lib.b, i0, ni, 0)
+        get_col(r, t, &lib.c, i0, ni, 0)
+        get_col(r, t, &lib.aux, i0, ni, 0)
+        get_col(r, t, &lib.nx, i0, ni, 1)
+        get_col(r, t, &lib.pv, i0, ni, 1)
+        get_col(r, t, &lib.uses, i0, ni, 0)
+        get_col(r, t, &lib.fwd, i0, ni, 0)
+        get_col(r, t, &lib.blk, i0, ni, 2)
+        let b0 = lib.nb
+        get_col(r, t, &lib.bfirst, b0, nb, 0)
+        get_col(r, t, &lib.blast, b0, nb, 0)
+        get_col(r, t, &lib.pfirst, b0, nb, 0)
+        get_col(r, t, &lib.plast, b0, nb, 0)
+        get_col(r, t, &lib.npar, b0, nb, 0)
+        let e0 = lib.ne
+        get_col(r, t, &lib.efrom, e0, ne, 0)
+        get_col(r, t, &lib.eto, e0, ne, 0)
+        get_col(r, t, &lib.eargs, e0, ne, 0)
+        get_col(r, t, &lib.eargn, e0, ne, 0)
+        get_col(r, t, &lib.pool, lib.np, np, 0)
+        if r.bad != 0:
+            return cir_bad_section()
+        /#/ links and blocks stay inside the function; the rest is the verifier's to check
+        let ok = in_range(&lib.nx, i0, ni, -1, ni) && in_range(&lib.pv, i0, ni, -1, ni) && chains_ok(lib, i0, ni, b0, nb) && in_range(&lib.bfirst, b0, nb, -1, ni) && in_range(&lib.blast, b0, nb, -1, ni) && in_range(&lib.efrom, e0, ne, -1, nb) && in_range(&lib.eto, e0, ne, -1, nb)
+        if !ok:
+            return cir_bad_range()
+        lib.ni = lib.ni + ni
+        lib.nb = lib.nb + nb
+        lib.ne = lib.ne + ne
+        lib.np = lib.np + np
+        lib.nmn = lib.nmn + nn
+        if n >= len(lw.ext_slot):
+            lw.ext_slot = buf_resize(lw.ext_slot, (n + 1) * 2)
+        lw.ext_slot[n] = 0
+    return 0
+
+/#/ Puts the module in `t` into `lw`, a fresh `Lower`. 0 when it read, else an error code.
+fn read_cir(t: &Txt, lw: &Lower) => int:
+    if t.n < 8 || tag_of(t, 0) != tag_val("CIR1"):
+        return cir_bad_magic()
+    let h = Rd { at: 4, end: t.n, bad: 0 }
+    let flags = h.var(t)
+    let nsec = h.count(t, 5)
+    if h.bad != 0 || nsec != 5:
+        return cir_bad_section()
+    let tags: buf<int> = new_buf(int, 5)
+    let lens: buf<int> = new_buf(int, 5)
+    let total = 0
+    for k in 0..5:
+        if h.left() < 5:
+            return cir_bad_section()
+        tags[k] = tag_of(t, h.at)
+        h.at = h.at + 4
+        lens[k] = h.var(t)
+        if h.bad != 0 || lens[k] < 0:
+            return cir_bad_section()
+        total = total + lens[k]
+    if h.left() != total + 4:
+        return cir_bad_section()
+    if get_u32(t, h.at) != fnv(t, h.at + 4):
+        return cir_bad_sum()
+    let at = h.at + 4
+    let want = new_buf(int, 5)
+    want[0] = tag_val("NAME")
+    want[1] = tag_val("REPS")
+    want[2] = tag_val("STRS")
+    want[3] = tag_val("GLOB")
+    want[4] = tag_val("FUNS")
+    let from: buf<int> = new_buf(int, 5)
+    for k in 0..5:
+        if tags[k] != want[k]:
+            return cir_bad_section()
+        from[k] = at
+        at = at + lens[k]
+    /#/ names
+    let r = Rd { at: from[0], end: from[0] + lens[0], bad: 0 }
+    let nnames = r.count(t, 1)
+    lw.names = new_names()
+    for q in 0..nnames:
+        let nl = r.count(t, 1)
+        let w = new_txt()
+        for k in 0..nl:
+            w.put_byte(r.byte(t))
+        if r.bad != 0:
+            return cir_bad_section()
+        lw.names.add_bytes(&w)
+    if r.at != r.end:
+        return cir_bad_section()
+    /#/ aggregate representations
+    r = Rd { at: from[1], end: from[1] + lens[1], bad: 0 }
+    let nreps = r.count(t, 1)
+    lw.rs = new_reps()
+    for q in 0..nreps:
+        let ik = r.count(t, 1)
+        let items: buf<int> = new_buf(int, ik + 1)
+        for ie in 0..ik:
+            items[ie] = r.var(t)
+            if items[ie] < 0 || items[ie] >= 8 + q:
+                return cir_bad_range()
+        if r.bad != 0:
+            return cir_bad_section()
+        if lw.rs.agg(&items, ik) != 8 + q:
+            return cir_bad_range()
+    if r.at != r.end:
+        return cir_bad_section()
+    /#/ strings: each is an 8-byte length, the text and a NUL
+    r = Rd { at: from[2], end: from[2] + lens[2], bad: 0 }
+    let slen = r.count(t, 1)
+    if r.bad != 0:
+        return cir_bad_section()
+    lw.sbytes = new_txt()
+    for q in 0..slen:
+        lw.sbytes.put_byte(r.byte(t))
+    let off = 0
+    while off < slen:
+        if off + 9 > slen:
+            return cir_bad_range()
+        let sl = 0
+        for sb in 0..8:
+            sl = sl | (lw.sbytes.b[off + sb] << (8 * sb))
+        if sl < 0 || off + 9 + sl > slen:
+            return cir_bad_range()
+        lw.mc.add_str(off + 8)
+        off = off + 9 + sl
+    /#/ globals
+    r = Rd { at: from[3], end: from[3] + lens[3], bad: 0 }
+    let ng = r.count(t, 2)
+    lw.gl_name = new_buf(int, ng + 1)
+    lw.gl_size = new_buf(int, ng + 1)
+    for k in 0..ng:
+        lw.gl_name[k] = r.var(t)
+        lw.gl_size[k] = r.var(t)
+        if r.bad != 0 || lw.gl_name[k] < 0 || lw.gl_name[k] >= nnames || lw.gl_size[k] < 0:
+            return cir_bad_range()
+    lw.gl_n = ng
+    if r.at != r.end:
+        return cir_bad_section()
+    /#/ functions
+    r = Rd { at: from[4], end: from[4] + lens[4], bad: 0 }
+    let fe = get_funs(&r, t, lw, nnames, nreps)
+    if fe != 0:
+        return fe
+    if r.at != r.end:
+        return cir_bad_section()
+    lw.opt = flags & 1
+    return 0
