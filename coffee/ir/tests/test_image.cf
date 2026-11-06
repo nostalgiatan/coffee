@@ -1,0 +1,114 @@
+use * in say
+use * in drive
+use * in image
+use fflush, system in libc of c
+
+fn expect(what: int, got: int, want: int) => int:
+    if got != want:
+        say(f"MISS #{what}: got {got}, want {want}\n")
+        fflush(0)
+        return 1
+    return 0
+
+/#/ A static executable made of the image: one segment at 0x400000, a start stub that calls `main`
+/#/ and exits with its result. It runs the image as a loader would, at an address no linker chose.
+fn exe_of(im: &Image, main_at: int) => Txt:
+    let out = new_txt()
+    let base = 4194304
+    let code_at = 192
+    w32(&out, 1179403647)
+    out.put_byte(2)
+    out.put_byte(1)
+    out.put_byte(1)
+    for k in 0..9:
+        out.put_byte(0)
+    w16(&out, 2)
+    w16(&out, 62)
+    w32(&out, 1)
+    w64(&out, base + 128)
+    w64(&out, 64)
+    w64(&out, 0)
+    w32(&out, 0)
+    w16(&out, 64)
+    w16(&out, 56)
+    w16(&out, 1)
+    w16(&out, 0)
+    w16(&out, 0)
+    w16(&out, 0)
+    /#/ the one program header: load everything, readable, writable, executable
+    w32(&out, 1)
+    w32(&out, 7)
+    w64(&out, 0)
+    w64(&out, base)
+    w64(&out, base)
+    let trap_at = image_round(code_at + im.b.n, 16)
+    w64(&out, trap_at + 16)
+    w64(&out, trap_at + 16)
+    w64(&out, 4096)
+    pad_to(&out, 128)
+    /#/ call main; mov edi, eax; mov eax, 60; syscall
+    out.put_byte(232)
+    w32(&out, (code_at + main_at) - (128 + 5))
+    out.put_byte(137)
+    out.put_byte(199)
+    out.put_byte(184)
+    w32(&out, 60)
+    out.put_byte(15)
+    out.put_byte(5)
+    pad_to(&out, code_at)
+    out.put_all(&im.b)
+    /#/ every external function is this: exit(99)
+    for k in 0..im.nimp:
+        let slot = code_at + im.imp_slot[k]
+        for q in 0..8:
+            out.b[slot + q] = ((base + trap_at) >> (8 * q)) & 255
+    pad_to(&out, 16)
+    out.put_byte(191)
+    w32(&out, 99)
+    out.put_byte(184)
+    w32(&out, 60)
+    out.put_byte(15)
+    out.put_byte(5)
+    return out
+
+/#/ The exit code of `src`, run from its flat image; -1 when no image, -2 when a relocation failed.
+fn run_image(src: str) => int:
+    let t = new_tys()
+    let g = new_globals()
+    let lw = module_of(bytes_of_str(&src), len(src), 1, "", &t, &g)
+    if lw.bad > 0:
+        return -1
+    lw.generate()
+    let im = image_of(&lw)
+    if im.err != 0:
+        return -2
+    let w = new_txt()
+    w.put("main")
+    let at = im.find(&w)
+    if at < 0:
+        return -1
+    let exe = exe_of(&im, at)
+    save_bytes("ir_image_test", &exe)
+    let st = system("chmod +x ./ir_image_test && ./ir_image_test")
+    return (st >> 8) & 255
+
+fn fib() => str:
+    return "fn fib(n: int) => int:\n    if n < 2:\n        return n\n    return fib(n - 1) + fib(n - 2)\n\nfn main() => int:\n    return fib(10)\n"
+
+fn globals() => str:
+    return "let counter = 0\n\nfn bump() => void:\n    counter = counter + 1\n\nfn main() => int:\n    bump()\n    bump()\n    bump()\n    return counter\n"
+
+fn literal() => str:
+    return "fn pick(s: &str, i: int) => int:\n    return int(s[i])\n\nfn main() => int:\n    return pick(\"hello\", 1)\n"
+
+fn calls_c() => str:
+    return "fn main() => int:\n    let s = \"hello\"\n    let t = s + \" world\"\n    return len(t)\n"
+
+fn main() => int:
+    let m = 0
+    m = m + expect(1, run_image(fib()), 55)
+    m = m + expect(2, run_image(globals()), 3)
+    m = m + expect(3, run_image(literal()), 101)
+    /#/ a program that calls the C library reaches the stub of an external: here exit(99)
+    m = m + expect(4, run_image(calls_c()), 99)
+    return m

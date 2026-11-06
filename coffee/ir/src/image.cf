@@ -1,0 +1,121 @@
+/#/ The flat image: what the generator made, laid out as it will sit in memory and with every
+/#/ relocation applied, for a loader that has no linker. Code, `.rodata`, `.data` and one stub per
+/#/ external function follow each other in one block, so every reference is a 32-bit distance
+/#/ from the place that makes it and the image works at any address. Each stub is a jump
+/#/ through an 8-byte slot, which the loader fills in with the address of the function.
+use * in lower
+
+class Image:
+    b: Txt
+    text_n: int
+    ro_at: int
+    data_at: int
+    stub_at: int
+    /#/ the names, and the symbols defined in the image: name offset, place in the image
+    names: Txt
+    sym_name: buf<int>
+    sym_at: buf<int>
+    nsym: int
+    /#/ the external functions: name offset, the offset of the slot to fill
+    imp_name: buf<int>
+    imp_slot: buf<int>
+    nimp: int
+    /#/ 0 when the image is whole, else a relocation that could not be applied
+    err: int
+
+    /#/ The place in the image of the symbol spelled `w`, -1 when it is not defined.
+    fn find(self, w: &Txt) => int:
+        for k in 0..self.nsym:
+            let at = self.sym_name[k]
+            let q = 0
+            while q < w.n && self.names.b[at + q] == w.b[q]:
+                q = q + 1
+            if q == w.n && self.names.b[at + w.n] == 0:
+                return self.sym_at[k]
+        return -1
+
+    /#/ The index of the external function spelled `w`, -1 when the image does not call it.
+    fn import_of(self, w: &Txt) => int:
+        for k in 0..self.nimp:
+            let at = self.imp_name[k]
+            let q = 0
+            while q < w.n && self.names.b[at + q] == w.b[q]:
+                q = q + 1
+            if q == w.n && self.names.b[at + w.n] == 0:
+                return k
+        return -1
+
+fn image_round(v: int, a: int) => int:
+    return (v + a - 1) // a * a
+
+/#/ The image of the code in `a` and the objects of `o`.
+fn make_image(o: &Obj, a: &Asm) => Image:
+    let im = Image { b: new_txt(), text_n: a.c.n, ro_at: 0, data_at: 0, stub_at: 0, names: new_txt(), sym_name: new_buf(int, o.ns + 1), sym_at: new_buf(int, o.ns + 1), nsym: 0, imp_name: new_buf(int, o.ns + 1), imp_slot: new_buf(int, o.ns + 1), nimp: 0, err: 0 }
+    im.names.put_all(&o.names)
+    im.ro_at = image_round(a.c.n, 16)
+    im.data_at = image_round(im.ro_at + o.ro.n, 8)
+    im.stub_at = image_round(im.data_at + o.data.n, 16)
+    /#/ the stub (jmp [rip+2], two bytes of padding) and its slot, 16 bytes together, per external
+    let stub_of: buf<int> = new_buf(int, o.ns + 1)
+    for k in 0..o.ns:
+        stub_of[k] = -1
+        if o.s_def[k] < 0:
+            stub_of[k] = im.stub_at + 16 * im.nimp
+            im.imp_name[im.nimp] = o.s_name[k]
+            im.imp_slot[im.nimp] = stub_of[k] + 8
+            im.nimp = im.nimp + 1
+        elif o.s_sec[k] == 8:
+            im.sym_name[im.nsym] = o.s_name[k]
+            im.sym_at[im.nsym] = im.data_at + o.s_def[k]
+            im.nsym = im.nsym + 1
+        else:
+            im.sym_name[im.nsym] = o.s_name[k]
+            im.sym_at[im.nsym] = o.s_def[k]
+            im.nsym = im.nsym + 1
+    im.b.put_all(&a.c)
+    while im.b.n < im.ro_at:
+        im.b.put_byte(0)
+    im.b.put_all(&o.ro)
+    while im.b.n < im.data_at:
+        im.b.put_byte(0)
+    im.b.put_all(&o.data)
+    while im.b.n < im.stub_at:
+        im.b.put_byte(0)
+    for k in 0..im.nimp:
+        im.b.put_byte(255)
+        im.b.put_byte(37)
+        w32(&im.b, 2)
+        im.b.put_byte(0)
+        im.b.put_byte(0)
+        w64(&im.b, 0)
+    for r in 0..a.nrl:
+        let at = a.rl_at[r]
+        let sym = a.rl_sym[r]
+        let target = 0 - 1
+        if sym == 1:
+            target = im.ro_at
+        elif sym >= 2 && sym - 2 < o.ns:
+            let sk = sym - 2
+            if o.s_def[sk] < 0:
+                target = stub_of[sk]
+            elif o.s_sec[sk] == 8:
+                target = im.data_at + o.s_def[sk]
+            else:
+                target = o.s_def[sk]
+        if target < 0 || at < 0 || at + 4 > a.c.n:
+            im.err = 1
+            return im
+        let d = target + a.rl_add[r] - at
+        for q in 0..4:
+            im.b.b[at + q] = (d >> (8 * q)) & 255
+    return im
+
+/#/ The image of the module in `lw`, once its functions are generated. Like `object`, it adds the
+/#/ strings and globals to the generator, so only one of the two can be asked for.
+fn image_of(lw: &Lower) => Image:
+    lw.mc.add_rodata(&lw.sbytes)
+    for k in 0..lw.gl_n:
+        let w = new_txt()
+        lw.names.put(&w, lw.gl_name[k])
+        lw.mc.add_global(&w, lw.gl_size[k])
+    return make_image(&lw.mc.o, &lw.mc.a)

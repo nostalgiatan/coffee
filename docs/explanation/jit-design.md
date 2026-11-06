@@ -1,6 +1,6 @@
 # JIT 后端的设计
 
-状态:设计稿,尚未实现。格式细节见 [IR 对象格式参考](../reference/ir-object.md),沙盒见 [沙盒的设计](sandbox-design.md)。没有解释器,JIT 是唯一的沙盒执行器。
+状态:设计稿,尚未实现。格式细节见 [IR 对象格式参考](../reference/ir-object.md),沙盒见 [沙盒的设计](sandbox-design.md),分层和预处理见 [JIT 的分层、热替换和预处理](jit-tiers.md)。没有解释器,JIT 是唯一的沙盒执行器。
 
 ## 目标和边界
 
@@ -88,7 +88,7 @@ JIT 只需要 IR 核心、opt、gen、asm 和一个加载器,约 180 KB;带上�
 ## 阶段
 
 1. **格式(已完成)。** `coffee/ir/src/cir.cf`:`write_cir(lw) => Txt` 和 `read_cir(bytes) => Module`,单元测试做往返:前端产出 → 写 → 读 → 生成,与直接生成的机器码逐字节相同。
-2. **出口。** `Gen.image()` 和重定位表导出,测试与 `write_elf` 的内容一致。
+2. **出口(已完成,`ir/src/image.cf`)。** `Gen.image()` 和重定位表导出,测试与 `write_elf` 的内容一致。
 3. **加载器与入口。** `coffee/jit/`:`cfjit file.cir args`,先用 `mmap` 加 `mprotect` 直接跑 `compat` 里的程序,用输出和退出码对照普通构建。
 4. **tea。** `tea jit file.cf`:调度 `coffee2 --emit-cir`、缓存、`cfjit`。
 5. **体积和速度。** 记录 `cfjit` 的 .text 大小、冷启动时间(读取加生成),与 `coffee2 + ld + 执行` 对比。
