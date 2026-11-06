@@ -37,7 +37,7 @@ tea run   [-O0..-O3] [-I dir]... [--compiler path] [--debug] [-- 程序参数...
 
 编译 `[build] main`(默认 `src/main.cf`),模块搜索目录是 `[build] include` 加上 `-I`,输出放在 `target/build/<[package] name>`。`run` 返回程序的退出码;编译失败时 `build` 和 `run` 返回 1。
 
-默认是发布构建:输出文件没有符号表。`--debug` 输出到 `target/debug/<包名>`,带 `-g`(保留函数和数据的名字,供 gdb、perf 用),没给优化级别时用 `-O0`,对象缓存在 `target/obj-debug`。
+默认是发布构建:输出文件没有符号表,函数从 16 字节边界开始(给 `coffee2` 加了 `--align`;`--debug` 构建不对齐,`coffee2` 直接调用也不对齐,文件更小)。`--debug` 输出到 `target/debug/<包名>`,带 `-g`(保留函数和数据的名字,供 gdb、perf 用),没给优化级别时用 `-O0`,对象缓存在 `target/obj-debug`。
 
 ## coffee.toml
 

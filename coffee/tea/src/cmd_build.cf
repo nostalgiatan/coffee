@@ -7,7 +7,7 @@
 /#/ The build is incremental: one object per source file in `target/obj`, rebuilt only when it or the
 /#/ interface of another file changed. `--whole` makes one object for the program instead.
 /#/ `--debug` builds into `target/debug` with `-g` (the file keeps the names of its functions) and, unless
-/#/ a level is given, `-O0`; the default is a release build: `target/build`, no symbols.
+/#/ a level is given, `-O0`; the default is a release build: `target/build`, no symbols, functions start on 16-byte boundaries (`--align`).
 use system, fflush in libc of c
 
 class Build:
@@ -92,6 +92,8 @@ fn build_program(b: &Build, pr: &Project) => int:
     c.put_all(&b.level)
     if b.debug:
         c.put(" -g")
+    else:
+        c.put(" --align")
     if !b.whole:
         if b.debug:
             c.put(" --incremental target/obj-debug")

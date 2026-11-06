@@ -133,6 +133,8 @@ fn parse_cli(fl: &Flat) => Cli:
                 cli.dynamic = true
             elif w.is("--emit-ir"):
                 set_ir_dump()
+            elif w.is("--align"):
+                set_fn_align()
             elif w.is("-g"):
                 set_keep_syms()
             elif w.is("--time"):
@@ -172,7 +174,7 @@ fn dir_of(path: &Txt) => Txt:
     return slice(path, 0, cut)
 
 fn usage() => int:
-    say("usage: coffee2 input.cf [-o output] [-I dir] [-O0|-O1|-O2|-O3] [--emit-obj] [--emit-flat] [--incremental dir] [--static|--dynamic] [-g] [--emit-ir] [--time] [-j n]\n")
+    say("usage: coffee2 input.cf [-o output] [-I dir] [-O0|-O1|-O2|-O3] [--emit-obj] [--emit-flat] [--incremental dir] [--static|--dynamic] [-g] [--align] [--emit-ir] [--time] [-j n]\n")
     fflush(0)
     return 2
 

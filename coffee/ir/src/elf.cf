@@ -264,7 +264,7 @@ fn write_elf(o: &Obj, a: &Asm) => Txt:
     pad_to(&out, 8)
     let off_sh = out.n
     shdr(&out, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-    shdr(&out, n_text, 1, 6, off_text, 0, 0, 0, 16, 0)
+    shdr(&out, n_text, 1, 6, off_text, 0, 0, 0, fn_align, 0)
     shdr(&out, n_ro, 1, 2, off_ro, o.ro.n, 0, 0, 16, 0)
     shdr(&out, n_rela, 4, 64, off_rela, 0, 5, 1, 8, 24)
     shdr(&out, n_note, 1, 0, off_shs, 0, 0, 0, 1, 0)
@@ -273,7 +273,7 @@ fn write_elf(o: &Obj, a: &Asm) => Txt:
     shdr(&out, n_shs, 3, 0, off_shs, sh.n, 0, 0, 1, 0)
     shdr(&out, n_data, 1, 3, off_data, o.data.n, 0, 0, 8, 0)
     for j in 0..nf:
-        shdr(&out, fn_tn[j], 1, 6, fn_off[j], o.s_size[fn_sym[j]], 0, 0, 16, 0)
+        shdr(&out, fn_tn[j], 1, 6, fn_off[j], o.s_size[fn_sym[j]], 0, 0, fn_align, 0)
         shdr(&out, fn_rn[j], 4, 64, off_rela + fn_ra[j], fn_rz[j], 5, 9 + 2 * j, 8, 24)
     /#/ the file header, over the zeros at the start
     let h = new_txt()

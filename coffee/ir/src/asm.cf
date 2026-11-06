@@ -64,6 +64,13 @@ fn new_pos(st: &buf<int>, pref: &buf<int>, n: int, p: int) => int:
             hi = mid
     return p - pref[lo]
 
+/#/ Functions start at a multiple of this many bytes: 1 (no padding), or 16 with `--align`, which
+/#/ `tea` asks for in a release build.
+let fn_align = 1
+
+fn set_fn_align() => void:
+    fn_align = 16
+
 class Asm:
     c: Txt
     /#/ labels of the function being assembled: absolute positions in `c`, -1 while unbound
@@ -112,7 +119,7 @@ class Asm:
     /#/ ---- labels ------------------------------------------------------------
 
     fn begin_fun(self) => void:
-        while self.c.n % 16 != 0:
+        while self.c.n % fn_align != 0:
             self.c.put_byte(204)
         self.nlab = 0
         self.nfx = 0
