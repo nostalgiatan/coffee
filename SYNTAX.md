@@ -209,7 +209,7 @@ let table: [int; 3] = [1, 2, 3]
 let origin: Point = Point { x: 0, y: 0 }
 ```
 
-类型可以是标量、`str`、类、枚举、定长数组。全局变量归程序所有，到进程结束才释放，所以只能就地读写：`len(greeting)`、`origin.x`、`&origin`、`table[1] = 5`、整体赋值 `greeting = "new"`（旧值先释放）都可以；把资源从它里面搬走或复制出来（`let s = greeting`、`take(greeting)`、`return greeting`、`mv` / `rm`）是 E302，要复制写 `clone greeting`。数组按值读出是一份新拷贝。元组、切片、`buf<T>` 的全局变量暂不支持。
+类型可以是标量、`str`、类、枚举、定长数组、元组、切片、`buf<T>`。全局变量归程序所有，到进程结束才释放，所以只能就地读写：`len(greeting)`、`origin.x`、`&origin`、`table[1] = 5`、整体赋值 `greeting = "new"`（旧值先释放）都可以；把资源从它里面搬走或复制出来（`let s = greeting`、`take(greeting)`、`return greeting`、`mv` / `rm`）是 E302，要复制写 `clone greeting`。数组按值读出是一份新拷贝。`buf<T>` 全局用 `&store` 借出，不能搬走，也不会被释放。
 
 ### 赋值语句
 

@@ -10,10 +10,10 @@ fn expect(what: int, got: int, want: int) => int:
     return 0
 
 fn head() => str:
-    return "class Q:\n    n: int\n    name: str\n\nenum E:\n    A(n: int)\n    B\n\nlet greeting: str = \"hi\"\nlet q: Q = Q { n: 5, name: \"qq\" }\nlet e: E = E.A(3)\nlet table: [int; 3] = [1, 2, 3]\nlet words: [str; 2] = [\"a\", \"bc\"]\nlet count = 0\n\n"
+    return "class Q:\n    n: int\n    name: str\n\nenum E:\n    A(n: int)\n    B\n\nlet greeting: str = \"hi\"\nlet q: Q = Q { n: 5, name: \"qq\" }\nlet e: E = E.A(3)\nlet table: [int; 3] = [1, 2, 3]\nlet words: [str; 2] = [\"a\", \"bc\"]\nlet count = 0\nlet pair: (int, int) = (3, 4)\nlet owned: (int, str) = (1, \"ab\")\nlet store: buf<int> = new_buf(int, 4)\nlet view: [int] = [5, 6, 7]\n\n"
 
 fn prog(body: str) => str:
-    return head() + "fn sum(x: &Q) => int:\n    return x.n\n\nfn main() => int:\n" + body
+    return head() + "fn pair_sum(p: (int, int)) => int:\n    let t = 0\n    for x in p:\n        t += x\n    return t\n\nfn first(b: &buf<int>) => int:\n    return b[0]\n\nfn count_of(s: &[int]) => int:\n    return len(s)\n\nfn sum(x: &Q) => int:\n    return x.n\n\nfn main() => int:\n" + body
 
 fn main() => int:
     let m = 0
@@ -38,4 +38,10 @@ fn main() => int:
     m = m + expect(14, first_error(prog("    let n = q.name\n    return 0\n")), 302)
     m = m + expect(15, first_error(prog("    mv greeting other\n    return 0\n")), 302)
     m = m + expect(16, first_error(prog("    rm greeting\n    return 0\n")), 302)
+    /#/ tuples, buffers and slices
+    m = m + expect(18, run_src(prog("    return pair_sum(pair) - 7\n"), true), 0)
+    m = m + expect(19, run_src(prog("    pair = (10, 20)\n    owned = (2, \"cdef\")\n    owned = (3, \"g\")\n    return pair_sum(pair) - 30\n"), true), 0)
+    m = m + expect(20, run_src(prog("    store[0] = 9\n    store[3] = 1\n    return first(&store) + store[3] - 10\n"), true), 0)
+    m = m + expect(21, run_src(prog("    return count_of(&view) - 3\n"), true), 0)
+    m = m + expect(22, first_error(prog("    let b = store\n    return 0\n")), 302)
     return m

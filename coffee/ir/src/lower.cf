@@ -1045,7 +1045,7 @@ class Lower:
             if a.kind[it] == int(Nk.Let) && a.pa[it] >= 0:
                 let vt = self.nd(t, ty, it)
                 let vr = self.rep(t, g, vt)
-                if vr < 0 || vr == int(Rp.Void) || vr >= rp_first_agg() || a.pc[it] < 0:
+                if vr < 0 || vr == int(Rp.Void) || a.pc[it] < 0:
                     self.unsupported(it)
                     return
                 let id = self.global_sym(a, a.pa[it])
@@ -1324,7 +1324,7 @@ class Lower:
         if k == int(Nk.Name):
             let v = self.lookup(a, a.tok[n])
             if v < 0:
-                if self.global_row(g, ty, a, a.tok[n]) >= 0 && r >= 0 && r < rp_first_agg():
+                if self.global_row(g, ty, a, a.tok[n]) >= 0 && r >= 0:
                     return self.f.load(r, -1, self.f.fnaddr(self.global_sym(a, a.tok[n])))
                 self.unsupported(n)
                 return self.f.undef(int(Rp.I64))
@@ -1420,6 +1420,8 @@ class Lower:
             let v = self.lookup(a, a.tok[o])
             if v >= 0 && self.v_slot[v] >= 0:
                 return self.v_slot[v]
+            if v < 0 && self.global_row(g, ty, a, a.tok[o]) >= 0 && self.rep(t, g, x) >= 0:
+                return self.f.fnaddr(self.global_sym(a, a.tok[o]))
         if a.kind[o] == int(Nk.Member) && t.kind[self.strip_refs(t, self.nd(t, ty, a.pa[o]))] == int(Ty.Named) && self.rep(t, g, x) >= 0:
             return self.field_addr(t, g, ty, a, o)
         if a.kind[o] == int(Nk.Index) && self.rep(t, g, x) >= 0:
@@ -1538,7 +1540,7 @@ class Lower:
             let v = self.lookup(a, a.tok[target])
             if v < 0 && self.global_row(g, ty, a, a.tok[target]) >= 0:
                 let gt = self.nd(t, ty, target)
-                if self.rep(t, g, gt) < 0 || self.rep(t, g, gt) >= rp_first_agg():
+                if self.rep(t, g, gt) < 0:
                     self.unsupported(n)
                     return
                 let gv = self.sink(t, g, ty, a, a.pb[n], gt)
