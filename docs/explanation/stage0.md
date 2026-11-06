@@ -22,7 +22,7 @@ Coffee 的编译器有过两代。第一代用 Rust 写成,编到 LLVM。第二�
 - 从 `.h` / `.c` 生成 `.cfc`(`-c`),以及 `[dependencies.c_libraries]` 的依赖图和自动生成;现在 `.cfc` 要手写,libc 和 libm 的内置。
 - 从 `c fn` 导出生成 `.h`(`--have-c`)。
 - 包依赖:`coffee fetch`、`[dependencies.packages]`、`coffee std install`、内嵌的 std(`library/std` 还在,但不会自动导入)。
-- 静态链接(`--static`、`--static-lib`)、`--target` 交叉编译、`--jit`、`--emit-llvm` / `--emit-bc`、`--emit-ast`、`--show-memory`。
+- 驱动的 `--static`、`--static-lib` 选项(静态可执行文件现在由 `cfld` 做,见 `coffee/ld/README.md`,只是驱动还没接上,默认仍用 `cc`)、`--target` 交叉编译、`--jit`、`--emit-llvm` / `--emit-bc`、`--emit-ast`、`--show-memory`。
 - 运行时陷阱:算术溢出和除零不再检查(越界下标仍然陷阱)。
 - `coffee run` / `coffee test` 的项目模式:由 `tea run` / `tea test` / `tea build` 代替。
 
