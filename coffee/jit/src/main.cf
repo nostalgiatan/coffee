@@ -66,6 +66,30 @@ fn allow_arg() => int:
             w.put_byte(raw.b[i])
     return mask
 
+/#/ The number in `--<key>=N` on the command line, or 0 when absent.
+fn num_arg(key: &str) => int:
+    let raw = read_file(&txt_of("/proc/self/cmdline"))
+    let w = new_txt()
+    let want = txt_of("--")
+    want.put(key)
+    want.put("=")
+    let v = 0
+    for i in 0..raw.n + 1:
+        if i == raw.n || raw.b[i] == 0:
+            if w.n > want.n:
+                let hit = true
+                for k in 0..want.n:
+                    if w.b[k] != want.b[k]:
+                        hit = false
+                if hit:
+                    v = 0
+                    for k in want.n..w.n:
+                        v = v * 10 + (int(w.b[k]) - 48)
+            w.clear()
+        else:
+            w.put_byte(raw.b[i])
+    return v
+
 fn main() => int:
     let sbx = sandbox_arg()
     let path = path_arg()
@@ -104,7 +128,7 @@ fn main() => int:
         if bad >= 0:
             say(f"cfjit: the code is not safe to run in the sandbox (offset {bad}, reason {sbx_why}, bytes {int(im.b.b[bad])} {int(im.b.b[bad + 1])} {int(im.b.b[bad + 2])} {int(im.b.b[bad + 3])} {int(im.b.b[bad + 4])})\n")
             return 2
-        let rs = sandbox_run(&im, at, allow_arg())
+        let rs = sandbox_run(&im, at, allow_arg(), num_arg("mem"), num_arg("cpu"))
         if rs == 0 - 1:
             say("cfjit: the sandbox could not be made\n")
             return 2

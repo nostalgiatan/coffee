@@ -74,5 +74,12 @@ fn main() => int:
     m = m + expect(20, run_sbx("fn main() => int:\n    return syscall(1, 1, 65600, 4294967296, 0, 0) + 100\n"), 86)
     m = m + expect(21, run_sbx("fn main() => int:\n    return syscall(1, 1, 4294967290, 100, 0, 0) + 100\n"), 86)
     m = m + expect(22, run_sbx("fn main() => int:\n    return syscall(1, 77, 65600, 1, 0, 0) + 100\n"), 91)
+    /#/ the quotas: an endless loop ends at the CPU limit (SIGALRM, 14), a big array needs more heap than --mem gives
+    m = m + expect(23, run_sbx_with("fn main() => int:\n    let i = 0\n    while true:\n        i = i + 1\n    return i\n", "--cpu=100"), 139)
+    m = m + expect(24, trapped("14"), 0)
+    let big = "fn main() => int:\n    let a = new_buf(int, 400000)\n    a[399999] = 7\n    return a[399999]\n"
+    m = m + expect(25, run_sbx_with(clone big, "--mem=8"), 7)
+    m = m + expect(26, run_sbx_with(clone big, "--mem=1"), 139)
+    m = m + expect(27, trapped("11"), 0)
     system("rm -f sbx.cf sbx.cir sbx.log sbx.out")
     return m

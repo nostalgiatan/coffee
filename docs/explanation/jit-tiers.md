@@ -71,7 +71,7 @@
 
 - **阶段 3** 加载器和 `cfjit`:`coffee2 --emit-cir` 把程序和 `min.cf` 运行时一起降成一个模块,`cfjit prog.cir` 读入、生成、`mmap`、跳到 `main`。新增内建 `call_addr(addr, args..)` 作跳入口。静态二进制 172 KB。`jit/tests/compare.sh` 对照原生:compat、lexer、parser、sema、types、own 共 90 个测试文件的退出码和输出全部一致。
 
-- **沙盒 S1、S2、S3**:见 [沙盒的设计](sandbox-design.md) 末尾的实现记录(S2 缩成了 `read`/`write` 两个宿主存根)。
+- **沙盒 S1 到 S4**:见 [沙盒的设计](sandbox-design.md) 末尾的实现记录(S2 缩成了 `read`/`write` 两个宿主存根)。
 
 接下来,每步独立提交:
 4. **tea**:`tea jit file.cf`,缓存 `.cir`,调度前端和 `cfjit`。

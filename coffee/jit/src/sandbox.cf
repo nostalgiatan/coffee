@@ -153,6 +153,36 @@ fn stub_io(n: int, ctrl: int, base: int, limit: int) => Txt:
     a.end_fun()
     return copy_of(&a.c)
 
+/#/ The handler of the CPU quota (SIGALRM; rdi the signal, rdx the saved state). When the code of the
+/#/ sandbox was running, it is stopped like on a fault. When the host stub was (a read that waits, say),
+/#/ the timer is armed again for a millisecond: the stub returns to the code, and the next alarm ends it.
+fn stub_alarm(code_lo: int, code_hi: int, trap: int, ctrl: int) => Txt:
+    let a = new_asm()
+    a.begin_fun()
+    let out = a.new_label()
+    a.load(0, 2, 168, 8)
+    a.mov_ri(1, code_lo)
+    a.cmp_rr(0, 1)
+    a.jcc(cc_b(), out)
+    a.mov_ri(1, code_hi)
+    a.cmp_rr(0, 1)
+    a.jcc(cc_ae(), out)
+    a.mov_ri(0, trap)
+    a.store(2, 168, 0, 8)
+    a.mov_ri(1, ctrl)
+    a.store(1, 16, 7, 8)
+    a.ret()
+    a.bind(out)
+    a.mov_ri(7, 0)
+    a.mov_ri(6, ctrl + 352)
+    a.mov_ri(2, 0)
+    a.mov_ri(0, 38)
+    a.byte(15)
+    a.byte(5)
+    a.ret()
+    a.end_fun()
+    return copy_of(&a.c)
+
 fn stub_restorer() => Txt:
     let a = new_asm()
     a.begin_fun()
@@ -172,7 +202,7 @@ fn catch_signal(sig: int, handler: int, restorer: int, act: int) => int:
 
 /#/ Runs `main` (at `main_at` in the code of `im`) in the sandbox. `allow` says which standard streams it may use (see below). Returns its result, or -1 when
 /#/ the sandbox could not be made, or -2 when it trapped (the signal is in `trap_signal()`).
-fn sandbox_run(im: &Image, main_at: int, allow: int) => int:
+fn sandbox_run(im: &Image, main_at: int, allow: int, mem_mb: int, cpu_ms: int) => int:
     let region = sys_mmap(4294967296 + 131072, 0, 16418)
     if !mapped(region):
         return 0 - 1
@@ -184,7 +214,11 @@ fn sandbox_run(im: &Image, main_at: int, allow: int) => int:
         return 0 - 1
     copy_in(region + im.lin_at, &im.lin)
     poke64(region + im.lin_at, im.ss_top)
-    poke64(region + im.lin_at + 8, im.limit)
+    /#/ the heap quota: the heap ends `mem_mb` megabytes after it starts (when that is less than what is mapped)
+    let heap_end = im.limit
+    if mem_mb > 0 && im.ss_top + mem_mb * 1048576 < heap_end:
+        heap_end = im.ss_top + mem_mb * 1048576
+    poke64(region + im.lin_at + 8, heap_end)
     if syscall(158, 4097, region, 0, 0, 0, 0) != 0:
         return 0 - 1
     /#/ the code, the stubs, the control block, the stack the code runs on and the one for signals
@@ -226,7 +260,27 @@ fn sandbox_run(im: &Image, main_at: int, allow: int) => int:
         return 0 - 1
     if catch_signal(8, stubs + 512, stubs + 768, ctrl + 256) != 0 || catch_signal(4, stubs + 512, stubs + 768, ctrl + 256) != 0:
         return 0 - 1
+    /#/ the CPU quota: a timer (wall clock) of `cpu_ms`; the itimerval at ctrl + 352 re-arms it, at ctrl + 384 starts it
+    copy_in(stubs + 1536, &stub_alarm(code, code + im.b.n, stubs + 256, ctrl))
+    poke64(ctrl + 352, 0)
+    poke64(ctrl + 360, 0)
+    poke64(ctrl + 368, 0)
+    poke64(ctrl + 376, 1000)
+    poke64(ctrl + 384, 0)
+    poke64(ctrl + 392, 0)
+    poke64(ctrl + 400, cpu_ms // 1000)
+    poke64(ctrl + 408, cpu_ms % 1000 * 1000)
+    if cpu_ms > 0:
+        if catch_signal(14, stubs + 1536, stubs + 768, ctrl + 256) != 0:
+            return 0 - 1
+        if syscall(38, 0, ctrl + 384, 0, 0, 0, 0) != 0:
+            return 0 - 1
     let rc = call_addr(stubs, ctrl)
+    if cpu_ms > 0:
+        /#/ off before the handler could run in the host again
+        poke64(ctrl + 400, 0)
+        poke64(ctrl + 408, 0)
+        syscall(38, 0, ctrl + 384, 0, 0, 0, 0)
     let t = peek64(ctrl + 16)
     if t != 0:
         say(f"cfjit: the sandbox trapped (signal {t})\n")
