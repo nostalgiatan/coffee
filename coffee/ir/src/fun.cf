@@ -616,7 +616,15 @@ class Fun:
                 return self.cint(to, unsigned_of(self.rep[x], self.cval(x)))
         return self.share(op, to, -1, x, -1, -1, 0)
 
+    /#/ Element `idx` of `agg`: the value itself when `agg` was built by `insert`s of it.
     fn extract(self, rep: int, agg: int, idx: int) => int:
+        let g = self.follow(agg)
+        while self.op[g] == int(Op.Insert):
+            if self.aux[g] == idx:
+                return self.follow(self.b[g])
+            g = self.follow(self.a[g])
+        if self.op[g] == int(Op.Undef):
+            return self.undef(rep)
         return self.share(int(Op.Extract), rep, -1, self.follow(agg), -1, -1, idx)
 
     fn insert(self, agg: int, v: int, idx: int) => int:

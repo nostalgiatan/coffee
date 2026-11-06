@@ -1174,8 +1174,11 @@ class Gen:
             if r >= rp_first_agg():
                 self.copy_mem(5, 0 - self.voff[i], sb, sd, rsize(rs, r))
             else:
-                self.a.load(0, sb, sd, rsize(rs, r))
-                self.st(i, 0)
+                let d = self.home[i]
+                if d < 0:
+                    d = 0
+                self.a.load(d, sb, sd, rsize(rs, r))
+                self.st(i, d)
             return
         if op == int(Op.Insert):
             let eo = elem_off(rs, r, f.aux[i])

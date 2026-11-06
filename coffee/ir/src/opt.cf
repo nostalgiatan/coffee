@@ -418,7 +418,80 @@ fn stack_alloc(f: &Fun) => bool:
     return changed
 
 /#/ Runs the passes: cleanup, own-opt, cleanup again for what that exposed.
+/#/ Moves every `extract` to just after the aggregate it reads, and keeps one of those that read
+/#/ the same element: a field of a value defined before a loop is read once, not each time round.
+fn hoist_extracts(f: &Fun) => bool:
+    let changed = false
+    let seen = 0
+    for b in 0..f.nb:
+        let i = f.bfirst[b]
+        while i >= 0:
+            let nxt = f.nx[i]
+            if f.op[i] == int(Op.Extract) && f.fwd[i] < 0:
+                seen = seen + 1
+                let g = f.follow(f.a[i])
+                let db = f.blk[g]
+                if db >= 0 && db != b:
+                    unlink(f, i)
+                    f.blk[i] = db
+                    if f.op[g] == int(Op.Param):
+                        let first = f.bfirst[db]
+                        f.pv[i] = -1
+                        f.nx[i] = first
+                        if first >= 0:
+                            f.pv[first] = i
+                        else:
+                            f.blast[db] = i
+                        f.bfirst[db] = i
+                    else:
+                        let n = f.nx[g]
+                        f.pv[i] = g
+                        f.nx[i] = n
+                        f.nx[g] = i
+                        if n >= 0:
+                            f.pv[n] = i
+                        else:
+                            f.blast[db] = i
+                    changed = true
+            i = nxt
+    if seen < 2:
+        return changed
+    /#/ the same element of the same aggregate: all of them are in one block now, the first dominates
+    let cap = 16
+    while cap < seen * 2:
+        cap = cap * 2
+    let tab: buf<int> = new_buf(int, cap)
+    for q in 0..cap:
+        tab[q] = -1
+    for b in 0..f.nb:
+        let i = f.bfirst[b]
+        while i >= 0:
+            let nxt = f.nx[i]
+            if f.op[i] == int(Op.Extract) && f.fwd[i] < 0:
+                let g = f.follow(f.a[i])
+                let h = ((g * 31 + f.aux[i]) * 31 + f.rep[i]) % cap
+                if h < 0:
+                    h = h + cap
+                let found = -1
+                while tab[h] >= 0 && found < 0:
+                    let e = tab[h]
+                    if f.follow(f.a[e]) == g && f.aux[e] == f.aux[i] && f.rep[e] == f.rep[i]:
+                        found = e
+                    else:
+                        h = (h + 1) % cap
+                if found >= 0:
+                    f.uses[found] = f.uses[found] + f.uses[i]
+                    f.fwd[i] = found
+                    unuse(f, i)
+                    unlink(f, i)
+                    changed = true
+                else:
+                    tab[h] = i
+            i = nxt
+    return changed
+
 fn optimize(f: &Fun) => void:
+    hoist_extracts(f)
     let round = 0
     let changed = true
     while changed && round < 8:

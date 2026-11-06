@@ -331,13 +331,20 @@ fn expect_with(src: str, want: int, leaks: bool) => int:
 
 /#/ Like `expect_exit`.
 fn expect_mc(src: str, want: int) => int:
+    return expect_mc_with(src, want, true)
+
+/#/ Like `expect_exit_early`.
+fn expect_mc_early(src: str, want: int) => int:
+    return expect_mc_with(src, want, false)
+
+fn expect_mc_with(src: str, want: int, leaks: bool) => int:
     let dup = clone src
     let o = build_src(src, 1)
     if o.n == 0:
         say(f"FAIL: no object for\n{dup}\n")
         fflush(0)
         return 1
-    let r = run_object(&o, true)
+    let r = run_object(&o, leaks)
     if r != want:
         say(f"FAIL (machine code): got {r}, want {want}\n{dup}\n")
         fflush(0)
