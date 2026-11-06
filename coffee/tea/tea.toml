@@ -1,2 +1,2 @@
 [test]
-include = ["src", "../driver/src", "../ir/src"]
+include = ["src", "../driver/src", "../ir/src", "../own/src", "../types/src", "../sema/src", "../parser/src", "../lexer/src"]

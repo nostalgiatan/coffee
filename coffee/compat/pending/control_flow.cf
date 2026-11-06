@@ -1,0 +1,15 @@
+/#/ Ported from tests/control_flow_tests.rs; the self-hosted compiler does not pass these yet.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + compiles("control_flow::test_for_in_tuple_variable", "\nfn main() => int:\n    let t: (int, int) = (1, 2)\n    for x in t:\n        let n: int = x\n    rm t\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_for_in_tuple_literal", "\nfn main() => int:\n    for x in (1, 2):\n        let n: int = x\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_for_in_tuple_expr", "\nfn main() => int:\n    let a: int = 1\n    let b: int = 2\n    for x in (a, b):\n        let n: int = x\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_early_return_in_loop", "\nfn find_value(arr: [int; 5], target: int) => int:\n    for i in range(0, 5):\n        if arr[i] == target:\n            return i\n    return -1\n\nfn main() => int:\n    let arr: [int; 5] = [1, 2, 3, 4, 5]\n    let index: int = find_value(arr, 3)\n    rm arr, index\n    return 0\n\n")
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

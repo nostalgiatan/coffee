@@ -126,8 +126,8 @@ fn verify(f: &Fun) => VDiags:
                 elif f.eargn[e] != f.npar[to]:
                     d.add(int(Ve.EdgeArity), t, b)
                 else:
-                    for k in 0..f.eargn[e]:
-                        if f.rep[f.follow(f.pool[f.eargs[e] + k])] != f.rep[f.param_at(to, k)]:
+                    for ea in 0..f.eargn[e]:
+                        if f.rep[f.follow(f.pool[f.eargs[e] + ea])] != f.rep[f.param_at(to, ea)]:
                             d.add(int(Ve.EdgeType), t, b)
     if nb == 0:
         return d

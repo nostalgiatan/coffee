@@ -1,0 +1,14 @@
+/#/ Ported from tests/enum_runtime_tests.rs; the self-hosted compiler does not pass these yet.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + exits("enum_runtime::test_unit_only_enum_still_works", "\nenum Color:\n    Red\n    Green\n    Blue\n\nfn name(c: Color) => int:\n    match c:\n        Color.Red => 1\n        Color.Green => 2\n        Color.Blue => 3\n\nfn main() => int:\n    return name(Color.Blue)\n", 3)
+    bad = bad + exits("enum_runtime::test_class_payload_binding_passed_to_function", "\nclass K:\n    v: int\n\nenum W:\n    Empty\n    Has(k: K)\n\nfn get_v(k: K) => int:\n    return k.v\n\nfn f(w: W) => int:\n    match w:\n        W.Empty => 0\n        W.Has(k) => get_v(k)\n\nfn main() => int:\n    let k: K = K { v: 7 }\n    let w: W = W.Has(k)\n    return f(w)\n", 7)
+    bad = bad + exits("enum_runtime::test_enum_payload_binding_of_enum_type_in_second_position", "\nenum Chain:\n    End\n    Link(n: int, rest: Chain)\n\nfn len(c: Chain) => int:\n    match c:\n        Chain.End => 0\n        Chain.Link(n, rest) => n + len(rest)\n\nfn main() => int:\n    let c: Chain = Chain.Link(1, Chain.Link(2, Chain.Link(3, Chain.End)))\n    return len(c)\n", 6)
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

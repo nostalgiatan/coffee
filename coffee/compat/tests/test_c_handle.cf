@@ -1,0 +1,13 @@
+/#/ Ported from tests/c_handle_tests.rs.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + compiles("c_handle::test_malloc_free_object_handle", "\nuse malloc, free in libc of c\n\nfn main() => int:\n    let p: object = malloc(64)\n    free(p)\n    return 0\n\n")
+    bad = bad + compiles("c_handle::test_printf_hello_and_variadic", "\nuse printf, puts in libc of c\n\nfn main() => int:\n    printf(\"Hello\")\n    puts(\"World\")\n    printf(\"%d %s\", 1, \"x\")\n    return 0\n\n")
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

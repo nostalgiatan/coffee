@@ -8,7 +8,6 @@
 /#/     tea test [-I dir]... [--compiler path] [-j N] [file.cf]...
 /#/
 /#/ Include directories also come from `tea.toml`: `include = ["../ir/src", "src"]` under `[test]`.
-use * in args
 use system, printf, fflush in libc of c
 
 class Plan:
@@ -143,7 +142,7 @@ fn run_one(p: &Plan) => int:
         return 0
     let r = txt_of("cd '")
     r.put_all(&d)
-    r.put("' && ./bin > run.log 2>&1")
+    r.put("' && timeout 600 ./bin > run.log 2>&1")
     let st = system(txt_str(&r))
     let code = new_txt()
     code.put_int((st >> 8) & 255)

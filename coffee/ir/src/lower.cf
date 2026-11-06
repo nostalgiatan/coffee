@@ -11,7 +11,7 @@
 /#/ `else`, `while`, `for` over a range, `break`/`continue`/`return`, calls of plain functions
 /#/ and C functions. Anything else sets `bad` and the function is not emitted.
 use * in gen
-use * in typer
+use * in own
 
 /#/ The IR representation of a type; -1 when it has none yet.
 fn rep_of(t: &Tys, g: &Syms, x: int) => int:
@@ -1126,7 +1126,7 @@ class Lower:
                 let v = self.sink(t, g, ty, a, a.pa[n], self.ret_ty)
                 self.flush_temps(t, g)
                 self.drop_scope(t, g, a, 0)
-                self.f.ret(v)
+                self.f.ret_v(v)
             else:
                 if a.pa[n] >= 0:
                     self.ex(t, g, ty, a, a.pa[n])
@@ -1422,7 +1422,7 @@ class Lower:
                 self.f.call(int(Rp.Void), -1, self.lis)
                 self.f.ret_void()
             else:
-                self.f.ret(self.f.call(rr, -1, self.lis))
+                self.f.ret_v(self.f.call(rr, -1, self.lis))
             self.dead_block()
             return
         let msg = new_txt()
@@ -1754,7 +1754,7 @@ class Lower:
                 self.f.store(self.f.field(q, self.lay_off[j]), v)
             self.f.br(end)
         self.f.set_block(end)
-        self.f.ret(q)
+        self.f.ret_v(q)
 
     /#/ ---- representations, slots, places ---------------------------------------
 
@@ -2383,7 +2383,7 @@ class Lower:
                 else:
                     let q = self.f.alloc(st_block(t, g, x))
                     self.glue_clone_fields(t, g, p, q)
-                    self.f.ret(q)
+                    self.f.ret_v(q)
             self.emit_current()
 
     /#/ Drop glue of a class whose last owned field is an enum that holds the class again
@@ -2460,7 +2460,7 @@ class Lower:
                 if needs_drop(t, g, et):
                     v = self.clone_value(t, g, v, et)
                 self.f.store(self.f.index(q, self.f.cint(int(Rp.I64), i), size), v)
-            self.f.ret(q)
+            self.f.ret_v(q)
 
     fn glue_drop_fields(self, t: &Tys, g: &Syms, p: int) => void:
         for i in 0..self.lay_n:

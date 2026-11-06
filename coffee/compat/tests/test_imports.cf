@@ -1,0 +1,36 @@
+/#/ Ported from tests/imports_tests.rs.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + compiles("imports::test_import_single_c_function", "\nuse printf in libc of c\n\nfn main() => int:\n    printf(\"Hello, World!\")\n    return 0\n\n")
+    bad = bad + compiles("imports::test_import_multiple_c_functions", "\nuse printf, puts, fprintf in libc of c\n\nfn main() => int:\n    printf(\"Hello\")\n    puts(\"World\")\n    return 0\n\n")
+    bad = bad + compiles("imports::test_import_math_functions", "\nuse sin, cos, sqrt in libm of c\n\nfn main() => int:\n    let a: float = sin(0.0)\n    let b: float = cos(0.0)\n    let c: float = sqrt(4.0)\n    rm c\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("imports::test_import_memory_functions", "\nuse malloc, free in libc of c\n\nfn main() => int:\n    let p: object = malloc(64)\n    free(p)\n    return 0\n\n")
+    bad = bad + compiles("imports::test_import_string_functions", "\nuse strlen, strcmp, strcpy in libc of c\n\nfn main() => int:\n    let len: int = strlen(\"hello\")\n    rm len\n    return 0\n\n")
+    bad = bad + compiles("imports::test_import_exit_function", "\nuse exit in libc of c\n\nfn main() => int:\n    return 0\n\n")
+    bad = bad + compiles("imports::test_import_abs_function", "\nuse abs in libc of c\n\nfn main() => int:\n    let result: int = abs(-42)\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("imports::test_import_putchar_function", "\nuse putchar in libc of c\n\nfn main() => int:\n    putchar(65)\n    return 0\n\n")
+    bad = bad + compiles("imports::test_import_fwrite_function", "\nuse fwrite in libc of c\n\nfn main() => int:\n    return 0\n\n")
+    bad = bad + compiles("imports::test_import_abort_function", "\nuse abort in libc of c\n\nfn main() => int:\n    return 0\n\n")
+    bad = bad + compiles("imports::test_use_imported_c_function", "\nuse printf in libc of c\n\nfn greet() => int:\n    printf(\"Hello from Coffee!\")\n    return 0\n\nfn main() => int:\n    greet()\n    return 0\n\n")
+    bad = bad + compiles("imports::test_use_multiple_imported_c_functions", "\nuse printf, puts, strlen in libc of c\n\nfn main() => int:\n    printf(\"Using multiple imports\")\n    puts(\"Hello\")\n    let len: int = strlen(\"test\")\n    rm len\n    return 0\n\n")
+    bad = bad + compiles("imports::test_import_in_function", "\nuse printf in libc of c\n\nfn use_imports() => int:\n    printf(\"Local import\")\n    return 0\n\nfn main() => int:\n    use_imports()\n    return 0\n\n")
+    bad = bad + compiles("imports::test_import_with_math_operations", "\nuse sin, cos, tan in libm of c\n\nfn main() => int:\n    let angle: float = 1.5708\n    let s: float = sin(angle)\n    let c: float = cos(angle)\n    let t: float = tan(angle)\n    rm t\n    rm c\n    rm s\n    return 0\n\n")
+    bad = bad + compiles("imports::test_import_with_string_operations", "\nuse strlen, strcpy, strcmp in libc of c\n\nfn main() => int:\n    let s1: str = \"hello\"\n    let s2: str = \"world\"\n    let len1: int = strlen(s1)\n    let len2: int = strlen(s2)\n    rm len2\n    rm len1\n    rm s2\n    rm s1\n    return 0\n\n")
+    bad = bad + compiles("imports::test_import_with_memory_operations", "\nuse malloc, free, calloc in libc of c\n\nfn main() => int:\n    let ptr1: object = malloc(100)\n    let ptr2: object = calloc(10, 10)\n    free(ptr1)\n    free(ptr2)\n    return 0\n\n")
+    bad = bad + compiles("imports::test_import_with_exit_codes", "\nuse exit in libc of c\n\nfn main() => int:\n    return 0\n\n")
+    bad = bad + compiles("imports::test_import_same_function_twice", "\nuse printf in libc of c\nuse printf in libc of c\n\nfn main() => int:\n    printf(\"Double import\")\n    return 0\n\n")
+    bad = bad + compiles("imports::test_import_nonexistent_function", "\nuse nonexistent in libc of c\n\nfn main() => int:\n    return 0\n\n")
+    bad = bad + compiles("imports::test_import_from_nonexistent_library", "\nuse function in nonexistent of c\n\nfn main() => int:\n    return 0\n\n")
+    bad = bad + compiles("imports::test_empty_import_list", "\nuse in libc of c\n\nfn main() => int:\n    return 0\n\n")
+    bad = bad + compiles("imports::test_import_with_complex_function_calls", "\nuse sin, cos, sqrt, pow in libm of c\n\nfn main() => int:\n    let x: float = 3.0\n    let y: float = 4.0\n    let hypotenuse: float = sqrt(pow(x, 2.0) + pow(y, 2.0))\n    rm hypotenuse\n    rm y\n    rm x\n    return 0\n\n")
+    bad = bad + compiles("imports::test_import_in_loop", "\nuse printf in libc of c\n\nfn main() => int:\n    let i: int = 0\n    while i < 3:\n        printf(\"Iteration\")\n        i = i + 1\n    rm i\n    return 0\n\n")
+    bad = bad + compiles("imports::test_import_in_conditional", "\nuse printf, puts in libc of c\n\nfn main() => int:\n    let flag: bool = true\n    if flag:\n        printf(\"True\")\n    else:\n        puts(\"False\")\n    rm flag\n    return 0\n\n")
+    bad = bad + compiles("imports::test_malloc_object_handle_without_rm", "\nuse malloc, free in libc of c\n\nfn main() => int:\n    let p: object = malloc(64)\n    free(p)\n    return 0\n\n")
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

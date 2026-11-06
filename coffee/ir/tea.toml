@@ -1,2 +1,2 @@
 [test]
-include = ["../types/src", "../sema/src", "../parser/src", "../lexer/src", "src"]
+include = ["../own/src", "../types/src", "../sema/src", "../parser/src", "../lexer/src", "src"]

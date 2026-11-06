@@ -1,0 +1,18 @@
+/#/ Ported from tests/last_use_move_tests.rs.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + compiles("last_use_move::test_let_last_use_compiles", "\nclass Box:\n    n: int\n\nfn main() => int:\n    let a: Box = Box { n: 1 }\n    let b: Box = a\n    return b.n\n\n")
+    bad = bad + rejected("last_use_move::test_let_use_after_still_errors", "\nclass Box:\n    n: int\n\nfn main() => int:\n    let a: Box = Box { n: 1 }\n    let b: Box = a\n    return a.n\n\n", 0)
+    bad = bad + compiles("last_use_move::test_call_last_use_compiles", "\nclass Box:\n    n: int\n\nfn take(p: Box) => int:\n    return p.n\n\nfn main() => int:\n    let a: Box = Box { n: 1 }\n    return take(a)\n\n")
+    bad = bad + compiles("last_use_move::test_return_last_use_compiles", "\nclass Box:\n    n: int\n\nfn give() => Box:\n    let a: Box = Box { n: 1 }\n    return a\n\nfn main() => int:\n    let b: Box = give()\n    return b.n\n\n")
+    bad = bad + rejected("last_use_move::test_assign_use_after_still_errors", "\nclass Box:\n    n: int\n\nfn main() => int:\n    let a: Box = Box { n: 1 }\n    let b: Box = Box { n: 0 }\n    b = a\n    return a.n\n\n", 0)
+    bad = bad + rejected("last_use_move::test_borrowed_then_let_copy_errors", "\nclass Box:\n    n: int\n\nfn main() => int:\n    let a: Box = Box { n: 1 }\n    let r: &Box = &a\n    let b: Box = a\n    return r.n\n\n", 0)
+    bad = bad + compiles("last_use_move::test_explicit_mv_still_works", "\nclass Box:\n    n: int\n\nfn main() => int:\n    let a: Box = Box { n: 1 }\n    mv a b\n    return b.n\n\n")
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

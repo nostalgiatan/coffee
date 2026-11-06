@@ -1,0 +1,72 @@
+/#/ Ported from tests/control_flow_tests.rs.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + compiles("control_flow::test_simple_if", "\nfn main() => int:\n    let a: int = 10\n    if a > 5:\n        let b: int = 20\n        rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_if_else", "\nfn main() => int:\n    let a: int = 10\n    if a > 5:\n        let b: int = 20\n        rm b\n    else:\n        let c: int = 30\n        rm c\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_if_elif_else", "\nfn main() => int:\n    let a: int = 10\n    if a > 20:\n        let b: int = 30\n        rm b\n    elif a > 10:\n        let c: int = 40\n        rm c\n    else:\n        let d: int = 50\n        rm d\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_multiple_elif", "\nfn main() => int:\n    let a: int = 10\n    if a > 40:\n        let b: int = 50\n        rm b\n    elif a > 30:\n        let c: int = 60\n        rm c\n    elif a > 20:\n        let d: int = 70\n        rm d\n    elif a > 10:\n        let e: int = 80\n        rm e\n    else:\n        let f: int = 90\n        rm f\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_nested_if", "\nfn main() => int:\n    let a: int = 10\n    let b: int = 20\n    if a > 5:\n        if b > 15:\n            let c: int = 30\n            rm c\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_if_with_and_condition", "\nfn main() => int:\n    let a: int = 10\n    let b: int = 20\n    if a > 5 && b > 15:\n        let c: int = 30\n        rm c\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_if_with_or_condition", "\nfn main() => int:\n    let a: int = 10\n    let b: int = 20\n    if a > 15 || b > 15:\n        let c: int = 30\n        rm c\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_simple_while", "\nfn main() => int:\n    let i: int = 0\n    while i < 5:\n        i = i + 1\n    rm i\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_while_with_break", "\nfn main() => int:\n    let i: int = 0\n    while i < 10:\n        if i == 5:\n            break\n        i = i + 1\n    rm i\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_while_with_continue", "\nfn main() => int:\n    let i: int = 0\n    let sum: int = 0\n    while i < 10:\n        if i % 2 == 0:\n            i = i + 1\n            continue\n        sum = sum + i\n        i = i + 1\n    rm sum\n    rm i\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_nested_while", "\nfn main() => int:\n    let i: int = 0\n    let j: int = 0\n    while i < 3:\n        j = 0\n        while j < 3:\n            j = j + 1\n        i = i + 1\n    rm j\n    rm i\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_while_with_complex_condition", "\nfn main() => int:\n    let i: int = 0\n    let j: int = 0\n    while i < 10 && j < 5:\n        i = i + 1\n        j = j + 1\n    rm j\n    rm i\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_for_loop_range", "\nfn main() => int:\n    let sum: int = 0\n    for i in 0..10:\n        sum = sum + i\n    rm sum\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_for_loop_with_break", "\nfn main() => int:\n    let sum: int = 0\n    for i in 0..10:\n        if i == 5:\n            break\n        sum = sum + i\n    rm sum\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_for_loop_with_continue", "\nfn main() => int:\n    let sum: int = 0\n    for i in 0..10:\n        if i % 2 == 0:\n            continue\n        sum = sum + i\n    rm sum\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_nested_for_loop", "\nfn main() => int:\n    let sum: int = 0\n    for i in 0..3:\n        for j in 0..3:\n            sum = sum + i * j\n    rm sum\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_for_loop_with_start_end", "\nfn main() => int:\n    let sum: int = 0\n    for i in 5..10:\n        sum = sum + i\n    rm sum\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_for_in_array_literal", "\nfn main() => int:\n    for x in [1, 2, 3]:\n        let n: int = x\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_for_in_array_variable", "\nfn main() => int:\n    let xs: [int; 2] = [1, 2]\n    for x in xs:\n        let n: int = x\n    rm xs\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_for_in_array_call", "\nfn make_arr() => [int; 2]:\n    return [1, 2]\n\nfn main() => int:\n    for x in make_arr():\n        let n: int = x\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_for_in_slice_variable", "\nfn main() => int:\n    let xs: [int] = []\n    for x in xs:\n        let n: int = x\n    rm xs\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_for_in_slice_call", "\nfn make_xs() => [int]:\n    let xs: [int] = []\n    return xs\n\nfn main() => int:\n    for x in make_xs():\n        let n: int = x\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_for_in_body_let_field_access", "\nclass Point:\n    x: int\n\nfn main() => int:\n    let xs: [int; 1] = [1]\n    for x in xs:\n        let p: Point = Point { x: x }\n        if p.x > 0:\n            let n: int = p.x\n        rm p\n    rm xs\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_break_in_while", "\nfn main() => int:\n    let i: int = 0\n    while i < 10:\n        if i == 5:\n            break\n        i = i + 1\n    rm i\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_break_in_for", "\nfn main() => int:\n    let sum: int = 0\n    for i in 0..10:\n        if i == 5:\n            break\n        sum = sum + i\n    rm sum\n    return 0\n\n")
+    return bad
+
+fn part1() => int:
+    let bad = 0
+    bad = bad + compiles("control_flow::test_break_in_nested_loops", "\nfn main() => int:\n    let i: int = 0\n    let j: int = 0\n    while i < 10:\n        j = 0\n        while j < 10:\n            if j == 5:\n                break\n            j = j + 1\n        if i == 3:\n            break\n        i = i + 1\n    rm j\n    rm i\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_continue_in_while", "\nfn main() => int:\n    let i: int = 0\n    let sum: int = 0\n    while i < 10:\n        i = i + 1\n        if i % 2 == 0:\n            continue\n        sum = sum + i\n    rm sum\n    rm i\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_continue_in_for", "\nfn main() => int:\n    let sum: int = 0\n    for i in 0..10:\n        if i % 2 == 0:\n            continue\n        sum = sum + i\n    rm sum\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_continue_in_nested_loops", "\nfn main() => int:\n    let i: int = 0\n    let j: int = 0\n    let sum: int = 0\n    while i < 5:\n        j = 0\n        while j < 5:\n            j = j + 1\n            if j == 3:\n                continue\n            sum = sum + 1\n        i = i + 1\n    rm sum\n    rm j\n    rm i\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_simple_return", "\nfn get_value() => int:\n    return 42\n\nfn main() => int:\n    let value: int = get_value()\n    rm value\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_return_with_expression", "\nfn add(a: int, b: int) => int:\n    return a + b\n    rm b\n    rm a\n\nfn main() => int:\n    let result: int = add(10, 20)\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_multiple_return_points", "\nfn get_value(flag: bool) => int:\n    if flag:\n        return 1\n    else:\n        return 0\n\nfn main() => int:\n    let a: int = get_value(true)\n    let b: int = get_value(false)\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_return_in_loop", "\nfn find_value() => int:\n    let i: int = 0\n    while i < 10:\n        if i == 5:\n            return i\n        i = i + 1\n    rm i\n    return -1\n\nfn main() => int:\n    let result: int = find_value()\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_complex_nested_control_flow", "\nfn main() => int:\n    let i: int = 0\n    let j: int = 0\n    while i < 5:\n        if i == 2:\n            i = i + 1\n            continue\n        j = 0\n        while j < 5:\n            if j == 3:\n                j = j + 1\n                break\n            for k in 0..3:\n                if k == 1:\n                    continue\n        i = i + 1\n    rm j\n    rm i\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_fizzbuzz", "\nfn main() => int:\n    let i: int = 1\n    while i <= 15:\n        if i % 15 == 0:\n            let s: str = \"fizzbuzz\"\n            rm s\n        elif i % 3 == 0:\n            let s: str = \"fizz\"\n            rm s\n        elif i % 5 == 0:\n            let s: str = \"buzz\"\n            rm s\n        else:\n            let s: str = \"number\"\n            rm s\n        i = i + 1\n    rm i\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_factorial", "\nfn factorial(n: int) => int:\n    if n <= 1:\n        return 1\n    else:\n        let result: int = n * factorial(n - 1)\n        rm n\n        return result\n\nfn main() => int:\n    let result: int = factorial(5)\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_fibonacci", "\nfn fibonacci(n: int) => int:\n    if n <= 1:\n        return n\n    else:\n        let a: int = fibonacci(n - 1)\n        let b: int = fibonacci(n - 2)\n        let result: int = a + b\n        rm n\n        rm b\n        rm a\n        return result\n\nfn main() => int:\n    let result: int = fibonacci(10)\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_prime_check", "\nfn is_prime(n: int) => bool:\n    if n <= 1:\n        return false\n    let i: int = 2\n    while i * i <= n:\n        if n % i == 0:\n            return false\n        i = i + 1\n    rm i\n    rm n\n    return true\n\nfn main() => int:\n    let result: bool = is_prime(17)\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_infinite_loop_with_break", "\nfn main() => int:\n    let i: int = 0\n    while true:\n        if i == 5:\n            break\n        i = i + 1\n    rm i\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_empty_while", "\nfn main() => int:\n    let flag: bool = false\n    while flag:\n        let a: int = 10\n        rm a\n    rm flag\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_empty_for", "\nfn main() => int:\n    let sum: int = 0\n    for i in 10..5:\n        sum = sum + i\n    rm sum\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_single_iteration_loop", "\nfn main() => int:\n    let i: int = 0\n    while i < 1:\n        i = i + 1\n    rm i\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_nested_loops_with_break", "\nfn main() => int:\n    let sum: int = 0\n    for i in 0..10:\n        for j in 0..10:\n            if i == 5 && j == 5:\n                break\n            sum = sum + 1\n    rm sum\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_nested_loops_with_continue", "\nfn main() => int:\n    let sum: int = 0\n    for i in 0..10:\n        for j in 0..10:\n            if j == 5:\n                continue\n            sum = sum + 1\n    rm sum\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_complex_nested_if", "\nfn main() => int:\n    let a: int = 10\n    let b: int = 20\n    let c: int = 30\n    let result: int = 0\n    \n    if a > b:\n        if b > c:\n            result = 1\n        else:\n            result = 2\n    elif a > c:\n        result = 3\n    else:\n        result = 4\n    \n    rm a, b, c, result\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_while_with_break_and_continue", "\nfn main() => int:\n    let i: int = 0\n    let sum: int = 0\n    while i < 10:\n        i = i + 1\n        if i == 5:\n            continue\n        if i == 8:\n            break\n        sum = sum + i\n    rm i, sum\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_for_loop_with_range", "\nfn main() => int:\n    let sum: int = 0\n    for i in 1..100:\n        sum = sum + i\n    rm sum\n    return 0\n\n")
+    bad = bad + compiles("control_flow::test_multiple_breaks", "\nfn main() => int:\n    let i: int = 0\n    let count: int = 0\n    while i < 100:\n        i = i + 1\n        if i == 10:\n            break\n        if i == 5:\n            break\n        count = count + 1\n    rm i, count\n    return 0\n\n")
+    bad = bad + exits("control_flow::test_and_short_circuit_does_not_call_right", "\nuse exit in libc of c\n\nfn boom() => bool:\n    exit(99)\n    return true\n\nfn main() => int:\n    let x: bool = false && boom()\n    rm x\n    return 0\n\n", 0)
+    bad = bad + exits("control_flow::test_or_short_circuit_does_not_call_right", "\nuse exit in libc of c\n\nfn boom() => bool:\n    exit(99)\n    return false\n\nfn main() => int:\n    let x: bool = true || boom()\n    rm x\n    return 0\n\n", 0)
+    return bad
+
+fn part2() => int:
+    let bad = 0
+    bad = bad + exits("control_flow::test_bitwise_and_still_evaluates_right", "\nuse exit in libc of c\n\nfn boom() => int:\n    exit(99)\n    return 1\n\nfn main() => int:\n    let x: int = 0 & boom()\n    rm x\n    return 0\n\n", 99)
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    bad = bad + part1()
+    bad = bad + part2()
+    return bad

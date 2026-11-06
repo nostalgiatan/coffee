@@ -1,0 +1,16 @@
+/#/ Ported from tests/return_flow_tests.rs; the self-hosted compiler does not pass these yet.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + exits("return_flow::test_tail_match_int_returns_arm_value", "\nfn f(x: int) => int:\n    match x:\n        0 => 10\n        _ => 20\n\nfn main() => int:\n    return f(0) + f(5)\n", 30)
+    bad = bad + exits("return_flow::test_tail_match_selects_the_right_arm", "\nfn f(x: int) => int:\n    match x:\n        0 => 10\n        _ => 20\n\nfn main() => int:\n    return f(5)\n", 20)
+    bad = bad + exits("return_flow::test_tail_match_enum_unit_variants", "\nenum Color:\n    Red\n    Green\n    Blue\n\nfn name(c: Color) => int:\n    match c:\n        Color.Red => 1\n        Color.Green => 2\n        Color.Blue => 3\n\nfn main() => int:\n    return name(Color.Green)\n", 2)
+    bad = bad + exits("return_flow::test_method_tail_match_returns_arm_value", "\nclass A:\n    v: int\n\n    fn pick(self) => int:\n        match self.v:\n            1 => 40\n            _ => 50\n\nfn main() => int:\n    let a: A = A { v: 1 }\n    return a.pick()\n", 40)
+    bad = bad + exits("return_flow::test_method_trailing_expression_still_returns", "\nclass A:\n    v: int\n\n    fn plus(self, n: int) => int:\n        self.v + n\n\nfn main() => int:\n    let a: A = A { v: 1 }\n    return a.plus(4)\n", 5)
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

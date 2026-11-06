@@ -36,6 +36,28 @@ fn build_obj(src: str, opt: int, cfc: str) => Txt:
         return new_txt()
     return lw.object()
 
+/#/ What the front end says about `src`: -1 for nothing, 0 for a parse error, else the number of the
+/#/ first scope, type or ownership finding.
+fn first_error(src: str) => int:
+    let t = new_tys()
+    let g = new_globals()
+    let a = parse(src)
+    if a.err_count > 0:
+        return 0
+    let m = declare_module(&g, &a, "t")
+    let sc = check(&a, &g, m)
+    for k in 0..sc.diags.n:
+        if !sc_is_warning(sc.diags.code[k]):
+            return sc_number(sc.diags.code[k])
+    declare_types(&t, &g, &a, m)
+    let ty = check_types(&t, &g, &a, m)
+    if ty.diags.n > 0:
+        return te_number(ty.diags.code[0])
+    let fl = check_own(&t, &g, &a, &ty)
+    if fl.diags.n > 0:
+        return oe_number(fl.diags.code[0])
+    return 0 - 1
+
 /#/ The module of `src` lowered and optimized, not yet generated; `bad` is set when the front
 /#/ end or the lowering refused it.
 fn module_of(src: str, opt: int, cfc: str, t: &Tys, g: &Syms) => Lower:
@@ -45,16 +67,24 @@ fn module_of(src: str, opt: int, cfc: str, t: &Tys, g: &Syms) => Lower:
         declare_user_cfc(t, g, cfc, "user.cfc")
     let a = parse(src)
     let m = declare_module(g, &a, "t")
+    let sc = check(&a, g, m)
     declare_types(t, g, &a, m)
     let ty = check_types(t, g, &a, m)
-    if ty.diags.n > 0 || a.err_count > 0:
-        printf("front end: %d type findings, %d parse errors\n", ty.diags.n, a.err_count)
+    let fl = check_own(t, g, &a, &ty)
+    if sc.diags.errors() > 0 || ty.diags.n > 0 || a.err_count > 0 || fl.diags.n > 0:
+        printf("front end: %d scope errors, %d type findings, %d ownership findings, %d parse errors\n", sc.diags.errors(), ty.diags.n, fl.diags.n, a.err_count)
         for k in 0..a.err_count:
             if k < 20:
                 printf("  parse error %d at line %d\n", a.err_code[k], a.toks.line[a.err_tok[k]])
+        for k in 0..sc.diags.n:
+            if k < 20 && !sc_is_warning(sc.diags.code[k]):
+                printf("  scope error E%d at line %d\n", sc_number(sc.diags.code[k]), a.toks.line[sc.diags.tok[k]])
         for k in 0..ty.diags.n:
             if k < 20:
                 printf("  type finding E%d at line %d\n", te_number(ty.diags.code[k]), a.toks.line[ty.diags.tok[k]])
+        for k in 0..fl.diags.n:
+            if k < 20:
+                printf("  ownership finding E%d at line %d\n", oe_number(fl.diags.code[k]), a.toks.line[fl.diags.tok[k]])
         fflush(0)
         lw.bad = 1
         return lw

@@ -1,0 +1,14 @@
+/#/ Ported from tests/ownership_hole_tests.rs.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + exits("ownership_hole::test_rm_in_returning_branch_does_not_poison_later_use", "\nclass P:\n    n: int\n\nfn f(p: P, c: bool) => int:\n    if c:\n        rm p\n        return 1\n    return p.n\n\nfn main() => int:\n    let a: P = P { n: 4 }\n    return f(a, false)\n", 4)
+    bad = bad + rejected("ownership_hole::test_rm_in_non_returning_branch_still_poisons_later_use", "\nclass P:\n    n: int\n\nfn f(p: P, c: bool) => int:\n    if c:\n        rm p\n    return p.n\n\nfn main() => int:\n    let a: P = P { n: 4 }\n    return f(a, false)\n", 0)
+    bad = bad + exits("ownership_hole::test_move_in_returning_branch_does_not_poison_later_use", "\nclass P:\n    n: int\n\nfn eat(p: P) => int:\n    return 9\n\nfn f(p: P, c: bool) => int:\n    if c:\n        return eat(p)\n    return p.n\n\nfn main() => int:\n    let a: P = P { n: 4 }\n    return f(a, false)\n", 4)
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

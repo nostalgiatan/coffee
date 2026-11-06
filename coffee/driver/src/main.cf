@@ -1,8 +1,11 @@
 /#/ The self-hosted compiler: `coffee2 input.cf [-o out] [-I dir] [-O0..-O3] [--emit-obj]`.
 /#/ The code generator is our own x86-64 backend; the system `cc` links the object.
 /#/ The standard C library gives a program no arguments, so they are read from /proc/self/cmdline.
-use * in flat
+/#/ The modules are listed here, each once: an import reached by two paths is a conflict.
 use * in drive
+use * in cstr
+use * in files
+use * in flat
 use printf, fflush, system, exit in libc of c
 
 class Cli:

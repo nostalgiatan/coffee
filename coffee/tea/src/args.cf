@@ -1,6 +1,5 @@
 /#/ The command line, word by word. Coffee's `main` has no arguments, so they are read from
 /#/ /proc/self/cmdline, where the words end in NUL bytes.
-use * in files
 
 class Args:
     text: Txt

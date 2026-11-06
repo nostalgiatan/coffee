@@ -55,7 +55,7 @@ fn main() => int:
     if f.op[f.blast[b0]] != int(Op.Br) || f.nsucc(b0) != 1:
         m = m + 1
     f.set_block(b1)
-    f.ret(s1)
+    f.ret_v(s1)
     f.set_block(b2)
-    f.ret(x)
+    f.ret_v(x)
     return m

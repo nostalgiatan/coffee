@@ -634,8 +634,8 @@ class Gen:
         if sret:
             ci = 1
         let cx = 0
-        for k in 0..self.nav:
-            let v = self.av[k]
+        for an in 0..self.nav:
+            let v = self.av[an]
             let x = self.res(f, v)
             let r = f.rep[x]
             if r >= rp_first_agg():

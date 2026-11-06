@@ -1,6 +1,10 @@
 /#/ tea, the tool around the compiler. Each command is a module of its own; `main` only picks one.
 /#/
 /#/     tea test    run the tests of this directory (src/cmd_test.cf)
+use * in txt
+use * in cstr
+use * in files
+use * in args
 use * in cmd_test
 use printf, fflush in libc of c
 

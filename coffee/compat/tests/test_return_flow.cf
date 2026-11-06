@@ -1,0 +1,18 @@
+/#/ Ported from tests/return_flow_tests.rs.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + rejected("return_flow::test_missing_return_is_error", "\nfn f(x: int) => int:\n    let y: int = x + 1\n\nfn main() => int:\n    return f(1)\n", 0)
+    bad = bad + rejected("return_flow::test_missing_return_on_one_branch_is_error", "\nfn f(x: int) => int:\n    if x > 0:\n        return 1\n\nfn main() => int:\n    return f(1)\n", 0)
+    bad = bad + exits("return_flow::test_return_on_every_branch_is_ok", "\nfn f(x: int) => int:\n    if x > 0:\n        return 3\n    elif x < 0:\n        return 4\n    else:\n        return 5\n\nfn main() => int:\n    return f(1)\n", 3)
+    bad = bad + exits("return_flow::test_void_function_needs_no_return", "\nfn f() => void:\n    let y: int = 1\n    return\n\nfn g() => void:\n    let z: int = 2\n\nfn main() => int:\n    g()\n    return 7\n", 7)
+    bad = bad + exits("return_flow::test_raise_ends_a_path", "\nuse fprintf, exit in libc of c\n\nfn f(x: int) => int:\n    if x > 0:\n        return 6\n    raise Error(\"bad\")\n\nfn main() => int:\n    return f(1)\n", 6)
+    bad = bad + rejected("return_flow::test_tail_match_wrong_arm_type_is_error", "\nfn f(x: int) => int:\n    match x:\n        0 => \"zero\"\n        _ => 1\n\nfn main() => int:\n    return f(0)\n", 0)
+    bad = bad + rejected("return_flow::test_method_missing_return_is_error", "\nclass A:\n    v: int\n\n    fn get(self) => int:\n        let y: int = self.v\n\nfn main() => int:\n    let a: A = A { v: 1 }\n    return a.get()\n", 0)
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

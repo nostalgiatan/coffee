@@ -1,0 +1,38 @@
+/#/ Cases ported from the integration tests of the Rust compiler: a program and what is expected of it.
+/#/ Each returns 0 for a pass and 1 for a failure, and names the case on a failure.
+use * in drive
+use printf, fflush in libc of c
+
+/#/ The program compiles to an object.
+fn compiles(name: str, src: str) => int:
+    let dup = clone src
+    let o = build_src(src, 1)
+    if o.n == 0:
+        printf("FAIL %s: does not compile\n%s\n", name, dup)
+        fflush(0)
+        return 1
+    return 0
+
+/#/ The front end rejects the program; `code` is the number of the finding expected, 0 for any.
+fn rejected(name: str, src: str, code: int) => int:
+    let dup = clone src
+    let got = first_error(src)
+    if got < 0:
+        printf("FAIL %s: accepted, want an error\n%s\n", name, dup)
+        fflush(0)
+        return 1
+    if code > 0 && got != code:
+        printf("FAIL %s: error %d, want %d\n%s\n", name, got, code, dup)
+        fflush(0)
+        return 1
+    return 0
+
+/#/ The program runs and ends with `want`.
+fn exits(name: str, src: str, want: int) => int:
+    let dup = clone src
+    let r = run_src(src, false)
+    if r != want:
+        printf("FAIL %s: exit %d, want %d\n%s\n", name, r, want, dup)
+        fflush(0)
+        return 1
+    return 0

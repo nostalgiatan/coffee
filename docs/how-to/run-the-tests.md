@@ -27,6 +27,17 @@ cd coffee/ir
 /tmp/coffee-seed/tea test --compiler /tmp/coffee-seed/coffee2 tests/test_opt.cf
 ```
 
+## 移植过来的 Rust 测试
+
+`coffee/compat` 里是从 Rust 编译器的集成测试移植来的用例,用同样的方式运行:
+
+```bash
+cd coffee/compat
+/tmp/coffee-seed/tea test --compiler /tmp/coffee-seed/coffee2
+```
+
+还没通过的用例放在 `coffee/compat/pending/`,不会运行。分类和没有移植的部分见 `coffee/compat/README.md`。
+
 ## 用 stage0 运行
 
 stage0 的 `coffee test` 仍然可用,在该阶段的目录里运行,`-I` 要列出它依赖的阶段:

@@ -1,0 +1,12 @@
+/#/ Ported from tests/mir_cfg_tests.rs.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + compiles("mir_cfg::test_borrow_ends_with_if_scope_compiles", "\nfn main() => int:\n    let x: int = 10\n    if true:\n        let y: &int = &x\n        let n: int = *y\n    x = 11\n    return x\n\n")
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

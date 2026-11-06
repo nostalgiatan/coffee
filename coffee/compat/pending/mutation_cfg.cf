@@ -1,0 +1,15 @@
+/#/ Ported from tests/mutation_cfg_tests.rs; the self-hosted compiler does not pass these yet.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + rejected("mutation_cfg::continue_outside_loop_is_e111", "\nfn main() => int:\n    continue\n    return 0\n\n", 111)
+    bad = bad + rejected("mutation_cfg::continue_in_if_not_loop_is_e111", "\nfn main() => int:\n    if true:\n        continue\n    return 0\n\n", 111)
+    bad = bad + rejected("mutation_cfg::break_in_function_with_no_loop_is_e111", "\nfn helper() => int:\n    break\n    return 0\n\nfn main() => int:\n    return helper()\n\n", 111)
+    bad = bad + rejected("mutation_cfg::duplicate_fn_main_is_e001", "\nfn main() => int:\n    return 0\n\nfn main() => int:\n    return 1\n\n", 1)
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

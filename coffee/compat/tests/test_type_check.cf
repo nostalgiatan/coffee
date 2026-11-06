@@ -1,0 +1,107 @@
+/#/ Ported from tests/type_check_tests.rs.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + rejected("type_check::test_let_int_from_bool_is_type_error", "\nfn main() => int:\n    let x: int = true\n    rm x\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_let_int_from_bool_is_type_error_2", "\nfn main() => int:\n    let x: int = true\n    rm x\n    return 0\n\n", 100)
+    bad = bad + rejected("type_check::test_mismatch_displays_int_byte_width", "\nfn main() => int:\n    let x: int(4)+ = true\n    rm x\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_nested_let_in_if_is_type_error", "\nfn main() => int:\n    if true:\n        let x: int = true\n        rm x\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_unary_not_on_int_is_error", "\nfn main() => int:\n    if !42:\n        return 1\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_unary_neg_on_bool_is_error", "\nfn main() => int:\n    let x: int = -true\n    rm x\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_undefined_in_if_body_is_error", "\nfn main() => int:\n    if true:\n        let x: int = missing\n        rm x\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_undefined_in_while_condition_is_error", "\nfn main() => int:\n    while missing:\n        break\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_missing_method_is_error", "\nclass Box:\n    n: int\n\n    fn new(n: int) => Box:\n        Box { n: n }\n\nfn main() => int:\n    let b: Box = Box::new(1)\n    b.nope(1)\n    rm b\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_assign_bool_to_int_is_type_error", "\nfn main() => int:\n    let x: int = 0\n    x = true\n    rm x\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_match_bool_payload_used_as_int_is_type_error", "\nenum Flag:\n    Some(bool)\n    None\n\nfn as_int(n: int) => int:\n    return n\n\nfn main() => int:\n    let opt: Flag = Flag.Some(true)\n    match opt:\n        Flag.Some(x) => as_int(x)\n        Flag.None => 0\n    rm opt\n    return 0\n\n", 0)
+    bad = bad + compiles("type_check::test_match_int_payload_ok", "\nenum Option:\n    Some(int)\n    None\n\nfn as_int(n: int) => int:\n    return n\n\nfn main() => int:\n    let opt: Option = Option.Some(42)\n    match opt:\n        Option.Some(x) => as_int(x)\n        Option.None => 0\n    rm opt\n    return 0\n\n")
+    bad = bad + rejected("type_check::test_class_method_body_type_error", "\nclass Box:\n    n: int\n\n    fn new(n: int) => Box:\n        Box { n: n }\n\n    fn bad(self) => int:\n        let x: int = true\n        rm x\n        return 0\n\nfn main() => int:\n    let b: Box = Box::new(1)\n    rm b\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_call_bool_arg_to_int_param_is_type_error", "\nfn takes_int(x: int) => int:\n    return x\n\nfn main() => int:\n    let n: int = takes_int(true)\n    rm n\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_main_entry_bool_arg_to_int_param_is_type_error", "\nfn run(n: int) => int:\n    return n\n\nmain(run(true))\n", 0)
+    bad = bad + rejected("type_check::test_if_int_condition_is_error", "\nfn main() => int:\n    if 1:\n        return 1\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_unknown_class_field_is_error", "\nclass Box:\n    n: int\n\n    fn new(n: int) => Box:\n        Box { n: n }\n\nfn main() => int:\n    let b: Box = Box::new(1)\n    let x: int = b.missing\n    rm x\n    rm b\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_struct_literal_unknown_field_is_error", "\nclass Point:\n    x: int\n    y: int\n\nfn main() => int:\n    let p: Point = Point { x: 1, y: 2, z: 3 }\n    rm p\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_struct_literal_missing_field_is_error", "\nclass Point:\n    x: int\n    y: int\n\nfn main() => int:\n    let p: Point = Point { x: 1 }\n    rm p\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_struct_literal_missing_ancestor_field_is_error", "\nclass Base:\n    x: int\n\nclass Child of Base:\n    y: int\n\nfn main() => int:\n    let c: Child = Child { y: 9 }\n    rm c\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_error_subclass_literal_missing_code_is_error", "\nclass E of Error:\n\nfn main() => int:\n    let e: E = E { }\n    rm e\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_constructor_bool_arg_to_int_param_is_error", "\nclass Box:\n    n: int\n\n    fn new(n: int) => Box:\n        Box { n: n }\n\nfn main() => int:\n    let b: Box = Box::new(true)\n    rm b\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_enum_variant_bool_payload_for_int_is_error", "\nenum Flag:\n    Some(int)\n    None\n\nfn main() => int:\n    let opt: Flag = Flag.Some(true)\n    rm opt\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_self_field_assign_type_mismatch", "\nclass Box:\n    n: int\n\n    fn new(n: int) => Box:\n        Box { n: n }\n\n    fn bad(self) => int:\n        self.n = true\n        return 0\n\nfn main() => int:\n    let b: Box = Box::new(1)\n    rm b\n    return 0\n\n", 0)
+    bad = bad + compiles("type_check::test_for_in_bool_array_binds_as_bool", "\nfn main() => int:\n    let xs: [bool; 2] = [true, false]\n    for x in xs:\n        if x:\n            return 1\n    rm xs\n    return 0\n\n")
+    return bad
+
+fn part1() => int:
+    let bad = 0
+    bad = bad + rejected("type_check::test_match_enum_incomplete_is_error", "\nenum Color:\n    Red\n    Green\n    Blue\n\nfn main() => int:\n    let c: Color = Color.Red\n    match c:\n        Color.Red => 1\n        Color.Green => 2\n    rm c\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_duplicate_enum_variant_is_error", "\nenum Color:\n    Red\n    Red\n\nfn main() => int:\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_break_outside_loop_is_error", "\nfn main() => int:\n    break\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_undefined_param_type_is_error", "\nfn takes_bad(x: NoSuchType) => int:\n    return 0\n\nfn main() => int:\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_raise_int_is_error", "\nfn main() => int:\n    raise 1\n\n", 0)
+    bad = bad + rejected("type_check::test_nested_field_assign_type_error", "\nclass Inner:\n    n: int\n\nclass Outer:\n    inner: Inner\n\nfn main() => int:\n    let i: Inner = Inner { n: 0 }\n    let o: Outer = Outer { inner: i }\n    o.inner.n = true\n    rm o\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_raise_undefined_name_is_error", "\nfn main() => int:\n    raise nope\n\n", 0)
+    bad = bad + rejected("type_check::test_for_in_non_array_is_error", "\nfn main() => int:\n    for x in 1:\n        return 0\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_malloc_pointer_as_int_needs_explicit_cast", "\nuse malloc in libc of c\n\nfn main() => int:\n    let ptr: int = malloc(8)\n    return 0\n\n", 0)
+    bad = bad + compiles("type_check::test_malloc_pointer_as_int_needs_explicit_cast_2", "\nuse malloc in libc of c\n\nfn main() => int:\n    let ptr: int = malloc(8) as int\n    return 0\n\n")
+    bad = bad + rejected("type_check::test_int_does_not_become_a_pointer_implicitly", "\nuse free in libc of c\n\nfn main() => int:\n    let n: int = 4096\n    free(n)\n    return 0\n\n", 0)
+    bad = bad + compiles("type_check::test_printf_variadic_extra_arg_compiles", "\nuse printf in libc of c\n\nfn main() => int:\n    printf(\"%d\", 1)\n    printf(\"%d %s\", 1, \"x\")\n    return 0\n\n")
+    bad = bad + rejected("type_check::test_unknown_field_expr_stmt_is_error", "\nclass Box:\n    n: int\n\n    fn new(n: int) => Box:\n        Box { n: n }\n\nfn main() => int:\n    let b: Box = Box::new(1)\n    b.missing\n    rm b\n    return 0\n\n", 0)
+    bad = bad + compiles("type_check::test_zero_arg_method_call_compiles", "\nclass Box:\n    n: int\n\n    fn new(n: int) => Box:\n        Box { n: n }\n\n    fn ping(self) => int:\n        return self.n\n\nfn main() => int:\n    let b: Box = Box::new(1)\n    b.ping()\n    rm b\n    return 0\n\n")
+    bad = bad + rejected("type_check::test_range_bounds_must_be_int", "\nfn main() => int:\n    for i in true..3:\n        return 0\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_match_guard_must_be_bool", "\nfn main() => int:\n    let x: int = 1\n    match x:\n        n if 1 => 1\n        _ => 0\n    rm x\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_int_match_requires_catch_all", "\nfn main() => int:\n    let x: int = 1\n    match x:\n        0 => 0\n        1 => 1\n    rm x\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_raise_bool_is_error", "\nfn main() => int:\n    raise true\n\n", 0)
+    bad = bad + rejected("type_check::test_bool_not_assignable_to_object", "\nuse free in libc of c\n\nfn main() => int:\n    free(true)\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_object_not_assignable_to_int4", "\nuse malloc, free in libc of c\n\nfn main() => int:\n    let p: int(4)+ = malloc(8)\n    free(p)\n    return 0\n\n", 0)
+    bad = bad + compiles("type_check::test_empty_slice_literal_uses_annotation", "\nfn main() => int:\n    let xs: [int] = []\n    rm xs\n    return 0\n\n")
+    bad = bad + rejected("type_check::test_guarded_ident_is_not_exhaustive", "\nfn main() => int:\n    let x: int = 1\n    match x:\n        n if n > 0 => 1\n    rm x\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_raise_non_error_class_is_error", "\nclass Point:\n    x: int\n    y: int\n\nfn main() => int:\n    raise Point { x: 1, y: 2 }\n\n", 0)
+    bad = bad + rejected("type_check::test_use_after_move_is_error", "\nfn main() => int:\n    let a: int = 1\n    mv a b\n    let c: int = a\n    rm c\n    rm b\n    return 0\n\n", 0)
+    bad = bad + compiles("type_check::test_int_without_rm_compiles", "\nfn main() => int:\n    let x: int = 1\n    return x\n\n")
+    return bad
+
+fn part2() => int:
+    let bad = 0
+    bad = bad + rejected("type_check::test_resource_assign_copy_is_error", "\nclass Box:\n    n: int\n\nfn main() => int:\n    let a: Box = Box { n: 1 }\n    let b: Box = Box { n: 0 }\n    b = a\n    rm a\n    rm b\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_resource_let_copy_is_error", "\nclass Box:\n    n: int\n\nfn main() => int:\n    let a: Box = Box { n: 1 }\n    let b: Box = a\n    rm a\n    rm b\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_copy_keyword_is_error", "\nfn main() => int:\n    let a: int = 1\n    copy a b\n    rm a\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_clean_out_keyword_is_error", "\nfn main() => int:\n    let a: int = 1\n    clean out\n    return 0\n\n", 0)
+    bad = bad + compiles("type_check::test_resource_let_clone_expr", "\nclass Box:\n    n: int\n\nfn main() => int:\n    let a: Box = Box { n: 1 }\n    let b: Box = clone a\n    rm a\n    rm b\n    return 0\n\n")
+    bad = bad + compiles("type_check::test_statement_clone_binds_target", "\nclass Box:\n    n: int\n\nfn main() => int:\n    let a: Box = Box { n: 1 }\n    clone a b\n    rm a\n    rm b\n    return 0\n\n")
+    bad = bad + compiles("type_check::test_if_block_int_without_rm", "\nfn main() => int:\n    if true:\n        let x: int = 1\n    return 0\n\n")
+    bad = bad + compiles("type_check::test_if_block_class_without_rm", "\nclass Point:\n    x: int\n    y: int\n\nfn main() => int:\n    if true:\n        let p: Point = Point { x: 1, y: 2 }\n    return 0\n\n")
+    bad = bad + rejected("type_check::test_malloc_without_import_is_error", "\nfn main() => int:\n    let p: int = malloc(8)\n    return 0\n\n", 0)
+    bad = bad + compiles("type_check::test_narrow_int_literal_fits_annotated_width", "\nfn main() => int:\n    let a: int(1)+ = 127\n    let b: int(1)+ = -128\n    return 0\n\n")
+    bad = bad + rejected("type_check::test_narrow_int_literal_overflow_is_error", "\nfn main() => int:\n    let a: int(1)+ = 128\n    return 0\n\n", 0)
+    bad = bad + compiles("type_check::test_float32_literal_fits_annotation", "\nfn main() => int:\n    let a: float(4) = 1.5\n    return 0\n\n")
+    bad = bad + compiles("type_check::test_functions_typecheck_without_named_lifetime_syntax", "\nfn helper(x: int) => int:\n    return x\n\nfn main() => int:\n    return helper(1)\n\n")
+    bad = bad + rejected("type_check::test_narrow_int_from_wider_variable_is_error", "\nfn main() => int:\n    let a: int = 1\n    let b: int(1)+ = a\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_function_match_mixed_is_error", "\nc fn go() => void:\n\nfn main() => int:\n    match go():\n        1 => 0\n        _ => 0\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_void_match_mixed_is_error", "\nc fn go() => void:\n\nfn main() => int:\n    match go():\n        Color.Red => 0\n        _ => 0\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_object_match_mixed_is_error", "\nfn take(x: object) => int:\n    match x:\n        1 => 0\n        _ => 0\n    return 0\n\nfn main() => int:\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_error_listener_missing_handler_is_error", "\nfn f() #on_err => int:\n    return 0\n\nfn main() => int:\n    return 0\n\n", 0)
+    bad = bad + compiles("type_check::test_error_listener_ok_compiles", "\nfn on_err(err: Error) => int:\n    rm err\n    return 1\n\nfn f() #on_err => int:\n    return 0\n\nfn main() => int:\n    return f()\n\n")
+    bad = bad + rejected("type_check::test_raise_ordinary_point_class_is_error", "\nclass Point:\n    x: int\n    y: int\n\nfn main() => int:\n    raise Point { x: 1, y: 2 }\n\n", 0)
+    bad = bad + compiles("type_check::test_raise_class_of_error_compiles", "\nuse fprintf, exit in libc of c\n\nclass E of Error:\n\nfn main() => int:\n    raise E { code: 1, note: \"n\", e: 0 }\n\n")
+    bad = bad + compiles("type_check::test_error_subclass_extra_field_and_method_typechecks", "\nuse fprintf, exit in libc of c\n\nclass Boom of Error:\n    extra: int\n\n    fn ping(self) => int:\n        return self.extra\n\nfn main() => int:\n    let b: Boom = Boom { extra: 1, code: 1, note: \"n\", e: 0 }\n    b.ping()\n    rm b\n    raise Boom { extra: 1, code: 1, note: \"n\", e: 0 }\n\n")
+    bad = bad + rejected("type_check::test_user_class_error_is_type_error", "\nclass Error:\n    code: int\n\nfn main() => int:\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_fooerror_without_of_error_cannot_raise", "\nclass FooError:\n    n: int\n\nfn main() => int:\n    raise FooError { n: 1 }\n\n", 0)
+    bad = bad + rejected("type_check::test_list_int_generic_is_type_error", "\nfn main() => int:\n    let x: List<int> = 0\n    return 0\n\n", 0)
+    return bad
+
+fn part3() => int:
+    let bad = 0
+    bad = bad + rejected("type_check::test_slice_cannot_be_c_function_parameter", "\nc fn f(xs: [int]) => int:\n\nfn main() => int:\n    return 0\n\n", 0)
+    bad = bad + compiles("type_check::test_generic_box_struct_lit_typechecks", "\nclass Box<T>:\n    v: T\n\nfn main() => int:\n    let b: Box<int> = Box { v: 1 }\n    rm b\n    return 0\n\n")
+    bad = bad + compiles("type_check::test_generic_nested_box_typechecks", "\nclass Box<T>:\n    v: T\n\nfn main() => int:\n    let inner: Box<int> = Box { v: 1 }\n    let b: Box<Box<int>> = Box { v: inner }\n    rm b\n    return 0\n\n")
+    bad = bad + rejected("type_check::test_generic_wrong_arity_is_error", "\nclass Box<T>:\n    v: T\n\nfn main() => int:\n    let b: Box<int, int> = Box { v: 1 }\n    rm b\n    return 0\n\n", 0)
+    bad = bad + rejected("type_check::test_generic_missing_args_is_error", "\nclass Box<T>:\n    v: T\n\nfn main() => int:\n    let b: Box = Box { v: 1 }\n    rm b\n    return 0\n\n", 0)
+    bad = bad + compiles("type_check::test_generic_id_infers_t", "\nfn id<T>(x: T) => T:\n    return x\n\nfn main() => int:\n    let y: int = id(1)\n    return y\n\n")
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    bad = bad + part1()
+    bad = bad + part2()
+    bad = bad + part3()
+    return bad

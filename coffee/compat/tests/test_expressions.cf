@@ -1,0 +1,63 @@
+/#/ Ported from tests/expressions_tests.rs.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + compiles("expressions::test_integer_literal", "\nfn main() => int:\n    let a: int = 42\n    let b: int = -100\n    let c: int = 0\n    rm c\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_float_literal", "\nfn main() => int:\n    let a: float = 3.14\n    let b: float = -2.718\n    let c: float = 0.0\n    rm c\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_bool_literal", "\nfn main() => int:\n    let a: bool = true\n    let b: bool = false\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_string_literal", "\nfn main() => int:\n    let a: str = \"hello\"\n    let b: str = \"\"\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_addition", "\nfn main() => int:\n    let a: int = 10 + 20\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_subtraction", "\nfn main() => int:\n    let a: int = 20 - 10\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_multiplication", "\nfn main() => int:\n    let a: int = 5 * 6\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_division", "\nfn main() => int:\n    let a: int = 20 // 5\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_modulo", "\nfn main() => int:\n    let a: int = 20 % 3\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_equality", "\nfn main() => int:\n    let a: bool = 10 == 10\n    let b: bool = 10 != 20\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_comparison", "\nfn main() => int:\n    let a: bool = 10 < 20\n    let b: bool = 20 > 10\n    let c: bool = 10 <= 10\n    let d: bool = 10 >= 10\n    rm d\n    rm c\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_logical_and", "\nfn main() => int:\n    let a: bool = true && false\n    let b: bool = true && true\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_logical_or", "\nfn main() => int:\n    let a: bool = true || false\n    let b: bool = false || false\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_negation", "\nfn main() => int:\n    let a: int = -10\n    let b: int = -(-10)\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_logical_not", "\nfn main() => int:\n    let a: bool = !true\n    let b: bool = !false\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_multiplication_before_addition", "\nfn main() => int:\n    let a: int = 2 + 3 * 4\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_parentheses_override", "\nfn main() => int:\n    let a: int = (2 + 3) * 4\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_complex_expression", "\nfn main() => int:\n    let a: int = (10 + 20) * (30 - 40) // 5\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_logical_and_before_or", "\nfn main() => int:\n    let a: bool = true && false || true\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_comparison_before_logical", "\nfn main() => int:\n    let a: bool = 10 < 20 && 30 > 40\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_simple_function_call", "\nfn add(a: int, b: int) => int:\n    return a + b\n\nfn main() => int:\n    let result: int = add(10, 20)\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_nested_function_call", "\nfn add(a: int, b: int) => int:\n    return a + b\n\nfn multiply(a: int, b: int) => int:\n    return a * b\n\nfn main() => int:\n    let result: int = add(multiply(2, 3), 4)\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_function_call_with_expressions", "\nfn add(a: int, b: int) => int:\n    return a + b\n\nfn main() => int:\n    let result: int = add(10 + 5, 20 * 2)\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_field_access", "\nclass Point:\n    x: int\n    y: int\n\nfn main() => int:\n    let p: Point = Point { x: 10, y: 20 }\n    let x_val: int = p.x\n    let y_val: int = p.y\n    rm y_val\n    rm x_val\n    rm p\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_nested_field_access", "\nclass Point:\n    x: int\n    y: int\n\nclass Line:\n    start: Point\n    end: Point\n\nfn main() => int:\n    let p1: Point = Point { x: 0, y: 0 }\n    let p2: Point = Point { x: 100, y: 100 }\n    let line: Line = Line { start: p1, end: p2 }\n    let start_x: int = line.start.x\n    let end_y: int = line.end.y\n    rm end_y\n    rm start_x\n    rm line\n    rm p2\n    rm p1\n    return 0\n\n")
+    return bad
+
+fn part1() => int:
+    let bad = 0
+    bad = bad + compiles("expressions::test_int_to_float_conversion", "\nfn main() => int:\n    let a: int = 42\n    let b: float = 3.14\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_mixed_type_arithmetic", "\nfn main() => int:\n    let a: int = 10\n    let b: int = 20\n    let c: int = a + b\n    rm c\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_complex_arithmetic", "\nfn main() => int:\n    let a: int = ((10 + 20) * 30 - 40) // 5\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_complex_boolean", "\nfn main() => int:\n    let a: bool = (10 < 20) && (30 > 40) || (50 == 50)\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_complex_with_function_calls", "\nfn add(a: int, b: int) => int:\n    return a + b\n\nfn main() => int:\n    let result: int = add(10, 20) + add(30, 40)\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_complex_with_field_access", "\nclass Point:\n    x: int\n    y: int\n\nfn main() => int:\n    let p: Point = Point { x: 10, y: 20 }\n    let sum: int = p.x + p.y\n    rm sum\n    rm p\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_very_complex_expression", "\nclass Point:\n    x: int\n    y: int\n\nfn add(a: int, b: int) => int:\n    return a + b\n\nfn main() => int:\n    let p1: Point = Point { x: 10, y: 20 }\n    let p2: Point = Point { x: 30, y: 40 }\n    let sum1: int = add(p1.x, p2.x)\n    let sum2: int = add(p1.y, p2.y)\n    let sum: int = sum1 + sum2\n    rm sum\n    rm sum2\n    rm sum1\n    rm p2\n    rm p1\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_division_by_zero_compiles", "\nfn main() => int:\n    let a: int = 10 // 0\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_modulo_by_zero_compiles", "\nfn main() => int:\n    let a: int = 10 % 0\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_very_large_number", "\nfn main() => int:\n    let a: int = 9223372036854775807\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_very_negative_number", "\nfn main() => int:\n    let a: int = -9223372036854775807\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_very_long_string", "\nfn main() => int:\n    let a: str = \"this is a very long string that contains many characters and should still compile without any issues\"\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_bitwise_operations", "\nfn main() => int:\n    let a: int = 15\n    let b: int = 7\n    let c: int = a & b\n    let d: int = a | b\n    let e: int = a ^ b\n    let f: int = a << 2\n    let g: int = a >> 1\n    rm a, b, c, d, e, f, g\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_complex_arithmetic_operations", "\nfn main() => int:\n    let a: int = 10\n    let b: int = 5\n    let c: int = (a + b) * (a - b) // (a // b)\n    rm a, b, c\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_operator_precedence", "\nfn main() => int:\n    let a: int = 10\n    let b: int = 5\n    let c: int = 3\n    let d: int = a + b * c\n    let e: int = (a + b) * c\n    let f: int = a // b + c\n    let g: int = a // (b + c)\n    rm a, b, c, d, e, f, g\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_nested_expressions", "\nfn main() => int:\n    let a: int = (((1 + 2) * 3) - 4) // 2\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_mixed_operations", "\nfn main() => int:\n    let a: int = 10\n    let b: float = 3.5\n    let c: bool = true\n    let d: int = a + int(b)\n    rm a, b, c, d\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_comparison_chaining", "\nfn main() => int:\n    let a: int = 5\n    let b: int = 10\n    let c: int = 15\n    let d: bool = a < b && b < c\n    rm a, b, c, d\n    return 0\n\n")
+    bad = bad + compiles("expressions::test_bitwise_not", "\nfn main() => int:\n    let a: int = 15\n    let b: int = ~a\n    let c: int = a & b | ~b\n    rm a, b, c\n    return 0\n\n")
+    bad = bad + rejected("expressions::test_bitwise_not_on_float_is_error", "\nfn main() => int:\n    let a: float = 1.0\n    let b: int = ~a\n    return 0\n\n", 0)
+    bad = bad + rejected("expressions::test_bitwise_not_on_bool_is_error", "\nfn main() => int:\n    let a: bool = true\n    let b: int = ~a\n    return 0\n\n", 0)
+    bad = bad + rejected("expressions::test_bitwise_not_on_pointer_is_error", "\nfn main() => int:\n    let a: int = 1\n    let r: &int = &a\n    let b: int = ~r\n    return 0\n\n", 0)
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    bad = bad + part1()
+    return bad

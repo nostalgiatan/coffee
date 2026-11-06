@@ -1,5 +1,4 @@
 /#/ Reading and writing whole files by a path held in a `Txt`.
-use * in cstr
 use fopen, fclose, fgetc, fputc, remove, access in libc of c
 
 /#/ The bytes of the file; `n` is -1 when it cannot be opened.

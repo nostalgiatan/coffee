@@ -10,7 +10,7 @@ fn main() => int:
     f.set_block(b0)
     let x = f.param(b0, i64, -1)
     let y = f.bin(int(Op.Add), x, f.cint(i64, 1))
-    f.ret(y)
+    f.ret_v(y)
     let o = new_txt()
     put_fun(&o, &f, &rs)
     if !o.is("fn add_one(%0: i64) -> i64:\nconsts:\n  %1 = const i64 1\nbb0:\n  %2 = add i64 %0, %1\n  ret %2\n"):
@@ -40,7 +40,7 @@ fn main() => int:
     g.arg(g.bin(int(Op.Add), r, g.cint(i64, 1)))
     g.br(head)
     g.set_block(done)
-    g.ret(i)
+    g.ret_v(i)
     let p = new_txt()
     put_fun(&p, &g, &rs)
     let want = "fn count(%0: i64) -> i64:\nconsts:\n  %1 = const i64 0\n  %7 = const i64 1\nbb0:\n  br bb1(%1)\nbb1(%3: i64):\n  %4 = cmp.slt i8 %3, %0\n  condbr %4, bb2(%3), bb3()\nbb2:\n  %6 = call i64 @4(%3)\n  %8 = add i64 %6, %7\n  br bb1(%8)\nbb3:\n  ret %3\n"

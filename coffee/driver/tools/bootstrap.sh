@@ -5,7 +5,7 @@
 set -e
 R=$(realpath "${1:?rust coffee binary}"); D=$(realpath -m "${2:?work dir}"); H=$(realpath "$(dirname "$0")/..")
 mkdir -p "$D"; cp "$H/src/main.cf" "$D/main.cf"; cd "$D"
-INC="-I $H/src -I $H/../ir/src -I $H/../types/src -I $H/../sema/src -I $H/../parser/src -I $H/../lexer/src"
+INC="-I $H/src -I $H/../ir/src -I $H/../own/src -I $H/../types/src -I $H/../sema/src -I $H/../parser/src -I $H/../lexer/src"
 $R --test-mode $INC main.cf --bin -o gen2 >/dev/null
 ./gen2 main.cf $INC --emit-obj -o gen2.o
 cc -o gen3 gen2.o -lm

@@ -23,7 +23,7 @@ fn good() => Fun:
     g.arg(g.bin(int(Op.Add), i, g.cint(i64, 1)))
     g.br(head)
     g.set_block(done)
-    g.ret(i)
+    g.ret_v(i)
     return g
 
 fn miss(f: &Fun, code: int, want: int) => int:
@@ -93,7 +93,7 @@ fn main() => int:
     let h0 = h.new_block()
     h.set_block(h0)
     let hp = h.param(h0, i32, -1)
-    h.ret(hp)
+    h.ret_v(hp)
     m = m + miss(&h, int(Ve.RetType), 1)
     /#/ a value used in a block its definition does not dominate
     let k = new_fun("k", i64)
@@ -113,7 +113,7 @@ fn main() => int:
     k.set_block(k2)
     k.br(k3)
     k.set_block(k3)
-    k.ret(inside)
+    k.ret_v(inside)
     m = m + miss(&k, int(Ve.NotDominated), 1)
     /#/ and a use before the definition in one block
     let q = new_fun("q", i64)
@@ -123,6 +123,6 @@ fn main() => int:
     let first = q.raw(int(Op.Neg), i64, -1, qp, -1, -1, 0)
     let later = q.raw(int(Op.Add), i64, -1, first, first, -1, 0)
     q.a[first] = later
-    q.ret(first)
+    q.ret_v(first)
     m = m + miss(&q, int(Ve.NotDominated), 1)
     return m

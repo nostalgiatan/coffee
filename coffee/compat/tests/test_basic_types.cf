@@ -1,0 +1,62 @@
+/#/ Ported from tests/basic_types_tests.rs.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + compiles("basic_types::test_int_type", "\nfn main() => int:\n    let a: int = 42\n    let b: int = -100\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_int_1_byte_signed", "\nfn main() => int:\n    let a: int(1)+ = 127\n    let b: int(1)+ = -128\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_int_2_bytes_signed", "\nfn main() => int:\n    let a: int(2)+ = 32767\n    let b: int(2)+ = -32768\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_int_4_bytes_signed", "\nfn main() => int:\n    let a: int(4)+ = 2147483647\n    let b: int(4)+ = -2147483648\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_int_8_bytes_signed", "\nfn main() => int:\n    let a: int(8)+ = 9223372036854775807\n    let b: int(8)+ = 0\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_int_1_byte_unsigned", "\nfn main() => int:\n    let a: int(1)- = 255\n    let b: int(1)- = 0\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_int_2_bytes_unsigned", "\nfn main() => int:\n    let a: int(2)- = 65535\n    let b: int(2)- = 0\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_int_4_bytes_unsigned", "\nfn main() => int:\n    let a: int(4)- = 4294967295\n    let b: int(4)- = 0\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_int_8_bytes_unsigned", "\nfn main() => int:\n    let a: int(8)- = 1000000000\n    let b: int(8)- = 0\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_int_arithmetic", "\nfn main() => int:\n    let a: int = 10\n    let b: int = 20\n    let c: int = a + b\n    let d: int = a - b\n    let e: int = a * b\n    let f: int = b // a\n    let g: int = b % a\n    rm g\n    rm f\n    rm e\n    rm d\n    rm c\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_int_comparison", "\nfn main() => int:\n    let a: int = 10\n    let b: int = 20\n    let c: bool = a == b\n    let d: bool = a != b\n    let e: bool = a < b\n    let f: bool = a > b\n    let g: bool = a <= b\n    let h: bool = a >= b\n    rm h\n    rm g\n    rm f\n    rm e\n    rm d\n    rm c\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_float_type", "\nfn main() => int:\n    let a: float = 3.14\n    let b: float = -2.718\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_float_4_bytes", "\nfn main() => int:\n    let a: float(4) = 3.14159\n    let b: float(4) = -2.71828\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_float_8_bytes", "\nfn main() => int:\n    let a: float(8) = 3.141592653589793\n    let b: float(8) = -2.718281828459045\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_float_arithmetic", "\nfn main() => int:\n    let a: float = 10.5\n    let b: float = 20.3\n    let c: float = a + b\n    let d: float = a - b\n    let e: float = a * b\n    let f: float = b / a\n    rm f\n    rm e\n    rm d\n    rm c\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_float_comparison", "\nfn main() => int:\n    let a: float = 10.5\n    let b: float = 20.3\n    let c: bool = a == b\n    let d: bool = a != b\n    let e: bool = a < b\n    let f: bool = a > b\n    let g: bool = a <= b\n    let h: bool = a >= b\n    rm h\n    rm g\n    rm f\n    rm e\n    rm d\n    rm c\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_bool_type", "\nfn main() => int:\n    let a: bool = true\n    let b: bool = false\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_bool_comparison", "\nfn main() => int:\n    let a: bool = true\n    let b: bool = false\n    let c: bool = a == b\n    let d: bool = a != b\n    rm d\n    rm c\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_string_type", "\nfn main() => int:\n    let a: str = \"hello\"\n    let b: str = \"world\"\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_string_type_alias", "\nfn main() => int:\n    let a: string = \"hello\"\n    let b: string = \"world\"\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_string_with_special_chars", "\nfn main() => int:\n    let a: str = \"hello\\nworld\"\n    let b: str = \"tab\\there\"\n    let c: str = \"quote\\\"test\"\n    rm c\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_string_empty", "\nfn main() => int:\n    let a: str = \"\"\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_unit_type", "\nfn main() => int:\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_void_type", "\nfn do_nothing() => int:\n    return 0\n\nfn main() => int:\n    do_nothing()\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_int_to_float", "\nfn main() => int:\n    let a: int = 42\n    let b: float = 3.14\n    rm b\n    rm a\n    return 0\n\n")
+    return bad
+
+fn part1() => int:
+    let bad = 0
+    bad = bad + compiles("basic_types::test_float_to_int", "\nfn main() => int:\n    let a: float = 42.0\n    let b: int = 3\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_different_int_sizes", "\nfn main() => int:\n    let a: int(1)+ = 127\n    let b: int(2)+ = 32767\n    let c: int(4)+ = 2147483647\n    let d: int(8)+ = 9223372036854775807\n    rm d\n    rm c\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_different_float_sizes", "\nfn main() => int:\n    let a: float(4) = 3.14159\n    let b: float(8) = 3.141592653589793\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_int_zero", "\nfn main() => int:\n    let a: int = 0\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_float_zero", "\nfn main() => int:\n    let a: float = 0.0\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_float_negative_zero", "\nfn main() => int:\n    let a: float = -0.0\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_int_max_values", "\nfn main() => int:\n    let a: int(1)+ = 127\n    let b: int(2)+ = 32767\n    let c: int(4)+ = 2147483647\n    let d: int(8)+ = 9223372036854775807\n    rm d\n    rm c\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_int_min_values", "\nfn main() => int:\n    let a: int(1)+ = 0\n    let b: int(2)+ = 0\n    let c: int(4)+ = 0\n    let d: int(8)+ = 0\n    rm d\n    rm c\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_unsigned_int_max_values", "\nfn main() => int:\n    let a: int(1)- = 255\n    let b: int(2)- = 65535\n    let c: int(4)- = 1000000\n    let d: int(8)- = 1000000000\n    rm d\n    rm c\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_float_infinity", "\nfn main() => int:\n    let a: float = 1.0 / 0.0\n    let b: float = -1.0 / 0.0\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_float_nan", "\nfn main() => int:\n    let a: float = 0.0 / 0.0\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_int_overflow", "\nfn main() => int:\n    let a: int(1)+ = 127\n    let b: int(1)+ = 1\n    let c: int(1)+ = a + b\n    rm a, b, c\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_unsigned_int", "\nfn main() => int:\n    let a: int(4)- = 4294967295\n    let b: int(4)- = 1\n    let c: int(4)- = a + b\n    rm a, b, c\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_string_concat", "\nfn main() => int:\n    let a: str = \"Hello\"\n    let b: str = \"World\"\n    rm a, b\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_bool_operations", "\nfn main() => int:\n    let a: bool = true\n    let b: bool = false\n    let c: bool = a && b\n    let d: bool = a || b\n    let e: bool = !a\n    rm a, b, c, d, e\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_type_conversion", "\nfn main() => int:\n    let a: int = 42\n    let b: float = 3.14\n    rm a, b\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_array_literal", "\nfn main() => int:\n    let arr: [int; 3] = [1, 2, 3]\n    rm arr\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_array_index_binary_expr", "\nfn main() => int:\n    let arr: [int; 3] = [1, 2, 3]\n    let i: int = 1\n    let x: int = arr[i + 1]\n    rm arr, i, x\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_nested_tuple", "\nfn main() => int:\n    let t: ((int, int), int) = ((1, 2), 3)\n    rm t\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_triple_nested_tuple", "\nfn main() => int:\n    let t: (((int, int), int), int) = (((1, 2), 3), 4)\n    rm t\n    return 0\n\n")
+    bad = bad + compiles("basic_types::test_complex_tuple", "\nfn main() => int:\n    let t: (int, float, str, bool) = (42, 3.14, \"hello\", true)\n    rm t\n    return 0\n\n")
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    bad = bad + part1()
+    return bad

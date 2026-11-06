@@ -1,3 +1,6 @@
+use * in drive
+use * in cstr
+use * in files
 use * in flat
 use printf, fflush in libc of c
 

@@ -6,7 +6,7 @@
 set -e
 D=$(realpath -m "${1:?work dir}"); H=$(realpath "$(dirname "$0")/.."); CC=${CC:-cc}
 mkdir -p "$D"; cd "$D"
-INC="-I $H/src -I $H/../ir/src -I $H/../types/src -I $H/../sema/src -I $H/../parser/src -I $H/../lexer/src"
+INC="-I $H/src -I $H/../ir/src -I $H/../own/src -I $H/../types/src -I $H/../sema/src -I $H/../parser/src -I $H/../lexer/src"
 gunzip -c "$H/seed/coffee2-x86_64.o.gz" > seed.o
 $CC -o seed seed.o -lm
 ./seed "$H/src/main.cf" $INC --emit-obj -o gen1.o

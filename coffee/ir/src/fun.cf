@@ -758,7 +758,7 @@ class Fun:
         self.cn = 0
         return self.raw(int(Op.Switch), int(Rp.Void), -1, self.follow(v), n, default_edge, start)
 
-    fn ret(self, v: int) => int:
+    fn ret_v(self, v: int) => int:
         return self.raw(int(Op.Ret), int(Rp.Void), -1, self.follow(v), -1, -1, 0)
 
     fn ret_void(self) => int:

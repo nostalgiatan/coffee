@@ -1,6 +1,5 @@
 /#/ Strings built at run time from bytes. There is no way to make a `str` from a buffer, so a byte
 /#/ becomes a one-character literal and the pieces are joined pairwise (O(n log n), not O(n^2)).
-use * in txt
 
 /#/ The one-character string of byte `c` (anything outside printable ASCII, tab and newline is `?`).
 fn ch_str(c: int) => str:

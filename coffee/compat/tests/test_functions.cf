@@ -1,0 +1,58 @@
+/#/ Ported from tests/functions_tests.rs.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + compiles("functions::test_simple_function", "\nfn greet() => int:\n    return 42\n\nfn main() => int:\n    let result: int = greet()\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("functions::test_function_with_parameters", "\nfn add(a: int, b: int) => int:\n    return a + b\n\nfn main() => int:\n    let result: int = add(10, 20)\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("functions::test_function_with_return_value", "\nfn multiply(a: int, b: int) => int:\n    return a * b\n\nfn main() => int:\n    let result: int = multiply(5, 6)\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("functions::test_function_no_return_value", "\nfn do_nothing() => int:\n    return 0\n\nfn main() => int:\n    do_nothing()\n    return 0\n\n")
+    bad = bad + compiles("functions::test_function_unit_return", "\nfn do_nothing() => int:\n    return 0\n\nfn main() => int:\n    do_nothing()\n    return 0\n\n")
+    bad = bad + compiles("functions::test_single_parameter", "\nfn square(x: int) => int:\n    return x * x\n\nfn main() => int:\n    let result: int = square(5)\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("functions::test_multiple_parameters", "\nfn add_three(a: int, b: int, c: int) => int:\n    return a + b + c\n\nfn main() => int:\n    let result: int = add_three(10, 20, 30)\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("functions::test_different_type_parameters", "\nfn combine(a: int, b: float, c: bool) => int:\n    return 0\n\nfn main() => int:\n    let result: int = combine(10, 3.14, true)\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("functions::test_string_parameter", "\nfn print_length(s: str) => int:\n    return 0\n\nfn main() => int:\n    let result: int = print_length(\"hello\")\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("functions::test_bool_parameter", "\nfn toggle(flag: bool) => bool:\n    return !flag\n\nfn main() => int:\n    let result: bool = toggle(true)\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("functions::test_nested_function_calls", "\nfn add(a: int, b: int) => int:\n    return a + b\n\nfn main() => int:\n    let result: int = add(add(1, 2), add(3, 4))\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("functions::test_function_call_in_expression", "\nfn square(x: int) => int:\n    return x * x\n\nfn main() => int:\n    let result: int = square(5) + square(10)\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("functions::test_function_call_in_condition", "\nfn is_positive(x: int) => bool:\n    return x > 0\n\nfn main() => int:\n    if is_positive(10):\n        let a: int = 20\n        rm a\n    return 0\n\n")
+    bad = bad + compiles("functions::test_function_call_in_loop", "\nfn square(x: int) => int:\n    return x * x\n\nfn main() => int:\n    let sum: int = 0\n    let i: int = 0\n    while i < 5:\n        let s: int = square(i)\n        sum = sum + s\n        rm s\n        i = i + 1\n    rm i\n    rm sum\n    return 0\n\n")
+    bad = bad + compiles("functions::test_simple_recursion", "\nfn countdown(n: int) => int:\n    if n <= 0:\n        return 0\n    let result: int = countdown(n - 1)\n    return n + result\n\nfn main() => int:\n    let result: int = countdown(5)\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("functions::test_factorial_recursion", "\nfn factorial(n: int) => int:\n    if n <= 1:\n        return 1\n    let f: int = factorial(n - 1)\n    let result: int = n * f\n    rm f\n    return result\n\nfn main() => int:\n    let result: int = factorial(5)\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("functions::test_fibonacci_recursion", "\nfn fibonacci(n: int) => int:\n    if n <= 1:\n        return n\n    let a: int = fibonacci(n - 1)\n    let b: int = fibonacci(n - 2)\n    let result: int = a + b\n    rm b\n    rm a\n    return result\n\nfn main() => int:\n    let result: int = fibonacci(7)\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("functions::test_mutual_recursion", "\nfn is_even(n: int) => bool:\n    if n == 0:\n        return true\n    let result: bool = is_odd(n - 1)\n    return result\n\nfn is_odd(n: int) => bool:\n    if n == 0:\n        return false\n    let result: bool = is_even(n - 1)\n    return result\n\nfn main() => int:\n    let a: bool = is_even(10)\n    let b: bool = is_odd(10)\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("functions::test_function_as_parameter", "\nfn apply(f: int, x: int) => int:\n    return f\n\nfn main() => int:\n    let result: int = apply(42, 10)\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("functions::test_function_returning_function", "\nfn get_adder() => int:\n    return 42\n\nfn main() => int:\n    let adder: int = get_adder()\n    rm adder\n    return 0\n\n")
+    bad = bad + compiles("functions::test_c_abi_function", "\nc fn c_function(x: int) => int:\n    return x * 2\n\nfn main() => int:\n    let result: int = c_function(21)\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("functions::test_c_abi_with_multiple_params", "\nc fn c_add(a: int, b: int) => int:\n    return a + b\n\nfn main() => int:\n    let result: int = c_add(10, 20)\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("functions::test_error_handler_function", "\nfn on_err(err: Error) => int:\n    return -1\n\nfn risky_operation() #on_err => int:\n    return 42\n\nfn main() => int:\n    let result: int = risky_operation()\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("functions::test_error_handler_with_params", "\nfn on_err(err: Error) => int:\n    return -1\n\nfn divide(a: int, b: int) #on_err => int:\n    return 0\n\nfn main() => int:\n    let result: int = divide(10, 2)\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("functions::test_function_with_local_variables", "\nfn complex_calculation(x: int, y: int) => int:\n    let temp1: int = x * 2\n    let temp2: int = y * 3\n    let result: int = temp1 + temp2\n    rm temp1\n    rm temp2\n    return result\n\nfn main() => int:\n    let result: int = complex_calculation(5, 10)\n    rm result\n    return 0\n\n")
+    return bad
+
+fn part1() => int:
+    let bad = 0
+    bad = bad + compiles("functions::test_function_with_nested_scopes", "\nfn nested_scopes(x: int) => int:\n    let y: int = x * 2\n    if x > 0:\n        let z: int = y * 3\n        rm z\n    rm y\n    return 0\n\nfn main() => int:\n    let result: int = nested_scopes(5)\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("functions::test_function_with_loops", "\nfn sum_range(start: int, end: int) => int:\n    let sum: int = 0\n    for i in start..end:\n        sum = sum + i\n    return sum\n\nfn main() => int:\n    let result: int = sum_range(1, 11)\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("functions::test_function_with_conditionals", "\nfn classify(n: int) => int:\n    if n < 0:\n        return -1\n    elif n == 0:\n        return 0\n    else:\n        return 1\n\nfn main() => int:\n    let a: int = classify(-5)\n    let b: int = classify(0)\n    let c: int = classify(5)\n    rm c\n    rm b\n    rm a\n    return 0\n\n")
+    bad = bad + compiles("functions::test_function_with_no_parameters", "\nfn get_value() => int:\n    return 42\n\nfn main() => int:\n    let result: int = get_value()\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("functions::test_function_with_many_parameters", "\nfn many_params(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: int) => int:\n    return 0\n\nfn main() => int:\n    let result: int = many_params(1, 2, 3, 4, 5, 6, 7, 8)\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("functions::test_function_call_with_literals", "\nfn add(a: int, b: int) => int:\n    return a + b\n\nfn main() => int:\n    let result: int = add(100, 200)\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("functions::test_function_call_with_variables", "\nfn add(a: int, b: int) => int:\n    return a + b\n\nfn main() => int:\n    let x: int = 10\n    let y: int = 20\n    let result: int = add(x, y)\n    rm result\n    rm y\n    rm x\n    return 0\n\n")
+    bad = bad + compiles("functions::test_function_call_with_expressions", "\nfn add(a: int, b: int) => int:\n    return a + b\n\nfn main() => int:\n    let result: int = add(10 * 2, 20 * 3)\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("functions::test_deep_recursion", "\nfn recursive_depth(n: int) => int:\n    if n <= 0:\n        return 0\n    let r: int = recursive_depth(n - 1)\n    let result: int = 1 + r\n    rm r\n    return result\n\nfn main() => int:\n    let result: int = recursive_depth(10)\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("functions::test_multiple_return_paths", "\nfn conditional_return(x: int) => int:\n    if x > 0:\n        return 1\n    elif x < 0:\n        return -1\n    else:\n        return 0\n\nfn main() => int:\n    let a: int = conditional_return(5)\n    let b: int = conditional_return(-5)\n    let c: int = conditional_return(0)\n    rm a, b, c\n    return 0\n\n")
+    bad = bad + compiles("functions::test_function_overloading", "\nfn add_int(a: int, b: int) => int:\n    return a + b\n\nfn add_float(a: float, b: float) => float:\n    return a + b\n\nfn main() => int:\n    let a: int = add_int(1, 2)\n    let b: float = add_float(1.5, 2.5)\n    rm a, b\n    return 0\n\n")
+    bad = bad + compiles("functions::test_nested_function_calls_operations", "\nfn add(a: int, b: int) => int:\n    return a + b\n\nfn multiply(a: int, b: int) => int:\n    return a * b\n\nfn main() => int:\n    let result: int = multiply(add(2, 3), 4)\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("functions::test_function_with_multiple_params", "\nfn sum(a: int, b: int, c: int, d: int) => int:\n    return a + b + c + d\n\nfn main() => int:\n    let result: int = sum(1, 2, 3, 4)\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("functions::test_tail_recursion", "\nfn factorial_tail(n: int, acc: int) => int:\n    if n <= 1:\n        return acc\n    return factorial_tail(n - 1, n * acc)\n\nfn main() => int:\n    let result: int = factorial_tail(5, 1)\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("functions::test_function_pointer", "\nfn add(a: int, b: int) => int:\n    return a + b\n\nfn subtract(a: int, b: int) => int:\n    return a - b\n\nfn main() => int:\n    let a: int = add(10, 5)\n    let b: int = subtract(10, 5)\n    rm a, b\n    return 0\n\n")
+    bad = bad + rejected("functions::test_anonymous_fn_cannot_capture_enclosing_local", "\nfn main() => int:\n    let n: int = 1\n    let callback: fn(int) => int = fn(x: int) => int:\n        return x + n\n    return callback(1)\n\n", 0)
+    bad = bad + rejected("functions::test_anonymous_fn_cannot_capture_enclosing_param", "\nfn apply(n: int) => int:\n    let callback: fn(int) => int = fn(x: int) => int:\n        return x + n\n    return callback(1)\n\nfn main() => int:\n    return apply(1)\n\n", 0)
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    bad = bad + part1()
+    return bad

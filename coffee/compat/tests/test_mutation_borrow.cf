@@ -1,0 +1,21 @@
+/#/ Ported from tests/mutation_borrow_tests.rs.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + rejected("mutation_borrow::test_shared_and_mut_on_same_var_nested", "\nfn main() => int:\n    let val: int = 42\n    if true:\n        let shared: &int = &val\n        let exclusive: &mut int = &mut val\n        let n: int = *shared\n    return 0\n\n", 0)
+    bad = bad + rejected("mutation_borrow::test_two_mut_borrows", "\nfn main() => int:\n    let k: int = 3\n    let r1: &mut int = &mut k\n    let r2: &mut int = &mut k\n    return *r1\n\n", 0)
+    bad = bad + rejected("mutation_borrow::test_mv_while_borrowed_in_helper", "\nfn helper() => int:\n    let num: int = 7\n    let ptr: &int = &num\n    let unused: int = 0\n    mv num dest\n    return *ptr\n\nfn main() => int:\n    return helper()\n\n", 0)
+    bad = bad + rejected("mutation_borrow::test_rm_while_borrowed", "\nfn main() => int:\n    let item: int = 5\n    let ref_item: &int = &item\n    rm item\n    return *ref_item\n\n", 0)
+    bad = bad + rejected("mutation_borrow::test_assign_while_borrowed_extra_let", "\nfn main() => int:\n    let count: int = 1\n    let view: &int = &count\n    let dummy: int = 0\n    count = 2\n    return *view\n\n", 0)
+    bad = bad + rejected("mutation_borrow::test_return_ref_to_tmp", "\nfn peek() => &int:\n    let tmp: int = 99\n    return &tmp\n\nfn main() => int:\n    let z: int = 1\n    return z\n\n", 0)
+    bad = bad + rejected("mutation_borrow::test_let_copy_class_resource", "\nclass Holder:\n    v: int\n\nfn main() => int:\n    let src: Holder = Holder { v: 8 }\n    let dst: Holder = src\n    rm src\n    rm dst\n    return 0\n\n", 0)
+    bad = bad + rejected("mutation_borrow::test_let_copy_str_resource", "\nfn main() => int:\n    let s: str = \"hi\"\n    let t: str = s\n    let u: str = s\n    return 0\n\n", 0)
+    bad = bad + rejected("mutation_borrow::test_copy_keyword_is_type_error", "\nfn main() => int:\n    let n: int = 4\n    let dummy: int = 1\n    copy n m\n    return 0\n\n", 0)
+    bad = bad + rejected("mutation_borrow::test_clean_out_keyword_is_type_error", "\nfn main() => int:\n    let n: int = 4\n    if true:\n        clean out\n    return 0\n\n", 0)
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad
