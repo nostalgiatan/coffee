@@ -3,10 +3,25 @@
 use * in exe
 use chmod in libc of c
 
+/#/ `-g`: the executable keeps the names of its functions and data (a symbol table); without it the
+/#/ file has none, which is what a release build wants.
+let keep_syms = false
+
+fn set_keep_syms() => void:
+    keep_syms = true
+
+/#/ The `cc` command start for linking: sections nobody reaches are dropped, and the symbols too
+/#/ unless `-g` was given.
+fn cc_link_start() => Txt:
+    if keep_syms:
+        return txt_of("cc -w -Wl,--gc-sections -o '")
+    return txt_of("cc -w -s -Wl,--gc-sections -o '")
+
 /#/ Links the object files named in `paths` (one per line) into the executable `out`.
 fn link_static(paths: &Txt, out: &Txt, quiet: bool) => int:
     let l = new_linker()
     l.quiet = quiet
+    l.syms = keep_syms
     let lo = 0
     for i in 0..paths.n:
         if paths.b[i] == 10:

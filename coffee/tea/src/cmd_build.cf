@@ -1,11 +1,13 @@
 /#/ `tea build` and `tea run`: compile the entry of `coffee.toml` (`[build] main`, default
 /#/ `src/main.cf`) with `coffee2` into `target/build/<package name>`; `run` then starts it.
 /#/
-/#/     tea build [-O0..-O3] [-I dir]... [--compiler path] [--whole]
-/#/     tea run   [-O0..-O3] [-I dir]... [--compiler path] [--whole] [-- program arguments...]
+/#/     tea build [-O0..-O3] [-I dir]... [--compiler path] [--whole] [--debug]
+/#/     tea run   [-O0..-O3] [-I dir]... [--compiler path] [--whole] [--debug] [-- program arguments...]
 /#/
 /#/ The build is incremental: one object per source file in `target/obj`, rebuilt only when it or the
 /#/ interface of another file changed. `--whole` makes one object for the program instead.
+/#/ `--debug` builds into `target/debug` with `-g` (the file keeps the names of its functions) and, unless
+/#/ a level is given, `-O0`; the default is a release build: `target/build`, no symbols.
 use system, fflush in libc of c
 
 class Build:
@@ -18,10 +20,11 @@ class Build:
     args: Txt
     /#/ true: one object for the whole program, no cache
     whole: bool
+    debug: bool
     bad: int
 
 fn parse_build(a: &Args) => Build:
-    let b = Build { compiler: txt_of("coffee2"), inc: new_txt(), level: new_txt(), args: new_txt(), whole: false, bad: 0 }
+    let b = Build { compiler: txt_of("coffee2"), inc: new_txt(), level: new_txt(), args: new_txt(), whole: false, debug: false, bad: 0 }
     let i = 2
     let rest = false
     while i < a.n:
@@ -38,6 +41,8 @@ fn parse_build(a: &Args) => Build:
             b.inc.put_all(&d)
             b.inc.put("'")
             i = i + 1
+        elif w.is("--debug"):
+            b.debug = true
         elif w.is("--whole"):
             b.whole = true
         elif w.is("--compiler") && i + 1 < a.n:
@@ -50,6 +55,8 @@ fn parse_build(a: &Args) => Build:
             say(f"tea: unknown option '{txt_str(&w)}'\n")
             b.bad = 1
         i = i + 1
+    if b.debug && b.level.n == 0:
+        b.level = txt_of(" -O0")
     return b
 
 /#/ `w` with each `'` written as `'\''`, to sit between single quotes in a shell command.
@@ -61,15 +68,20 @@ fn quote_into(out: &Txt, w: &Txt) => void:
             out.put_byte(w.b[i])
 
 /#/ target/build/<name>
-fn program_path(pr: &Project) => Txt:
+fn program_path(b: &Build, pr: &Project) => Txt:
     let p = txt_of("target/build/")
+    if b.debug:
+        p = txt_of("target/debug/")
     p.put_all(&pr.name)
     return p
 
 /#/ Compiles the entry; 0 when it worked.
 fn build_program(b: &Build, pr: &Project) => int:
-    system("mkdir -p target/build")
-    let out = program_path(pr)
+    if b.debug:
+        system("mkdir -p target/debug")
+    else:
+        system("mkdir -p target/build")
+    let out = program_path(b, pr)
     let c = txt_of("'")
     c.put_all(&b.compiler)
     c.put("' '")
@@ -78,8 +90,13 @@ fn build_program(b: &Build, pr: &Project) => int:
     c.put_all(&b.inc)
     c.put_all(&pr.build_inc)
     c.put_all(&b.level)
+    if b.debug:
+        c.put(" -g")
     if !b.whole:
-        c.put(" --incremental target/obj")
+        if b.debug:
+            c.put(" --incremental target/obj-debug")
+        else:
+            c.put(" --incremental target/obj")
     c.put(" -o '")
     c.put_all(&out)
     c.put("'")
@@ -104,7 +121,7 @@ fn run_run(a: &Args) => int:
     if build_program(&b, &pr) != 0:
         return 1
     let c = txt_of("'")
-    c.put_all(&program_path(&pr))
+    c.put_all(&program_path(&b, &pr))
     c.put("'")
     c.put_all(&b.args)
     fflush(0)

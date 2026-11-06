@@ -31,11 +31,13 @@ tea test [-I dir]... [--compiler path] [-j N] [file.cf]...
 ## tea build 和 tea run
 
 ```
-tea build [-O0..-O3] [-I dir]... [--compiler path]
-tea run   [-O0..-O3] [-I dir]... [--compiler path] [-- 程序参数...]
+tea build [-O0..-O3] [-I dir]... [--compiler path] [--debug]
+tea run   [-O0..-O3] [-I dir]... [--compiler path] [--debug] [-- 程序参数...]
 ```
 
 编译 `[build] main`(默认 `src/main.cf`),模块搜索目录是 `[build] include` 加上 `-I`,输出放在 `target/build/<[package] name>`。`run` 返回程序的退出码;编译失败时 `build` 和 `run` 返回 1。
+
+默认是发布构建:输出文件没有符号表。`--debug` 输出到 `target/debug/<包名>`,带 `-g`(保留函数和数据的名字,供 gdb、perf 用),没给优化级别时用 `-O0`,对象缓存在 `target/obj-debug`。
 
 ## coffee.toml
 

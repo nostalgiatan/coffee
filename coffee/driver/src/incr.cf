@@ -661,7 +661,7 @@ fn build_incremental(fl: &Flat, a0: Ast, dir: &Txt, out: &Txt, opt: int, jobs: i
         phase("link")
         if rc == 0 || !auto_static:
             return rc
-    let cmd = txt_of("cc -w -Wl,--gc-sections -o '")
+    let cmd = cc_link_start()
     cmd.put_all(out)
     cmd.put("'")
     cmd.put_all(&objs)

@@ -30,6 +30,116 @@ fn phdr(t: &Txt, ty: int, flags: int, off: int, addr: int, fsz: int, msz: int, a
     put64(t, msz)
     put64(t, align)
 
+/#/ The symbol table, its names and the section headers, appended to `out`; returns where the
+/#/ section headers start. One section per segment, the symbols point into them.
+fn add_symbols(l: &Linker, out: &Txt, base: int) => int:
+    let nseg = l.sg_off.n
+    let strs = new_txt()
+    strs.put_byte(0)
+    let tab = new_txt()
+    put_zeros(&tab, 24)
+    let nlocal = 1
+    for pass in 0..2:
+        for sid in 0..l.y_sec.n:
+            let nm = l.y_nm.b[sid]
+            let sec = l.y_sec.b[sid]
+            let local = l.y_bind.b[sid] == 0
+            if nm >= 0 && sec >= 0 && sec < l.sc_grp.n && l.sc_grp.b[sec] >= 0 && l.final_sym(sid) == sid && local == (pass == 0):
+                let ty = l.y_type.b[sid]
+                if ty == 0 || ty == 1 || ty == 2:
+                    let addr = l.sym_addr(sid, base)
+                    let seg = 0
+                    for k in 0..nseg:
+                        if addr >= base + l.sg_rva.b[k] && addr < base + l.sg_rva.b[k] + l.sg_msz.b[k]:
+                            seg = k + 1
+                    if seg > 0:
+                        let w = l.name_of(nm)
+                        put32(&tab, strs.n)
+                        strs.put_all(&w)
+                        strs.put_byte(0)
+                        let bind = 1
+                        if local:
+                            bind = 0
+                        tab.put_byte((bind << 4) | ty)
+                        tab.put_byte(0)
+                        put16(&tab, seg)
+                        put64(&tab, addr)
+                        put64(&tab, l.y_size.b[sid])
+        if pass == 0:
+            nlocal = tab.n // 24
+    /#/ names of the sections: .symtab .strtab .shstrtab .seg
+    let sh = new_txt()
+    sh.put_byte(0)
+    let n_sym = sh.n
+    sh.put(".symtab")
+    sh.put_byte(0)
+    let n_str = sh.n
+    sh.put(".strtab")
+    sh.put_byte(0)
+    let n_shs = sh.n
+    sh.put(".shstrtab")
+    sh.put_byte(0)
+    let n_seg = sh.n
+    sh.put(".seg")
+    sh.put_byte(0)
+    put_zeros(out, align_to(out.n, 8) - out.n)
+    let off_sym = out.n
+    out.put_all(&tab)
+    let off_str = out.n
+    out.put_all(&strs)
+    let off_shs = out.n
+    out.put_all(&sh)
+    put_zeros(out, align_to(out.n, 8) - out.n)
+    let shoff = out.n
+    put_zeros(out, 64)
+    for k in 0..nseg:
+        let fl = 2
+        if l.sg_flags.b[k] & 1 != 0:
+            fl = fl | 4
+        if l.sg_flags.b[k] & 2 != 0:
+            fl = fl | 1
+        put32(out, n_seg)
+        put32(out, 1)
+        put64(out, fl)
+        put64(out, base + l.sg_rva.b[k])
+        put64(out, l.sg_off.b[k])
+        put64(out, l.sg_fsz.b[k])
+        put32(out, 0)
+        put32(out, 0)
+        put64(out, 16)
+        put64(out, 0)
+    put32(out, n_sym)
+    put32(out, 2)
+    put64(out, 0)
+    put64(out, 0)
+    put64(out, off_sym)
+    put64(out, tab.n)
+    put32(out, nseg + 2)
+    put32(out, nlocal)
+    put64(out, 8)
+    put64(out, 24)
+    put32(out, n_str)
+    put32(out, 3)
+    put64(out, 0)
+    put64(out, 0)
+    put64(out, off_str)
+    put64(out, strs.n)
+    put32(out, 0)
+    put32(out, 0)
+    put64(out, 1)
+    put64(out, 0)
+    put32(out, n_shs)
+    put32(out, 3)
+    put64(out, 0)
+    put64(out, 0)
+    put64(out, off_shs)
+    put64(out, sh.n)
+    put32(out, 0)
+    put32(out, 0)
+    put64(out, 1)
+    put64(out, 0)
+    return shoff
+
 fn link_exe(l: &Linker) => Txt:
     let none = new_txt()
     l.add_start()
@@ -56,6 +166,13 @@ fn link_exe(l: &Linker) => Txt:
         put_zeros(&out, at + l.sg_fsz.b[k] - out.n)
         for q in 0..l.sg_fsz.b[k]:
             out.b[at + q] = mem.b[l.sg_rva.b[k] + q]
+    let shoff = 0
+    let shnum = 0
+    let shstr = 0
+    if l.syms:
+        shoff = add_symbols(l, &out, base)
+        shnum = nseg + 4
+        shstr = nseg + 3
     /#/ the headers, over the start of the first piece
     let h = new_txt()
     h.put_byte(127)
@@ -69,14 +186,14 @@ fn link_exe(l: &Linker) => Txt:
     put32(&h, 1)
     put64(&h, l.sym_addr(entry, base))
     put64(&h, 64)
-    put64(&h, 0)
+    put64(&h, shoff)
     put32(&h, 0)
     put16(&h, 64)
     put16(&h, 56)
     put16(&h, nseg + 1)
     put16(&h, 64)
-    put16(&h, 0)
-    put16(&h, 0)
+    put16(&h, shnum)
+    put16(&h, shstr)
     for k in 0..nseg:
         phdr(&h, 1, l.sg_flags.b[k], l.sg_off.b[k], base + l.sg_rva.b[k], l.sg_fsz.b[k], l.sg_msz.b[k], 4096)
     /#/ PT_GNU_STACK: the stack is not executable
