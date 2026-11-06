@@ -5,6 +5,7 @@ enum Op:
     Param
     Const
     StrLit
+    FnAddr
     Undef
     Add
     Sub
@@ -155,6 +156,7 @@ fn new_optab() => OpTab:
     t.def("param", 0, p)
     t.def("const", 0, p)
     t.def("str.lit", 0, p)
+    t.def("fn.addr", 0, p)
     t.def("undef", 0, p)
     t.def("add", 2, c)
     t.def("sub", 2, p)

@@ -122,6 +122,9 @@ fn put_inst(o: &Txt, f: &Fun, rs: &Reps, i: int) => void:
     if op == int(Op.Const):
         o.put(" ")
         o.put_int(f.aux[i])
+    elif op == int(Op.FnAddr):
+        o.put(" @")
+        o.put_int(f.aux[i])
     elif op == int(Op.StrLit):
         o.put(" #")
         o.put_int(f.aux[i])

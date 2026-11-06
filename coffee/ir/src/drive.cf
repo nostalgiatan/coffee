@@ -30,9 +30,11 @@ fn build_obj(src: str, opt: int, cfc: str) => Txt:
     lw.emit_glue(&t, &g)
     if lw.ver_err > 0:
         printf("verifier: %d functions with findings\n", lw.ver_err)
+        fflush(0)
         return new_txt()
     if lw.mc_err > 0:
         printf("machine code: %d functions could not be translated\n", lw.mc_err)
+        fflush(0)
         return new_txt()
     return lw.object()
 

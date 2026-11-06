@@ -787,6 +787,10 @@ class Gen:
                 self.a.shift_cl(7, 0)
             self.st(i, 0)
             return
+        if op == int(Op.FnAddr):
+            self.a.lea_rip(0, self.callee(sy, f.aux[i]), 0)
+            self.st(i, 0)
+            return
         if op == int(Op.Neg) || op == int(Op.Not):
             self.ld(0, f, f.a[i])
             if op == int(Op.Neg):

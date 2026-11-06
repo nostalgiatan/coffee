@@ -426,6 +426,10 @@ class Fun:
     fn strlit(self, id: int) => int:
         return self.share(int(Op.StrLit), int(Rp.Ptr), -1, -1, -1, -1, id)
 
+    /#/ The address of the function named `id`.
+    fn fnaddr(self, id: int) => int:
+        return self.raw(int(Op.FnAddr), int(Rp.Ptr), -1, -1, -1, -1, id)
+
     fn is_const(self, v: int) => bool:
         return self.op[v] == int(Op.Const) && rp_is_int(self.rep[v])
 

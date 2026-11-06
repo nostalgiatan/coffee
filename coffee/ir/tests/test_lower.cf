@@ -21,4 +21,7 @@ fn main() => int:
     m = m + expect_exit("use printf in libc of c\n\nfn main() => int:\n    printf(\"hello %ld\\n\", 3)\n    return 4\n", 4)
     /#/ \xHH in a string is one byte, unsigned
     m = m + expect_exit("fn main() => int:\n    let a = \"\\xe5\\x8d\\x95\"\n    let b = \"\\xff\"\n    return len(a) + len(b) + int(b[0]) - 250\n", 9)
+    /#/ a function declared in a body, one of the same name in two bodies, an anonymous function
+    m = m + expect_exit("fn a() => int:\n    fn helper() => int:\n        return 3\n    return helper()\n\nfn b() => int:\n    fn helper() => int:\n        return 4\n    return helper()\n\nfn main() => int:\n    return a() * 10 + b()\n", 34)
+    m = m + expect_exit("fn main() => int:\n    let cb: fn(int) => int = fn(x: int) => int:\n        return x * 2\n    return cb(21)\n", 42)
     return m

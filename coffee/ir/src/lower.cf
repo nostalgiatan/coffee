@@ -279,10 +279,19 @@ class Lower:
     iq_node: buf<int>
     iq_env: buf<int>
     iq_cls: buf<int>
+    /#/ the name an instance is lowered under, -1 for the one its node spells
+    iq_nm: buf<int>
     iq_n: int
     iq_done: int
     /#/ the name of the listener of the function being lowered, -1 for none
     lis: int
+    /#/ the functions declared in the body being lowered: name token, node, and the name they get
+    nf_tok: buf<int>
+    nf_node: buf<int>
+    nf_id: buf<int>
+    nf_n: int
+    /#/ the name the function being lowered is given, -1 for the one its node spells
+    pnm: int
     /#/ the return type of the function
     ret_ty: int
     bad: int
@@ -311,10 +320,17 @@ class Lower:
             self.iq_node = buf_resize(self.iq_node, cap)
             self.iq_env = buf_resize(self.iq_env, cap)
             self.iq_cls = buf_resize(self.iq_cls, cap)
+            self.iq_nm = buf_resize(self.iq_nm, cap)
         self.iq_node[self.iq_n] = node
         self.iq_env[self.iq_n] = env
         self.iq_cls[self.iq_n] = cls
+        self.iq_nm[self.iq_n] = -1
         self.iq_n = self.iq_n + 1
+
+    /#/ Asks for the function node `node`, declared inside a body, to be lowered as name `nm`.
+    fn want_named(self, node: int, nm: int) => void:
+        self.want_instance(node, -1, -1)
+        self.iq_nm[self.iq_n - 1] = nm
 
     /#/ Lowers the instances asked for, and those they ask for in turn; their text goes to `o`.
     fn run_instances(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, o: &Txt) => void:
@@ -322,8 +338,10 @@ class Lower:
             let i = self.iq_done
             self.iq_done = i + 1
             self.penv = self.iq_env[i]
+            self.pnm = self.iq_nm[i]
             self.function(t, g, ty, a, self.iq_node[i], self.iq_cls[i])
             self.penv = -1
+            self.pnm = -1
             if self.bad > 0:
                 return
             self.keep_current()
@@ -817,6 +835,106 @@ class Lower:
         self.f.set_block(join)
         return self.read_var(res, join)
 
+    /#/ The slot of the function declared in this body that token `tok` names, -1 if none.
+    fn nested_find(self, a: &Ast, tok: int) => int:
+        let i = self.nf_n
+        while i > 0:
+            i = i - 1
+            if same_text(a, self.nf_tok[i], tok):
+                return i
+        return -1
+
+    /#/ Declares the function node `n` in this body; it is lowered as `outer__name`.
+    fn nested_declare(self, a: &Ast, n: int) => void:
+        let w = new_txt()
+        self.names.put(&w, self.cur_id)
+        w.put("__")
+        for q in a.toks.start[a.pa[n]]..a.toks.end[a.pa[n]]:
+            w.put_byte(a.byte_at(q))
+        let id = self.names.intern(&w)
+        if self.nf_n >= len(self.nf_tok):
+            let cap = (self.nf_n + 1) * 2
+            self.nf_tok = buf_resize(self.nf_tok, cap)
+            self.nf_node = buf_resize(self.nf_node, cap)
+            self.nf_id = buf_resize(self.nf_id, cap)
+        self.nf_tok[self.nf_n] = a.pa[n]
+        self.nf_node[self.nf_n] = n
+        self.nf_id[self.nf_n] = id
+        self.nf_n = self.nf_n + 1
+        self.want_named(n, id)
+
+    /#/ Lets a function declared in a body call itself by its name.
+    fn nested_declare_self(self, a: &Ast, n: int) => void:
+        if a.pa[n] < 0:
+            return
+        self.nf_tok[0] = a.pa[n]
+        self.nf_node[0] = n
+        self.nf_id[0] = self.pnm
+        self.nf_n = 1
+
+    /#/ The address of the anonymous function `n`; it is lowered as `outer__fnN`.
+    fn anon_fn(self, a: &Ast, n: int) => int:
+        let w = new_txt()
+        self.names.put(&w, self.cur_id)
+        w.put("__fn")
+        w.put_int(n)
+        let id = self.names.intern(&w)
+        self.want_named(n, id)
+        return self.f.fnaddr(id)
+
+    /#/ A call through the variable `lv` that holds a function.
+    fn call_indirect(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int, lv: int) => int:
+        let sig = self.v_ty[lv]
+        let rr = self.rep(t, g, t.c[sig])
+        if rr < 0:
+            self.unsupported(n)
+            return self.f.undef(int(Rp.I64))
+        let fv = self.var_read(lv)
+        let vals: buf<int> = new_buf(int, 8)
+        let i = 0
+        let c = a.child[n]
+        while c >= 0:
+            if i >= len(vals):
+                vals = buf_resize(vals, i * 2)
+            let at = self.nd(t, ty, c)
+            let v = self.ex(t, g, ty, a, c)
+            if i < t.count_of(sig):
+                v = self.coerce(t, g, v, at, t.arg(sig, i))
+                if t.kind[t.arg(sig, i)] != int(Ty.Ref) && !(t.kind[t.arg(sig, i)] == int(Ty.Slice) && t.kind[at] == int(Ty.Array)):
+                    v = self.consume(t, g, a, c, v, at)
+            vals[i] = v
+            i = i + 1
+            c = a.next[c]
+        for j in 0..i:
+            self.f.arg(vals[j])
+        return self.f.calli(rr, -1, fv)
+
+    /#/ A call of the function declared in this body at slot `slot`.
+    fn call_nested(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int, slot: int) => int:
+        let sig = ty.rd.fn_sig(t, a, self.nf_node[slot], -1)
+        let rr = self.rep(t, g, t.c[sig])
+        if rr < 0:
+            self.unsupported(n)
+            return self.f.undef(int(Rp.I64))
+        let vals: buf<int> = new_buf(int, 8)
+        let i = 0
+        let c = a.child[n]
+        while c >= 0:
+            if i >= len(vals):
+                vals = buf_resize(vals, i * 2)
+            let at = self.nd(t, ty, c)
+            let v = self.ex(t, g, ty, a, c)
+            if i < t.count_of(sig):
+                v = self.coerce(t, g, v, at, t.arg(sig, i))
+                if t.kind[t.arg(sig, i)] != int(Ty.Ref) && !(t.kind[t.arg(sig, i)] == int(Ty.Slice) && t.kind[at] == int(Ty.Array)):
+                    v = self.consume(t, g, a, c, v, at)
+            vals[i] = v
+            i = i + 1
+            c = a.next[c]
+        for j in 0..i:
+            self.f.arg(vals[j])
+        return self.f.call(rr, -1, self.nf_id[slot])
+
     fn call(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => int:
         let callee = a.pa[n]
         let res = self.nd(t, ty, n)
@@ -827,6 +945,12 @@ class Lower:
         if callee < 0 || a.kind[callee] != int(Nk.Name):
             self.unsupported(n)
             return self.f.undef(int(Rp.I64))
+        let lv = self.lookup(a, a.tok[callee])
+        if lv >= 0 && t.kind[self.v_ty[lv]] == int(Ty.Fn):
+            return self.call_indirect(t, g, ty, a, n, lv)
+        let nfi = self.nested_find(a, a.tok[callee])
+        if nfi >= 0:
+            return self.call_nested(t, g, ty, a, n, nfi)
         let r = ty.lookup(a, a.tok[callee])
         if r < 0:
             self.unsupported(n)
@@ -981,6 +1105,8 @@ class Lower:
                 self.f.arg(lit)
                 return self.f.ccall(int(Rp.Ptr), 1, self.rt_strdup, 0)
             return lit
+        if k == int(Nk.Fn) && a.pa[n] < 0:
+            return self.anon_fn(a, n)
         if k == int(Nk.Name):
             let v = self.lookup(a, a.tok[n])
             if v < 0:
@@ -1161,6 +1287,8 @@ class Lower:
             else:
                 self.jump(self.lc[self.nloops - 1])
             self.dead_block()
+        elif k == int(Nk.Fn) && a.pa[n] >= 0:
+            self.nested_declare(a, n)
         else:
             self.unsupported(n)
 
@@ -2562,13 +2690,19 @@ class Lower:
             for q in g.off[cls]..g.off[cls] + g.size[cls]:
                 name.put_byte(g.pool[q])
             name.put_byte('_')
-        for q in a.toks.start[a.pa[fn_node]]..a.toks.end[a.pa[fn_node]]:
-            name.put_byte(a.byte_at(q))
-        if self.penv >= 0:
-            name.put("__")
-            name.put_int(self.penv)
+        if self.pnm >= 0:
+            self.names.put(&name, self.pnm)
+        else:
+            for q in a.toks.start[a.pa[fn_node]]..a.toks.end[a.pa[fn_node]]:
+                name.put_byte(a.byte_at(q))
+            if self.penv >= 0:
+                name.put("__")
+                name.put_int(self.penv)
         self.f.reset(&name, rr)
         self.cur_id = self.names.intern(&name)
+        self.nf_n = 0
+        if self.pnm >= 0:
+            self.nested_declare_self(a, fn_node)
         self.sc.truncate(0)
         self.dk = new_buf(int, 64)
         for i in 0..64:
@@ -2690,4 +2824,4 @@ fn new_lower() => Lower:
     return lw
 
 fn make_lower() => Lower:
-    return Lower { f: new_fun("", 0), rs: new_reps(), names: new_names(), nstr: 0, cd_name: new_buf(int, 8), cd_sig: new_buf(int, 8), cd_var: new_buf(int, 8), cd_n: 0, sc: new_syms(), v_rep: new_buf(int, 16), v_ty: new_buf(int, 16), v_slot: new_buf(int, 16), v_flag: new_buf(int, 16), tmp_v: new_buf(int, 8), tmp_ty: new_buf(int, 8), tmp_n: 0, no_own: 0, own_st: new_buf(int, 16), own_n: 0, ld: new_buf(int, 8), glue_ty: new_buf(int, 8), glue_kind: new_buf(int, 8), glue_n: 0, glue_done: 0, lay_ty: new_buf(int, 8), lay_off: new_buf(int, 8), lay_n: 0, addr: new_names(), scanned: 0, fty: 0, rt_exit: 0, rt_calloc: 0, rt_strlen: 0, rt_malloc: 0, rt_free: 0, rt_strdup: 0, rt_memcpy: 0, rt_strcmp: 0, rt_write: 0, opt: 1, mc: new_gen(), sbytes: new_txt(), mc_err: 0, ver_err: 0, lib: new_lib(), cur_id: -1, penv: -1, ue: new_buf(int, 16), iq_node: new_buf(int, 8), iq_env: new_buf(int, 8), iq_cls: new_buf(int, 8), iq_n: 0, iq_done: 0, lis: -1, nv: 0, dk: new_buf(int, 64), dv: new_buf(int, 64), dn: 0, sealed: new_buf(int, 16), inc_head: new_buf(int, 16), inc_var: new_buf(int, 16), inc_par: new_buf(int, 16), inc_next: new_buf(int, 16), inc_n: 0, pe_head: new_buf(int, 16), pe_next: new_buf(int, 16), lc: new_buf(int, 8), lb: new_buf(int, 8), nloops: 0, ret_ty: 0, bad: 0, bad_node: -1 }
+    return Lower { f: new_fun("", 0), rs: new_reps(), names: new_names(), nstr: 0, cd_name: new_buf(int, 8), cd_sig: new_buf(int, 8), cd_var: new_buf(int, 8), cd_n: 0, sc: new_syms(), v_rep: new_buf(int, 16), v_ty: new_buf(int, 16), v_slot: new_buf(int, 16), v_flag: new_buf(int, 16), tmp_v: new_buf(int, 8), tmp_ty: new_buf(int, 8), tmp_n: 0, no_own: 0, own_st: new_buf(int, 16), own_n: 0, ld: new_buf(int, 8), glue_ty: new_buf(int, 8), glue_kind: new_buf(int, 8), glue_n: 0, glue_done: 0, lay_ty: new_buf(int, 8), lay_off: new_buf(int, 8), lay_n: 0, addr: new_names(), scanned: 0, fty: 0, rt_exit: 0, rt_calloc: 0, rt_strlen: 0, rt_malloc: 0, rt_free: 0, rt_strdup: 0, rt_memcpy: 0, rt_strcmp: 0, rt_write: 0, opt: 1, mc: new_gen(), sbytes: new_txt(), mc_err: 0, ver_err: 0, lib: new_lib(), cur_id: -1, penv: -1, ue: new_buf(int, 16), iq_node: new_buf(int, 8), iq_env: new_buf(int, 8), iq_cls: new_buf(int, 8), iq_nm: new_buf(int, 8), nf_tok: new_buf(int, 8), nf_node: new_buf(int, 8), nf_id: new_buf(int, 8), nf_n: 0, pnm: -1, iq_n: 0, iq_done: 0, lis: -1, nv: 0, dk: new_buf(int, 64), dv: new_buf(int, 64), dn: 0, sealed: new_buf(int, 16), inc_head: new_buf(int, 16), inc_var: new_buf(int, 16), inc_par: new_buf(int, 16), inc_next: new_buf(int, 16), inc_n: 0, pe_head: new_buf(int, 16), pe_next: new_buf(int, 16), lc: new_buf(int, 8), lb: new_buf(int, 8), nloops: 0, ret_ty: 0, bad: 0, bad_node: -1 }
