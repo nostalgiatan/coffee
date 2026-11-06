@@ -2,4 +2,4 @@
 name = "rt"
 
 [test]
-include = ["src"]
+include = ["src", "../lexer/src"]

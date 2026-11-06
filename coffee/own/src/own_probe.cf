@@ -1,6 +1,7 @@
 /#/ Helpers for tests and tools: check the ownership of a source and count what was found.
+use * in say
 use * in own
-use printf, fflush in libc of c
+use fflush in libc of c
 
 /#/ Declares, checks types and ownership of `src` as a module of its own.
 fn ocheck(src: str) => Flow:
@@ -16,7 +17,7 @@ fn ocheck(src: str) => Flow:
 fn miss_o(src: str, code: int, want: int) => int:
     let f = ocheck(clone src)
     if f.diags.count(code) != want:
-        printf("MISS want %d x %d, found %d, of %d findings in:\n%s\n", want, oe_number(code), f.diags.count(code), f.diags.n, src)
+        say(f"MISS want {want} x {oe_number(code)}, found {f.diags.count(code)}, of {f.diags.n} findings in:\n{src}\n")
         fflush(0)
         return 1
     return 0
@@ -25,6 +26,6 @@ fn miss_o(src: str, code: int, want: int) => int:
 fn miss_clean(src: str) => int:
     let f = ocheck(clone src)
     if f.diags.n > 0:
-        printf("MISS expected clean, %d findings (first %d) in:\n%s\n", f.diags.n, oe_number(f.diags.code[0]), src)
+        say(f"MISS expected clean, {f.diags.n} findings (first {oe_number(f.diags.code[0])}) in:\n{src}\n")
         fflush(0)
     return f.diags.n

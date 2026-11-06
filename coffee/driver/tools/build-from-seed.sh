@@ -18,7 +18,7 @@ if ! cmp -s gen1 gen2; then
     FIN=gen2
 fi
 cp $FIN coffee2
-./coffee2 "$H/../tea/src/main.cf" -I "$H/../tea/src" -I "$H/src" -I "$H/../ir/src" -I "$H/../ld/src" -o tea
+./coffee2 "$H/../tea/src/main.cf" -I "$H/../tea/src" -I "$H/src" -I "$H/../ir/src" -I "$H/../ld/src" -I "$H/../lexer/src" -o tea
 if cmp -s seed $FIN; then
     echo "seed is current; coffee2 built in $D"
 elif [ "$2" = "--refresh" ]; then

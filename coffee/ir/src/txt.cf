@@ -1,5 +1,6 @@
 /#/ Text built a byte at a time: the buffer the printer and the emitter write to.
 use * in op
+use * in say
 use write, open, close in libc of c
 
 class Txt:
@@ -59,16 +60,6 @@ class Txt:
 fn new_txt() => Txt:
     return Txt { b: new_buf(int, 256), n: 0 }
 
-
-/#/ Writes `s` to standard output, at once (no buffering).
-fn say(s: str) => void:
-    write(1, s as object, len(s))
-
-/#/ Writes the byte `c` to standard output.
-fn say_byte(c: int) => void:
-    let b: buf<i8> = new_buf(i8, 1)
-    b[0] = i8(c)
-    write(1, buf_ptr(b), 1)
 
 /#/ Writes the bytes of `t` to the file `path`.
 fn save_bytes(path: str, t: &Txt) => void:

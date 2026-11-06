@@ -1,13 +1,14 @@
 /#/ `coffee2 --static` links with the linker of `ld/` and the C library of `rt/src/min.cf`: the
 /#/ program needs no shared library and still allocates, copies strings and prints numbers.
+use * in say
 use * in txt
 use * in cstr
 use * in files
-use system, printf, fflush in libc of c
+use system, fflush in libc of c
 
 fn expect(what: int, got: int, want: int) => int:
     if got != want:
-        printf("MISS #%d: got %d, want %d\n", what, got, want)
+        say(f"MISS #{what}: got {got}, want {want}\n")
         fflush(0)
         return 1
     return 0

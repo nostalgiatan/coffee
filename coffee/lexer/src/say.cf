@@ -1,0 +1,12 @@
+/#/ Output that needs no C library beyond `write`: every stage prints with these.
+use write in libc of c
+
+/#/ Writes `s` to standard output, at once (no buffering).
+fn say(s: str) => void:
+    write(1, s as object, len(s))
+
+/#/ Writes the byte `c` to standard output.
+fn say_byte(c: int) => void:
+    let b: buf<i8> = new_buf(i8, 1)
+    b[0] = i8(c)
+    write(1, buf_ptr(b), 1)

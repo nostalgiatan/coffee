@@ -1,5 +1,6 @@
+use * in say
 use * in drive
-use putchar, printf, fflush in libc of c
+use fflush in libc of c
 
 /#/ The offsets lowering uses for the fields of the first class of `src`, in order, as
 /#/ `o0 + 100 * o1 + ...` would hide errors: they are returned one at a time.
@@ -35,7 +36,7 @@ fn main() => int:
     for k in 0..5:
         let got = offset_of(clone q, k)
         if got != want[k]:
-            printf("field %d at %d, want %d\n", k, got, want[k])
+            say(f"field {k} at {got}, want {want[k]}\n")
             fflush(0)
             m = m + 1
     return m

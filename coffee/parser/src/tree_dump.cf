@@ -1,15 +1,16 @@
 /#/ Debug printers for a parse tree.
+use * in say
 use * in tree_shape
-use putchar, printf, fflush in libc of c
+use fflush in libc of c
 
 fn dump_shape(a: &Ast) => void:
     let s = shape(a)
     for i in 0..s.n:
-        putchar(s.out[i])
-    putchar(10)
+        say_byte(s.out[i])
+    say_byte(10)
     fflush(0)
 
 fn dump_errors(a: &Ast) => void:
     for i in 0..a.err_count:
-        printf("error code=%d at token %d (line %d)\n", a.err_code[i], a.err_tok[i], a.toks.line[a.err_tok[i]])
+        say(f"error code={a.err_code[i]} at token {a.err_tok[i]} (line {a.toks.line[a.err_tok[i]]})\n")
     fflush(0)

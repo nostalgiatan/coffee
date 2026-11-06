@@ -1,5 +1,6 @@
+use * in say
 use * in drive
-use printf, fflush in libc of c
+use fflush in libc of c
 
 /#/ The instructions left in the blocks, and the blocks.
 fn count(f: &Fun) => int:
@@ -23,7 +24,7 @@ fn count_op(f: &Fun, op: int) => int:
 
 fn expect(what: int, got: int, want: int) => int:
     if got != want:
-        printf("MISS #%d: got %d, want %d\n", what, got, want)
+        say(f"MISS #{what}: got {got}, want {want}\n")
         fflush(0)
         return 1
     return 0
@@ -31,7 +32,7 @@ fn expect(what: int, got: int, want: int) => int:
 fn sound(what: int, f: &Fun) => int:
     let d = verify(f)
     if d.n != 0:
-        printf("MISS #%d: verifier code %d\n", what, d.code[0])
+        say(f"MISS #{what}: verifier code {d.code[0]}\n")
         fflush(0)
         return 1
     return 0
@@ -204,7 +205,7 @@ fn main() => int:
     let shorter = 0
     if raw > opt:
         shorter = 1
-    printf("lowered lines: %d, optimized %d\n", raw, opt)
+    say(f"lowered lines: {raw}, optimized {opt}\n")
     m = m + expect(20, shorter, 1)
     m = m + expect(21, run_src(sample(), true), 18)
     return m

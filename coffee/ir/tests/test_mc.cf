@@ -1,14 +1,15 @@
+use * in say
 use * in drive
-use putchar in libc of c
 
 /#/ the bytes of the code the assembler made, as a list of numbers
 fn code_is(a: &Asm, want: buf<int>) => int:
     if a.pos() != len(want):
-        printf("FAIL: %d bytes, want %d\n", a.pos(), len(want))
+        say(f"FAIL: {a.pos()} bytes, want {len(want)}\n")
         return 1
     for k in 0..len(want):
         if a.c.b[k] != want[k]:
-            printf("FAIL: byte %d is %d, want %d\n", k, a.c.b[k], want[k])
+            let got = a.c.b[k]
+            say(f"FAIL: byte {k} is {got}, want {want[k]}\n")
             return 1
     return 0
 

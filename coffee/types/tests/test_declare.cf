@@ -1,5 +1,6 @@
+use * in say
 use * in declare
-use putchar, fflush in libc of c
+use fflush in libc of c
 
 /#/ 1 when the declared type of the global named `name` in `src` is not spelled `want`.
 fn miss(src: str, name: &str, want: &str) => int:
@@ -17,8 +18,8 @@ fn miss(src: str, name: &str, want: &str) => int:
     if found && o.is(want):
         return 0
     for i in 0..o.n:
-        putchar(o.b[i])
-    putchar(10)
+        say_byte(o.b[i])
+    say_byte(10)
     fflush(0)
     return 1
 

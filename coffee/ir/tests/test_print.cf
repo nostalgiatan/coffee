@@ -1,5 +1,5 @@
+use * in say
 use * in print
-use putchar in libc of c
 
 fn main() => int:
     let m = 0
@@ -16,7 +16,7 @@ fn main() => int:
     if !o.is("fn add_one(%0: i64) -> i64:\nconsts:\n  %1 = const i64 1\nbb0:\n  %2 = add i64 %0, %1\n  ret %2\n"):
         m = m + 1
         for k in 0..o.n:
-            putchar(o.b[k])
+            say_byte(o.b[k])
     /#/ a loop with a block parameter, a branch and a call
     let g = new_fun("count", i64)
     let e = g.new_block()
@@ -47,5 +47,5 @@ fn main() => int:
     if !p.is(&want):
         m = m + 1
         for k in 0..p.n:
-            putchar(p.b[k])
+            say_byte(p.b[k])
     return m

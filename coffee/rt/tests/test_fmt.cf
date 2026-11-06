@@ -1,11 +1,12 @@
 /#/ The f-string number text, checked against libc: every float text reads back as the same
 /#/ double (atof), and no decimal one digit shorter does.
+use * in say
 use * in fmt
-use printf, fflush, atof in libc of c
+use fflush, atof in libc of c
 
 fn expect(what: int, got: str, want: str) => int:
     if got != want:
-        printf("MISS #%d: got %s, want %s\n", what, got, want)
+        say(f"MISS #{what}: got {got}, want {want}\n")
         fflush(0)
         return 1
     return 0
@@ -98,10 +99,10 @@ fn main() => int:
             x = make(4503599627370496, 0 - 1022)
         let s = __cf_fmt_float(x)
         if !reads_back(&s, x):
-            printf("NO ROUND TRIP %s\n", s)
+            say(f"NO ROUND TRIP {s}\n")
             bad += 1
         elif shorter_exists(f, e, x):
-            printf("NOT SHORTEST %s\n", s)
+            say(f"NOT SHORTEST {s}\n")
             bad += 1
     fflush(0)
     if bad > 0:

@@ -1,5 +1,6 @@
+use * in say
 use * in verify
-use putchar, printf, fflush in libc of c
+use fflush in libc of c
 
 /#/ a well-formed loop: sum 0..n
 fn good() => Fun:
@@ -29,7 +30,7 @@ fn good() => Fun:
 fn miss(f: &Fun, code: int, want: int) => int:
     let d = verify(f)
     if d.count(code) != want:
-        printf("MISS want %d x code %d, found %d of %d\n", want, code, d.count(code), d.n)
+        say(f"MISS want {want} x code {code}, found {d.count(code)} of {d.n}\n")
         fflush(0)
         return 1
     return 0
@@ -41,7 +42,7 @@ fn main() => int:
     let g = good()
     let d = verify(&g)
     if d.n != 0:
-        printf("good has %d findings, first code %d\n", d.n, d.code[0])
+        say(f"good has {d.n} findings, first code {d.code[0]}\n")
         fflush(0)
         m = m + 1
     /#/ a block with no terminator

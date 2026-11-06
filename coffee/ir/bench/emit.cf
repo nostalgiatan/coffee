@@ -1,7 +1,8 @@
 /#/ Benchmark driver: each program through our front end and IR, with the optimizer off and on,
 /#/ written as LLVM text; prints how long that part takes. Run by bench/run.sh.
+use * in say
 use * in drive
-use printf, time, fflush, fopen, fputc, fclose in libc of c
+use time, fflush, fopen, fputc, fclose in libc of c
 
 fn prog(k: int) => str:
     if k == 0:
@@ -39,7 +40,7 @@ fn time_one(k: int, opt: int, reps: int) => int:
         let x = build_src(prog(k), opt)
         size = x.n
     let t1 = time(0)
-    printf("front+ir prog %d opt %d: %d runs in %d s, %d bytes of IR text\n", k, opt, reps, t1 - t0, size)
+    say(f"front+ir prog {k} opt {opt}: {reps} runs in {t1 - t0} s, {size} bytes of IR text\n")
     fflush(0)
     return t1 - t0
 

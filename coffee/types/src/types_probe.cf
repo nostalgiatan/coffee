@@ -1,6 +1,7 @@
 /#/ Helpers for tests and tools: type-check a source and count what was found.
+use * in say
 use * in typer
-use printf, fflush in libc of c
+use fflush in libc of c
 
 /#/ Declares and checks `src` as a module of its own.
 fn tcheck(src: str) => Typer:
@@ -15,7 +16,7 @@ fn tcheck(src: str) => Typer:
 fn miss_t(src: str, code: int, want: int) => int:
     let r = tcheck(clone src)
     if r.diags.count(code) != want:
-        printf("MISS want %d x %d, found %d, of %d findings in:\n%s\n", want, te_number(code), r.diags.count(code), r.diags.n, src)
+        say(f"MISS want {want} x {te_number(code)}, found {r.diags.count(code)}, of {r.diags.n} findings in:\n{src}\n")
         fflush(0)
         return 1
     return 0
@@ -24,6 +25,6 @@ fn miss_t(src: str, code: int, want: int) => int:
 fn miss_ok(src: str) => int:
     let r = tcheck(clone src)
     if r.diags.n > 0:
-        printf("MISS expected clean, %d findings (first %d) in:\n%s\n", r.diags.n, te_number(r.diags.code[0]), src)
+        say(f"MISS expected clean, {r.diags.n} findings (first {te_number(r.diags.code[0])}) in:\n{src}\n")
         fflush(0)
     return r.diags.n

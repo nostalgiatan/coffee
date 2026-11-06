@@ -1,11 +1,12 @@
 /#/ Float literals the quick conversion cannot do (long mantissa, large or small exponent), against
 /#/ values built from exact operations and against libc's reading of the same text.
+use * in say
 use * in drive
-use printf, fflush in libc of c
+use fflush in libc of c
 
 fn expect(what: int, got: int, want: int) => int:
     if got != want:
-        printf("MISS #%d: got %d, want %d\n", what, got, want)
+        say(f"MISS #{what}: got {got}, want {want}\n")
         fflush(0)
         return 1
     return 0
