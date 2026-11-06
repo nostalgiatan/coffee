@@ -4,8 +4,9 @@ use * in exe
 use chmod in libc of c
 
 /#/ Links the object files named in `paths` (one per line) into the executable `out`.
-fn link_static(paths: &Txt, out: &Txt) => int:
+fn link_static(paths: &Txt, out: &Txt, quiet: bool) => int:
     let l = new_linker()
+    l.quiet = quiet
     let lo = 0
     for i in 0..paths.n:
         if paths.b[i] == 10:
@@ -22,3 +23,37 @@ fn link_static(paths: &Txt, out: &Txt) => int:
     write_file(out, &exe)
     chmod(txt_str(out), 493)
     return 0
+
+/#/ The C functions `rt/src/min.cf` defines, space-separated.
+fn min_provides() => str:
+    return " malloc free calloc memcpy strlen strdup strcmp open read write close remove access chmod clock_gettime fork waitpid system exit _exit execve fflush "
+
+/#/ Does the program (flattened text) import only what the built-in C library has? Then it can be
+/#/ linked without `cc`.
+fn can_link_static(t: &Txt) => bool:
+    let lo = 0
+    let have = min_provides()
+    for i in 0..t.n + 1:
+        if i == t.n || t.b[i] == 10:
+            if i - lo > 8 && find_in(t, lo, i, " of c") >= 0 && t.b[lo] == int('u') && t.b[lo + 1] == int('s') && t.b[lo + 2] == int('e'):
+                let lib = c_lib_name(t, lo, i)
+                if !lib.is("libc"):
+                    return false
+                /#/ the names between `use ` and ` in `
+                let stop = find_in(t, lo, i, " in ")
+                let name = new_txt()
+                for k in lo + 4..stop + 1:
+                    if k == stop || t.b[k] == 44 || t.b[k] == 32:
+                        if name.n > 0:
+                            let probe = txt_of(" ")
+                            probe.put_all(&name)
+                            probe.put(" ")
+                            let ps = txt_str(&probe)
+                            let ht = txt_of(&have)
+                            if find_in(&ht, 0, ht.n, &ps) < 0:
+                                return false
+                            name = new_txt()
+                    else:
+                        name.put_byte(t.b[k])
+            lo = i + 1
+    return true

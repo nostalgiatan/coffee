@@ -60,7 +60,8 @@ V1 的目标:只要 x86-64,系统 `cc` 做链接器,不用 LLVM,不用 Rust 也�
 - [ ] 包依赖和 `fetch`、`std install`(`library/std` 还在仓库里)
 - [x] `--static`:驱动用 `ld/` 的链接器和 `rt/src/min.cf` 的 C 库,链出不依赖 libc 的可执行文件
 - [x] 编译器自己可以 `--static` 构建(2.4 MB,不依赖任何共享库,再编自己得到逐字节相同的结果;编译自己约 2.1 秒,动态版 1.75 秒):源码不再用 `printf`/`fopen` 系列,改用 `say` 和 `open`/`read`/`write`;`min.cf` 补了 `open read close remove access chmod clock_gettime fork waitpid _exit execve system fflush`
-- [ ] `--static` 成为默认;`min.cf` 的 `malloc` 不合并空闲块,`strlen`/`memcpy` 是逐字节/逐字的循环,可以再优化
+- [x] `--static` 在程序只导入 `min.cf` 有的 libc 函数时自动生效(`--dynamic` 强制 `cc`);编译器自己因此默认就是静态的
+- [ ] `min.cf` 的 `malloc` 不合并空闲块,`strlen`/`memcpy` 是逐字节/逐字的循环,可以再优化
 - [ ] `--target` 交叉编译、`--jit`
 - [ ] 算术溢出和除零的陷阱(现在不检查)
 - [ ] 通过 `&T`(不可变借用)给字段赋值现在不报错(编译器自己的源码这样写);要报错得先把源码里的 `&` 改成 `&mut`

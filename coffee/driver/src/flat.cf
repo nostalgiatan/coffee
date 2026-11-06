@@ -1,7 +1,6 @@
 /#/ Imports of Coffee modules, resolved the way the Rust compiler does it: the module's text
 /#/ goes in front of the file that imports it, once, and the `use` line is dropped. Lines that
 /#/ import from C stay.
-use printf in libc of c
 
 class Flat:
     out: Txt

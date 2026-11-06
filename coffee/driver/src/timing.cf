@@ -1,5 +1,5 @@
 /#/ `--time`: how long each phase of a build took, in milliseconds on the wall clock.
-use clock_gettime, printf, fflush in libc of c
+use clock_gettime, fflush in libc of c
 
 let t_on = false
 let t_last = 0

@@ -6,7 +6,7 @@
 /#/ something still needed). If no input defines `_start`, one that calls `main` is added.
 use * in exe
 use * in args
-use chmod, printf, fflush in libc of c
+use chmod, fflush in libc of c
 
 fn usage() => int:
     say("usage: cfld [-o out] [-L dir]... file.o|file.a|-lname ...\n")

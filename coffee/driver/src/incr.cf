@@ -15,7 +15,7 @@
 /#/ different times never define the same symbol. The optimizer works inside one file, but the small
 /#/ functions and methods (`small_fn`) of the files a file can see are lowered into it as well, for
 /#/ inlining only: their bodies are part of their interface, and their code stays in their own file.
-use printf, system, fflush, fork, waitpid, _exit in libc of c
+use system, fflush, fork, waitpid, _exit in libc of c
 
 /#/ Two 64-bit FNV lanes.
 class Hash:
@@ -470,7 +470,7 @@ fn online_cpus() => int:
     return total
 
 /#/ Builds the program in `fl` into `dir`, linking `out`. Returns 0 when it worked.
-fn build_incremental(fl: &Flat, a0: Ast, dir: &Txt, out: &Txt, opt: int, jobs: int, static_link: bool) => int:
+fn build_incremental(fl: &Flat, a0: Ast, dir: &Txt, out: &Txt, opt: int, jobs: int, static_link: bool, auto_static: bool) => int:
     system(txt_str(&mkdir_cmd(dir)))
     if a0.err_count > 0:
         say(f"front end: {a0.err_count} parse errors\n")
@@ -652,17 +652,15 @@ fn build_incremental(fl: &Flat, a0: Ast, dir: &Txt, out: &Txt, opt: int, jobs: i
                 return 1
             write_file(&cache_path(dir, &mn, ".o"), &mobj)
             write_file(&cache_path(dir, &mn, ".key"), &mkt)
-            compiled = compiled + 1
-        else:
-            reused = reused + 1
         plain.put_all(&cache_path(dir, &mn, ".o"))
         plain.put_byte(10)
     say(f"incremental: {compiled} compiled, {reused} reused\n")
     fflush(0)
     if static_link:
-        let rc = link_static(&plain, out)
+        let rc = link_static(&plain, out, auto_static)
         phase("link")
-        return rc
+        if rc == 0 || !auto_static:
+            return rc
     let cmd = txt_of("cc -w -Wl,--gc-sections -o '")
     cmd.put_all(out)
     cmd.put("'")

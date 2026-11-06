@@ -7,7 +7,6 @@
 /#/ in the order they were made (`2 + k`). All of them are global; the locals before them are the
 /#/ two above.
 use * in asm
-use printf in libc of c
 
 class Obj:
     ro: Txt
