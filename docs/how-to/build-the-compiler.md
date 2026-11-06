@@ -2,7 +2,7 @@
 
 目标:得到可执行文件 `coffee2`,并确认它能编译自己。
 
-前提:已经有 Rust 版编译器(stage0),`cc` 在 `PATH` 上;构建 stage0 本身需要 LLVM 21.1。
+前提:x86-64 Linux 和系统的 C 编译器 `cc`。不需要 Rust 和 LLVM。
 
 ## 不用 Rust 和 LLVM:从种子构建
 
@@ -18,60 +18,13 @@ coffee/driver/tools/build-from-seed.sh /tmp/coffee-seed
 coffee/driver/tools/build-from-seed.sh /tmp/coffee-seed --refresh
 ```
 
-下面的步骤走 stage0 的路线,只在没有种子,或要确认 stage0 编出的编译器和种子一致时需要。
-
-## 构建 stage0
-
-在仓库根目录:
-
-```bash
-cargo build --release
-```
-
-得到 `target/release/coffee`。
-
-## 用 stage0 编译 `coffee2`
-
-在 `coffee/` 目录下:
-
-```bash
-I="-I driver/src -I ir/src -I types/src -I sema/src -I parser/src -I lexer/src"
-../target/release/coffee --test-mode $I driver/src/main.cf --bin -o coffee2
-```
-
-这一步要几分钟。我量过一次 Rust 版编译这份源码的耗时,约 4 分钟,所以第一次别以为它卡住了。
-
 ## 验证它能复现自己
 
-用脚本一次做完:
+脚本已经做了:种子编出 `gen1.o`,`gen1` 再编出 `gen2.o`,两者逐字节相同才算通过。目标文件格式变了的那一次,种子的输出是旧格式,脚本会多编一轮(`gen3.o`),要求 `gen2.o` 和 `gen3.o` 相同。
 
-```bash
-driver/tools/bootstrap.sh ../target/release/coffee /tmp/coffee-boot
-```
+## 第一代(Rust)
 
-脚本做四件事:
-
-1. stage0 编译出 `gen2`。
-2. `gen2` 把驱动自己的源码编译成目标文件 `gen2.o`。
-3. `cc` 把 `gen2.o` 链接成 `gen3`,`gen3` 再编译一遍,得到 `gen3.o`。
-4. 比较两个目标文件。
-
-最后一行输出 `fixed point: gen2 and gen3 produce identical objects` 就是通过。两个文件不同,脚本会停在 `cmp` 报错。
-
-## 验证机器码后端也能复现自己
-
-在脚本留下的工作目录里,用 `gen2` 以 `--emit-obj` 编译驱动,链接后再编译一遍,比较两个 `.o`:
-
-```bash
-cd /tmp/coffee-boot
-I="-I <coffee>/driver/src -I <coffee>/ir/src -I <coffee>/types/src -I <coffee>/sema/src -I <coffee>/parser/src -I <coffee>/lexer/src"
-./gen2 main.cf $I --emit-obj -o a.o
-clang -w -o gen4 a.o -lm
-./gen4 main.cf $I --emit-obj -o b.o
-cmp a.o b.o && echo identical
-```
-
-把 `<coffee>` 换成仓库里 `coffee/` 目录的绝对路径。
+第一代编译器已经移出主目录。它的最后一个版本在 git 标签 `rust-stage0-final` 里:`git checkout rust-stage0-final` 后用 `cargo build --release` 构建(需要 LLVM 21.1)。种子是从它引导出来的,日常构建不再需要它。
 
 ## 相关
 

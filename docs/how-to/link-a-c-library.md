@@ -12,7 +12,7 @@ c fn twice(x: int(4)+) => int(4)+:
 
 `int(4)+` 是 4 字节有符号整数,对应 C 的 `int`。
 
-如果手头有头文件,可以让 stage0 生成 `.cfc`:`coffee -c header.h [-I path]`。自举编译器目前不能生成。
+自举编译器不能从头文件生成 `.cfc`,要手写(格式见 `library/cfc/libc.cfc`)。第一代有 `coffee -c header.h`,在标签 `rust-stage0-final` 里。
 
 ## 放在编译器找得到的位置
 

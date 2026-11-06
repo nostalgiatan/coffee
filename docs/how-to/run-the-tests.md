@@ -2,7 +2,7 @@
 
 目标:运行某一阶段的测试,或者全部测试。
 
-测试是 Coffee 写的,由 `tea test` 运行(stage0 的 `coffee test` 也行)。每个阶段的测试在自己目录的 `tests/` 下,每个文件的 `main` 返回失败的个数,0 表示全部通过。
+测试是 Coffee 写的,由 `tea test` 运行。每个阶段的测试在自己目录的 `tests/` 下,每个文件的 `main` 返回失败的个数,0 表示全部通过。
 
 ## 用 tea 运行
 
@@ -36,23 +36,7 @@ cd coffee/compat
 /tmp/coffee-seed/tea test --compiler /tmp/coffee-seed/coffee2
 ```
 
-兼容用例全部通过。没有移植的部分见 `coffee/compat/README.md`。
-
-## 用 stage0 运行
-
-stage0 的 `coffee test` 仍然可用,在该阶段的目录里运行,`-I` 要列出它依赖的阶段:
-
-| 目录 | 命令 |
-|---|---|
-| `coffee/lexer` | `coffee test -I src` |
-| `coffee/parser` | `coffee test --test-mode -I ../lexer/src` |
-| `coffee/sema` | `coffee test --test-mode -I ../parser/src -I ../lexer/src -I src` |
-| `coffee/types` | `coffee test --test-mode -I ../sema/src -I ../parser/src -I ../lexer/src -I src` |
-| `coffee/own` | `coffee test --test-mode -I ../types/src -I ../sema/src -I ../parser/src -I ../lexer/src -I src` |
-| `coffee/ir` | `coffee test --test-mode -I ../types/src -I ../sema/src -I ../parser/src -I ../lexer/src -I src` |
-| `coffee/driver` | `coffee test --test-mode -I ../ir/src -I ../types/src -I ../sema/src -I ../parser/src -I ../lexer/src -I src` |
-
-`--test-mode` 跳过进程锁。不加它,同一目录下并发运行两个 `coffee` 会失败。stage0 的运行器在阶段目录里留下 `ir_lower_test*` 之类的临时文件,已经加入 `.gitignore`。
+兼容用例(1023 个)全部通过。没有移植的部分和两个编译器的差别见 `coffee/compat/README.md`。
 
 ## 运行类测试怎么跑
 

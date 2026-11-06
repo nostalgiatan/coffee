@@ -1,4 +1,4 @@
-# Rust
+# Build output
 /target/
 **/*.rs.backup
 
