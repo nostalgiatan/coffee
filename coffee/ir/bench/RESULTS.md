@@ -51,3 +51,5 @@ and the executable is 1.47 MB.
   It is now a type error unless the context is an unsigned 8-byte int.
 
 xmm 家之后:mandel 0.44 → 0.26 秒,其余不变。
+
+xmm 家与 fmt_int 改写之后:strings 1.09 → 0.34 秒(整数转文字原来每个数字拼接一次,现在只分配两次)。

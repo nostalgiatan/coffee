@@ -39,29 +39,34 @@ fn __cf_ch(c: int) => str:
         return "e"
     return "?"
 
-/#/ The decimal text of `v`.
+/#/ The decimal text of `v`. The characters are packed into words (8 per word, the first in the
+/#/ low byte) and the string is made once from that NUL-ended text.
 fn __cf_fmt_int(v: int) => str:
     if v == 0:
         return "0"
     if v < 0 - 9223372036854775807:
         return "-9223372036854775808"
-    let digits: buf<int> = new_buf(int, 24)
-    let n = 0
     let w = v
+    let neg = 0
     if w < 0:
         w = 0 - w
-    while w > 0:
-        digits[n] = w % 10
-        w = w // 10
+        neg = 1
+    let n = 0
+    let t = w
+    while t > 0:
         n += 1
-    let out = ""
-    if v < 0:
-        out = "-"
-    let i = n - 1
-    while i >= 0:
-        out = out + __cf_ch(48 + digits[i])
-        i -= 1
-    return out
+        t = t // 10
+    let words: buf<int> = new_buf(int, 4)
+    for k in 0..4:
+        words[k] = 0
+    let q = n + neg - 1
+    while w > 0:
+        words[q >> 3] = words[q >> 3] | ((48 + w % 10) << ((q & 7) * 8))
+        w = w // 10
+        q -= 1
+    if neg == 1:
+        words[0] = words[0] | 45
+    return buf_ptr(words) as str
 
 /#/ ---- a bignum: 48 limbs of 28 bits, least significant first ------------------
 

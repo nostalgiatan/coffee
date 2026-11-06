@@ -70,6 +70,10 @@ c fn memcpy(dst: object, src: object, n: int) => object:
     while i + 8 <= n:
         poke64((d + i) as object, peek64((s + i) as object))
         i = i + 8
+    if i < n && n >= 8:
+        /#/ the last bytes: one word that overlaps what was copied (the blocks do not overlap)
+        poke64((d + n - 8) as object, peek64((s + n - 8) as object))
+        i = n
     while i < n:
         poke8((d + i) as object, peek8((s + i) as object))
         i = i + 1
