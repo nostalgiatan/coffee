@@ -202,6 +202,7 @@ fn lower_prepared(p: &Prep, t: &Tys, g: &Syms, opt: int, only: int, unit: &buf<i
     if lw.bad > 0:
         report_unsupported(&p.a, lw.bad_node)
         return lw
+    lw.emit_glue(t, g)
     lw.optimize_module()
     return lw
 

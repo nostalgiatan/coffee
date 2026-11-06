@@ -3236,7 +3236,7 @@ class Lower:
             else:
                 self.layout(t, g, x)
                 if kind == 0 && self.glue_class_loop(t, g, x, p):
-                    self.emit_current()
+                    self.keep_glue(&name)
                     continue
                 if kind == 0:
                     self.glue_drop_fields(t, g, p)
@@ -3246,7 +3246,12 @@ class Lower:
                     let q = self.f.alloc(st_block(t, g, x))
                     self.glue_clone_fields(t, g, p, q)
                     self.f.ret_v(q)
-            self.emit_current()
+            self.keep_glue(&name)
+
+    fn keep_glue(self, name: &Txt) => void:
+        self.cur_id = self.names.intern(name)
+        self.ext_mode = false
+        self.keep_current()
 
     /#/ Drop glue of a class whose last owned field is an enum that holds the class again
     /#/ (`next: Option` with `Some(L)`): the chain is released by looping. False, with nothing
@@ -3500,12 +3505,6 @@ class Lower:
             self.names.put(&w, self.gl_name[k])
             self.mc.add_global(&w, self.gl_size[k])
         return self.mc.elf()
-
-    /#/ Optimizes the function in `self.f` and generates it.
-    fn emit_current(self) => void:
-        if self.opt > 0:
-            optimize_rs(&self.f, &self.rs, true)
-        self.put_fun()
 
 fn type_param_count(a: &Ast, f: int) => int:
     let k = 0

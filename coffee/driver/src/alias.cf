@@ -17,8 +17,20 @@ fn same_ident(t: &Txt, tk: &Tokens, x: int, y: int) => bool:
             return false
     return true
 
+/#/ Does a line of `src` start with `use ` and have ` as ` in it? Without one there is nothing to lex.
+fn has_alias_line(src: &Txt) => bool:
+    let start = 0
+    for i in 0..src.n + 1:
+        if i == src.n || src.b[i] == 10:
+            if i - start > 8 && src.b[start] == int('u') && src.b[start + 1] == int('s') && src.b[start + 2] == int('e') && src.b[start + 3] == 32 && find_in(src, start, i, " as ") >= 0:
+                return true
+            start = i + 1
+    return false
+
 /#/ `src` with the aliases of its `use` lines applied; empty when it has none.
 fn renamed_aliases(src: &Txt) => Txt:
+    if !has_alias_line(src):
+        return new_txt()
     let tk = lex_bytes(&src.b, src.n)
     /#/ to[q] = the token whose text replaces identifier token q, -1 for none
     let to = new_buf(int, tk.count + 1)

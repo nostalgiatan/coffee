@@ -85,3 +85,9 @@ strings 6887 → 3882、collatz 2732 → 1812(百万指令);wall 0.26 → 0.15 �
 - `prints_numbers` 不再整程序重新解析+检查,只做词法扫描(有 f-string 就附加数字运行时,链接器丢掉用不到的)。
 - 验证器默认不跑,`--verify` 开启(`tea test` 加上)。
 - `main.cf` 与 `incr.cf` 的链接尾部合成 `link_objects`。
+
+## 符号哈希、glue 并入模块路径、前端预检
+自编译 16.01G → 13.65G Ir(再 -15%);编译器 990744 字节,不动点成立,基准输出与体积不变。
+- `Syms` 加按哈希分链的索引(`find_span`/`find_in_module` 走链,`truncate` 摘链),结果与线性扫描相同。
+- drop/clone glue 先入模块再 `module_opt`,不再当场优化当场生成;删了 `emit_current`。体积/速度无变化,少一条路径。
+- `renamed_aliases` 先按行预检 `use ... as`,没有就不词法分析;`keyword_scan` 先按长度和首字母排除。

@@ -82,13 +82,19 @@ fn keyword_table() => str:
 
 fn keyword_scan(src: &buf<int>, s: int, e: int, table: &buf<int>, tn: int) => int:
     let n = e - s
+    /#/ the longest keyword is `continue`; no keyword starts with any other letter than these
+    if n > 8:
+        return -1
+    let c0 = sbyte(src, s)
+    if c0 < 'a' || c0 > 'w' || c0 == 'd' || c0 == 'g' || c0 == 'h' || c0 == 'j' || c0 == 'k' || c0 == 'n' || c0 == 'q':
+        return -1
     let idx = 0
     let p = 0
     while p < tn:
         let q = p
         while q < tn && table[q] != ' ':
             q = q + 1
-        if q - p == n:
+        if q - p == n && table[p] == c0:
             let same = true
             for k in 0..n:
                 if sbyte(src, s + k) != table[p + k]:
