@@ -53,6 +53,7 @@ fn part1() => int:
     bad = bad + exits("functions::test_anonymous_fn_may_call_toplevel_function", "\nfn double(x: int) => int:\n    return x * 2\n\nfn main() => int:\n    let callback: fn(int) => int = fn(x: int) => int:\n        return double(x)\n    return callback(21)\n\n", 42)
     bad = bad + rejected("functions::test_anonymous_fn_cannot_capture_enclosing_local", "\nfn main() => int:\n    let n: int = 1\n    let callback: fn(int) => int = fn(x: int) => int:\n        return x + n\n    return callback(1)\n\n", 0)
     bad = bad + rejected("functions::test_anonymous_fn_cannot_capture_enclosing_param", "\nfn apply(n: int) => int:\n    let callback: fn(int) => int = fn(x: int) => int:\n        return x + n\n    return callback(1)\n\nfn main() => int:\n    return apply(1)\n\n", 0)
+    bad = bad + exits("functions::test_anonymous_fn_may_use_global", "\nlet n: int = 21\n\nfn main() => int:\n    let callback: fn(int) => int = fn(x: int) => int:\n        return x * n\n    return callback(2)\n\n", 42)
     bad = bad + exits("functions::test_anonymous_fn_may_call_c", "\nuse printf in libc of c\n\nfn main() => int:\n    let callback: fn(int) => int = fn(x: int) => int:\n        printf(\"%d\\n\", x)\n        return x\n    return callback(42)\n\n", 42)
     return bad
 

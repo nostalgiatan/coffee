@@ -24,4 +24,6 @@ fn main() => int:
     /#/ a function declared in a body, one of the same name in two bodies, an anonymous function
     m = m + expect_exit("fn a() => int:\n    fn helper() => int:\n        return 3\n    return helper()\n\nfn b() => int:\n    fn helper() => int:\n        return 4\n    return helper()\n\nfn main() => int:\n    return a() * 10 + b()\n", 34)
     m = m + expect_exit("fn main() => int:\n    let cb: fn(int) => int = fn(x: int) => int:\n        return x * 2\n    return cb(21)\n", 42)
+    /#/ module-level lets: read, written from a function, a float one
+    m = m + expect_exit("let n: int = 5\nlet f: float = 1.5\n\nfn bump() => void:\n    n = n + 1\n\nfn main() => int:\n    bump()\n    bump()\n    return n * 10 + int(f * 2.0)\n", 73)
     return m

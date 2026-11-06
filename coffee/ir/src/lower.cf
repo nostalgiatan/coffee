@@ -292,6 +292,10 @@ class Lower:
     nf_n: int
     /#/ the name the function being lowered is given, -1 for the one its node spells
     pnm: int
+    /#/ the module-level `let`s: the symbol name and the size in bytes
+    gl_name: buf<int>
+    gl_size: buf<int>
+    gl_n: int
     /#/ the return type of the function
     ret_ty: int
     bad: int
@@ -872,6 +876,43 @@ class Lower:
         self.nf_id[0] = self.pnm
         self.nf_n = 1
 
+    /#/ The row of the module-level `let` that token `tok` names, -1 if none.
+    fn global_row(self, g: &Syms, ty: &Typer, a: &Ast, tok: int) => int:
+        let r = g.find_in_module(a, tok, ty.cur)
+        if r >= 0 && g.kind[r] == int(Sk.Global):
+            return r
+        return -1
+
+    /#/ The symbol of the module-level `let` named by token `tok`.
+    fn global_sym(self, a: &Ast, tok: int) => int:
+        let w = new_txt()
+        w.put("coffee_g_")
+        for q in a.toks.start[tok]..a.toks.end[tok]:
+            w.put_byte(a.byte_at(q))
+        return self.names.intern(&w)
+
+    /#/ Makes the module-level `let`s exist and gives them their values; this opens `main`.
+    fn init_globals(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast) => void:
+        let it = a.child[a.root]
+        while it >= 0:
+            if a.kind[it] == int(Nk.Let) && a.pa[it] >= 0:
+                let vt = self.nd(t, ty, it)
+                let vr = self.rep(t, g, vt)
+                if vr < 0 || vr == int(Rp.Void) || vr >= rp_first_agg() || needs_drop(t, g, vt) || a.pc[it] < 0:
+                    self.unsupported(it)
+                    return
+                let id = self.global_sym(a, a.pa[it])
+                if self.gl_n >= len(self.gl_name):
+                    let cap = (self.gl_n + 1) * 2
+                    self.gl_name = buf_resize(self.gl_name, cap)
+                    self.gl_size = buf_resize(self.gl_size, cap)
+                self.gl_name[self.gl_n] = id
+                self.gl_size[self.gl_n] = rsize(&self.rs, vr)
+                self.gl_n = self.gl_n + 1
+                let val = self.sink(t, g, ty, a, a.pc[it], vt)
+                self.f.store(self.f.fnaddr(id), val)
+            it = a.next[it]
+
     /#/ The address of the anonymous function `n`; it is lowered as `outer__fnN`.
     fn anon_fn(self, a: &Ast, n: int) => int:
         let w = new_txt()
@@ -1110,6 +1151,8 @@ class Lower:
         if k == int(Nk.Name):
             let v = self.lookup(a, a.tok[n])
             if v < 0:
+                if self.global_row(g, ty, a, a.tok[n]) >= 0 && r >= 0 && r < rp_first_agg():
+                    return self.f.load(r, -1, self.f.fnaddr(self.global_sym(a, a.tok[n])))
                 self.unsupported(n)
                 return self.f.undef(int(Rp.I64))
             return self.var_read(v)
@@ -1297,6 +1340,14 @@ class Lower:
         let tk = a.kind[target]
         if tk == int(Nk.Name):
             let v = self.lookup(a, a.tok[target])
+            if v < 0 && self.global_row(g, ty, a, a.tok[target]) >= 0:
+                let gt = self.nd(t, ty, target)
+                if self.rep(t, g, gt) < 0 || self.rep(t, g, gt) >= rp_first_agg():
+                    self.unsupported(n)
+                    return
+                let gv = self.sink(t, g, ty, a, a.pb[n], gt)
+                self.f.store(self.f.fnaddr(self.global_sym(a, a.tok[target])), gv)
+                return
             if v < 0:
                 self.unsupported(n)
                 return
@@ -2749,6 +2800,8 @@ class Lower:
                 self.no_own = 0
                 i = i + 1
             p = a.next[p]
+        if cls < 0 && self.pnm < 0 && self.penv < 0 && a.pa[fn_node] >= 0 && tok_is(a, a.pa[fn_node], "main"):
+            self.init_globals(t, g, ty, a)
         self.block(t, g, ty, a, body)
         if !self.f.terminated(self.f.cur):
             if rr == int(Rp.Void):
@@ -2783,6 +2836,10 @@ class Lower:
     /#/ The object file.
     fn object(self) => Txt:
         self.mc.add_rodata(&self.sbytes)
+        for k in 0..self.gl_n:
+            let w = new_txt()
+            self.names.put(&w, self.gl_name[k])
+            self.mc.add_global(&w, self.gl_size[k])
         return self.mc.elf()
 
     /#/ Optimizes the function in `self.f` and generates it.
@@ -2824,4 +2881,4 @@ fn new_lower() => Lower:
     return lw
 
 fn make_lower() => Lower:
-    return Lower { f: new_fun("", 0), rs: new_reps(), names: new_names(), nstr: 0, cd_name: new_buf(int, 8), cd_sig: new_buf(int, 8), cd_var: new_buf(int, 8), cd_n: 0, sc: new_syms(), v_rep: new_buf(int, 16), v_ty: new_buf(int, 16), v_slot: new_buf(int, 16), v_flag: new_buf(int, 16), tmp_v: new_buf(int, 8), tmp_ty: new_buf(int, 8), tmp_n: 0, no_own: 0, own_st: new_buf(int, 16), own_n: 0, ld: new_buf(int, 8), glue_ty: new_buf(int, 8), glue_kind: new_buf(int, 8), glue_n: 0, glue_done: 0, lay_ty: new_buf(int, 8), lay_off: new_buf(int, 8), lay_n: 0, addr: new_names(), scanned: 0, fty: 0, rt_exit: 0, rt_calloc: 0, rt_strlen: 0, rt_malloc: 0, rt_free: 0, rt_strdup: 0, rt_memcpy: 0, rt_strcmp: 0, rt_write: 0, opt: 1, mc: new_gen(), sbytes: new_txt(), mc_err: 0, ver_err: 0, lib: new_lib(), cur_id: -1, penv: -1, ue: new_buf(int, 16), iq_node: new_buf(int, 8), iq_env: new_buf(int, 8), iq_cls: new_buf(int, 8), iq_nm: new_buf(int, 8), nf_tok: new_buf(int, 8), nf_node: new_buf(int, 8), nf_id: new_buf(int, 8), nf_n: 0, pnm: -1, iq_n: 0, iq_done: 0, lis: -1, nv: 0, dk: new_buf(int, 64), dv: new_buf(int, 64), dn: 0, sealed: new_buf(int, 16), inc_head: new_buf(int, 16), inc_var: new_buf(int, 16), inc_par: new_buf(int, 16), inc_next: new_buf(int, 16), inc_n: 0, pe_head: new_buf(int, 16), pe_next: new_buf(int, 16), lc: new_buf(int, 8), lb: new_buf(int, 8), nloops: 0, ret_ty: 0, bad: 0, bad_node: -1 }
+    return Lower { f: new_fun("", 0), rs: new_reps(), names: new_names(), nstr: 0, cd_name: new_buf(int, 8), cd_sig: new_buf(int, 8), cd_var: new_buf(int, 8), cd_n: 0, sc: new_syms(), v_rep: new_buf(int, 16), v_ty: new_buf(int, 16), v_slot: new_buf(int, 16), v_flag: new_buf(int, 16), tmp_v: new_buf(int, 8), tmp_ty: new_buf(int, 8), tmp_n: 0, no_own: 0, own_st: new_buf(int, 16), own_n: 0, ld: new_buf(int, 8), glue_ty: new_buf(int, 8), glue_kind: new_buf(int, 8), glue_n: 0, glue_done: 0, lay_ty: new_buf(int, 8), lay_off: new_buf(int, 8), lay_n: 0, addr: new_names(), scanned: 0, fty: 0, rt_exit: 0, rt_calloc: 0, rt_strlen: 0, rt_malloc: 0, rt_free: 0, rt_strdup: 0, rt_memcpy: 0, rt_strcmp: 0, rt_write: 0, opt: 1, mc: new_gen(), sbytes: new_txt(), mc_err: 0, ver_err: 0, lib: new_lib(), cur_id: -1, penv: -1, ue: new_buf(int, 16), iq_node: new_buf(int, 8), iq_env: new_buf(int, 8), iq_cls: new_buf(int, 8), iq_nm: new_buf(int, 8), nf_tok: new_buf(int, 8), nf_node: new_buf(int, 8), nf_id: new_buf(int, 8), nf_n: 0, pnm: -1, gl_name: new_buf(int, 8), gl_size: new_buf(int, 8), gl_n: 0, iq_n: 0, iq_done: 0, lis: -1, nv: 0, dk: new_buf(int, 64), dv: new_buf(int, 64), dn: 0, sealed: new_buf(int, 16), inc_head: new_buf(int, 16), inc_var: new_buf(int, 16), inc_par: new_buf(int, 16), inc_next: new_buf(int, 16), inc_n: 0, pe_head: new_buf(int, 16), pe_next: new_buf(int, 16), lc: new_buf(int, 8), lb: new_buf(int, 8), nloops: 0, ret_ty: 0, bad: 0, bad_node: -1 }

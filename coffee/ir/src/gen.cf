@@ -115,6 +115,10 @@ class Gen:
     fn add_rodata(self, t: &Txt) => void:
         self.o.ro.put_all(t)
 
+    /#/ Makes `name` an object of `size` zero bytes in `.data`.
+    fn add_global(self, name: &Txt, size: int) => void:
+        self.o.define_data(self.o.sym(name), size)
+
     fn elf(self) => Txt:
         return write_elf(&self.o, &self.a)
 
