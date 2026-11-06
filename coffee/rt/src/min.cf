@@ -10,6 +10,8 @@
 /#/ first use: word 0 is the next free byte of the chunk, word 1 its end, words 2.. the list heads.
 
 let cf_state: int = 0
+/#/ 1 when the block `malloc` last made is fresh from the system (and so zero), 0 when it was on a list
+let cf_fresh: int = 0
 
 fn cf_mmap(n: int) => int:
     return syscall(9, 0, n, 3, 34, 0 - 1, 0)
@@ -30,7 +32,9 @@ c fn malloc(n: int) => object:
     let p = peek64(head as object)
     if p != 0:
         poke64(head as object, peek64((p + 8) as object))
+        cf_fresh = 0
         return (p + 16) as object
+    cf_fresh = 1
     if sz > 65536:
         p = cf_mmap(sz)
     else:
@@ -82,8 +86,16 @@ c fn memcpy(dst: object, src: object, n: int) => object:
 c fn calloc(n: int, m: int) => object:
     let total = n * m
     let p = malloc(total)
+    if cf_fresh == 1:
+        return p
     let d = int(p)
     let i = 0
+    while i + 32 <= total:
+        poke64((d + i) as object, 0)
+        poke64((d + i + 8) as object, 0)
+        poke64((d + i + 16) as object, 0)
+        poke64((d + i + 24) as object, 0)
+        i = i + 32
     while i + 8 <= total:
         poke64((d + i) as object, 0)
         i = i + 8

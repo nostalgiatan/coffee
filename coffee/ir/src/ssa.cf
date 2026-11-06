@@ -17,10 +17,11 @@ fn edge_push(f: &Fun, e: int, v0: int) => void:
 
 /#/ Gives the parameter `p` (the `k`-th of block `b`) the value it always has, if there is
 /#/ one: every edge into `b` passes the same value, or `p` itself around a loop.
-fn trivial_param(f: &Fun, b: int, p: int, k: int) => bool:
+fn trivial_param(f: &Fun, inf: &buf<int>, inl: &buf<int>, b: int, p: int, k: int) => bool:
     let same = -1
-    for e in 0..f.ne:
-        if f.eto[e] == b && k < f.eargn[e]:
+    for q in inf[b]..inf[b + 1]:
+        let e = inl[q]
+        if k < f.eargn[e]:
             let x = f.follow(f.pool[f.eargs[e] + k])
             if x != p:
                 if same >= 0 && same != x:
@@ -34,6 +35,20 @@ fn trivial_param(f: &Fun, b: int, p: int, k: int) => bool:
 
 /#/ Removes every parameter that is one value, and the arguments passed to it.
 fn simplify_params(f: &Fun) => void:
+    /#/ the edges into each block: `inl[inf[b] .. inf[b + 1]]`
+    let inf: buf<int> = new_buf(int, f.nb + 2)
+    for e in 0..f.ne:
+        if f.eto[e] >= 0:
+            inf[f.eto[e] + 1] = inf[f.eto[e] + 1] + 1
+    for b in 0..f.nb + 1:
+        inf[b + 1] = inf[b + 1] + inf[b]
+    let fill: buf<int> = new_buf(int, f.nb + 1)
+    let inl: buf<int> = new_buf(int, f.ne + 1)
+    for e in 0..f.ne:
+        let t = f.eto[e]
+        if t >= 0:
+            inl[inf[t] + fill[t]] = e
+            fill[t] = fill[t] + 1
     let changed = true
     while changed:
         changed = false
@@ -41,7 +56,7 @@ fn simplify_params(f: &Fun) => void:
             let p = f.pfirst[b]
             let k = 0
             while p >= 0:
-                if f.fwd[p] < 0 && trivial_param(f, b, p, k):
+                if f.fwd[p] < 0 && trivial_param(f, &inf, &inl, b, p, k):
                     changed = true
                 p = f.nx[p]
                 k = k + 1

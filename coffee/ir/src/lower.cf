@@ -311,6 +311,16 @@ class Lower:
     lib: Lib
     /#/ the name number of the function in `f`
     cur_id: int
+    /#/ per class row of the globals: its chain of ancestors (`ch_len` + 1, 0 when not made yet; the
+    /#/ classes are `ch_at[sym * 8 ..]`) and its field rows (`fl_len` + 1, `fl_from` into `fl_pool`);
+    /#/ made again when the globals have grown (`fc_gn`)
+    fc_gn: int
+    ch_len: buf<int>
+    ch_at: buf<int>
+    fl_len: buf<int>
+    fl_from: buf<int>
+    fl_pool: buf<int>
+    fl_n: int
     /#/ the type arguments the function being lowered is instantiated with, as `Name<A, B>`; -1 if none
     penv: int
     /#/ scratch: what `unify` found for each type parameter
@@ -2597,48 +2607,77 @@ class Lower:
     /#/ The offset of field `tok` in class type `cls` (ancestors' fields come first); the field's
     /#/ type is left in `fty`. -1 when there is no such field.
     fn find_field(self, t: &Tys, g: &Syms, a: &Ast, cls: int, tok: int) => int:
-        let chain: buf<int> = new_buf(int, 8)
-        let n = 0
-        let cur = t.a[cls]
-        while cur >= 0 && n < 8:
-            chain[n] = cur
-            n = n + 1
-            let next = -1
-            for i in 0..g.n:
-                if g.info[i] == cur && g.kind[i] == int(Sk.Parent):
-                    next = g.find_class_row(i)
-            cur = next
-        return self.find_field_span(t, g, a, cls, chain, n, a.toks.start[tok], a.toks.end[tok])
+        return self.find_field_by(t, g, a, cls, a.toks.start[tok], a.toks.end[tok])
 
     /#/ Like `find_field`, for the name spelled by the bytes `s`..`e` of the source.
     fn find_field_by(self, t: &Tys, g: &Syms, a: &Ast, cls: int, s: int, e: int) => int:
-        let chain: buf<int> = new_buf(int, 8)
-        let n = 0
-        let cur = t.a[cls]
-        while cur >= 0 && n < 8:
-            chain[n] = cur
-            n = n + 1
-            let next = -1
-            for i in 0..g.n:
-                if g.info[i] == cur && g.kind[i] == int(Sk.Parent):
-                    next = g.find_class_row(i)
-            cur = next
-        return self.find_field_span(t, g, a, cls, chain, n, s, e)
+        self.fc_check(g)
+        let sym = t.a[cls]
+        if self.ch_len[sym] == 0:
+            let chain: buf<int> = new_buf(int, 8)
+            let n = 0
+            let cur = sym
+            while cur >= 0 && n < 8:
+                chain[n] = cur
+                n = n + 1
+                let next = -1
+                for i in 0..g.n:
+                    if g.info[i] == cur && g.kind[i] == int(Sk.Parent):
+                        next = g.find_class_row(i)
+                cur = next
+            for k in 0..n:
+                self.ch_at[sym * 8 + k] = chain[k]
+            self.ch_len[sym] = n + 1
+        return self.find_field_span(t, g, a, cls, sym, self.ch_len[sym] - 1, s, e)
 
-    /#/ The search of `find_field_by`, given the `n` classes of the chain, root first at `n - 1`.
-    fn find_field_span(self, t: &Tys, g: &Syms, a: &Ast, cls: int, chain: buf<int>, n: int, s: int, e: int) => int:
+    /#/ Makes the caches of `find_field_by` empty when the globals have more rows than they were made for.
+    fn fc_check(self, g: &Syms) => void:
+        if self.fc_gn == g.n:
+            return
+        self.fc_gn = g.n
+        if len(self.ch_len) < g.n + 1:
+            self.ch_len = new_buf(int, g.n * 2 + 1)
+            self.ch_at = new_buf(int, (g.n * 2 + 1) * 8)
+            self.fl_len = new_buf(int, g.n * 2 + 1)
+            self.fl_from = new_buf(int, g.n * 2 + 1)
+        else:
+            for i in 0..len(self.ch_len):
+                self.ch_len[i] = 0
+                self.fl_len[i] = 0
+        self.fl_n = 0
+
+    /#/ The field rows of class row `owner`, in order, in `fl_pool[fl_from[owner] ..]`.
+    fn field_rows(self, g: &Syms, owner: int) => int:
+        if self.fl_len[owner] == 0:
+            self.fl_from[owner] = self.fl_n
+            let k = 0
+            for i in 0..g.n:
+                if g.info[i] == owner && g.kind[i] == int(Sk.Field) && g.ty[i] >= 0:
+                    if self.fl_n >= len(self.fl_pool):
+                        self.fl_pool = buf_resize(self.fl_pool, (self.fl_n + 1) * 2)
+                    self.fl_pool[self.fl_n] = i
+                    self.fl_n = self.fl_n + 1
+                    k = k + 1
+            self.fl_len[owner] = k + 1
+        return self.fl_len[owner] - 1
+
+    /#/ The search of `find_field_by`, given the `n` classes of the chain of `sym`, root first at `n - 1`.
+    fn find_field_span(self, t: &Tys, g: &Syms, a: &Ast, cls: int, sym: int, n: int, s: int, e: int) => int:
         let h = g.span_hash(a, s, e)
         let off = 0
         let c = n - 1
         while c >= 0:
-            for i in 0..g.n:
-                if g.info[i] == chain[c] && g.kind[i] == int(Sk.Field) && g.ty[i] >= 0:
-                    let ft = subst_env(t, g.ty[i], cls)
-                    off = align_up(off, st_align(t, g, ft))
-                    if g.same_span(i, a, s, e, h):
-                        self.fty = ft
-                        return off
-                    off = off + st_size(t, g, ft)
+            let owner = self.ch_at[sym * 8 + c]
+            let cnt = self.field_rows(g, owner)
+            let from = self.fl_from[owner]
+            for q in 0..cnt:
+                let i = self.fl_pool[from + q]
+                let ft = subst_env(t, g.ty[i], cls)
+                off = align_up(off, st_align(t, g, ft))
+                if g.same_span(i, a, s, e, h):
+                    self.fty = ft
+                    return off
+                off = off + st_size(t, g, ft)
             c = c - 1
         return -1
 
@@ -3539,4 +3578,4 @@ fn new_lower() => Lower:
     return lw
 
 fn make_lower() => Lower:
-    return Lower { f: new_fun("", 0), rs: new_reps(), names: new_names(), nstr: 0, cd_name: new_buf(int, 8), cd_sig: new_buf(int, 8), cd_var: new_buf(int, 8), cd_n: 0, sc: new_syms(), v_rep: new_buf(int, 16), v_ty: new_buf(int, 16), v_slot: new_buf(int, 16), v_flag: new_buf(int, 16), tmp_v: new_buf(int, 8), tmp_ty: new_buf(int, 8), tmp_n: 0, no_own: 0, own_st: new_buf(int, 16), own_n: 0, ld: new_buf(int, 8), glue_ty: new_buf(int, 8), glue_kind: new_buf(int, 8), glue_n: 0, glue_done: 0, lay_ty: new_buf(int, 8), lay_off: new_buf(int, 8), lay_n: 0, addr: new_names(), scanned: 0, fty: 0, rt_exit: 0, rt_calloc: 0, rt_strlen: 0, rt_malloc: 0, main_fn: false, rt_free: 0, rt_strdup: 0, rt_memcpy: 0, rt_strcmp: 0, rt_write: 0, or_mark: -1, opt: 1, mc: new_gen(), sbytes: new_txt(), mc_err: 0, ver_err: 0, lib: new_lib(), cur_id: -1, penv: -1, ue: new_buf(int, 16), iq_node: new_buf(int, 8), iq_env: new_buf(int, 8), iq_cls: new_buf(int, 8), iq_nm: new_buf(int, 8), nf_tok: new_buf(int, 8), nf_node: new_buf(int, 8), nf_id: new_buf(int, 8), nf_n: 0, pnm: -1, tag: new_txt(), uses_rt: false, ext_mode: false, ext_slot: new_buf(int, 16), gl_name: new_buf(int, 8), gl_size: new_buf(int, 8), gl_n: 0, tailb: -1, tailm: -1, retx: -1, iq_n: 0, iq_done: 0, lis: -1, nv: 0, dk: new_buf(int, 64), dv: new_buf(int, 64), dn: 0, sealed: new_buf(int, 16), inc_head: new_buf(int, 16), inc_var: new_buf(int, 16), inc_par: new_buf(int, 16), inc_next: new_buf(int, 16), inc_n: 0, pe_head: new_buf(int, 16), pe_next: new_buf(int, 16), lc: new_buf(int, 8), lb: new_buf(int, 8), nloops: 0, ret_ty: 0, bad: 0, bad_node: -1 }
+    return Lower { f: new_fun("", 0), rs: new_reps(), names: new_names(), nstr: 0, cd_name: new_buf(int, 8), cd_sig: new_buf(int, 8), cd_var: new_buf(int, 8), cd_n: 0, sc: new_syms(), v_rep: new_buf(int, 16), v_ty: new_buf(int, 16), v_slot: new_buf(int, 16), v_flag: new_buf(int, 16), tmp_v: new_buf(int, 8), tmp_ty: new_buf(int, 8), tmp_n: 0, no_own: 0, own_st: new_buf(int, 16), own_n: 0, ld: new_buf(int, 8), glue_ty: new_buf(int, 8), glue_kind: new_buf(int, 8), glue_n: 0, glue_done: 0, lay_ty: new_buf(int, 8), lay_off: new_buf(int, 8), lay_n: 0, addr: new_names(), scanned: 0, fty: 0, rt_exit: 0, rt_calloc: 0, rt_strlen: 0, rt_malloc: 0, main_fn: false, rt_free: 0, rt_strdup: 0, rt_memcpy: 0, rt_strcmp: 0, rt_write: 0, or_mark: -1, opt: 1, mc: new_gen(), sbytes: new_txt(), mc_err: 0, ver_err: 0, lib: new_lib(), cur_id: -1, fc_gn: -1, ch_len: new_buf(int, 8), ch_at: new_buf(int, 64), fl_len: new_buf(int, 8), fl_from: new_buf(int, 8), fl_pool: new_buf(int, 16), fl_n: 0, penv: -1, ue: new_buf(int, 16), iq_node: new_buf(int, 8), iq_env: new_buf(int, 8), iq_cls: new_buf(int, 8), iq_nm: new_buf(int, 8), nf_tok: new_buf(int, 8), nf_node: new_buf(int, 8), nf_id: new_buf(int, 8), nf_n: 0, pnm: -1, tag: new_txt(), uses_rt: false, ext_mode: false, ext_slot: new_buf(int, 16), gl_name: new_buf(int, 8), gl_size: new_buf(int, 8), gl_n: 0, tailb: -1, tailm: -1, retx: -1, iq_n: 0, iq_done: 0, lis: -1, nv: 0, dk: new_buf(int, 64), dv: new_buf(int, 64), dn: 0, sealed: new_buf(int, 16), inc_head: new_buf(int, 16), inc_var: new_buf(int, 16), inc_par: new_buf(int, 16), inc_next: new_buf(int, 16), inc_n: 0, pe_head: new_buf(int, 16), pe_next: new_buf(int, 16), lc: new_buf(int, 8), lb: new_buf(int, 8), nloops: 0, ret_ty: 0, bad: 0, bad_node: -1 }

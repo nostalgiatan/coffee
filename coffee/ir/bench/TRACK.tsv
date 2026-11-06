@@ -3,3 +3,4 @@ commit	label	self-compile Ir	compiler bytes
 032f511	r11 allocatable	12582754731	813928
 309274f	rdi allocatable	12407873618	808984
 f801beb	eviction by weight per range length	12226717193	786440
+afbb19e	calloc, incoming edge lists, field cache	10697468372	790000
