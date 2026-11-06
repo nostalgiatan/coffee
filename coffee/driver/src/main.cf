@@ -151,9 +151,9 @@ fn parse_cli(fl: &Flat) => Cli:
             elif w.is("-O1"):
                 cli.set_level(1)
             elif w.is("-O2"):
-                cli.set_level(2)
+                cli.set_level(1)
             elif w.is("-O3"):
-                cli.set_level(3)
+                cli.set_level(1)
             elif w.n > 0 && w.b[0] == int('-'):
                 say(f"error: unknown option '{txt_str(&w)}'\n")
                 cli.set_bad()

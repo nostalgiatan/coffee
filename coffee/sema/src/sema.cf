@@ -122,9 +122,6 @@ fn same_tok(a: &Ast, t1: int, t2: int) => bool:
             return false
     return true
 
-fn is_ident_byte(b: int) => bool:
-    return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || b == '_' || (b >= '0' && b <= '9')
-
 /#/ Does a `break` that belongs to the loop around `st` appear in it?
 fn has_break(a: &Ast, st: int) => bool:
     if st < 0:

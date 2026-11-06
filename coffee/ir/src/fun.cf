@@ -714,10 +714,6 @@ class Fun:
         let x = self.follow(v)
         return self.raw(int(Op.Clone), self.rep[x], -1, x, -1, -1, glue)
 
-    fn own_move(self, v: int) => int:
-        let x = self.follow(v)
-        return self.raw(int(Op.OwnMove), self.rep[x], self.ty[x], x, -1, -1, 0)
-
     /#/ ---- edges and terminators ---------------------------------------------
 
     /#/ An edge to `target` passing the queued arguments.

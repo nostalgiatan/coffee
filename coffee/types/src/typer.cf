@@ -128,13 +128,6 @@ class Typer:
                 c = c + 1
         return c
 
-    fn untyped(self, a: &Ast) => int:
-        let c = 0
-        for i in 0..a.count:
-            if self.node[i] == 0:
-                c = c + 1
-        return c
-
     /#/ The scope row a name token refers to; -1 when it names nothing.
     fn lookup(self, a: &Ast, tok: int) => int:
         return self.rd.sc.loc.find_tok(a, tok, 0)

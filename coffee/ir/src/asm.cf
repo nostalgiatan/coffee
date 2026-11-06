@@ -26,9 +26,6 @@ fn cc_be() => int:
 fn cc_a() => int:
     return 7
 
-fn cc_p() => int:
-    return 10
-
 fn cc_np() => int:
     return 11
 

@@ -11,10 +11,6 @@
 /#/ Not here yet: effect summaries, inlining and the attributes that come from them.
 use * in ssa
 
-/#/ The value an operand stands for.
-fn opd(f: &Fun, v: int) => int:
-    return f.follow(v)
-
 /#/ Takes `i` out of its block's list (a parameter is not in that list).
 fn unlink(f: &Fun, i: int) => void:
     let b = f.blk[i]

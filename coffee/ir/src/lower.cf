@@ -53,15 +53,6 @@ fn rep_of(t: &Tys, g: &Syms, x: int) => int:
             return int(Rp.I64)
     return -1
 
-/#/ Does `w` spell `s`?
-fn txt_spells(w: &Txt, s: str) => bool:
-    if w.n != len(s):
-        return false
-    for i in 0..w.n:
-        if w.b[i] != s[i]:
-            return false
-    return true
-
 /#/ A function of the program named like one the generated code calls in the C library would take
 /#/ its place; its symbol gets a suffix.
 fn keep_off_runtime(w: &Txt) => void:

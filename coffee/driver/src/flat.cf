@@ -99,9 +99,6 @@ class Flat:
                     cmd.put_byte(self.libs.b[k])
                 st = i + 1
 
-    fn out_str(self) => str:
-        return txt_str(&self.out)
-
     fn write_to(self, path: &Txt) => void:
         write_file(path, &self.out)
 

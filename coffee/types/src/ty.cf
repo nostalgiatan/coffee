@@ -192,9 +192,6 @@ class Tys:
     fn is_int(self, t: int) => bool:
         return self.kind[t] == int(Ty.Int)
 
-    fn is_float(self, t: int) => bool:
-        return self.kind[t] == int(Ty.Float)
-
     fn is_numeric(self, t: int) => bool:
         return self.kind[t] == int(Ty.Int) || self.kind[t] == int(Ty.Float)
 

@@ -57,10 +57,6 @@ fn subst_env(t: &Tys, ty: int, env: int) => int:
         return t.intern(int(Ty.Named), t.a[ty], 0, count, start)
     return ty
 
-/#/ Is `x` an enum type?
-fn is_enum(t: &Tys, g: &Syms, x: int) => bool:
-    return t.kind[x] == int(Ty.Named) && g.kind[t.a[x]] == int(Sk.Enum)
-
 /#/ Does enum `e` (a row of `g`) have a variant that carries values?
 fn has_payload(t: &Tys, g: &Syms, e: int) => bool:
     for i in 0..g.n:

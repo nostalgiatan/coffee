@@ -9,8 +9,3 @@ fn dump_shape(a: &Ast) => void:
         say_byte(s.out[i])
     say_byte(10)
     fflush(0)
-
-fn dump_errors(a: &Ast) => void:
-    for i in 0..a.err_count:
-        say(f"error code={a.err_code[i]} at token {a.err_tok[i]} (line {a.toks.line[a.err_tok[i]]})\n")
-    fflush(0)
