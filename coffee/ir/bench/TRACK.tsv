@@ -4,3 +4,4 @@ commit	label	self-compile Ir	compiler bytes
 309274f	rdi allocatable	12407873618	808984
 f801beb	eviction by weight per range length	12226717193	786440
 afbb19e	calloc, incoming edge lists, field cache	10697468372	790000
+43a3787	cfg cleanup, then value passes; 3 rounds	10707889364	789408

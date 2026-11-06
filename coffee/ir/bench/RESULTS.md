@@ -147,3 +147,8 @@ rsi 不行:`src(…, 6)` 和 `addr_of(…, 1, 6)` 在每个地址在栈上的 Lo
 ## 各部分的代码体积(静态编译器的 .text,按函数名归到源文件)
 AST→IR(lower/drive)146660;gen+asm+elf 80914;types 76369;rt(fmt,min)76218;IR 核心(fun,lib,names,rep,op,print,verify…)63152;opt(opt,ssa,modopt)61438;driver 59519;sema 56099;own 33721;ld 26693;parser 25708;lexer 15370;共 731202。
 只要后端(IR→机器码 + 优化 + 加载)≈ 80914 + 61438 + 约 40000(IR 核心去掉 print/verify)≈ 180 KB;带前端(源码直接进)≈ 530 KB。
+
+## 优化遍的结构:先理清控制流,再看值
+每轮前用 `cfg_cleanup`(thread_jumps、fold_branches、merge_traps、drop_unreachable、merge_blocks)跑到不动为止,再跑 `value_passes`(fold_extracts、split_*、cse_branches、hoist_invariants、own_opt、stack_alloc、dead_code、dead_params);值的遍有改动才再来一轮,最多 3 轮,收尾再清一次(所以截断也总是合法的)。
+剖面:原来的 8 轮里,round 0 有 995/1141 个函数靠 drop_unreachable 删块(降低时生成的死块),round 1 还有 588 个(别的遍造出来的死块)。
+结果:上限 3 轮 compat 全过(旧结构上限 3 有 4 个失败);自编译 10.70G → 10.71G Ir(持平),编译器 790000 → 789408 字节,基准体积和时间不变。上限 2 会让 matmul 慢 15%(0.18→0.22),不取。收益是结构与安全,不是速度。

@@ -1237,41 +1237,66 @@ fn optimize(f: &Fun) => void:
     let rs = new_reps()
     optimize_rs(f, &rs, false)
 
+/#/ The passes that only reshape the control flow, run until none of them has more to do: jumps
+/#/ threaded, branches decided, traps shared, blocks that nothing reaches dropped, blocks joined.
+fn cfg_cleanup(f: &Fun) => bool:
+    let any = false
+    let again = true
+    let n = 0
+    while again && n < 8:
+        again = false
+        if thread_jumps(f):
+            again = true
+        if fold_branches(f):
+            again = true
+        if merge_traps(f):
+            again = true
+        if drop_unreachable(f):
+            again = true
+            simplify_params(f)
+        if merge_blocks(f):
+            again = true
+        if again:
+            any = true
+        n = n + 1
+    return any
+
+/#/ The passes that look at what the instructions compute.
+fn value_passes(f: &Fun, rs: &Reps, split: bool) => bool:
+    let changed = false
+    if fold_extracts(f):
+        changed = true
+    if split && split_loads(f, rs):
+        changed = true
+    if split && split_stores(f, rs):
+        changed = true
+    if cse_branches(f):
+        changed = true
+    if hoist_invariants(f):
+        changed = true
+    if own_opt(f):
+        changed = true
+    if stack_alloc(f):
+        changed = true
+    if dead_code(f):
+        changed = true
+    if dead_params(f):
+        changed = true
+    return changed
+
 fn optimize_rs(f: &Fun, rs: &Reps, split: bool) => void:
     fold_extracts(f)
     hoist_extracts(f)
+    /#/ the control flow is put in order before each look at the values, so the passes that look at
+    /#/ them are run again only when one of them changed something
     let round = 0
     let changed = true
-    while changed && round < 8:
-        changed = false
-        if fold_extracts(f):
-            changed = true
-        if split && split_loads(f, rs):
-            changed = true
-        if split && split_stores(f, rs):
-            changed = true
-        if cse_branches(f):
-            changed = true
-        if hoist_invariants(f):
-            changed = true
-        if thread_jumps(f):
-            changed = true
-        if fold_branches(f):
-            changed = true
-        if merge_traps(f):
-            changed = true
-        if drop_unreachable(f):
-            changed = true
-            simplify_params(f)
-        if merge_blocks(f):
-            changed = true
-        if own_opt(f):
-            changed = true
-        if stack_alloc(f):
-            changed = true
-        if dead_code(f):
-            changed = true
-        if dead_params(f):
-            changed = true
+    while changed && round < 3:
+        cfg_cleanup(f)
+        changed = value_passes(f, rs, split)
         round = round + 1
+    if changed:
+        cfg_cleanup(f)
+        dead_code(f)
+        dead_params(f)
     recount_uses(f)
