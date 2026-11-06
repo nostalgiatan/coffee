@@ -1,0 +1,27 @@
+/#/ Float literals the quick conversion cannot do (long mantissa, large or small exponent), against
+/#/ values built from exact operations and against libc's reading of the same text.
+use * in drive
+use printf, fflush in libc of c
+
+fn expect(what: int, got: int, want: int) => int:
+    if got != want:
+        printf("MISS #%d: got %d, want %d\n", what, got, want)
+        fflush(0)
+        return 1
+    return 0
+
+/#/ A program whose `main` returns 0 when `lit` equals the double `rhs` evaluates to.
+fn same(lit: str, rhs: str) => str:
+    let helpers = "fn halve(n: int) => float:\n    let x = 1.0\n    for i in 0..n:\n        x = x / 2.0\n    return x\n\nfn double(n: int) => float:\n    let x = 1.0\n    for i in 0..n:\n        x = x * 2.0\n    return x\n\n"
+    return helpers + "fn main() => int:\n    let a = " + lit + "\n    let b = " + rhs + "\n    if a == b:\n        return 0\n    return 1\n"
+
+fn main() => int:
+    let m = 0
+    /#/ 2^-1074, the smallest double
+    m = m + expect(1, run_src(same("5e-324", "halve(1074)"), true), 0)
+    m = m + expect(2, run_src(same("2.2250738585072014e-308", "halve(1022)"), true), 0)
+    m = m + expect(3, run_src(same("1.7976931348623157e308", "(2.0 - halve(52)) * double(1023)"), true), 0)
+    m = m + expect(4, run_src(same("9007199254740993.0", "9007199254740992.0"), true), 0)
+    m = m + expect(5, run_src(same("0.123456789012345678", "0.12345678901234568"), true), 0)
+    m = m + expect(6, run_src(same("1e-30", "1.0 / 1000000000000000.0 / 1000000000000000.0"), true), 0)
+    return m

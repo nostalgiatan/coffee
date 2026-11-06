@@ -1,0 +1,137 @@
+/#/ The double nearest to a decimal literal, rounded to even, for the cases the quick exact
+/#/ conversion in `float_bits` cannot do (a long mantissa, a large or small exponent). The value is
+/#/ m * 10^scale with m below 10^18, worked out on a bignum of 48 limbs of 28 bits.
+
+fn dec_zero(a: &buf<int>) => void:
+    for i in 0..48:
+        a[i] = 0
+
+fn dec_set(a: &buf<int>, v: int) => void:
+    dec_zero(a)
+    let w = v
+    let i = 0
+    while w > 0:
+        a[i] = w % 268435456
+        w = w // 268435456
+        i += 1
+
+fn dec_copy(d: &buf<int>, s: &buf<int>) => void:
+    for i in 0..48:
+        d[i] = s[i]
+
+/#/ a = a * m, for 0 <= m <= 2^28
+fn dec_mul(a: &buf<int>, m: int) => void:
+    let carry = 0
+    for i in 0..48:
+        let t = a[i] * m + carry
+        a[i] = t % 268435456
+        carry = t // 268435456
+
+/#/ a = a * 2^bits
+fn dec_shl(a: &buf<int>, bits: int) => void:
+    let left = bits
+    while left > 0:
+        let step = left
+        if step > 27:
+            step = 27
+        let p = 1
+        for z in 0..step:
+            p = p * 2
+        dec_mul(a, p)
+        left -= step
+
+/#/ -1, 0 or 1 as a is below, equal to or above b
+fn dec_cmp(a: &buf<int>, b: &buf<int>) => int:
+    let i = 47
+    while i >= 0:
+        if a[i] < b[i]:
+            return -1
+        if a[i] > b[i]:
+            return 1
+        i -= 1
+    return 0
+
+/#/ a = a - b, for a >= b
+fn dec_sub(a: &buf<int>, b: &buf<int>) => void:
+    let borrow = 0
+    for i in 0..48:
+        let t = a[i] - b[i] - borrow
+        borrow = 0
+        if t < 0:
+            t += 268435456
+            borrow = 1
+        a[i] = t
+
+/#/ The number of bits of a (0 for zero).
+fn dec_bits(a: &buf<int>) => int:
+    let i = 47
+    while i >= 0 && a[i] == 0:
+        i -= 1
+    if i < 0:
+        return 0
+    let n = 0
+    let w = a[i]
+    while w > 0:
+        w = w // 2
+        n += 1
+    return i * 28 + n
+
+/#/ The bits of the double nearest to m * 10^scale (m > 0); -1 when it is too large or too long to do.
+fn decimal_bits(m: int, scale: int) => int:
+    if scale > 310:
+        return -1
+    if scale < -342:
+        return 0
+    let r: buf<int> = new_buf(int, 48)
+    let d: buf<int> = new_buf(int, 48)
+    let t: buf<int> = new_buf(int, 48)
+    dec_set(&r, m)
+    dec_set(&d, 1)
+    if scale >= 0:
+        for i in 0..scale:
+            dec_mul(&r, 10)
+    else:
+        for i in 0..0 - scale:
+            dec_mul(&d, 10)
+    /#/ scale r / d into (2^55, 2^57): q = floor(r / d) then has 56 or 57 bits and value = q * 2^-k
+    let k = 56 + dec_bits(&d) - dec_bits(&r)
+    if k > 0:
+        dec_shl(&r, k)
+    else:
+        dec_shl(&d, 0 - k)
+    let q = 0
+    let b = 56
+    while b >= 0:
+        dec_copy(&t, &d)
+        dec_shl(&t, b)
+        if dec_cmp(&t, &r) <= 0:
+            dec_sub(&r, &t)
+            q = q + (1 << b)
+        b -= 1
+    let sticky = dec_bits(&r) > 0
+    let nb = 0
+    let w = q
+    while w > 0:
+        w = w // 2
+        nb += 1
+    let e2 = 0 - k
+    let ulp = e2 + nb - 53
+    if ulp < 0 - 1074:
+        ulp = 0 - 1074
+    let shift = ulp - e2
+    if shift > nb:
+        return 0
+    let mant = q >> shift
+    let rem = q - (mant << shift)
+    let half = 1 << (shift - 1)
+    if rem > half || (rem == half && (sticky || mant % 2 == 1)):
+        mant += 1
+    if mant >= 9007199254740992:
+        mant = mant // 2
+        ulp += 1
+    if ulp == 0 - 1074:
+        return mant
+    let biased = ulp + 52 + 1023
+    if biased >= 2047:
+        return -1
+    return (biased << 52) | (mant - 4503599627370496)
