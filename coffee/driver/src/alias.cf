@@ -2,6 +2,10 @@
 /#/ flattened into one text, so the alias is applied there: in that file's own text every `g` (not a
 /#/ field or method name after a `.`, not inside a string or comment) becomes `f`. The names `f`
 /#/ and `g` share the one flat namespace, so an alias to a name the file also declares is not told apart.
+/#/
+/#/ `use m as a` names module `m` as `a`: `a.f(x)` and `a.Point {...}` in that file become `f(x)` and
+/#/ `Point {...}`. The prefix is dropped wherever the name `a` is followed by a `.` and is not itself
+/#/ after one, so a local variable called `a` would be read as the module.
 
 /#/ Do the identifier tokens `x` and `y` of `t` spell the same name?
 fn same_ident(t: &Txt, tk: &Tokens, x: int, y: int) => bool:
@@ -23,6 +27,8 @@ fn renamed_aliases(src: &Txt) => Txt:
     let from_tok = new_buf(int, 8)
     let to_tok = new_buf(int, 8)
     let pairs = 0
+    let mods = new_buf(int, 8)
+    let nmods = 0
     let in_use = false
     let w = 0
     while w < tk.count:
@@ -39,6 +45,19 @@ fn renamed_aliases(src: &Txt) => Txt:
                 if tk.kind[z] == int(Tk.KwIn):
                     before_in = true
                 z = z + 1
+            /#/ `use m as a`: no `in` or `of` anywhere on the line
+            let plain = !before_in
+            let ls = w
+            while ls > 0 && tk.kind[ls - 1] != int(Tk.Newline):
+                ls = ls - 1
+            for y in ls..w:
+                if tk.kind[y] == int(Tk.KwIn):
+                    plain = false
+            if plain:
+                if nmods >= len(mods):
+                    mods = buf_resize(mods, nmods * 2)
+                mods[nmods] = w + 1
+                nmods = nmods + 1
             if before_in:
                 if pairs >= len(from_tok):
                     from_tok = buf_resize(from_tok, pairs * 2)
@@ -47,7 +66,7 @@ fn renamed_aliases(src: &Txt) => Txt:
                 to_tok[pairs] = w - 1
                 pairs = pairs + 1
         w = w + 1
-    if pairs == 0:
+    if pairs == 0 && nmods == 0:
         return new_txt()
     in_use = false
     for q in 0..tk.count:
@@ -60,10 +79,25 @@ fn renamed_aliases(src: &Txt) => Txt:
             for p in 0..pairs:
                 if same_ident(src, &tk, q, from_tok[p]):
                     to[q] = to_tok[p]
+            if q + 1 < tk.count && tk.kind[q + 1] == int(Tk.Dot):
+                for p in 0..nmods:
+                    if same_ident(src, &tk, q, mods[p]):
+                        to[q] = -2
+    let changed = false
+    for q in 0..tk.count:
+        if to[q] != -1:
+            changed = true
+    if !changed:
+        return new_txt()
     let out = new_txt()
     let pos = 0
     for q in 0..tk.count:
-        if to[q] >= 0:
+        if to[q] == -2:
+            while pos < tk.start[q]:
+                out.put_byte(src.b[pos])
+                pos = pos + 1
+            pos = tk.end[q + 1]
+        elif to[q] >= 0:
             while pos < tk.start[q]:
                 out.put_byte(src.b[pos])
                 pos = pos + 1

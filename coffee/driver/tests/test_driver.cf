@@ -86,4 +86,8 @@ fn main() => int:
     let two = renamed_aliases(&txt_of("use a as x, b as y in util\nfn f() => int:\n    return x() + y()\n"))
     m = m + expect(24, b2i(two.same(&txt_of("use a as x, b as y in util\nfn f() => int:\n    return a() + b()\n"))), 1)
     m = m + expect(25, renamed_aliases(&txt_of("use util as u\nfn f() => int:\n    return u()\n")).n, 0)
+    /#/ `use m as a`: the prefix `a.` goes, a field after a dot and a function alias are left alone
+    let mod = renamed_aliases(&txt_of("use util as u\nfn f() => int:\n    let p = u.Pt { x: 1 }\n    return u.twice(p.u.x)\n"))
+    m = m + expect(26, b2i(mod.same(&txt_of("use util as u\nfn f() => int:\n    let p = Pt { x: 1 }\n    return twice(p.u.x)\n"))), 1)
+    m = m + expect(27, renamed_aliases(&txt_of("use twice in util as u\nfn f() => int:\n    return u.x\n")).n, 0)
     return m
