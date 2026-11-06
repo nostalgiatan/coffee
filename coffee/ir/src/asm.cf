@@ -48,6 +48,10 @@ fn r_pc32() => int:
 fn r_plt32() => int:
     return 4
 
+/#/ R_X86_64_32: the address itself, in 32 bits (sandbox code: an offset in the linear memory)
+fn r_abs32() => int:
+    return 10
+
 /#/ Where the code at old position `p` is once the jumps are shortened: `st` are the starts of the
 /#/ `n` jumps, and `pref[k]` the bytes saved by the jumps before the `k`th.
 fn new_pos(st: &buf<int>, pref: &buf<int>, n: int, p: int) => int:
@@ -95,6 +99,9 @@ class Asm:
     ls_base: int
     ls_disp: int
     ls_reg: int
+    /#/ sandbox code: a memory operand (but for `lea`, and rbp/rsp as the base: the host stack) is
+    /#/ addressed through `gs` in 32 bits, and a reference to rodata or data is an absolute 32-bit number
+    sbx: bool
 
     fn dump(self, t: &Txt) => void:
         t.put_all(&self.c)
@@ -246,6 +253,9 @@ class Asm:
 
     /#/ `opc` with a register and the memory operand `[base + disp]`.
     fn rmem(self, w: int, opc: int, opc2: int, reg: int, base: int, disp: int, force: bool) => void:
+        if self.sbx && opc != 141 && base != 4 && base != 5:
+            self.byte(103)
+            self.byte(101)
         self.rex(w, reg, base, force)
         self.byte(opc)
         if opc2 >= 0:
@@ -272,6 +282,9 @@ class Asm:
         elif scale == 8:
             ss = 3
         let v = 64 | (w << 3) | ((reg >> 3) << 2) | ((idx >> 3) << 1) | (base >> 3)
+        if self.sbx && base != 4 && base != 5:
+            self.byte(103)
+            self.byte(101)
         if v != 64 || force:
             self.byte(v)
         self.byte(opc)
@@ -418,6 +431,11 @@ class Asm:
 
     /#/ dst = the address of rodata offset `off` (the symbol `rosym` is the section).
     fn lea_rip(self, dst: int, rosym: int, off: int) => void:
+        if self.sbx:
+            self.rex(0, 0, dst, false)
+            self.byte(184 + (dst & 7))
+            self.reloc(rosym, r_abs32(), off)
+            return
         self.rex(1, dst, 0, false)
         self.byte(141)
         self.byte(5 | ((dst & 7) << 3))
@@ -680,4 +698,4 @@ class Asm:
         self.rr(0, 15, 90, dst, src, false)
 
 fn new_asm() => Asm:
-    return Asm { c: new_txt(), lab: new_buf(int, 64), nlab: 0, fx_at: new_buf(int, 64), fx_lab: new_buf(int, 64), fx_kind: new_buf(int, 64), nfx: 0, fs: 0, rl0: 0, rl_at: new_buf(int, 64), rl_sym: new_buf(int, 64), rl_ty: new_buf(int, 64), rl_add: new_buf(int, 64), nrl: 0, lm_end: -1, lm_d: 0, lm_s: 0, ls_end: -1, ls_base: 0, ls_disp: 0, ls_reg: 0 }
+    return Asm { c: new_txt(), lab: new_buf(int, 64), nlab: 0, fx_at: new_buf(int, 64), fx_lab: new_buf(int, 64), fx_kind: new_buf(int, 64), nfx: 0, fs: 0, rl0: 0, rl_at: new_buf(int, 64), rl_sym: new_buf(int, 64), rl_ty: new_buf(int, 64), rl_add: new_buf(int, 64), nrl: 0, lm_end: -1, lm_d: 0, lm_s: 0, ls_end: -1, ls_base: 0, ls_disp: 0, ls_reg: 0, sbx: false }

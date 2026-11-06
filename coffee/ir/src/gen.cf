@@ -36,6 +36,9 @@ class Gen:
     o: Obj
     /#/ the place of each value, as the distance below rbp; for a `slot` its area
     voff: buf<int>
+    /#/ sandbox code: 1 for a value whose bytes are in the shadow frame (r14 + offset), not the host frame
+    sh: buf<int>
+    sframe: int
     tmp: int
     frame: int
     err: int
@@ -134,7 +137,7 @@ class Gen:
         elif k == int(Op.StrLit):
             self.a.lea_rip(reg, 1, self.sbase + self.so(f.aux[x]))
         elif k == int(Op.Slot):
-            self.a.lea(reg, 5, 0 - self.voff[x])
+            self.a.lea(reg, self.vb(x), 0 - self.voff[x])
         elif self.home[x] >= 0:
             if self.home[x] != reg:
                 self.a.mov_rr(reg, self.home[x])
@@ -145,6 +148,12 @@ class Gen:
 
     fn so(self, id: int) => int:
         return self.soff[id]
+
+    /#/ The base register of the bytes of value `x`: rbp, or r14 for the shadow frame of sandbox code.
+    fn vb(self, x: int) => int:
+        if self.a.sbx && self.sh[x] == 1:
+            return 14
+        return 5
 
     /#/ The register that holds `v`: its own when it has one, else `scratch`, loaded with it.
     fn src(self, f: &Fun, v: int, scratch: int) => int:
@@ -209,7 +218,7 @@ class Gen:
         if f.op[x] == int(Op.Undef):
             self.a.lea_rip(6, 1, 0)
             return 6
-        return 5
+        return self.vb(x)
 
     fn ab_disp(self, f: &Fun, v: int) => int:
         let x = self.res(f, v)
@@ -253,6 +262,8 @@ class Gen:
 
     /#/ The saved registers come back by pop, from below the frame's locals.
     fn epilogue(self) => void:
+        if self.sframe > 0:
+            self.a.add_ri(14, self.sframe)
         if self.nsaved > 0:
             if self.frame > 8 + 8 * self.nsaved:
                 self.a.lea(4, 5, 0 - 8 - 8 * self.nsaved)
@@ -328,6 +339,8 @@ class Gen:
     /#/ May a value that lives across calls writing `cm` and (`restr`) is a parameter or an argument
     /#/ take register number `r` of the pool?
     fn reg_ok(self, r: int, cm: int, restr: bool) => bool:
+        if self.a.sbx && r == 8:
+            return false
         if r >= 5:
             return true
         if ((cm >> r) & 1) == 1:
@@ -830,26 +843,50 @@ class Gen:
     fn layout(self, f: &Fun, rs: &Reps) => void:
         if len(self.voff) < f.ni + 1:
             self.voff = new_buf(int, f.ni + 1)
+            self.sh = new_buf(int, f.ni + 1)
+        for v in 0..f.ni:
+            self.sh[v] = 0
+        let sbx = self.a.sbx
+        /#/ sandbox code keeps aggregates and the slots whose address is taken in the shadow frame, in
+        /#/ the linear memory: a pointer to them is an offset like any other, and the host stack holds
+        /#/ only what the code cannot name (return addresses, saved registers, spilled scalars)
+        let scur = 0
         let cur = 8 + 8 * self.nsaved
         let tmp = 0
         for b in 0..f.nb:
             let p = f.pfirst[b]
             while p >= 0:
                 if self.home[p] < 0 && self.xhome[p] < 0:
-                    cur = cur + self.place_size(rs, f.rep[p])
-                    self.voff[p] = cur
+                    if sbx && f.rep[p] >= rp_first_agg():
+                        self.voff[p] = 0 - scur
+                        self.sh[p] = 1
+                        scur = scur + self.place_size(rs, f.rep[p])
+                    else:
+                        cur = cur + self.place_size(rs, f.rep[p])
+                        self.voff[p] = cur
                 p = f.nx[p]
             let i = f.bfirst[b]
             while i >= 0:
                 let op = f.op[i]
                 if op == int(Op.Slot):
-                    cur = cur + round8(f.ty[i])
+                    let sz = round8(f.ty[i])
                     if f.ty[i] < 1:
-                        cur = cur + 8
-                    self.voff[i] = cur
+                        sz = sz + 8
+                    if sbx:
+                        self.voff[i] = 0 - scur
+                        self.sh[i] = 1
+                        scur = scur + sz
+                    else:
+                        cur = cur + sz
+                        self.voff[i] = cur
                 elif f.rep[i] != int(Rp.Void) && op != int(Op.OwnMove) && self.home[i] < 0 && self.xhome[i] < 0:
-                    cur = cur + self.place_size(rs, f.rep[i])
-                    self.voff[i] = cur
+                    if sbx && f.rep[i] >= rp_first_agg():
+                        self.voff[i] = 0 - scur
+                        self.sh[i] = 1
+                        scur = scur + self.place_size(rs, f.rep[i])
+                    else:
+                        cur = cur + self.place_size(rs, f.rep[i])
+                        self.voff[i] = cur
                 i = f.nx[i]
         for e in 0..f.ne:
             if f.eto[e] >= 0:
@@ -861,6 +898,10 @@ class Gen:
         cur = cur + tmp
         self.tmp = cur
         self.frame = (cur + 15) // 16 * 16
+        self.sframe = (scur + 15) // 16 * 16
+        /#/ a frame larger than the guard below the shadow stack could be stepped over
+        if self.sframe > 32768:
+            self.err = 1
 
     /#/ ---- edges -------------------------------------------------------------
 
@@ -899,7 +940,7 @@ class Gen:
                         self.ld(0, f, ax)
                         self.st(p, 0)
                 else:
-                    self.val_to(f, rs, 5, 0 - self.voff[p], f.pool[f.eargs[e] + k])
+                    self.val_to(f, rs, self.vb(p), 0 - self.voff[p], f.pool[f.eargs[e] + k])
                 p = f.nx[p]
             return
         let at = 0
@@ -917,7 +958,7 @@ class Gen:
                 self.a.load(0, 5, 0 - self.tmp + at, 8)
                 self.st(p, 0)
             else:
-                self.copy_mem(5, 0 - self.voff[p], 5, 0 - self.tmp + at, sz)
+                self.copy_mem(self.vb(p), 0 - self.voff[p], 5, 0 - self.tmp + at, sz)
             at = at + sz
             p = f.nx[p]
 
@@ -984,13 +1025,13 @@ class Gen:
                     if f.op[x] == int(Op.Undef):
                         self.a.lea_rip(0, 1, 0)
                     else:
-                        self.a.lea(0, 5, 0 - self.voff[x])
+                        self.a.lea(0, self.vb(x), 0 - self.voff[x])
                 else:
                     self.ld(0, f, self.av[k])
                 self.a.push(0)
             k = k - 1
         if sret:
-            self.a.lea(7, 5, 0 - self.voff[i])
+            self.a.lea(7, self.vb(i), 0 - self.voff[i])
         let ci = 0
         if sret:
             ci = 1
@@ -1004,7 +1045,7 @@ class Gen:
                     if f.op[x] == int(Op.Undef):
                         self.a.lea_rip(int_reg(ci), 1, 0)
                     else:
-                        self.a.lea(int_reg(ci), 5, 0 - self.voff[x])
+                        self.a.lea(int_reg(ci), self.vb(x), 0 - self.voff[x])
                 ci = ci + 1
             elif self.is_int_class(r):
                 if ci < 6:
@@ -1501,7 +1542,7 @@ class Gen:
             let sb = self.ab_reg(f, f.a[i])
             let sd = self.ab_disp(f, f.a[i]) + eo
             if r >= rp_first_agg():
-                self.copy_mem(5, 0 - self.voff[i], sb, sd, rsize(rs, r))
+                self.copy_mem(self.vb(i), 0 - self.voff[i], sb, sd, rsize(rs, r))
             elif self.xhome[i] >= 0:
                 self.a.load_x(self.xhome[i], sb, sd, r == int(Rp.F32))
             else:
@@ -1514,19 +1555,19 @@ class Gen:
         if op == int(Op.Insert):
             let eo = elem_off(rs, r, f.aux[i])
             let sb = self.ab_reg(f, f.a[i])
-            self.copy_mem(5, 0 - self.voff[i], sb, self.ab_disp(f, f.a[i]), rsize(rs, r))
+            self.copy_mem(self.vb(i), 0 - self.voff[i], sb, self.ab_disp(f, f.a[i]), rsize(rs, r))
             let er = f.rep[self.res(f, f.b[i])]
             if er >= rp_first_agg():
                 let eb = self.ab_reg(f, f.b[i])
-                self.copy_mem(5, 0 - self.voff[i] + eo, eb, self.ab_disp(f, f.b[i]), rsize(rs, er))
+                self.copy_mem(self.vb(i), 0 - self.voff[i] + eo, eb, self.ab_disp(f, f.b[i]), rsize(rs, er))
             else:
                 self.ld(0, f, f.b[i])
-                self.a.store(5, 0 - self.voff[i] + eo, 0, rsize(rs, er))
+                self.a.store(self.vb(i), 0 - self.voff[i] + eo, 0, rsize(rs, er))
             return
         if op == int(Op.Load):
             if r >= rp_first_agg():
                 self.ld(6, f, f.a[i])
-                self.copy_mem(5, 0 - self.voff[i], 6, 0, rsize(rs, r))
+                self.copy_mem(self.vb(i), 0 - self.voff[i], 6, 0, rsize(rs, r))
             elif self.xhome[i] >= 0:
                 let xd = self.xhome[i]
                 let sg = r == int(Rp.F32)
@@ -1606,6 +1647,10 @@ class Gen:
             self.nav = 0
             for k in 0..f.b[i]:
                 self.push_arg(f.pool[f.a[i] + k])
+            if op == int(Op.CallI) && self.a.sbx:
+                /#/ a function value would have to be a checked table index
+                self.bad()
+                return
             if op == int(Op.CallI):
                 self.ld(11, f, f.c[i])
                 self.do_call(f, rs, i, 0 - 1, false)
@@ -1730,6 +1775,8 @@ class Gen:
             self.a.push(self.saved[k])
         if self.frame > 8 + 8 * self.nsaved:
             self.a.sub_ri(4, self.frame - 8 - 8 * self.nsaved)
+        if self.sframe > 0:
+            self.a.sub_ri(14, self.sframe)
         let nret = 0
         for b in 0..f.nb:
             if f.blast[b] >= 0 && f.op[f.blast[b]] == int(Op.Ret):
@@ -1748,14 +1795,14 @@ class Gen:
             if r >= rp_first_agg() || self.is_int_class(r):
                 if ci < 6:
                     if r >= rp_first_agg():
-                        self.copy_mem(5, 0 - self.voff[p], int_reg(ci), 0, rsize(rs, r))
+                        self.copy_mem(self.vb(p), 0 - self.voff[p], int_reg(ci), 0, rsize(rs, r))
                     else:
                         self.st(p, int_reg(ci))
                 else:
                     self.a.load(0, 5, 16 + 8 * cs, 8)
                     if r >= rp_first_agg():
                         self.a.mov_rr(6, 0)
-                        self.copy_mem(5, 0 - self.voff[p], 6, 0, rsize(rs, r))
+                        self.copy_mem(self.vb(p), 0 - self.voff[p], 6, 0, rsize(rs, r))
                     else:
                         self.st(p, 0)
                     cs = cs + 1
@@ -1802,7 +1849,7 @@ class Gen:
         return ok && self.err == 0
 
 fn new_gen() => Gen:
-    return Gen { a: new_asm(), o: new_obj(), voff: new_buf(int, 64), tmp: 0, frame: 0, err: 0, av: new_buf(int, 16), nav: 0, sbase: 256, soff: new_buf(int, 16), nstr: 0, home: new_buf(int, 64), xhome: new_buf(int, 64), ord: new_buf(int, 16), emit: new_buf(int, 16), xsg: new_buf(int, 64), did: new_buf(int, 64), nsaved: 0, saved: new_buf(int, 8), ed: new_buf(int, 16), ned: 0, ra_lo: new_buf(int, 1), ra_hi: new_buf(int, 1), ra_wt: new_buf(int, 1), ra_use: new_buf(int, 1), ra_def: new_buf(int, 1), ra_words: 0, ra_cp: new_buf(int, 16), ra_ncp: 0, ra_cm: new_buf(int, 16), cur: -1, msk: new_buf(int, 16), fmask: 0, nuse: new_buf(int, 64), am_base: 0, am_idx: -1, am_scale: 1, am_disp: 0, epi: 0, epi_jump: false }
+    return Gen { a: new_asm(), o: new_obj(), voff: new_buf(int, 64), sh: new_buf(int, 64), sframe: 0, tmp: 0, frame: 0, err: 0, av: new_buf(int, 16), nav: 0, sbase: 256, soff: new_buf(int, 16), nstr: 0, home: new_buf(int, 64), xhome: new_buf(int, 64), ord: new_buf(int, 16), emit: new_buf(int, 16), xsg: new_buf(int, 64), did: new_buf(int, 64), nsaved: 0, saved: new_buf(int, 8), ed: new_buf(int, 16), ned: 0, ra_lo: new_buf(int, 1), ra_hi: new_buf(int, 1), ra_wt: new_buf(int, 1), ra_use: new_buf(int, 1), ra_def: new_buf(int, 1), ra_words: 0, ra_cp: new_buf(int, 16), ra_ncp: 0, ra_cm: new_buf(int, 16), cur: -1, msk: new_buf(int, 16), fmask: 0, nuse: new_buf(int, 64), am_base: 0, am_idx: -1, am_scale: 1, am_disp: 0, epi: 0, epi_jump: false }
 
 /#/ The multiplier that divides by `d` (not a power of two; `l` is the log2 of `d` rounded up):
 /#/ 1 + floor(2^(63 + l) / d), taken as a 64-bit pattern, by long division one bit at a time.

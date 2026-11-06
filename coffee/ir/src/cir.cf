@@ -439,3 +439,66 @@ fn read_cir(t: &Txt, lw: &Lower) => int:
         return cir_bad_section()
     lw.opt = flags & 1
     return 0
+
+/#/ ---- what is reached -----------------------------------------------------
+
+/#/ Marks the function with name number `id` and everything it can reach as wanted in `seen`.
+fn reach_from(lw: &Lower, id: int, seen: &buf<int>) => void:
+    let lib = &lw.lib
+    let work: buf<int> = new_buf(int, lib.nf + 1)
+    let nw = 0
+    let first = lib.find(id)
+    if first < 0:
+        return
+    seen[first] = 1
+    work[0] = first
+    nw = 1
+    let mal = lw.names.find(&txt_word("malloc"))
+    let fre = lw.names.find(&txt_word("free"))
+    let fmo = lw.names.find(&txt_word("fmod"))
+    let fmf = lw.names.find(&txt_word("fmodf"))
+    while nw > 0:
+        nw = nw - 1
+        let n = work[nw]
+        let i0 = lib.f_i0[n]
+        for q in 0..lib.f_ni[n]:
+            let op = lib.op[i0 + q]
+            let target = -2
+            if op == int(Op.Call) || op == int(Op.CCall) || op == int(Op.Drop) || op == int(Op.Clone) || op == int(Op.FnAddr):
+                target = lib.aux[i0 + q]
+            elif op == int(Op.Alloc):
+                target = mal
+            elif op == int(Op.Free):
+                target = fre
+            elif op == int(Op.FRem):
+                /#/ one of the two, by the width
+                if lib.rep[i0 + q] == int(Rp.F32):
+                    target = fmf
+                else:
+                    target = fmo
+            if target >= 0:
+                let k = lib.find(target)
+                if k >= 0 && seen[k] == 0:
+                    seen[k] = 1
+                    work[nw] = k
+                    nw = nw + 1
+
+fn txt_word(s: str) => Txt:
+    let t = new_txt()
+    t.put(&s)
+    return t
+
+/#/ Leaves out of the code generated the functions that `main` cannot reach: the runtime comes
+/#/ with every module, and a program uses a little of it. Returns how many were left out.
+fn prune_unreached(lw: &Lower) => int:
+    let seen: buf<int> = new_buf(int, lw.lib.nf + 1)
+    let id = lw.names.find(&txt_word("main"))
+    if id < 0:
+        return 0
+    reach_from(lw, id, &seen)
+    let dropped = 0
+    for n in 0..lw.lib.nf:
+        if seen[n] == 0 && lw.ext_slot[n] == 0:
+            lw.ext_slot[n] = 1
+            dropped = dropped + 1
+    return dropped

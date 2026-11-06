@@ -1,0 +1,178 @@
+/#/ Runs sandbox code (see docs/explanation/sandbox-design.md). The code only reaches the linear
+/#/ memory, a 4 GB reservation of which the part the module needs is readable and writable; every
+/#/ access of the code goes through the `gs` segment in 32 bits, so whatever it computes it lands
+/#/ inside. Anything else that goes wrong (an access past what is mapped, a division by zero, the
+/#/ end of the stack) is a signal, and the handler turns it into a return from `sandbox_run`.
+/#/
+/#/ The code runs on a stack of its own with a guard below it. The host keeps a control block that
+/#/ the sandbox cannot name: [0] the host stack pointer to return to, [8] the top of the sandbox
+/#/ stack, [16] the signal of a trap (0 when the run ended by itself).
+use * in image
+use * in asm
+use * in loader
+
+/#/ The bytes of `t` in a `Txt` of their own.
+fn copy_of(t: &Txt) => Txt:
+    let out = new_txt()
+    out.put_all(t)
+    return out
+
+fn page_up(n: int) => int:
+    return (n + 4095) // 4096 * 4096
+
+/#/ The code of the three stubs goes to the host; `at` is where each one will be.
+fn stub_enter(ss_top: int, entry: int) => Txt:
+    let a = new_asm()
+    a.begin_fun()
+    a.push(5)
+    a.push(3)
+    a.push(12)
+    a.push(13)
+    a.push(14)
+    a.push(15)
+    a.store(7, 0, 4, 8)
+    a.load(4, 7, 8, 8)
+    a.push(7)
+    a.sub_ri(4, 8)
+    a.mov_ri(14, ss_top)
+    a.mov_ri(0, entry)
+    a.call_reg(0)
+    a.add_ri(4, 8)
+    a.pop(7)
+    a.load(4, 7, 0, 8)
+    a.pop(15)
+    a.pop(14)
+    a.pop(13)
+    a.pop(12)
+    a.pop(3)
+    a.pop(5)
+    a.ret()
+    a.end_fun()
+    return copy_of(&a.c)
+
+/#/ Reached after the handler moved the faulting instruction here: back to the host with rax 0.
+fn stub_trap(ctrl: int) => Txt:
+    let a = new_asm()
+    a.begin_fun()
+    a.mov_ri(7, ctrl)
+    a.load(4, 7, 0, 8)
+    a.mov_ri(0, 0)
+    a.pop(15)
+    a.pop(14)
+    a.pop(13)
+    a.pop(12)
+    a.pop(3)
+    a.pop(5)
+    a.ret()
+    a.end_fun()
+    return copy_of(&a.c)
+
+/#/ Where the exit of the sandbox code goes (rax holds the status): back to the host with it.
+fn stub_exit(ctrl: int) => Txt:
+    let a = new_asm()
+    a.begin_fun()
+    a.mov_ri(7, ctrl)
+    a.load(4, 7, 0, 8)
+    a.pop(15)
+    a.pop(14)
+    a.pop(13)
+    a.pop(12)
+    a.pop(3)
+    a.pop(5)
+    a.ret()
+    a.end_fun()
+    return copy_of(&a.c)
+
+/#/ The signal handler (rdi the signal, rdx the saved state): when the instruction that faulted is
+/#/ in the code of the sandbox, it is replaced by the trap stub and the signal is noted; else exit.
+fn stub_handler(code_lo: int, code_hi: int, trap: int, ctrl: int) => Txt:
+    let a = new_asm()
+    a.begin_fun()
+    let out = a.new_label()
+    a.load(0, 2, 168, 8)
+    a.mov_ri(1, code_lo)
+    a.cmp_rr(0, 1)
+    a.jcc(cc_b(), out)
+    a.mov_ri(1, code_hi)
+    a.cmp_rr(0, 1)
+    a.jcc(cc_ae(), out)
+    a.mov_ri(0, trap)
+    a.store(2, 168, 0, 8)
+    a.mov_ri(1, ctrl)
+    a.store(1, 16, 7, 8)
+    a.ret()
+    a.bind(out)
+    a.mov_ri(7, 134)
+    a.mov_ri(0, 231)
+    a.byte(15)
+    a.byte(5)
+    a.end_fun()
+    return copy_of(&a.c)
+
+fn stub_restorer() => Txt:
+    let a = new_asm()
+    a.begin_fun()
+    a.mov_ri(0, 15)
+    a.byte(15)
+    a.byte(5)
+    a.end_fun()
+    return copy_of(&a.c)
+
+/#/ Makes the signal `sig` run the handler at `handler`, on the alternate stack.
+fn catch_signal(sig: int, handler: int, restorer: int, act: int) => int:
+    poke64(act, handler)
+    poke64(act + 8, 201326596)
+    poke64(act + 16, restorer)
+    poke64(act + 24, 0)
+    return syscall(13, sig, act, 0, 8, 0, 0)
+
+/#/ Runs `main` (at `main_at` in the code of `im`) in the sandbox. Returns its result, or -1 when
+/#/ the sandbox could not be made, or -2 when it trapped (the signal is in `trap_signal()`).
+fn sandbox_run(im: &Image, main_at: int) => int:
+    let region = sys_mmap(4294967296 + 131072, 0, 16418)
+    if !mapped(region):
+        return 0 - 1
+    /#/ the linear memory it starts with, and the shadow stack
+    let lin_len = page_up(im.lin.n)
+    if sys_mprotect(region + im.lin_at, lin_len, 3) != 0:
+        return 0 - 1
+    if sys_mprotect(region + im.ss_base, im.limit - im.ss_base, 3) != 0:
+        return 0 - 1
+    copy_in(region + im.lin_at, &im.lin)
+    poke64(region + im.lin_at, im.ss_top)
+    poke64(region + im.lin_at + 8, im.limit)
+    if syscall(158, 4097, region, 0, 0, 0, 0) != 0:
+        return 0 - 1
+    /#/ the code, the stubs, the control block, the stack the code runs on and the one for signals
+    let code = sys_mmap(page_up(im.b.n + 1), 7, 34)
+    let stubs = sys_mmap(4096, 7, 34)
+    let ctrl = sys_mmap(4096, 3, 34)
+    let stack = sys_mmap(1048576 + 4096, 3, 34)
+    let alt = sys_mmap(65536, 3, 34)
+    if !mapped(code) || !mapped(stubs) || !mapped(ctrl) || !mapped(stack) || !mapped(alt):
+        return 0 - 1
+    sys_mprotect(stack, 4096, 0)
+    copy_in(code, &im.b)
+    if im.exit_at > 0:
+        copy_in(code + im.exit_at, &stub_exit(ctrl))
+    poke64(ctrl + 8, stack + 1048576 + 4096)
+    poke64(ctrl + 16, 0)
+    copy_in(stubs, &stub_enter(im.ss_top, code + main_at))
+    copy_in(stubs + 256, &stub_trap(ctrl))
+    copy_in(stubs + 512, &stub_handler(code, code + im.b.n, stubs + 256, ctrl))
+    copy_in(stubs + 768, &stub_restorer())
+    poke64(ctrl + 320, alt)
+    poke64(ctrl + 328, 0)
+    poke64(ctrl + 336, 65536)
+    if syscall(131, ctrl + 320, 0, 0, 0, 0, 0) != 0:
+        return 0 - 1
+    if catch_signal(11, stubs + 512, stubs + 768, ctrl + 256) != 0 || catch_signal(7, stubs + 512, stubs + 768, ctrl + 256) != 0:
+        return 0 - 1
+    if catch_signal(8, stubs + 512, stubs + 768, ctrl + 256) != 0 || catch_signal(4, stubs + 512, stubs + 768, ctrl + 256) != 0:
+        return 0 - 1
+    let rc = call_addr(stubs, ctrl)
+    let t = peek64(ctrl + 16)
+    if t != 0:
+        say(f"cfjit: the sandbox trapped (signal {t})\n")
+        return 0 - 2
+    return rc

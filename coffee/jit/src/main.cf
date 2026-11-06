@@ -3,6 +3,7 @@
 use * in cir
 use * in image
 use * in loader
+use * in sandbox
 use * in cstr
 use * in files
 
@@ -18,7 +19,27 @@ fn path_arg() => Txt:
             p.put_byte(raw.b[i])
     return p
 
+fn image_for(lw: &Lower, sbx: bool) => Image:
+    if sbx:
+        return image_sbx_of(lw)
+    return image_of(lw)
+
+/#/ Is `--sandbox` on the command line?
+fn sandbox_arg() => bool:
+    let raw = read_file(&txt_of("/proc/self/cmdline"))
+    let w = new_txt()
+    let on = false
+    for i in 0..raw.n:
+        if raw.b[i] == 0:
+            if w.is("--sandbox"):
+                on = true
+            w.clear()
+        else:
+            w.put_byte(raw.b[i])
+    return on
+
 fn main() => int:
+    let sbx = sandbox_arg()
     let path = path_arg()
     if path.n == 0:
         say("usage: cfjit program.cir\n")
@@ -28,15 +49,17 @@ fn main() => int:
         say("cfjit: cannot read the file\n")
         return 2
     let lw = new_lower()
+    lw.mc.a.sbx = sbx
     let e = read_cir(&cir, &lw)
     if e != 0:
         say(f"cfjit: not a usable .cir (code {e})\n")
         return 2
+    prune_unreached(&lw)
     lw.generate()
     if lw.mc_err > 0:
         say(f"cfjit: {lw.mc_err} functions could not be translated\n")
         return 2
-    let im = image_of(&lw)
+    let im = image_for(&lw, sbx)
     if im.err != 0:
         say("cfjit: a relocation could not be applied\n")
         return 2
@@ -48,6 +71,14 @@ fn main() => int:
     if at < 0:
         say("cfjit: the module has no main\n")
         return 2
+    if sbx:
+        let rs = sandbox_run(&im, at)
+        if rs == 0 - 1:
+            say("cfjit: the sandbox could not be made\n")
+            return 2
+        if rs == 0 - 2:
+            return 139
+        return rs
     let base = load_image(&im)
     if base == 0:
         say("cfjit: out of memory\n")

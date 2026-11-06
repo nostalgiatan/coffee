@@ -23,14 +23,24 @@ fn load_image(im: &Image) => int:
     let base = syscall(9, 0, page_round(im.b.n + 1), load_prot(), load_flags(), 0 - 1, 0)
     if !mapped(base):
         return 0
+    copy_in(base, &im.b)
+    return base
+
+/#/ The bytes of `t` to the memory at `base`.
+fn copy_in(base: int, t: &Txt) => void:
     let k = 0
-    while k + 8 <= im.b.n:
+    while k + 8 <= t.n:
         let w = 0
         for q in 0..8:
-            w = w | (im.b.b[k + q] << (8 * q))
+            w = w | (t.b[k + q] << (8 * q))
         poke64(base + k, w)
         k = k + 8
-    while k < im.b.n:
-        poke8(base + k, im.b.b[k])
+    while k < t.n:
+        poke8(base + k, t.b[k])
         k = k + 1
-    return base
+
+fn sys_mmap(n: int, prot: int, flags: int) => int:
+    return syscall(9, 0, n, prot, flags, 0 - 1, 0)
+
+fn sys_mprotect(addr: int, n: int, prot: int) => int:
+    return syscall(10, addr, n, prot, 0, 0, 0)
