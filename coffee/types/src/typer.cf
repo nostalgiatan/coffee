@@ -951,6 +951,13 @@ class Typer:
         if tok_is(a, tok, "peek8") || tok_is(a, tok, "peek64") || tok_is(a, tok, "syscall"):
             self.args_untyped(t, g, a, n)
             return t.int_ty(8, true)
+        /#/ a new string of n bytes of text (zero bytes, ended), and byte i of a string set
+        if tok_is(a, tok, "str_alloc"):
+            self.args_untyped(t, g, a, n)
+            return t.simple(int(Ty.Str))
+        if tok_is(a, tok, "str_put"):
+            self.args_untyped(t, g, a, n)
+            return t.simple(int(Ty.Void))
         if tok_is(a, tok, "poke8") || tok_is(a, tok, "poke64"):
             self.args_untyped(t, g, a, n)
             return t.simple(int(Ty.Void))

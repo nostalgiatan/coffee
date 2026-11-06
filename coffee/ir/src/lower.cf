@@ -1291,6 +1291,20 @@ class Lower:
                     val = self.f.conv(int(Op.Trunc), int(Rp.I8), val)
                 self.f.store(addr, val)
                 return self.f.undef(int(Rp.I64))
+            if tok_is(a, a.tok[callee], "str_alloc"):
+                let len = self.coerce(t, g, self.ex(t, g, ty, a, a.child[n]), self.nd(t, ty, a.child[n]), t.int_ty(8, true))
+                let sp = self.str_new(len)
+                self.f.store(self.f.index(sp, len, 1), self.f.cint(int(Rp.I8), 0))
+                return sp
+            if tok_is(a, a.tok[callee], "str_put"):
+                let sv = a.child[n]
+                let iv = a.next[sv]
+                let cv = a.next[iv]
+                let sp = self.exb(t, g, ty, a, sv)
+                let ix = self.coerce(t, g, self.ex(t, g, ty, a, iv), self.nd(t, ty, iv), t.int_ty(8, true))
+                let ch = self.coerce(t, g, self.ex(t, g, ty, a, cv), self.nd(t, ty, cv), t.int_ty(8, true))
+                self.f.store(self.f.index(sp, ix, 1), self.f.conv(int(Op.Trunc), int(Rp.I8), ch))
+                return self.f.undef(int(Rp.I64))
             if tok_is(a, a.tok[callee], "syscall"):
                 /#/ `cf_syscall(n, a, b, c, d, e, f)` is supplied by the linker
                 let sc = a.child[n]

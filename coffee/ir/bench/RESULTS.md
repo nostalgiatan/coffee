@@ -68,3 +68,6 @@ mandel 2305、objects 5440、sort 3440、matmul 4229、collatz 2732、strings 72
 callgrind(百万):sort 3440 → 2633、matmul 4229 → 3966、strings 7226 → 6935;总指令数(flaws.py)6185 → 6081。
 
 边界检查:循环计数器(从小常数起、每次加小常数)在 `i < K'` 的分支里,对 `ult i, K`(K' ≤ K)的检查不再生成。sieve 784 → 744、strings 6935 → 6887(百万指令)。下标是算出来的(`i * n + k`)时仍保留检查。
+
+字符串路径:新内建 `str_alloc(n)`(n 字节文本的新字符串)和 `str_put(s, i, c)`,`__cf_fmt_int` 直接写进结果字符串(不再经过 buf、`as str` 的 strlen 和拷贝),位数用乘 10 的比较阶梯数;`x % m`(m 非 2 的幂)改为 `x - x / m * m`,让同一个 x 的商只算一次。
+strings 6887 → 3882、collatz 2732 → 1812(百万指令);wall 0.26 → 0.15 秒。

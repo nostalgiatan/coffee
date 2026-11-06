@@ -525,6 +525,9 @@ class Fun:
             return x
         if (op == int(Op.SRem) || op == int(Op.URem)) && yc && yv == 1:
             return self.cint(rep, 0)
+        /#/ x % m is x - x / m * m, so that a quotient of the same x is made once
+        if op == int(Op.SRem) && yc && yv >= 3 && (yv & (yv - 1)) != 0 && rep == int(Rp.I64):
+            return self.bin(int(Op.Sub), x, self.bin(int(Op.Mul), self.bin(int(Op.SDiv), x, y), y))
         if x == y:
             if op == int(Op.Sub) || op == int(Op.Xor):
                 return self.cint(rep, 0)
