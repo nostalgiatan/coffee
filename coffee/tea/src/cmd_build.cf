@@ -1,8 +1,11 @@
 /#/ `tea build` and `tea run`: compile the entry of `coffee.toml` (`[build] main`, default
 /#/ `src/main.cf`) with `coffee2` into `target/build/<package name>`; `run` then starts it.
 /#/
-/#/     tea build [-O0..-O3] [-I dir]... [--compiler path]
-/#/     tea run   [-O0..-O3] [-I dir]... [--compiler path] [-- program arguments...]
+/#/     tea build [-O0..-O3] [-I dir]... [--compiler path] [--whole]
+/#/     tea run   [-O0..-O3] [-I dir]... [--compiler path] [--whole] [-- program arguments...]
+/#/
+/#/ The build is incremental: one object per source file in `target/obj`, rebuilt only when it or the
+/#/ interface of another file changed. `--whole` makes one object for the program instead.
 use system, printf, fflush in libc of c
 
 class Build:
@@ -13,10 +16,12 @@ class Build:
     level: Txt
     /#/ the program's arguments, each ` 'word'`
     args: Txt
+    /#/ true: one object for the whole program, no cache
+    whole: bool
     bad: int
 
 fn parse_build(a: &Args) => Build:
-    let b = Build { compiler: txt_of("coffee2"), inc: new_txt(), level: new_txt(), args: new_txt(), bad: 0 }
+    let b = Build { compiler: txt_of("coffee2"), inc: new_txt(), level: new_txt(), args: new_txt(), whole: false, bad: 0 }
     let i = 2
     let rest = false
     while i < a.n:
@@ -33,6 +38,8 @@ fn parse_build(a: &Args) => Build:
             b.inc.put_all(&d)
             b.inc.put("'")
             i = i + 1
+        elif w.is("--whole"):
+            b.whole = true
         elif w.is("--compiler") && i + 1 < a.n:
             b.compiler = a.get(i + 1)
             i = i + 1
@@ -71,6 +78,8 @@ fn build_program(b: &Build, pr: &Project) => int:
     c.put_all(&b.inc)
     c.put_all(&pr.build_inc)
     c.put_all(&b.level)
+    if !b.whole:
+        c.put(" --incremental target/obj")
     c.put(" -o '")
     c.put_all(&out)
     c.put("'")

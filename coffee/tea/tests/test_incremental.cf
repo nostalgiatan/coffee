@@ -1,0 +1,60 @@
+/#/ `tea build` keeps one object per source file and rebuilds only what a change reaches. The
+/#/ compiler says how many it compiled and reused; the test reads that line from the build log.
+use * in txt
+use * in cstr
+use * in files
+use system, printf, fflush in libc of c
+
+fn expect(what: int, got: int, want: int) => int:
+    if got != want:
+        printf("MISS #%d: got %d, want %d\n", what, got, want)
+        fflush(0)
+        return 1
+    return 0
+
+/#/ Does the last build log say `want`?
+fn said(want: &str) => int:
+    let c = txt_of("grep -q '")
+    c.put(want)
+    c.put("' proj/build.log")
+    return (system(txt_str(&c)) >> 8) & 255
+
+fn build() => int:
+    return (system("cd proj && tea build > build.log 2>&1") >> 8) & 255
+
+fn put(path: &str, text: &str) => void:
+    write_file(&txt_of(path), &txt_of(text))
+
+fn main() => int:
+    let m = 0
+    system("rm -rf proj && mkdir -p proj/src")
+    put("proj/coffee.toml", "[package]\nname = \"app\"\n\n[build]\nmain = \"src/main.cf\"\ninclude = [\"src\"]\n")
+    put("proj/src/util.cf", "fn add(a: int, b: int) => int:\n    return a + b\n")
+    put("proj/src/other.cf", "use * in util\n\nfn twice(a: int) => int:\n    return add(a, a)\n")
+    put("proj/src/main.cf", "use * in other\nuse * in util\n\nfn main() => int:\n    return twice(add(1, 2))\n")
+    m = m + expect(1, build(), 0)
+    m = m + expect(2, said("3 compiled, 0 reused"), 0)
+    m = m + expect(3, (system("proj/target/build/app") >> 8) & 255, 6)
+    /#/ nothing changed
+    m = m + expect(4, build(), 0)
+    m = m + expect(5, said("0 compiled, 3 reused"), 0)
+    /#/ a comment is not a change
+    put("proj/src/other.cf", "use * in util\n\n/#/ twice\nfn twice(a: int) => int:\n    return add(a, a)\n")
+    m = m + expect(6, build(), 0)
+    m = m + expect(7, said("0 compiled, 3 reused"), 0)
+    /#/ a body that others only call
+    put("proj/src/other.cf", "use * in util\n\nfn twice(a: int) => int:\n    return add(a, a) + 1\n")
+    m = m + expect(8, build(), 0)
+    m = m + expect(9, said("1 compiled, 2 reused"), 0)
+    m = m + expect(10, (system("proj/target/build/app") >> 8) & 255, 7)
+    /#/ a new parameter reaches every file that sees the function
+    put("proj/src/util.cf", "fn add(a: int, b: int, c: int) => int:\n    return a + b + c\n")
+    put("proj/src/other.cf", "use * in util\n\nfn twice(a: int) => int:\n    return add(a, a, 0) + 1\n")
+    put("proj/src/main.cf", "use * in other\nuse * in util\n\nfn main() => int:\n    return twice(add(1, 2, 0))\n")
+    m = m + expect(11, build(), 0)
+    m = m + expect(12, said("3 compiled, 0 reused"), 0)
+    m = m + expect(13, (system("proj/target/build/app") >> 8) & 255, 7)
+    /#/ one object for everything
+    m = m + expect(14, (system("cd proj && tea build --whole > whole.log 2>&1") >> 8) & 255, 0)
+    m = m + expect(15, (system("proj/target/build/app") >> 8) & 255, 7)
+    return m

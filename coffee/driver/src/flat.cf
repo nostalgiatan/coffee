@@ -14,6 +14,56 @@ class Flat:
     libs: Txt
     cfc: Txt
     lib_dirs: Txt
+    /#/ the source files that went into `out`, one name per line, and the stretches of `out` lines
+    /#/ each supplied: from line `seg_line[k]` (0-based) on, until the next stretch, it is file `seg_unit[k]`
+    units: Txt
+    nunit: int
+    seg_line: buf<int>
+    seg_unit: buf<int>
+    nseg: int
+    lines: int
+    cur_unit: int
+
+    /#/ Starts a new source file called `name`; its number.
+    fn begin_unit(self, name: &Txt) => int:
+        self.units.put_all(name)
+        self.units.put_byte(10)
+        self.nunit = self.nunit + 1
+        return self.nunit - 1
+
+    /#/ From the next line of `out` on, the text is from file `u`.
+    fn enter(self, u: int) => void:
+        if self.nseg >= len(self.seg_line):
+            self.seg_line = buf_resize(self.seg_line, (self.nseg + 1) * 2)
+            self.seg_unit = buf_resize(self.seg_unit, (self.nseg + 1) * 2)
+        self.seg_line[self.nseg] = self.lines
+        self.seg_unit[self.nseg] = u
+        self.nseg = self.nseg + 1
+        self.cur_unit = u
+
+    fn nl(self) => void:
+        self.out.put_byte(10)
+        self.lines = self.lines + 1
+
+    /#/ The file the 1-based line `line` of `out` came from.
+    fn unit_of_line(self, line: int) => int:
+        let u = 0
+        for k in 0..self.nseg:
+            if self.seg_line[k] <= line - 1:
+                u = self.seg_unit[k]
+        return u
+
+    /#/ The name of file `u`.
+    fn unit_name(self, u: int) => Txt:
+        let k = 0
+        let s = 0
+        for i in 0..self.units.n:
+            if self.units.b[i] == 10:
+                if k == u:
+                    return slice(&self.units, s, i)
+                k = k + 1
+                s = i + 1
+        return new_txt()
 
     fn add_dir(self, w: &Txt) => void:
         self.dirs.put_all(w)
@@ -115,12 +165,17 @@ class Flat:
 
     /#/ Adds `src`, whose file is in `dir`, to the output with its imports in front; the aliases
     /#/ of its `use f as g in m` lines are applied first.
-    fn flatten(self, src: &Txt, dir: &Txt) => void:
+    fn flatten(self, src: &Txt, dir: &Txt, name: &Txt) => void:
+        let parent = self.cur_unit
+        let u = self.begin_unit(name)
+        self.enter(u)
         let renamed = renamed_aliases(src)
         if renamed.n > 0:
             self.flatten_text(&renamed, dir)
         else:
             self.flatten_text(src, dir)
+        if parent >= 0:
+            self.enter(parent)
 
     fn flatten_text(self, src: &Txt, dir: &Txt) => void:
         let start = 0
@@ -131,7 +186,7 @@ class Flat:
                     self.note_c_lib(src, start, i, dir)
                     for k in start..i:
                         self.out.put_byte(src.b[k])
-                    self.out.put_byte(10)
+                    self.nl()
                 elif !has_line(&self.seen, &module):
                     self.seen.put_all(&module)
                     self.seen.put_byte(10)
@@ -141,13 +196,17 @@ class Flat:
                         self.count_error()
                         printf("error: module '%s' not found\n", txt_str(&module))
                     else:
-                        self.flatten(&text, &found)
+                        let path = copy_txt(&found)
+                        path.put_byte(47)
+                        path.put_all(&module)
+                        path.put(".cf")
+                        self.flatten(&text, &found, &path)
                 else:
-                    self.out.put_byte(10)
+                    self.nl()
                 start = i + 1
 
 fn new_flat() => Flat:
-    return Flat { out: new_txt(), seen: new_txt(), dirs: new_txt(), errs: 0, libs: new_txt(), cfc: new_txt(), lib_dirs: new_txt() }
+    return Flat { out: new_txt(), seen: new_txt(), dirs: new_txt(), errs: 0, libs: new_txt(), cfc: new_txt(), lib_dirs: new_txt(), units: new_txt(), nunit: 0, seg_line: new_buf(int, 16), seg_unit: new_buf(int, 16), nseg: 0, lines: 0, cur_unit: -1 }
 
 /#/ Is `w` in the lines of `t` (a line equal to it)?
 fn has_line(t: &Txt, w: &Txt) => bool:

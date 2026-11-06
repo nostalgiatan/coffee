@@ -1,7 +1,7 @@
 # 命令行参考:`coffee2`
 
 ```
-coffee2 input.cf [-o output] [-I dir] [-O0|-O1|-O2|-O3] [--emit-obj] [--emit-flat]
+coffee2 input.cf [-o output] [-I dir] [-O0|-O1|-O2|-O3] [--emit-obj] [--emit-flat] [--incremental dir]
 ```
 
 `coffee2` 是自举编译器(`coffee/driver/src/main.cf`)。它只做编译。项目模式(`coffee.toml`)、依赖获取和 `std install` 不在这里,它们留给以后的工具链程序。
@@ -17,6 +17,7 @@ coffee2 input.cf [-o output] [-I dir] [-O0|-O1|-O2|-O3] [--emit-obj] [--emit-fla
 | `-O1` `-O2` `-O3` | 打开 IR 优化器。默认 `-O1`。 |
 | `--emit-obj` | 写出 `.o` 后停止,不链接。 |
 | `--emit-flat` | 写出展开了所有 `use` 的单文件源码后停止。诊断里的行号指的是这份文本。 |
+| `--incremental dir` | 每个源文件一个 `.o`,放在 `dir`,没变的复用;再链接。前端仍检查整个程序。文件的记号(注释和空行不算)、别的文件的接口(函数头、类字段和方法头、枚举、别名、模块级 `let`、泛型整体)、编译器、`.cfc`、优化级别任何一样变了,才重编。这个模式下优化器不跨文件内联。 |
 
 ## 默认输出
 

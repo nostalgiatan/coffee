@@ -138,11 +138,15 @@ fn first_error(src: str) => int:
         return oe_number(fl.diags.code[0])
     return 0 - 1
 
-/#/ The module of `src` lowered and optimized, not yet generated; `bad` is set when the front
-/#/ end or the lowering refused it.
-fn module_of(bytes: buf<int>, size: int, opt: int, cfc: str, t: &Tys, g: &Syms) => Lower:
-    let lw = new_lower()
-    lw.opt = opt
+/#/ A program through the front end: its tree and types, ready to be lowered; `ok` is false when
+/#/ the front end refused it (it has said why).
+class Prep:
+    a: Ast
+    ty: Typer
+    ok: bool
+
+/#/ Runs the front end over the `size` bytes in `bytes`.
+fn prepare(bytes: buf<int>, size: int, cfc: str, t: &Tys, g: &Syms) => Prep:
     if len(cfc) > 0:
         declare_user_cfc(t, g, cfc, "user.cfc")
     let a = parse_bytes(bytes, size)
@@ -151,6 +155,7 @@ fn module_of(bytes: buf<int>, size: int, opt: int, cfc: str, t: &Tys, g: &Syms) 
     declare_types(t, g, &a, m)
     let ty = check_types(t, g, &a, m)
     let fl = check_own(t, g, &a, &ty)
+    let ok = true
     if sc.diags.errors() > 0 || ty.diags.n > 0 || a.err_count > 0 || fl.diags.n > 0:
         printf("front end: %d scope errors, %d type findings, %d ownership findings, %d parse errors\n", sc.diags.errors(), ty.diags.n, fl.diags.n, a.err_count)
         for k in 0..a.err_count:
@@ -166,35 +171,57 @@ fn module_of(bytes: buf<int>, size: int, opt: int, cfc: str, t: &Tys, g: &Syms) 
             if k < 20:
                 printf("  ownership finding E%d at line %d\n", oe_number(fl.diags.code[k]), a.toks.line[fl.diags.tok[k]])
         fflush(0)
-        lw.bad = 1
-        return lw
+        ok = false
+    return Prep { a: a, ty: ty, ok: ok }
+
+/#/ The functions of a prepared program lowered and optimized, not yet generated. With `only` >= 0
+/#/ just the top-level items whose `unit[node]` is `only` are lowered (the rest are called by name from
+/#/ other objects), and the names the compiler makes end in `tag`.
+fn lower_prepared(p: &Prep, t: &Tys, g: &Syms, opt: int, only: int, unit: &buf<int>, tag: &str) => Lower:
+    let lw = new_lower()
+    lw.opt = opt
+    lw.tag.put(tag)
     let body = new_txt()
-    let it = a.child[a.root]
+    let it = p.a.child[p.a.root]
     while it >= 0:
-        if a.kind[it] == int(Nk.Fn) && type_param_count(&a, it) == 0:
-            lw.function(t, g, &ty, &a, it, -1)
+        if only >= 0 && unit[it] != only:
+            it = p.a.next[it]
+            continue
+        if p.a.kind[it] == int(Nk.Fn) && type_param_count(&p.a, it) == 0:
+            lw.function(t, g, &p.ty, &p.a, it, -1)
             if lw.bad > 0:
-                report_unsupported(&a, lw.bad_node)
+                report_unsupported(&p.a, lw.bad_node)
                 return lw
             lw.keep_current()
-        elif a.kind[it] == int(Nk.Class) && type_param_count(&a, it) == 0:
-            let row = g.find_in_module(&a, a.pa[it], ty.cur)
-            let c = a.child[it]
+        elif p.a.kind[it] == int(Nk.Class) && type_param_count(&p.a, it) == 0:
+            let row = g.find_in_module(&p.a, p.a.pa[it], p.ty.cur)
+            let c = p.a.child[it]
             while c >= 0:
-                if a.kind[c] == int(Nk.Fn):
-                    lw.function(t, g, &ty, &a, c, row)
+                if p.a.kind[c] == int(Nk.Fn):
+                    lw.function(t, g, &p.ty, &p.a, c, row)
                     if lw.bad > 0:
-                        report_unsupported(&a, lw.bad_node)
+                        report_unsupported(&p.a, lw.bad_node)
                         return lw
                     lw.keep_current()
-                c = a.next[c]
-        it = a.next[it]
-    lw.run_instances(t, g, &ty, &a, &body)
+                c = p.a.next[c]
+        it = p.a.next[it]
+    lw.run_instances(t, g, &p.ty, &p.a, &body)
     if lw.bad > 0:
-        report_unsupported(&a, lw.bad_node)
+        report_unsupported(&p.a, lw.bad_node)
         return lw
     lw.optimize_module()
     return lw
+
+/#/ The module of `src` lowered and optimized, not yet generated; `bad` is set when the front
+/#/ end or the lowering refused it.
+fn module_of(bytes: buf<int>, size: int, opt: int, cfc: str, t: &Tys, g: &Syms) => Lower:
+    let p = prepare(bytes, size, cfc, t, g)
+    if !p.ok:
+        let lw = new_lower()
+        lw.bad = 1
+        return lw
+    let none: buf<int> = new_buf(int, 1)
+    return lower_prepared(&p, t, g, opt, -1, &none, "")
 
 /#/ Compiles `src` through our front end and IR, with clang as the linker, and runs it: the exit
 /#/ code, or -2 when something did not compile.

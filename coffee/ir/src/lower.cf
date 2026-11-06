@@ -307,6 +307,9 @@ class Lower:
     tailm: int
     retx: int
     /#/ the module-level `let`s: the symbol name and the size in bytes
+    /#/ for a unit built apart: a suffix that keeps the names the compiler makes (glue, instances) from
+    /#/ meeting those of another object; empty for a whole program
+    tag: Txt
     gl_name: buf<int>
     gl_size: buf<int>
     gl_n: int
@@ -325,6 +328,7 @@ class Lower:
         w.put_all(base)
         w.put("__")
         w.put_int(env)
+        w.put_all(&self.tag)
         return self.names.intern(&w)
 
     /#/ Asks for the function node `node` (of class row `cls`, -1 for a free function) to be
@@ -1092,6 +1096,21 @@ class Lower:
                 return self.new_buf_call(t, g, ty, a, n)
             if tok_is(a, a.tok[callee], "buf_resize"):
                 return self.buf_resize_call(t, g, ty, a, n)
+            if tok_is(a, a.tok[callee], "wrapping_add") || tok_is(a, a.tok[callee], "wrapping_sub") || tok_is(a, a.tok[callee], "wrapping_mul"):
+                /#/ arithmetic here never traps, so the wrapping forms are the plain operations
+                let l = a.child[n]
+                if l < 0 || a.next[l] < 0 || self.rep(t, g, res) < 0:
+                    self.unsupported(n)
+                    return self.f.undef(int(Rp.I64))
+                let r2 = a.next[l]
+                let wl = self.coerce(t, g, self.ex(t, g, ty, a, l), self.nd(t, ty, l), res)
+                let wr = self.coerce(t, g, self.ex(t, g, ty, a, r2), self.nd(t, ty, r2), res)
+                let op = int(Op.Mul)
+                if tok_is(a, a.tok[callee], "wrapping_add"):
+                    op = int(Op.Add)
+                elif tok_is(a, a.tok[callee], "wrapping_sub"):
+                    op = int(Op.Sub)
+                return self.f.bin(op, wl, wr)
             if tok_is(a, a.tok[callee], "buf_ptr"):
                 /#/ the buffer is only borrowed: reading it as a value would move it into a temporary
                 /#/ that is freed at the end of the statement
@@ -2705,6 +2724,7 @@ class Lower:
         else:
             w.put("clone.")
         w.put_int(x)
+        w.put_all(&self.tag)
         let id = self.names.intern(&w)
         for i in 0..self.glue_n:
             if self.glue_ty[i] == x && self.glue_kind[i] == kind:
@@ -2883,6 +2903,7 @@ class Lower:
             else:
                 name.put("clone.")
             name.put_int(x)
+            name.put_all(&self.tag)
             if kind == 0:
                 self.f.reset(&name, int(Rp.Void))
             else:
@@ -3037,6 +3058,7 @@ class Lower:
             if self.penv >= 0:
                 name.put("__")
                 name.put_int(self.penv)
+                name.put_all(&self.tag)
         self.f.reset(&name, rr)
         self.cur_id = self.names.intern(&name)
         self.nf_n = 0
@@ -3175,4 +3197,4 @@ fn new_lower() => Lower:
     return lw
 
 fn make_lower() => Lower:
-    return Lower { f: new_fun("", 0), rs: new_reps(), names: new_names(), nstr: 0, cd_name: new_buf(int, 8), cd_sig: new_buf(int, 8), cd_var: new_buf(int, 8), cd_n: 0, sc: new_syms(), v_rep: new_buf(int, 16), v_ty: new_buf(int, 16), v_slot: new_buf(int, 16), v_flag: new_buf(int, 16), tmp_v: new_buf(int, 8), tmp_ty: new_buf(int, 8), tmp_n: 0, no_own: 0, own_st: new_buf(int, 16), own_n: 0, ld: new_buf(int, 8), glue_ty: new_buf(int, 8), glue_kind: new_buf(int, 8), glue_n: 0, glue_done: 0, lay_ty: new_buf(int, 8), lay_off: new_buf(int, 8), lay_n: 0, addr: new_names(), scanned: 0, fty: 0, rt_exit: 0, rt_calloc: 0, rt_strlen: 0, rt_malloc: 0, rt_free: 0, rt_strdup: 0, rt_memcpy: 0, rt_strcmp: 0, rt_write: 0, or_mark: -1, opt: 1, mc: new_gen(), sbytes: new_txt(), mc_err: 0, ver_err: 0, lib: new_lib(), cur_id: -1, penv: -1, ue: new_buf(int, 16), iq_node: new_buf(int, 8), iq_env: new_buf(int, 8), iq_cls: new_buf(int, 8), iq_nm: new_buf(int, 8), nf_tok: new_buf(int, 8), nf_node: new_buf(int, 8), nf_id: new_buf(int, 8), nf_n: 0, pnm: -1, gl_name: new_buf(int, 8), gl_size: new_buf(int, 8), gl_n: 0, tailb: -1, tailm: -1, retx: -1, iq_n: 0, iq_done: 0, lis: -1, nv: 0, dk: new_buf(int, 64), dv: new_buf(int, 64), dn: 0, sealed: new_buf(int, 16), inc_head: new_buf(int, 16), inc_var: new_buf(int, 16), inc_par: new_buf(int, 16), inc_next: new_buf(int, 16), inc_n: 0, pe_head: new_buf(int, 16), pe_next: new_buf(int, 16), lc: new_buf(int, 8), lb: new_buf(int, 8), nloops: 0, ret_ty: 0, bad: 0, bad_node: -1 }
+    return Lower { f: new_fun("", 0), rs: new_reps(), names: new_names(), nstr: 0, cd_name: new_buf(int, 8), cd_sig: new_buf(int, 8), cd_var: new_buf(int, 8), cd_n: 0, sc: new_syms(), v_rep: new_buf(int, 16), v_ty: new_buf(int, 16), v_slot: new_buf(int, 16), v_flag: new_buf(int, 16), tmp_v: new_buf(int, 8), tmp_ty: new_buf(int, 8), tmp_n: 0, no_own: 0, own_st: new_buf(int, 16), own_n: 0, ld: new_buf(int, 8), glue_ty: new_buf(int, 8), glue_kind: new_buf(int, 8), glue_n: 0, glue_done: 0, lay_ty: new_buf(int, 8), lay_off: new_buf(int, 8), lay_n: 0, addr: new_names(), scanned: 0, fty: 0, rt_exit: 0, rt_calloc: 0, rt_strlen: 0, rt_malloc: 0, rt_free: 0, rt_strdup: 0, rt_memcpy: 0, rt_strcmp: 0, rt_write: 0, or_mark: -1, opt: 1, mc: new_gen(), sbytes: new_txt(), mc_err: 0, ver_err: 0, lib: new_lib(), cur_id: -1, penv: -1, ue: new_buf(int, 16), iq_node: new_buf(int, 8), iq_env: new_buf(int, 8), iq_cls: new_buf(int, 8), iq_nm: new_buf(int, 8), nf_tok: new_buf(int, 8), nf_node: new_buf(int, 8), nf_id: new_buf(int, 8), nf_n: 0, pnm: -1, tag: new_txt(), gl_name: new_buf(int, 8), gl_size: new_buf(int, 8), gl_n: 0, tailb: -1, tailm: -1, retx: -1, iq_n: 0, iq_done: 0, lis: -1, nv: 0, dk: new_buf(int, 64), dv: new_buf(int, 64), dn: 0, sealed: new_buf(int, 16), inc_head: new_buf(int, 16), inc_var: new_buf(int, 16), inc_par: new_buf(int, 16), inc_next: new_buf(int, 16), inc_n: 0, pe_head: new_buf(int, 16), pe_next: new_buf(int, 16), lc: new_buf(int, 8), lb: new_buf(int, 8), nloops: 0, ret_ty: 0, bad: 0, bad_node: -1 }

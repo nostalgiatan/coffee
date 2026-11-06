@@ -1,0 +1,311 @@
+/#/ Incremental builds: one object per source file, kept in a cache directory and reused while
+/#/ nothing it depends on changed.
+/#/
+/#/ The front end still sees the whole program, so types and calls are checked as always; only the
+/#/ lowering, optimizing and machine code of a file are skipped when its object is current. A file's
+/#/ object is rebuilt when
+/#/   - its own tokens changed (comments and blank lines do not count), or
+/#/   - the interface of another file changed: function headers, class fields and method headers,
+/#/     enums, aliases, module-level `let`s, and the whole of generic functions and classes, or
+/#/   - the compiler, the `.cfc` text or the optimization level is another one.
+/#/ Names the compiler makes (glue, generic instances) carry a per-file suffix, so objects built at
+/#/ different times never define the same symbol. The optimizer works inside one file only, so a
+/#/ call into another file is never inlined.
+use printf, system, fflush in libc of c
+
+/#/ Two 64-bit FNV lanes.
+class Hash:
+    a: int
+    b: int
+
+    fn add(self, c: int) => void:
+        self.a = wrapping_mul(self.a ^ c, 1099511628211)
+        self.b = wrapping_mul(self.b ^ (c + 977), 6364136223846793005)
+
+    fn add_txt(self, t: &Txt) => void:
+        for i in 0..t.n:
+            self.add(t.b[i])
+        self.add(256)
+
+    /#/ The 32 hex digits.
+    fn hex(self) => Txt:
+        let r = new_txt()
+        for lane in 0..2:
+            let v = self.a
+            if lane == 1:
+                v = self.b
+            let i = 15
+            while i >= 0:
+                let d = (v >> (4 * i)) & 15
+                if d < 10:
+                    r.put_byte(48 + d)
+                else:
+                    r.put_byte(87 + d)
+                i -= 1
+        return r
+
+fn new_hash() => Hash:
+    return Hash { a: 1469598103934665603, b: 7046029254386353131 }
+
+/#/ Adds the tokens `lo` up to `hi` of `a`: kind and spelling, so spaces and comments do not count.
+fn hash_tokens(h: &Hash, a: &Ast, lo: int, hi: int) => void:
+    for q in lo..hi:
+        h.add(a.toks.kind[q])
+        for k in a.toks.start[q]..a.toks.end[q]:
+            h.add(a.byte_at(k))
+        h.add(257)
+
+/#/ Adds what other files may depend on in the top-level item `n`.
+fn hash_interface(h: &Hash, a: &Ast, n: int) => void:
+    let k = a.kind[n]
+    let lo = a.tok[n]
+    let hi = a.end[n]
+    if k == int(Nk.Fn):
+        if type_param_count(a, n) == 0 && a.pc[n] >= 0:
+            hi = a.tok[a.pc[n]]
+        hash_tokens(h, a, lo, hi)
+    elif k == int(Nk.Class) && type_param_count(a, n) == 0:
+        /#/ fields and method headers, not the method bodies
+        let q = lo
+        let m = a.child[n]
+        while q < hi:
+            while m >= 0 && !(a.kind[m] == int(Nk.Fn) && a.pc[m] >= 0 && a.tok[a.pc[m]] >= q):
+                m = a.next[m]
+            let stop = hi
+            if m >= 0:
+                stop = a.tok[a.pc[m]]
+            hash_tokens(h, a, q, stop)
+            if m < 0:
+                q = hi
+            else:
+                q = a.end[m]
+                m = a.next[m]
+    else:
+        hash_tokens(h, a, lo, hi)
+
+/#/ The number of the file a top-level node is from, going by the line of its first token.
+fn node_unit(fl: &Flat, a: &Ast, n: int, runtime: int) => int:
+    let line = a.toks.line[a.tok[n]]
+    if line - 1 >= fl.lines:
+        return runtime
+    return fl.unit_of_line(line)
+
+/#/ The hash of the file the compiler runs from, so a new compiler rebuilds everything.
+fn compiler_hash() => Txt:
+    let p = txt_of("/proc/self/exe")
+    let t = read_file(&p)
+    let h = new_hash()
+    h.add_txt(&t)
+    return h.hex()
+
+/#/ The cache name of file `u`: its base name and a hash of its whole path.
+fn object_name(fl: &Flat, u: int) => Txt:
+    let path = fl.unit_name(u)
+    let lo = 0
+    for i in 0..path.n:
+        if path.b[i] == 47:
+            lo = i + 1
+    let hi = path.n
+    if hi - lo > 3 && path.b[hi - 3] == 46 && path.b[hi - 2] == 99 && path.b[hi - 1] == 102:
+        hi = hi - 3
+    let r = new_txt()
+    for i in lo..hi:
+        let c = path.b[i]
+        if (c >= 48 && c <= 57) || (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || c == 95:
+            r.put_byte(c)
+        else:
+            r.put_byte(95)
+    r.put_byte(95)
+    let h = new_hash()
+    h.add_txt(&path)
+    let x = h.hex()
+    for i in 0..8:
+        r.put_byte(x.b[i])
+    return r
+
+fn cache_path(dir: &Txt, name: &Txt, ext: &str) => Txt:
+    let p = copy_txt(dir)
+    p.put_byte(47)
+    p.put_all(name)
+    p.put(ext)
+    return p
+
+/#/ The key stored for a file whose object is current: the same text as `want`?
+fn key_current(dir: &Txt, name: &Txt, want: &Txt) => bool:
+    let kp = cache_path(dir, name, ".key")
+    let have = read_file(&kp)
+    if have.n < 0 || !have.same(want):
+        return false
+    let op = cache_path(dir, name, ".o")
+    let o = read_file(&op)
+    return o.n > 0
+
+/#/ The hash of the interface of file `u`.
+fn unit_interface(fl: &Flat, a: &Ast, u: int, n: int) => Txt:
+    let h = new_hash()
+    let it = a.child[a.root]
+    while it >= 0:
+        if node_unit(fl, a, it, n) == u:
+            hash_interface(&h, a, it)
+        it = a.next[it]
+    return h.hex()
+
+/#/ The hash of the tokens of file `u`.
+fn unit_body(fl: &Flat, a: &Ast, u: int) => Txt:
+    let h = new_hash()
+    for q in 0..a.toks.count:
+        let line = a.toks.line[q]
+        if line - 1 < fl.lines && fl.unit_of_line(line) == u:
+            hash_tokens(&h, a, q, q + 1)
+    return h.hex()
+
+/#/ The key of file `u`: the compiler, the level, the `.cfc` text, its own tokens and the interfaces
+/#/ (`ifcs`, one line per file) of all the others.
+fn unit_key(fl: &Flat, a: &Ast, u: int, n: int, ch: &Txt, opt: int, cfc: &str, ifcs: &Txt) => Txt:
+    let k = new_hash()
+    k.add_txt(ch)
+    k.add(opt)
+    k.add_txt(&txt_of(cfc))
+    k.add_txt(&unit_body(fl, a, u))
+    let s = 0
+    let v = 0
+    for i in 0..ifcs.n:
+        if ifcs.b[i] == 10:
+            if v != u:
+                k.add_txt(&slice(ifcs, s, i))
+            s = i + 1
+            v = v + 1
+    return k.hex()
+
+/#/ Builds the program in `fl` into `dir`, linking `out`. Returns 0 when it worked.
+fn build_incremental(fl: &Flat, dir: &Txt, out: &Txt, opt: int) => int:
+    system(txt_str(&mkdir_cmd(dir)))
+    let size = fl.out.n
+    let a0 = parse_bytes(copy_bytes(&fl.out.b, size), size)
+    if a0.err_count > 0:
+        printf("front end: %d parse errors\n", a0.err_count)
+        return 1
+    let ch = compiler_hash()
+    let cfc = fl.cfc_str()
+    let n = fl.nunit
+    /#/ the interface of each file, one line each, then the key of each file
+    let ifcs = new_txt()
+    for u in 0..n:
+        ifcs.put_all(&unit_interface(fl, &a0, u, n))
+        ifcs.put_byte(10)
+    let keys = new_txt()
+    let all = new_hash()
+    for u in 0..n:
+        let k = unit_key(fl, &a0, u, n, &ch, opt, &cfc, &ifcs)
+        keys.put_all(&k)
+        keys.put_byte(10)
+        all.add_txt(&k)
+    let want_state = all.hex()
+    let state_path = cache_path(dir, &txt_of("state"), "")
+    let state = read_file(&state_path)
+    let have_state = state.n >= 33
+    if have_state:
+        for i in 0..32:
+            if state.b[i] != want_state.b[i]:
+                have_state = false
+    let misses = 0
+    for u in 0..n:
+        if !key_current(dir, &object_name(fl, u), &slice(&keys, u * 33, u * 33 + 32)):
+            misses = misses + 1
+    let compiled = 0
+    let reused = 0
+    let objs = new_txt()
+    if misses == 0 && have_state:
+        for u in 0..n:
+            objs.put(" '")
+            objs.put_all(&cache_path(dir, &object_name(fl, u), ".o"))
+            objs.put("'")
+        reused = n
+        if state.b[32] == 'r':
+            objs.put(" '")
+            objs.put_all(&cache_path(dir, &txt_of("runtime"), ".o"))
+            objs.put("'")
+            reused = reused + 1
+    else:
+        let bytes = copy_bytes(&fl.out.b, size)
+        let total = size
+        let with_runtime = false
+        if prints_numbers(copy_bytes(&bytes, total), total, &cfc):
+            with_runtime = true
+            let both = copy_txt(&fl.out)
+            both.put_byte(10)
+            let rt = fmt_rt_text()
+            both.put(&rt)
+            bytes = copy_bytes(&both.b, both.n)
+            total = both.n
+        let t = new_tys()
+        let g = new_globals()
+        let prep = prepare(bytes, total, cfc, &t, &g)
+        if !prep.ok:
+            return 1
+        let unit: buf<int> = new_buf(int, prep.a.count + 1)
+        let top = prep.a.child[prep.a.root]
+        while top >= 0:
+            unit[top] = node_unit(fl, &prep.a, top, n)
+            top = prep.a.next[top]
+        let total_units = n
+        if with_runtime:
+            total_units = n + 1
+        for u in 0..total_units:
+            let name = txt_of("runtime")
+            let kt = new_txt()
+            if u < n:
+                name = object_name(fl, u)
+                kt = slice(&keys, u * 33, u * 33 + 32)
+            else:
+                let rk = new_hash()
+                rk.add_txt(&ch)
+                rk.add(opt)
+                let rts = fmt_rt_text()
+                rk.add_txt(&txt_of(&rts))
+                kt = rk.hex()
+            let op = cache_path(dir, &name, ".o")
+            if !key_current(dir, &name, &kt):
+                let tag = txt_of("_u")
+                tag.put_int(u)
+                let ts = txt_str(&tag)
+                let lw = lower_prepared(&prep, &t, &g, opt, u, &unit, &ts)
+                if lw.bad > 0:
+                    return 1
+                lw.generate()
+                lw.emit_glue(&t, &g)
+                if lw.ver_err > 0 || lw.mc_err > 0:
+                    printf("incremental: %d functions with findings in %s\n", lw.ver_err + lw.mc_err, txt_str(&name))
+                    return 1
+                let obj = lw.object()
+                write_file(&op, &obj)
+                write_file(&cache_path(dir, &name, ".key"), &kt)
+                compiled = compiled + 1
+            else:
+                reused = reused + 1
+            objs.put(" '")
+            objs.put_all(&op)
+            objs.put("'")
+        let st = copy_txt(&want_state)
+        if with_runtime:
+            st.put("r")
+        else:
+            st.put("n")
+        write_file(&state_path, &st)
+    printf("incremental: %d compiled, %d reused\n", compiled, reused)
+    fflush(0)
+    let cmd = txt_of("cc -w -o '")
+    cmd.put_all(out)
+    cmd.put("'")
+    cmd.put_all(&objs)
+    fl.link_flags(&cmd)
+    cmd.put(" -lm")
+    if system(txt_str(&cmd)) != 0:
+        return 1
+    return 0
+
+fn mkdir_cmd(dir: &Txt) => Txt:
+    let c = txt_of("mkdir -p '")
+    c.put_all(dir)
+    c.put("'")
+    return c
