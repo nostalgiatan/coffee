@@ -16,6 +16,10 @@ fn main() => int:
     m = m + miss_t(prog("    let a: int(1)+ = -129\n"), mis, 1)
     m = m + miss_ok(prog("    let a: int(8)- = 18446744073709551615\n"))
     m = m + miss_ok(prog("    let a: int(4)+ = 'a'\n"))
+    /#/ a number above the largest int has no int type of its own
+    m = m + miss_t(prog("    let a = 18446744073709551615\n"), mis, 1)
+    m = m + miss_t(prog("    let a: int = 9223372036854775808\n"), mis, 1)
+    m = m + miss_ok(prog("    let a = 9223372036854775807\n"))
     /#/ an int never becomes a float, nor the other way
     m = m + miss_t(prog("    let a: float = 1\n"), mis, 1)
     m = m + miss_t(prog("    let a: int = 1.5\n"), mis, 1)

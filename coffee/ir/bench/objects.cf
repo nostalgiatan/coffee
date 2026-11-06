@@ -1,0 +1,21 @@
+/#/ Allocation and release of small objects, with an owner that is replaced each time.
+use * in say
+
+class P:
+    a: int
+    b: int
+    c: int
+
+    fn sum(self) => int:
+        return self.a + self.b + self.c
+
+fn main() => int:
+    let slots: buf<P> = new_buf(P, 64)
+    for i in 0..64:
+        slots[i] = P { a: i, b: 1, c: 2 }
+    let total = 0
+    for i in 0..40000000:
+        slots[i % 64] = P { a: i, b: i + 1, c: i * 2 }
+        total += slots[(i * 7) % 64].sum() % 1000
+    say(f"{total}\n")
+    return 0

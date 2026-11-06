@@ -1,0 +1,39 @@
+/#/ Recursion, comparisons and stores in a buffer: quicksort of 400000 pseudo-random numbers, fifteen times.
+use * in say
+
+fn qsort(a: &mut buf<int>, lo: int, hi: int) => void:
+    let i = lo
+    let j = hi
+    let p = a[(lo + hi) // 2]
+    while i <= j:
+        while a[i] < p:
+            i += 1
+        while a[j] > p:
+            j -= 1
+        if i <= j:
+            let t = a[i]
+            a[i] = a[j]
+            a[j] = t
+            i += 1
+            j -= 1
+    if lo < j:
+        qsort(a, lo, j)
+    if i < hi:
+        qsort(a, i, hi)
+
+fn main() => int:
+    let n = 400000
+    let a: buf<int> = new_buf(int, n)
+    let seed = 12345
+    let check = 0
+    for round in 0..15:
+        for i in 0..n:
+            seed = (seed * 1103515245 + 12345) % 2147483648
+            a[i] = seed
+        qsort(&mut a, 0, n - 1)
+        let sum = 0
+        for i in 0..n:
+            sum = (sum * 31 + a[i]) % 1000000007
+        check = (check * 7 + sum + a[0] + a[n - 1]) % 1000000007
+    say(f"{check}\n")
+    return 0

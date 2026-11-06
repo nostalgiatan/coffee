@@ -1,0 +1,13 @@
+/#/ Shifts, xors and multiplies in a register-only loop.
+use * in say
+
+fn main() => int:
+    let h = 0 - 3750763034362895579
+    let x = 1
+    for i in 0..300000000:
+        x = x ^ (x << 13)
+        x = x ^ (x >> 7)
+        x = x ^ (x << 17)
+        h = (h ^ (x & 255)) * 1099511628211
+    say(f"{h} {x}\n")
+    return 0

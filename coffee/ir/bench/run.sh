@@ -1,21 +1,26 @@
 #!/bin/bash
-# Compile-time and run-time measurements; best of 3 runs each.
-# Usage: bench/run.sh <rust coffee binary> <scratch dir inside the current directory tree>
-# First build and run bench/emit.cf (it writes /tmp/claude_bench_<program>_<opt>.ll), see RESULTS.md.
-R=$(realpath "${1:?coffee binary}"); D=${2:?scratch dir}; B=$(dirname "$(realpath "$0")")
-mkdir -p "$D"; cp "$B"/fib.cf "$B"/acc.cf "$B"/sieve.cf "$D"; cd "$D" || exit 1
-best() { local b=999; for i in 1 2 3; do local s=$(date +%s.%N); "$@" >/dev/null 2>&1; local d=$(echo "$(date +%s.%N) - $s" | bc); b=$(echo "if ($d < $b) $d else $b" | bc); done; printf "%.3f s" "$b"; }
-for p in fib acc sieve; do
-  case $p in fib) k=0;; acc) k=1;; sieve) k=2;; esac
-  echo "== $p"
-  for o in 0 2 3; do
-    printf "rust coffee -O$o:          compile "; best "$R" --test-mode $p.cf --bin -O$o -o r$p$o
-    printf "  run "; best ./r$p$o; echo
+# Run time and code size of the benchmark programs, with a check of their output.
+# Usage: bench/run.sh <coffee2> [runs]      (user time in seconds, best of `runs`, default 5)
+# The output of every program is compared with bench/expected.txt, so a miscompiled
+# program shows up as WRONG instead of as a fast result.
+C=$(realpath "${1:?path of coffee2}"); N=${2:-5}
+B=$(dirname "$(realpath "$0")"); L=$B/../../lexer/src
+D=$(mktemp -d /tmp/coffee_bench.XXXXXX); trap 'rm -rf "$D"' EXIT
+printf "%-9s %9s %10s %9s  %s\n" program "run (s)" "code (B)" "build (s)" check
+for p in fib acc sieve collatz mandel sort hash objects strings matmul bits; do
+  s=$(date +%s.%N)
+  "$C" "$B/$p.cf" -I "$L" --static -o "$D/$p" >/dev/null 2>&1 || { printf "%-9s  compile failed\n" $p; continue; }
+  e=$(date +%s.%N); bt=$(echo "$e - $s" | bc)
+  "$C" "$B/$p.cf" -I "$L" --emit-obj -o "$D/$p.o" >/dev/null 2>&1
+  sz=$(stat -c %s "$D/$p.o")
+  best=999
+  for i in $(seq "$N"); do
+    out=$( { /usr/bin/time -f "%U" "$D/$p" > "$D/out" 2>"$D/err"; echo "rc=$?" >> "$D/out"; } 2>&1 )
+    t=$(tail -1 "$D/err")
+    best=$(echo "if ($t < $best) $t else $best" | bc)
   done
-  for opt in 0 1; do
-    for o in 0 2; do
-      printf "ir opt=$opt + clang -O$o:   compile "; best clang -w -O$o -o s$p$opt$o /tmp/claude_bench_${k}_$opt.ll
-      printf "  run "; best ./s$p$opt$o; echo
-    done
-  done
+  got=$(tr '\n' ' ' < "$D/out" | sed 's/ *$//')
+  want=$(grep "^$p " "$B/expected.txt" | cut -d' ' -f2-)
+  ok=ok; [ "$got" == "$want" ] || ok="WRONG (got: $got)"
+  printf "%-9s %9.2f %10d %9.2f  %s\n" $p "$best" "$sz" "$bt" "$ok"
 done

@@ -1,0 +1,23 @@
+/#/ Floating point: iterations of z = z*z + c over a 1000 by 1000 grid.
+use * in say
+
+fn mandel(cr: float, ci: float) => int:
+    let zr = 0.0
+    let zi = 0.0
+    let k = 0
+    while k < 200:
+        let t = zr * zr - zi * zi + cr
+        zi = 2.0 * zr * zi + ci
+        zr = t
+        if zr * zr + zi * zi > 4.0:
+            return k
+        k += 1
+    return k
+
+fn main() => int:
+    let total = 0
+    for y in 0..1000:
+        for x in 0..1000:
+            total += mandel(x as float * 3.0 / 1000.0 - 2.0, y as float * 2.0 / 1000.0 - 1.0)
+    say(f"{total}\n")
+    return 0

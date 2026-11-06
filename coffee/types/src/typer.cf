@@ -249,6 +249,9 @@ class Typer:
                     return want
             elif k == int(Ty.Object) && v == 0 && !neg:
                 return want
+        if big:
+            /#/ above the largest 64-bit unsigned number the type could hold: it would be -1
+            self.err(tok, int(Te.Mismatch), want, t.int_ty(8, true))
         return t.int_ty(8, true)
 
     fn int_fits(self, t: &Tys, ty: int, v: int, neg: bool) => bool:

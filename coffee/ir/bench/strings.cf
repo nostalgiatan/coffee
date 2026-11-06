@@ -1,0 +1,13 @@
+/#/ Text: f-strings and concatenation, with the lengths and bytes summed.
+use * in say
+
+fn main() => int:
+    let total = 0
+    let acc = ""
+    for i in 0..3000000:
+        let s = f"{i}:{i * 3}"
+        total += len(s) + s[len(s) - 1]
+        if i % 10000 == 0:
+            acc = acc + s
+    say(f"{total} {len(acc)}\n")
+    return 0

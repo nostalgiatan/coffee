@@ -1,0 +1,26 @@
+/#/ An open-addressing hash set in a buffer: inserts and lookups with probing.
+use * in say
+
+fn main() => int:
+    let size = 262144
+    let keys: buf<int> = new_buf(int, size)
+    let found = 0
+    let x = 88172645463325252
+    for i in 0..100000000:
+        x = x ^ (x << 13)
+        x = x ^ (x >> 7)
+        x = x ^ (x << 17)
+        let k = (x & 65535) + 1
+        let h = (k * 2654435761) & (size - 1)
+        let go = true
+        while go:
+            if keys[h] == 0:
+                keys[h] = k
+                go = false
+            elif keys[h] == k:
+                found += 1
+                go = false
+            else:
+                h = (h + 1) & (size - 1)
+    say(f"{found}\n")
+    return 0
