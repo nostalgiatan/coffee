@@ -11,6 +11,7 @@
 /#/ `else`, `while`, `for` over a range, `break`/`continue`/`return`, calls of plain functions
 /#/ and C functions. Anything else sets `bad` and the function is not emitted.
 use * in gen
+use * in print
 use * in own
 use * in decimal
 
@@ -223,6 +224,12 @@ fn hex_val(c: int) => int:
     if c >= 'A' && c <= 'F':
         return c - 'A' + 10
     return 0 - 1
+
+/#/ `--emit-ir`: the optimized IR of every function is printed before it is translated.
+let ir_dump = false
+
+fn set_ir_dump() => void:
+    ir_dump = true
 
 class Lower:
     f: Fun
@@ -2480,11 +2487,14 @@ class Lower:
         return -1
 
     /#/ Every name `&` is applied to in the module: those variables live in a slot.
-    fn scan_addr(self, a: &Ast) => void:
-        if self.scanned == 1:
-            return
-        self.scanned = 1
-        for i in 0..a.count:
+    fn scan_addr(self, a: &Ast, fn_node: int) => void:
+        /#/ the names that `&` is taken of in this function: its nodes follow it in the table, up to
+        /#/ the next item
+        self.addr = new_names()
+        let end = a.count
+        if a.next[fn_node] > fn_node:
+            end = a.next[fn_node]
+        for i in fn_node..end:
             if a.kind[i] == int(Nk.Unary) && a.pc[i] == int(Tk.Amp) && a.pa[i] >= 0 && a.kind[a.pa[i]] == int(Nk.Name):
                 let w = new_txt()
                 for q in a.toks.start[a.tok[a.pa[i]]]..a.toks.end[a.tok[a.pa[i]]]:
@@ -3286,7 +3296,7 @@ class Lower:
     /#/ Lowers the function node `fn_node` into `self.f`; `bad` says whether it could not.
     fn function(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, fn_node: int, cls: int) => void:
         self.bad = 0
-        self.scan_addr(a)
+        self.scan_addr(a, fn_node)
         let body = a.pc[fn_node]
         let class_ty = -1
         if cls >= 0:
@@ -3415,6 +3425,10 @@ class Lower:
             if self.ext_slot[n] == 1:
                 continue
             self.lib.restore(n, &self.f)
+            if ir_dump:
+                let o = ir_text(&self.f, &self.rs)
+                for q in 0..o.n:
+                    say_byte(o.b[q])
             self.mc.cur = self.lib.f_id[n]
             self.put_fun()
             self.mc.cur = -1

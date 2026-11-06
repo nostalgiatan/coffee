@@ -519,12 +519,270 @@ fn hoist_extracts(f: &Fun) => bool:
             i = nxt
     return changed
 
+/#/ ---- common subexpressions and known conditions ------------------------------
+
+/#/ Does the value of `i` depend on its operands alone (no memory, no call)?
+fn pure_op(o: int) => bool:
+    if o >= int(Op.Add) && o <= int(Op.FNeg) && o != int(Op.FRem):
+        return true
+    if o >= int(Op.Cmp) && o <= int(Op.Insert):
+        return true
+    return o == int(Op.Field) || o == int(Op.Index)
+
+fn commutes(o: int) => bool:
+    return o == int(Op.Add) || o == int(Op.Mul) || o == int(Op.And) || o == int(Op.Or) || o == int(Op.Xor) || o == int(Op.FAdd) || o == int(Op.FMul)
+
+/#/ The operands of pure instruction `i` as values, the first two in a fixed order when the
+/#/ operation commutes. Returns them in `k[0..3]`.
+fn operands(f: &Fun, i: int, k: &buf<int>) => void:
+    let x = -1
+    let y = -1
+    let z = -1
+    if f.a[i] >= 0:
+        x = f.follow(f.a[i])
+    if f.b[i] >= 0:
+        y = f.follow(f.b[i])
+    if f.c[i] >= 0:
+        z = f.follow(f.c[i])
+    if commutes(f.op[i]) && x > y:
+        let t = x
+        x = y
+        y = t
+    k[0] = x
+    k[1] = y
+    k[2] = z
+
+/#/ The blocks reachable from the entry in reverse post-order (`rpo`, the count returned) and their
+/#/ immediate dominators (`idom`, -1 for the unreachable).
+fn dominators(f: &Fun, rpo: &buf<int>, idom: &buf<int>) => int:
+    let nb = f.nb
+    let visited: buf<int> = new_buf(int, nb + 1)
+    let ci: buf<int> = new_buf(int, nb + 1)
+    let stack: buf<int> = new_buf(int, nb + 1)
+    let post: buf<int> = new_buf(int, nb + 1)
+    let sp = 1
+    let np = 0
+    stack[0] = 0
+    visited[0] = 1
+    while sp > 0:
+        let b = stack[sp - 1]
+        if f.terminated(b) && ci[b] < f.nsucc(b):
+            let t = f.eto[f.succ_edge(b, ci[b])]
+            ci[b] = ci[b] + 1
+            if t >= 0 && t < nb && visited[t] == 0:
+                visited[t] = 1
+                stack[sp] = t
+                sp = sp + 1
+        else:
+            post[np] = b
+            np = np + 1
+            sp = sp - 1
+    let num: buf<int> = new_buf(int, nb + 1)
+    for k in 0..np:
+        rpo[k] = post[np - 1 - k]
+        num[rpo[k]] = k
+    for b in 0..nb:
+        idom[b] = -1
+    idom[0] = 0
+    /#/ the predecessors, once
+    let pc: buf<int> = new_buf(int, nb + 2)
+    for k in 0..np:
+        let b = rpo[k]
+        for s in 0..f.nsucc(b):
+            let t = f.eto[f.succ_edge(b, s)]
+            if t >= 0:
+                pc[t + 1] = pc[t + 1] + 1
+    for b in 0..nb:
+        pc[b + 1] = pc[b + 1] + pc[b]
+    let fill: buf<int> = new_buf(int, nb + 1)
+    let pl: buf<int> = new_buf(int, pc[nb] + 1)
+    for k in 0..np:
+        let b = rpo[k]
+        for s in 0..f.nsucc(b):
+            let t = f.eto[f.succ_edge(b, s)]
+            if t >= 0:
+                pl[pc[t] + fill[t]] = b
+                fill[t] = fill[t] + 1
+    let changed = true
+    while changed:
+        changed = false
+        for k in 1..np:
+            let b = rpo[k]
+            let nd = -1
+            for q in pc[b]..pc[b + 1]:
+                let pb = pl[q]
+                if idom[pb] >= 0:
+                    if nd < 0:
+                        nd = pb
+                    else:
+                        let x = pb
+                        let y = nd
+                        while x != y:
+                            while num[x] > num[y]:
+                                x = idom[x]
+                            while num[y] > num[x]:
+                                y = idom[y]
+                        nd = x
+            if nd != idom[b]:
+                idom[b] = nd
+                changed = true
+    return np
+
+/#/ Replaces instruction `i` by the value `v` everywhere.
+fn replace_inst(f: &Fun, i: int, v: int) => void:
+    f.uses[v] = f.uses[v] + f.uses[i]
+    f.fwd[i] = v
+    unuse(f, i)
+    unlink(f, i)
+
+/#/ A pure instruction that an instruction with the same operation and operands in a dominating
+/#/ block already computed is that one. Then a branch on a condition that a dominating branch has
+/#/ decided (the block is entered by one edge of it) goes one way only: the second bounds check
+/#/ of `a[i]` and the checks the loop condition implies.
+fn cse_branches(f: &Fun) => bool:
+    if f.nb < 2:
+        return false
+    let nb = f.nb
+    let rpo: buf<int> = new_buf(int, nb + 1)
+    let idom: buf<int> = new_buf(int, nb + 1)
+    let np = dominators(f, &rpo, &idom)
+    let changed = false
+    /#/ the dominator tree, and the single predecessor of each block (-1: none or several)
+    let head: buf<int> = new_buf(int, nb + 1)
+    let sib: buf<int> = new_buf(int, nb + 1)
+    let npred: buf<int> = new_buf(int, nb + 1)
+    let pred1: buf<int> = new_buf(int, nb + 1)
+    for b in 0..nb:
+        head[b] = -1
+        pred1[b] = -1
+    for k in 0..np:
+        let b = rpo[k]
+        if b != 0:
+            sib[b] = head[idom[b]]
+            head[idom[b]] = b
+        for s in 0..f.nsucc(b):
+            let t = f.eto[f.succ_edge(b, s)]
+            if t >= 0:
+                npred[t] = npred[t] + 1
+                pred1[t] = b
+    let cap = 64
+    while cap < f.ni * 2:
+        cap = cap * 2
+    let tab: buf<int> = new_buf(int, cap)
+    for q in 0..cap:
+        tab[q] = -1
+    let log: buf<int> = new_buf(int, f.ni + 1)
+    let nlog = 0
+    let mark: buf<int> = new_buf(int, nb + 1)
+    let entered: buf<int> = new_buf(int, nb + 1)
+    let stack: buf<int> = new_buf(int, nb + 1)
+    let ka: buf<int> = new_buf(int, 4)
+    let kb: buf<int> = new_buf(int, 4)
+    let sp = 1
+    stack[0] = 0
+    while sp > 0:
+        let b = stack[sp - 1]
+        if entered[b] == 1:
+            while nlog > mark[b]:
+                nlog = nlog - 1
+                tab[log[nlog]] = -1
+            sp = sp - 1
+        else:
+            entered[b] = 1
+            mark[b] = nlog
+            let i = f.bfirst[b]
+            while i >= 0:
+                let nxt = f.nx[i]
+                if pure_op(f.op[i]) && f.fwd[i] < 0:
+                    operands(f, i, &ka)
+                    let h = hmix(hmix(hmix(hmix(hmix(f.op[i], f.rep[i]), ka[0]), ka[1]), ka[2]), f.aux[i]) % cap
+                    if h < 0:
+                        h = h + cap
+                    let found = -1
+                    while tab[h] >= 0 && found < 0:
+                        let e = tab[h]
+                        if f.op[e] == f.op[i] && f.rep[e] == f.rep[i] && f.aux[e] == f.aux[i]:
+                            operands(f, e, &kb)
+                            if kb[0] == ka[0] && kb[1] == ka[1] && kb[2] == ka[2]:
+                                found = e
+                        if found < 0:
+                            h = (h + 1) % cap
+                    if found >= 0:
+                        replace_inst(f, i, found)
+                        changed = true
+                    else:
+                        tab[h] = i
+                        log[nlog] = h
+                        nlog = nlog + 1
+                i = nxt
+            /#/ a decided condition: walk up the blocks that are entered by one edge of a branch
+            let t = f.blast[b]
+            if t >= 0 && f.op[t] == int(Op.CondBr):
+                let c = f.follow(f.a[t])
+                if !f.is_const(c):
+                    let x = b
+                    let known = -1
+                    while known < 0:
+                        if npred[x] == 1:
+                            let pb = pred1[x]
+                            let pt = f.blast[pb]
+                            if pt >= 0 && f.op[pt] == int(Op.CondBr) && f.follow(f.a[pt]) == c:
+                                let et = f.eto[f.b[pt]]
+                                let ef = f.eto[f.c[pt]]
+                                if et == x && ef != x:
+                                    known = 1
+                                elif ef == x && et != x:
+                                    known = 0
+                        if known < 0:
+                            if x == 0 || idom[x] == x || idom[x] < 0:
+                                break
+                            x = idom[x]
+                    if known >= 0:
+                        let kc = f.cint(int(Rp.I8), known)
+                        f.uses[c] = f.uses[c] - 1
+                        f.uses[kc] = f.uses[kc] + 1
+                        f.a[t] = kc
+                        changed = true
+            let ch = head[b]
+            while ch >= 0:
+                stack[sp] = ch
+                sp = sp + 1
+                ch = sib[ch]
+    return changed
+
+/#/ An `extract` of an aggregate that is now known to be built by `insert`s (a parameter that turned
+/#/ out to be one value all along) becomes the value that was inserted.
+fn fold_extracts(f: &Fun) => bool:
+    let changed = false
+    for b in 0..f.nb:
+        let i = f.bfirst[b]
+        while i >= 0:
+            let nxt = f.nx[i]
+            if f.op[i] == int(Op.Extract) && f.fwd[i] < 0:
+                let g = f.follow(f.a[i])
+                while f.op[g] == int(Op.Insert) && f.aux[g] != f.aux[i]:
+                    g = f.follow(f.a[g])
+                if f.op[g] == int(Op.Insert) && f.rep[f.follow(f.b[g])] == f.rep[i]:
+                    let v = f.follow(f.b[g])
+                    f.uses[v] = f.uses[v] + f.uses[i]
+                    f.fwd[i] = v
+                    unuse(f, i)
+                    unlink(f, i)
+                    changed = true
+            i = nxt
+    return changed
+
 fn optimize(f: &Fun) => void:
+    fold_extracts(f)
     hoist_extracts(f)
     let round = 0
     let changed = true
     while changed && round < 8:
         changed = false
+        if fold_extracts(f):
+            changed = true
+        if cse_branches(f):
+            changed = true
         if thread_jumps(f):
             changed = true
         if fold_branches(f):

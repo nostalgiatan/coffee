@@ -220,3 +220,9 @@ fn put_fun(o: &Txt, f: &Fun, rs: &Reps) => void:
         while i >= 0:
             put_inst(o, f, rs, i)
             i = f.nx[i]
+
+/#/ The text of function `f`.
+fn ir_text(f: &Fun, rs: &Reps) => Txt:
+    let o = new_txt()
+    put_fun(&o, f, rs)
+    return o
