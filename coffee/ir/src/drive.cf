@@ -147,9 +147,13 @@ class Prep:
 
 /#/ Runs the front end over the `size` bytes in `bytes`.
 fn prepare(bytes: buf<int>, size: int, cfc: str, t: &Tys, g: &Syms) => Prep:
+    return prepare_ast(parse_bytes(bytes, size), cfc, t, g)
+
+/#/ `prepare` for a tree that is already parsed (the caller may have blanked function bodies it
+/#/ does not need checked: a function with no body is a declaration).
+fn prepare_ast(a: Ast, cfc: str, t: &Tys, g: &Syms) => Prep:
     if len(cfc) > 0:
         declare_user_cfc(t, g, cfc, "user.cfc")
-    let a = parse_bytes(bytes, size)
     let m = declare_module(g, &a, "t")
     let sc = check(&a, g, m)
     declare_types(t, g, &a, m)

@@ -205,6 +205,15 @@ fn unit_key(u: int, ch: &Txt, opt: int, cfc: &str, bodies: &Txt, ifcs: &Txt) => 
             v = v + 1
     return k.hex()
 
+/#/ Does the program define the number-printing runtime itself (the runtime's own tests do)?
+fn defines_runtime(a: &Ast) => bool:
+    let it = a.child[a.root]
+    while it >= 0:
+        if a.kind[it] == int(Nk.Fn) && a.pa[it] >= 0 && tok_is(a, a.pa[it], "__cf_fmt_int"):
+            return true
+        it = a.next[it]
+    return false
+
 /#/ Builds the object of unit `u` into `dir`, with the key `kt`. False when the unit has findings.
 fn compile_unit(prep: &Prep, t: &Tys, g: &Syms, opt: int, u: int, unit: &buf<int>, name: &Txt, kt: &Txt, dir: &Txt) => bool:
     let tag = txt_of("_u")
@@ -224,6 +233,10 @@ fn compile_unit(prep: &Prep, t: &Tys, g: &Syms, opt: int, u: int, unit: &buf<int
     let obj = lw.object()
     write_file(&cache_path(dir, name, ".o"), &obj)
     write_file(&cache_path(dir, name, ".key"), kt)
+    if lw.uses_rt:
+        write_file(&cache_path(dir, name, ".rt"), &txt_of("1"))
+    else:
+        write_file(&cache_path(dir, name, ".rt"), &txt_of("0"))
     unit_times(t1 - t0, t2 - t1, now_ms() - t2)
     return true
 
@@ -264,6 +277,7 @@ fn build_incremental(fl: &Flat, dir: &Txt, out: &Txt, opt: int, jobs: int) => in
         printf("front end: %d parse errors\n", a0.err_count)
         return 1
     phase("parse")
+    let defines = defines_runtime(&a0)
     let ch = compiler_hash()
     let cfc = fl.cfc_str()
     let n = fl.nunit
@@ -282,95 +296,62 @@ fn build_incremental(fl: &Flat, dir: &Txt, out: &Txt, opt: int, jobs: int) => in
     let want_state = all.hex()
     let state_path = cache_path(dir, &txt_of("state"), "")
     let state = read_file(&state_path)
-    let have_state = state.n >= 33
+    let have_state = state.n >= 32
     if have_state:
         for i in 0..32:
             if state.b[i] != want_state.b[i]:
                 have_state = false
-    let misses = 0
+    /#/ the stale files: those whose object is missing or built from other tokens or interfaces
+    let stale: buf<int> = new_buf(int, n + 1)
+    let todo: buf<int> = new_buf(int, n + 1)
+    let ntodo = 0
+    let names = new_txt()
+    let name_at: buf<int> = new_buf(int, n + 1)
     for u in 0..n:
-        if !key_current(dir, &object_name(fl, u), &slice(&keys, u * 33, u * 33 + 32)):
-            misses = misses + 1
-    let compiled = 0
-    let reused = 0
+        let name = object_name(fl, u)
+        name_at[u] = names.n
+        names.put_all(&name)
+        names.put_byte(10)
+        if !key_current(dir, &name, &slice(&keys, u * 33, u * 33 + 32)):
+            stale[u] = 1
+            todo[ntodo] = u
+            ntodo = ntodo + 1
+    name_at[n] = names.n
+    let compiled = ntodo
+    let reused = n - ntodo
     let objs = new_txt()
-    if misses == 0 && have_state:
-        for u in 0..n:
-            objs.put(" '")
-            objs.put_all(&cache_path(dir, &object_name(fl, u), ".o"))
-            objs.put("'")
-        reused = n
-        if state.b[32] == 'r':
-            objs.put(" '")
-            objs.put_all(&cache_path(dir, &txt_of("runtime"), ".o"))
-            objs.put("'")
-            reused = reused + 1
-    else:
-        let bytes = copy_bytes(&fl.out.b, size)
-        let total = size
-        let with_runtime = false
-        if prints_numbers(copy_bytes(&bytes, total), total, &cfc):
-            with_runtime = true
-            let both = copy_txt(&fl.out)
-            both.put_byte(10)
-            let rt = fmt_rt_text()
-            both.put(&rt)
-            bytes = copy_bytes(&both.b, both.n)
-            total = both.n
+    if ntodo > 0 || !have_state:
         let t = new_tys()
         let g = new_globals()
-        let prep = prepare(bytes, total, cfc, &t, &g)
+        /#/ the file of each top-level item; the bodies of the files that are not stale are not
+        /#/ checked again (they were when their objects were built, and their interfaces and
+        /#/ tokens are the same), so they become declarations
+        let unit: buf<int> = new_buf(int, a0.count + 1)
+        let top = a0.child[a0.root]
+        while top >= 0:
+            let u = node_unit(fl, &a0, top, n)
+            unit[top] = u
+            if u < n && stale[u] == 0:
+                if a0.kind[top] == int(Nk.Fn) && type_param_count(&a0, top) == 0:
+                    a0.pc[top] = 0 - 1
+                elif a0.kind[top] == int(Nk.Class) && type_param_count(&a0, top) == 0:
+                    let c = a0.child[top]
+                    while c >= 0:
+                        if a0.kind[c] == int(Nk.Fn):
+                            a0.pc[c] = 0 - 1
+                        c = a0.next[c]
+            top = a0.next[top]
+        let prep = prepare_ast(a0, cfc, &t, &g)
         if !prep.ok:
             return 1
         phase("front end")
-        let unit: buf<int> = new_buf(int, prep.a.count + 1)
-        let top = prep.a.child[prep.a.root]
-        while top >= 0:
-            unit[top] = node_unit(fl, &prep.a, top, n)
-            top = prep.a.next[top]
-        let total_units = n
-        if with_runtime:
-            total_units = n + 1
-        /#/ the file, key and object of each unit; the stale ones are built below
-        let names = new_txt()
-        let name_at: buf<int> = new_buf(int, total_units + 1)
-        let kts = new_txt()
-        let todo: buf<int> = new_buf(int, total_units + 1)
-        let ntodo = 0
-        for u in 0..total_units:
-            let name = txt_of("runtime")
-            let kt = new_txt()
-            if u < n:
-                name = object_name(fl, u)
-                kt = slice(&keys, u * 33, u * 33 + 32)
-            else:
-                let rk = new_hash()
-                rk.add_txt(&ch)
-                rk.add(opt)
-                let rts = fmt_rt_text()
-                rk.add_txt(&txt_of(&rts))
-                kt = rk.hex()
-            if !key_current(dir, &name, &kt):
-                todo[ntodo] = u
-                ntodo = ntodo + 1
-            else:
-                reused = reused + 1
-            objs.put(" '")
-            objs.put_all(&cache_path(dir, &name, ".o"))
-            objs.put("'")
-            name_at[u] = names.n
-            names.put_all(&name)
-            names.put_byte(10)
-            kts.put_all(&kt)
-            kts.put_byte(10)
-        name_at[total_units] = names.n
-        compiled = ntodo
         let workers = jobs
         if workers > ntodo:
             workers = ntodo
         if workers <= 1:
             for i in 0..ntodo:
-                if !compile_unit(&prep, &t, &g, opt, todo[i], &unit, &slice(&names, name_at[todo[i]], name_at[todo[i] + 1] - 1), &slice(&kts, todo[i] * 33, todo[i] * 33 + 32), dir):
+                let u = todo[i]
+                if !compile_unit(&prep, &t, &g, opt, u, &unit, &slice(&names, name_at[u], name_at[u + 1] - 1), &slice(&keys, u * 33, u * 33 + 32), dir):
                     return 1
             unit_phases()
         else:
@@ -384,7 +365,8 @@ fn build_incremental(fl: &Flat, dir: &Txt, out: &Txt, opt: int, jobs: int) => in
                     let ok = true
                     let i = w
                     while i < ntodo && ok:
-                        ok = compile_unit(&prep, &t, &g, opt, todo[i], &unit, &slice(&names, name_at[todo[i]], name_at[todo[i] + 1] - 1), &slice(&kts, todo[i] * 33, todo[i] * 33 + 32), dir)
+                        let u = todo[i]
+                        ok = compile_unit(&prep, &t, &g, opt, u, &unit, &slice(&names, name_at[u], name_at[u + 1] - 1), &slice(&keys, u * 33, u * 33 + 32), dir)
                         i = i + workers
                     fflush(0)
                     if ok:
@@ -400,12 +382,38 @@ fn build_incremental(fl: &Flat, dir: &Txt, out: &Txt, opt: int, jobs: int) => in
             if failed:
                 return 1
             phase("units")
-        let st = copy_txt(&want_state)
-        if with_runtime:
-            st.put("r")
+        write_file(&state_path, &want_state)
+    /#/ the objects, and the number-printing runtime when some file calls it and none defines it
+    let uses = false
+    for u in 0..n:
+        let name = slice(&names, name_at[u], name_at[u + 1] - 1)
+        objs.put(" '")
+        objs.put_all(&cache_path(dir, &name, ".o"))
+        objs.put("'")
+        let fg = read_file(&cache_path(dir, &name, ".rt"))
+        if fg.n > 0 && fg.b[0] == 49:
+            uses = true
+    if uses && !defines:
+        let rk = new_hash()
+        rk.add_txt(&ch)
+        rk.add(opt)
+        let rts = fmt_rt_text()
+        rk.add_txt(&txt_of(&rts))
+        let kt = rk.hex()
+        let rn = txt_of("runtime")
+        if !key_current(dir, &rn, &kt):
+            let rb = bytes_of_str(&rts)
+            let obj = build_text(rb, len(rts), opt, "")
+            if obj.n == 0:
+                return 1
+            write_file(&cache_path(dir, &rn, ".o"), &obj)
+            write_file(&cache_path(dir, &rn, ".key"), &kt)
+            compiled = compiled + 1
         else:
-            st.put("n")
-        write_file(&state_path, &st)
+            reused = reused + 1
+        objs.put(" '")
+        objs.put_all(&cache_path(dir, &rn, ".o"))
+        objs.put("'")
     printf("incremental: %d compiled, %d reused\n", compiled, reused)
     fflush(0)
     let cmd = txt_of("cc -w -o '")

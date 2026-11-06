@@ -57,4 +57,11 @@ fn main() => int:
     /#/ one object for everything
     m = m + expect(14, (system("cd proj && tea build --whole > whole.log 2>&1") >> 8) & 255, 0)
     m = m + expect(15, (system("proj/target/build/app") >> 8) & 255, 7)
+    /#/ a file that prints a number brings the runtime in; the other files stay as they were
+    put("proj/src/main.cf", "use * in other\nuse * in util\n\nfn main() => int:\n    let s = f\"{twice(add(1, 2, 0))}!\"\n    return len(s)\n")
+    m = m + expect(16, build(), 0)
+    m = m + expect(17, said("2 compiled, 2 reused"), 0)
+    m = m + expect(18, (system("proj/target/build/app") >> 8) & 255, 2)
+    m = m + expect(19, build(), 0)
+    m = m + expect(20, said("0 compiled, 4 reused"), 0)
     return m
