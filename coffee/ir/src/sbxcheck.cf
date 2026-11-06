@@ -1,0 +1,305 @@
+/#/ A check of sandbox machine code (see docs/explanation/sandbox-design.md, "S3"). It reads the
+/#/ bytes the code generator made and accepts only what the generator can make and what keeps the
+/#/ code inside the linear memory:
+/#/
+/#/ - Only the instructions `Gen` and `Asm` emit, in the forms they emit them. Anything else
+/#/   (`syscall`, `int`, `wrgsbase`, indirect jumps and calls, segment overrides but `gs`) is refused.
+/#/ - A memory operand is either addressed through `gs` in 32 bits (the prefixes 0x67 0x65 together)
+/#/   or is `[rbp + disp]` on the stack of the code: |disp| below 32768, and not the saved rbp or the
+/#/   return address. `lea` computes and does not access.
+/#/ - rsp and rbp change only as a function frame does: push, pop rbp, `mov rbp, rsp`, `mov rsp, rbp`,
+/#/   `lea rsp, [rbp - n]`, `leave`, and `add`/`sub rsp, imm` with an immediate up to 32768.
+/#/ - Every direct jump or call lands on the start of an instruction of the code (or on `entry`, the
+/#/   system call function of the image, which comes after the code).
+/#/
+/#/ The code is decoded from its start to its end in one go, so the instruction boundaries the check
+/#/ sees are those the processor sees.
+use * in txt
+
+class Dec:
+    tgt: int
+    kind: int
+    why: int
+
+fn new_dec() => Dec:
+    return Dec { tgt: -1, kind: 0, why: 0 }
+
+/#/ Why the last instruction was refused (a number from `dec_no`), for the message of the loader.
+let sbx_why = 0
+
+fn dec_no(d: &Dec, why: int) => int:
+    d.why = why
+    sbx_why = why
+    return -1
+
+fn dec_s32(code: &Txt, i: int) => int:
+    let v = int(code.b[i]) | (int(code.b[i + 1]) << 8) | (int(code.b[i + 2]) << 16) | (int(code.b[i + 3]) << 24)
+    if v >= 2147483648:
+        v = v - 4294967296
+    return v
+
+fn dec_s8(code: &Txt, i: int) => int:
+    let v = int(code.b[i])
+    if v >= 128:
+        v = v - 256
+    return v
+
+/#/ The length of the instruction at `at` in the `n` bytes of `code`, or -1 when it is refused
+/#/ (`d.why` says why). For a jump or call `d.kind` is 1 or 2 and `d.tgt` the offset it goes to.
+fn sbx_decode(code: &Txt, at: int, n: int, d: &Dec) => int:
+    d.tgt = -1
+    d.kind = 0
+    let i = at
+    let p66 = false
+    let p67 = false
+    let p65 = false
+    let pf = 0
+    while i < n:
+        let b = int(code.b[i])
+        if b == 102:
+            p66 = true
+        elif b == 103:
+            p67 = true
+        elif b == 101:
+            p65 = true
+        elif b == 242 || b == 243:
+            pf = b
+        else:
+            break
+        i = i + 1
+    let rex = 0
+    if i < n && int(code.b[i]) >= 64 && int(code.b[i]) < 80:
+        rex = int(code.b[i])
+        i = i + 1
+    if i >= n:
+        return dec_no(d, 1)
+    let op = int(code.b[i])
+    i = i + 1
+    let op2 = 0 - 1
+    if op == 15:
+        if i >= n:
+            return dec_no(d, 1)
+        op2 = int(code.b[i])
+        i = i + 1
+    let rexw = (rex >> 3) & 1
+    let rr = (rex >> 2) & 1
+    let rx = (rex >> 1) & 1
+    let rb = rex & 1
+    let modrm = false
+    let imm = 0
+    let rel = 0
+    let dsel = 0
+    let dst = 0 - 1
+    let isext = false
+    let extok = 255
+    let nowr = 0
+    let need3 = false
+    let popbp = false
+    if op != 15:
+        if op == 3 || op == 43 || op == 35 || op == 11 || op == 51 || op == 139 || op == 141 || op == 99:
+            modrm = true
+            dsel = 1
+        elif op == 59 || op == 133:
+            modrm = true
+        elif op == 49 || op == 136 || op == 137:
+            modrm = true
+            dsel = 2
+        elif op == 107:
+            modrm = true
+            imm = 1
+            dsel = 1
+        elif op == 105:
+            modrm = true
+            imm = 4
+            dsel = 1
+        elif op == 131 || op == 129:
+            modrm = true
+            imm = 1
+            if op == 129:
+                imm = 4
+            dsel = 2
+            isext = true
+            extok = 243
+            nowr = 128
+        elif op == 199:
+            modrm = true
+            imm = 4
+            dsel = 2
+            isext = true
+            extok = 1
+            need3 = true
+        elif op == 247:
+            modrm = true
+            dsel = 2
+            isext = true
+            extok = 252
+            nowr = 240
+            need3 = true
+        elif op == 211 || op == 193:
+            modrm = true
+            dsel = 2
+            isext = true
+            extok = 176
+            need3 = true
+            if op == 193:
+                imm = 1
+        elif op >= 184 && op <= 191:
+            imm = 4
+            if rexw == 1:
+                imm = 8
+            dst = (op - 184) | (rb << 3)
+        elif op >= 80 && op <= 87:
+            dsel = 0
+        elif op >= 88 && op <= 95:
+            dst = (op - 88) | (rb << 3)
+            popbp = true
+        elif op == 201 || op == 195 || op == 204 || op == 153:
+            dsel = 0
+        elif op == 232:
+            d.kind = 2
+            rel = 4
+        elif op == 233:
+            d.kind = 1
+            rel = 4
+        elif op == 235 || (op >= 112 && op <= 127):
+            d.kind = 1
+            rel = 1
+        else:
+            return dec_no(d, 2)
+    else:
+        if op2 >= 128 && op2 <= 143:
+            d.kind = 1
+            rel = 4
+        elif op2 >= 144 && op2 <= 159:
+            modrm = true
+            dsel = 2
+            need3 = true
+        elif op2 == 182 || op2 == 183 || op2 == 190 || op2 == 191 || op2 == 175 || op2 == 44:
+            modrm = true
+            dsel = 1
+        elif op2 == 11:
+            dsel = 0
+        elif op2 == 16 || op2 == 17 || op2 == 40 || op2 == 42 || op2 == 46 || op2 == 87 || op2 == 88 || op2 == 89 || op2 == 90 || op2 == 92 || op2 == 94 || op2 == 110:
+            modrm = true
+        elif op2 == 126:
+            modrm = true
+            dsel = 2
+        else:
+            return dec_no(d, 3)
+    /#/ the prefixes that were read must be those the instruction takes, or the length would differ
+    if p66 && !(op == 137 || (op == 15 && (op2 == 46 || op2 == 110 || op2 == 126))):
+        return dec_no(d, 4)
+    if pf != 0 && !(op == 15 && (op2 == 16 || op2 == 17 || op2 == 42 || op2 == 44 || op2 == 88 || op2 == 89 || op2 == 90 || op2 == 92 || op2 == 94)):
+        return dec_no(d, 5)
+    if p67 != p65:
+        return dec_no(d, 6)
+    let guest = p67 && p65
+    let immv = 0
+    if modrm:
+        if i >= n:
+            return dec_no(d, 1)
+        let m = int(code.b[i])
+        i = i + 1
+        let md = m >> 6
+        let reg = (m >> 3) & 7
+        let rmf = m & 7
+        if need3 && md != 3:
+            return dec_no(d, 7)
+        if isext && ((extok >> reg) & 1) == 0:
+            return dec_no(d, 8)
+        let disp = 0
+        let has_sib = false
+        let sib = 0
+        if md != 3:
+            if rmf == 4:
+                if i >= n:
+                    return dec_no(d, 1)
+                sib = int(code.b[i])
+                has_sib = true
+                i = i + 1
+            let dsz = 0
+            if md == 1:
+                dsz = 1
+            elif md == 2:
+                dsz = 4
+            elif md == 0 && rmf == 5:
+                dsz = 4
+            elif md == 0 && has_sib && (sib & 7) == 5:
+                dsz = 4
+            if i + dsz > n:
+                return dec_no(d, 1)
+            if dsz == 1:
+                disp = dec_s8(code, i)
+            elif dsz == 4:
+                disp = dec_s32(code, i)
+            i = i + dsz
+            /#/ a memory operand: through gs, or [rbp + disp] outside the two words at rbp
+            if op != 141 && !guest:
+                if has_sib || rmf != 5 || rb == 1 || md == 0:
+                    return dec_no(d, 9)
+                if disp <= 0 - 32768 || disp >= 32768 || (disp >= 0 && disp < 16):
+                    return dec_no(d, 10)
+        if imm > 0:
+            if i + imm > n:
+                return dec_no(d, 1)
+            if imm == 1:
+                immv = dec_s8(code, i)
+            elif imm == 4:
+                immv = dec_s32(code, i)
+            i = i + imm
+        if dsel == 1:
+            dst = reg | (rr << 3)
+        elif dsel == 2 && md == 3:
+            if !(isext && ((nowr >> reg) & 1) == 1):
+                dst = rmf | (rb << 3)
+        /#/ rsp and rbp: only the moves of a function frame
+        if dst == 4:
+            let frame = (op == 129 || op == 131) && (reg == 0 || reg == 5) && md == 3 && immv >= 0 && immv <= 32768
+            let back = op == 141 && md != 3 && rmf == 5 && !has_sib && rb == 0 && !p67 && disp < 0 && disp >= 0 - 32768
+            let mov = op == 139 && md == 3 && reg == 4 && rmf == 5 && rr == 0 && rb == 0
+            if !(frame || back || mov):
+                return dec_no(d, 11)
+        if dst == 5:
+            if !(op == 139 && md == 3 && reg == 5 && rmf == 4 && rr == 0 && rb == 0):
+                return dec_no(d, 12)
+    else:
+        if imm > 0:
+            if i + imm > n:
+                return dec_no(d, 1)
+            i = i + imm
+        if dst == 4 || (dst == 5 && !popbp):
+            return dec_no(d, 13)
+    if rel > 0:
+        if i + rel > n:
+            return dec_no(d, 1)
+        if rel == 1:
+            d.tgt = i + rel + dec_s8(code, i)
+        else:
+            d.tgt = i + rel + dec_s32(code, i)
+        i = i + rel
+    return i - at
+
+/#/ -1 when the `n` bytes of `code` pass, else the offset of the first instruction refused (or of the
+/#/ jump whose target is bad). `entry` is where a call may go besides the instruction starts, or -1.
+fn sbx_verify(code: &Txt, n: int, entry: int) => int:
+    let bnd = new_buf(int, n + 1)
+    for k in 0..n + 1:
+        bnd[k] = 0
+    let d = new_dec()
+    let i = 0
+    while i < n:
+        let l = sbx_decode(code, i, n, &d)
+        if l < 0:
+            return i
+        bnd[i] = 1
+        i = i + l
+    i = 0
+    while i < n:
+        let l = sbx_decode(code, i, n, &d)
+        if d.kind != 0:
+            let t = d.tgt
+            if !(d.kind == 2 && t == entry):
+                if t < 0 || t >= n || bnd[t] == 0:
+                    return i
+        i = i + l
+    return -1

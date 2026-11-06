@@ -191,15 +191,15 @@ fn sandbox_run(im: &Image, main_at: int, allow: int) => int:
     let code = sys_mmap(page_up(im.b.n + 1), 7, 34)
     let stubs = sys_mmap(4096, 7, 34)
     let ctrl = sys_mmap(4096, 3, 34)
-    let stack = sys_mmap(1048576 + 4096, 3, 34)
+    let stack = sys_mmap(1048576 + 65536, 3, 34)
     let alt = sys_mmap(65536, 3, 34)
     if !mapped(code) || !mapped(stubs) || !mapped(ctrl) || !mapped(stack) || !mapped(alt):
         return 0 - 1
-    sys_mprotect(stack, 4096, 0)
+    sys_mprotect(stack, 65536, 0)
     copy_in(code, &im.b)
     if im.exit_at > 0:
         copy_in(code + im.exit_at, &stub_exit(ctrl))
-    poke64(ctrl + 8, stack + 1048576 + 4096)
+    poke64(ctrl + 8, stack + 1048576 + 65536)
     poke64(ctrl + 16, 0)
     copy_in(stubs, &stub_enter(im.ss_top, code + main_at))
     copy_in(stubs + 256, &stub_trap(ctrl))

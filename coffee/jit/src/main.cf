@@ -4,6 +4,7 @@ use * in cir
 use * in image
 use * in loader
 use * in sandbox
+use * in sbxcheck
 use * in cstr
 use * in files
 
@@ -99,6 +100,10 @@ fn main() => int:
         say("cfjit: the module has no main\n")
         return 2
     if sbx:
+        let bad = sbx_verify(&im.b, im.text_n, im.sys_at)
+        if bad >= 0:
+            say(f"cfjit: the code is not safe to run in the sandbox (offset {bad}, reason {sbx_why}, bytes {int(im.b.b[bad])} {int(im.b.b[bad + 1])} {int(im.b.b[bad + 2])} {int(im.b.b[bad + 3])} {int(im.b.b[bad + 4])})\n")
+            return 2
         let rs = sandbox_run(&im, at, allow_arg())
         if rs == 0 - 1:
             say("cfjit: the sandbox could not be made\n")

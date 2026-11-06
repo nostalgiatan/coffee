@@ -33,6 +33,8 @@ class Image:
     /#/ sandbox image: where the host's exit stub goes (the loader writes it), at the end of the code
     exit_at: int
     hc_at: int
+    /#/ where `cf_syscall` starts in a sandbox image (-1 when it has none)
+    sys_at: int
 
     /#/ The place in the image of the symbol spelled `w`, -1 when it is not defined.
     fn find(self, w: &Txt) => int:
@@ -68,7 +70,7 @@ fn image_round(v: int, a: int) => int:
 
 /#/ The image of the code in `a` and the objects of `o`.
 fn make_image(o: &Obj, a: &Asm) => Image:
-    let im = Image { b: new_txt(), text_n: a.c.n, ro_at: 0, data_at: 0, stub_at: 0, names: new_txt(), sym_name: new_buf(int, o.ns + 1), sym_at: new_buf(int, o.ns + 1), nsym: 0, imp_name: new_buf(int, o.ns + 1), imp_slot: new_buf(int, o.ns + 1), nimp: 0, err: 0, lin: new_txt(), lin_at: 0, data_lin: 0, ss_base: 0, ss_top: 0, limit: 0, exit_at: 0, hc_at: 0 }
+    let im = Image { b: new_txt(), text_n: a.c.n, ro_at: 0, data_at: 0, stub_at: 0, names: new_txt(), sym_name: new_buf(int, o.ns + 1), sym_at: new_buf(int, o.ns + 1), nsym: 0, imp_name: new_buf(int, o.ns + 1), imp_slot: new_buf(int, o.ns + 1), nimp: 0, err: 0, lin: new_txt(), lin_at: 0, data_lin: 0, ss_base: 0, ss_top: 0, limit: 0, exit_at: 0, hc_at: 0, sys_at: -1 }
     im.names.put_all(&o.names)
     im.ro_at = image_round(a.c.n, 16)
     im.data_at = image_round(im.ro_at + o.ro.n, 8)
@@ -175,7 +177,7 @@ fn sbx_header() => int:
 /#/ relocations); calls are relative. A call of anything not in the module, and the address of a
 /#/ function, are refused (`err` 2 and 3): there is nothing for them to go through yet.
 fn make_image_sbx(o: &Obj, a: &Asm) => Image:
-    let im = Image { b: new_txt(), text_n: a.c.n, ro_at: 0, data_at: 0, stub_at: 0, names: new_txt(), sym_name: new_buf(int, o.ns + 1), sym_at: new_buf(int, o.ns + 1), nsym: 0, imp_name: new_buf(int, o.ns + 1), imp_slot: new_buf(int, o.ns + 1), nimp: 0, err: 0, lin: new_txt(), lin_at: sbx_lin_at(), data_lin: 0, ss_base: 0, ss_top: 0, limit: 0, exit_at: 0, hc_at: 0 }
+    let im = Image { b: new_txt(), text_n: a.c.n, ro_at: 0, data_at: 0, stub_at: 0, names: new_txt(), sym_name: new_buf(int, o.ns + 1), sym_at: new_buf(int, o.ns + 1), nsym: 0, imp_name: new_buf(int, o.ns + 1), imp_slot: new_buf(int, o.ns + 1), nimp: 0, err: 0, lin: new_txt(), lin_at: sbx_lin_at(), data_lin: 0, ss_base: 0, ss_top: 0, limit: 0, exit_at: 0, hc_at: 0, sys_at: -1 }
     im.names.put_all(&o.names)
     let ro_lin = sbx_lin_at() + sbx_header()
     im.data_lin = image_round(ro_lin + o.ro.n, 16)
@@ -271,6 +273,7 @@ fn make_image_sbx(o: &Obj, a: &Asm) => Image:
         for q in from..sa.c.n:
             im.b.put_byte(sa.c.b[q])
         /#/ the slots are after the first `jmp [rip+2]; int3; int3` (the assembler may shorten jumps, so look for it)
+        im.sys_at = sys_at
         let q = sys_at
         while im.hc_at == 0 && q + 8 < im.b.n:
             if im.b.b[q] == 255 && im.b.b[q + 1] == 37 && im.b.b[q + 2] == 2 && im.b.b[q + 6] == 204 && im.b.b[q + 7] == 204:
