@@ -37,7 +37,7 @@ fn copy_bytes(b: &buf<int>, size: int) => buf<int>:
 
 /#/ Like `build_obj`, for the `size` bytes in `bytes`.
 fn build_bytes(bytes: buf<int>, size: int, opt: int, cfc: str) => Txt:
-    if prints_numbers(copy_bytes(&bytes, size), size, &cfc):
+    if prints_numbers(&bytes, size):
         let text = fmt_rt_text()
         let rt = bytes_of_str(&text)
         let rn = len(text)
@@ -68,39 +68,23 @@ fn build_text(bytes: buf<int>, size: int, opt: int, cfc: str) => Txt:
         return new_txt()
     return lw.object()
 
-/#/ Does an f-string of `src` print an int or a float? Then the program needs the runtime that
-/#/ makes their text (`fmt_rt_text`). A program the front end refuses needs nothing: it is not built.
-fn prints_numbers(bytes: buf<int>, size: int, cfc: &str) => bool:
-    let a = parse_bytes(bytes, size)
-    if a.err_count > 0:
-        return false
+/#/ Does `src` have an f-string, and not the number-formatting runtime (`fmt_rt_text`) itself? Then
+/#/ the runtime is appended; the linker drops what the program does not reach. Only the lexer runs.
+fn prints_numbers(bytes: &buf<int>, size: int) => bool:
+    let tk = lex_bytes(bytes, size)
     let any = false
-    for n in 0..a.count:
-        if a.kind[n] == int(Nk.FStr):
+    let want = "__cf_fmt_int"
+    for n in 0..tk.count:
+        if tk.kind[n] == int(Tk.FStr):
             any = true
-        /#/ a program that has the runtime itself (the runtime's own tests) is left as it is
-        if a.kind[n] == int(Nk.Fn) && a.pa[n] >= 0 && tok_is(&a, a.pa[n], "__cf_fmt_int"):
-            return false
-    if !any:
-        return false
-    let t = new_tys()
-    let g = new_globals()
-    if len(cfc) > 0:
-        declare_user_cfc(&t, &g, cfc + "", "user.cfc")
-    let m = declare_module(&g, &a, "t")
-    let sc = check(&a, &g, m)
-    declare_types(&t, &g, &a, m)
-    let ty = check_types(&t, &g, &a, m)
-    if sc.diags.errors() > 0 || ty.diags.n > 0:
-        return false
-    for n in 0..a.count:
-        if a.kind[n] == int(Nk.FPart):
-            let x = ty.node[a.pa[n]]
-            while t.kind[x] == int(Ty.Ref):
-                x = t.a[x]
-            if t.kind[x] == int(Ty.Int) || t.kind[x] == int(Ty.Float) || a.pd[n] >= 0:
-                return true
-    return false
+        if tk.kind[n] == int(Tk.Ident) && tk.end[n] - tk.start[n] == len(want):
+            let same = true
+            for q in 0..len(want):
+                if bytes[tk.start[n] + q] != want[q]:
+                    same = false
+            if same:
+                return false
+    return any
 
 /#/ The number of the first parse error: 1 for a character or `//` comment, 3 for a missing
 /#/ colon or indent, 110 for `copy`, else 2.

@@ -17,6 +17,25 @@ fn cc_link_start() => Txt:
         return txt_of("cc -w -Wl,--gc-sections -o '")
     return txt_of("cc -w -s -Wl,--gc-sections -o '")
 
+/#/ Links the objects into `out`: `paths` has one object per line, `quoted` the same as `'a' 'b'` for
+/#/ `cc`, `flags` is what the program's `.cfc` files add to the `cc` line. With `static_link` the
+/#/ built-in linker goes first; when `quiet` (the choice was automatic) and it cannot, `cc` is tried.
+/#/ 0 on success.
+fn link_objects(paths: &Txt, quoted: &Txt, flags: &Txt, out: &Txt, static_link: bool, quiet: bool) => int:
+    if static_link:
+        let rc = link_static(paths, out, quiet)
+        if rc == 0 || !quiet:
+            return rc
+    let cmd = cc_link_start()
+    cmd.put_all(out)
+    cmd.put("'")
+    cmd.put_all(quoted)
+    cmd.put_all(flags)
+    cmd.put(" -lm")
+    if system(txt_str(&cmd)) != 0:
+        return 1
+    return 0
+
 /#/ Links the object files named in `paths` (one per line) into the executable `out`.
 fn link_static(paths: &Txt, out: &Txt, quiet: bool) => int:
     let l = new_linker()

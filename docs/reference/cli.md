@@ -1,7 +1,7 @@
 # 命令行参考:`coffee2`
 
 ```
-coffee2 input.cf [-o output] [-I dir] [-O0|-O1|-O2|-O3] [--emit-obj] [--emit-flat] [--incremental dir] [-j n] [--static] [-g] [--align] [--time]
+coffee2 input.cf [-o output] [-I dir] [-O0|-O1|-O2|-O3] [--emit-obj] [--emit-flat] [--incremental dir] [-j n] [--static] [-g] [--align] [--verify] [--time]
 ```
 
 `coffee2` 是自举编译器(`coffee/driver/src/main.cf`)。它只做编译。项目模式(`coffee.toml`)、依赖获取和 `std install` 不在这里,它们留给以后的工具链程序。
@@ -21,6 +21,7 @@ coffee2 input.cf [-o output] [-I dir] [-O0|-O1|-O2|-O3] [--emit-obj] [--emit-fla
 | `-j n` | 增量构建里同时编译 `n` 个文件(进程,共享前端的结果);默认是在线的处理器数,最多 16。产物和 `-j 1` 逐字节相同。 |
 | `--dynamic` | 强制用 `cc` 链接。 |
 | `-g` | 输出文件保留符号表(函数和数据的名字、大小、地址)和节头,gdb、perf 能显示名字。不给时输出没有符号表也没有节头(`--static`),用 `cc` 链接时加 `-s`。 |
+| `--verify` | 每个函数翻译前跑 IR 验证器(`tea test` 加这个);不给时不跑,编译快约 9%。 |
 | `--align` | 每个函数从 16 字节边界开始(`tea` 的发布构建加这个)。不给时函数紧挨着放,文件更小。 |
 | `--static` | 不用 `cc` 和 C 库:程序加上 `rt/src/min.cf` 里用 Coffee 写的 C 库(`malloc`、`calloc`、`free`、`memcpy`、`strlen`、`strdup`、`strcmp`、`open`、`read`、`write`、`close`、`remove`、`access`、`chmod`、`fork`、`waitpid`、`system`、`clock_gettime`、`exit` 等,走 Linux 系统调用;没有 `printf`、`fopen`,因为它们要变长参数),由 `ld/` 的链接器在本进程里链成静态可执行文件。程序不能用别的 C 函数(`printf`、`fopen` 等),否则链接报 `undefined symbol`。可以和 `--incremental` 一起用。程序只导入 `min.cf` 有的 libc 函数时,不加选项也是这样链接;导入了别的 C 函数或别的 C 库就用 `cc`。 |
 | `--time` | 每个阶段花的毫秒数:展开、改名、解析、哈希、前端、逐文件的降低/代码生成/写对象(或并行时合在一起)、链接。 |

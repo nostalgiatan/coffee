@@ -656,21 +656,11 @@ fn build_incremental(fl: &Flat, a0: Ast, dir: &Txt, out: &Txt, opt: int, jobs: i
         plain.put_byte(10)
     say(f"incremental: {compiled} compiled, {reused} reused\n")
     fflush(0)
-    if static_link:
-        let rc = link_static(&plain, out, auto_static)
-        phase("link")
-        if rc == 0 || !auto_static:
-            return rc
-    let cmd = cc_link_start()
-    cmd.put_all(out)
-    cmd.put("'")
-    cmd.put_all(&objs)
-    fl.link_flags(&cmd)
-    cmd.put(" -lm")
-    if system(txt_str(&cmd)) != 0:
-        return 1
+    let flags = new_txt()
+    fl.link_flags(&flags)
+    let rc = link_objects(&plain, &objs, &flags, out, static_link, auto_static)
     phase("link")
-    return 0
+    return rc
 
 fn mkdir_cmd(dir: &Txt) => Txt:
     let c = txt_of("mkdir -p '")
