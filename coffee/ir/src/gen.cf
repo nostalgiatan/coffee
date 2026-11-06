@@ -108,6 +108,13 @@ class Gen:
     /#/ the positions of the instructions that call something, in order
     ra_cp: buf<int>
     ra_ncp: int
+    /#/ how many times each value is used, counted again for the function being generated
+    nuse: buf<int>
+    /#/ the address a load or store was folded into: base, index (-1 if none), scale, displacement
+    am_base: int
+    am_idx: int
+    am_scale: int
+    am_disp: int
 
     fn add_str(self, off: int) => void:
         if self.nstr >= len(self.soff):
@@ -272,6 +279,62 @@ class Gen:
             else:
                 a = mid + 1
         return a < self.ra_ncp && self.ra_cp[a] < hi
+
+    /#/ Counts the uses of every value of `f`, through forwarding and `own.move`.
+    fn count_uses(self, f: &Fun) => void:
+        if len(self.nuse) < f.ni + 1:
+            self.nuse = new_buf(int, f.ni + 1)
+        for v in 0..f.ni + 1:
+            self.nuse[v] = 0
+        for b in 0..f.nb:
+            let i = f.bfirst[b]
+            while i >= 0:
+                for k in 0..f.nval(i):
+                    let v = f.val_at(i, k)
+                    if v >= 0:
+                        let x = self.res(f, v)
+                        self.nuse[x] = self.nuse[x] + 1
+                i = f.nx[i]
+        for e in 0..f.ne:
+            if f.eto[e] >= 0:
+                for k in 0..f.eargn[e]:
+                    let x = self.res(f, f.pool[f.eargs[e] + k])
+                    self.nuse[x] = self.nuse[x] + 1
+
+    /#/ Is `x`, an `index` or a `field`, only the address of the scalar `load` or `store` right
+    /#/ after it? Then the access uses the address mode and `x` makes no code of its own.
+    fn folds(self, f: &Fun, x: int) => bool:
+        let op = f.op[x]
+        if op != int(Op.Index) && op != int(Op.Field):
+            return false
+        if self.nuse[x] != 1 || f.fwd[x] >= 0:
+            return false
+        if op == int(Op.Index):
+            let sz = f.aux[x]
+            if sz != 1 && sz != 2 && sz != 4 && sz != 8:
+                return false
+        let u = f.nx[x]
+        if u < 0:
+            return false
+        if f.op[u] == int(Op.Load):
+            return self.res(f, f.a[u]) == x && f.rep[u] < rp_first_agg()
+        if f.op[u] == int(Op.Store):
+            let v = self.res(f, f.b[u])
+            return self.res(f, f.a[u]) == x && v != x && f.rep[v] < rp_first_agg()
+        return false
+
+    /#/ The address of the folded `x` as base, index, scale and displacement in `am_*`; what is not
+    /#/ in a register of its own is loaded into `s1` (the base) and `s2` (the index).
+    fn addr_of(self, f: &Fun, x: int, s1: int, s2: int) => void:
+        self.am_base = self.src(f, f.a[x], s1)
+        if f.op[x] == int(Op.Index):
+            self.am_idx = self.src(f, f.b[x], s2)
+            self.am_scale = f.aux[x]
+            self.am_disp = 0
+        else:
+            self.am_idx = -1
+            self.am_scale = 1
+            self.am_disp = f.aux[x]
 
     /#/ Does a call stand at position `p`?
     fn at_call(self, p: int) => bool:
@@ -1141,6 +1204,8 @@ class Gen:
             self.a.movq_r(0, 0, to_single)
             self.st(i, 0)
             return
+        if (op == int(Op.Field) || op == int(Op.Index)) && self.folds(f, i):
+            return
         if op == int(Op.Field):
             let d = self.home[i]
             if d < 0:
@@ -1200,7 +1265,15 @@ class Gen:
                 let d = self.home[i]
                 if d < 0:
                     d = 0
-                self.a.load(d, self.src(f, f.a[i], 6), 0, rsize(rs, r))
+                let x = self.res(f, f.a[i])
+                if self.folds(f, x):
+                    self.addr_of(f, x, 6, 1)
+                    if self.am_idx >= 0:
+                        self.a.load_idx(d, self.am_base, self.am_idx, self.am_scale, 0, rsize(rs, r))
+                    else:
+                        self.a.load(d, self.am_base, self.am_disp, rsize(rs, r))
+                else:
+                    self.a.load(d, self.src(f, f.a[i], 6), 0, rsize(rs, r))
                 self.st(i, d)
             return
         if op == int(Op.Store):
@@ -1211,7 +1284,15 @@ class Gen:
                 self.copy_mem(7, 0, sb, self.ab_disp(f, f.b[i]), rsize(rs, vr))
             else:
                 let rv = self.src(f, f.b[i], 0)
-                self.a.store(self.src(f, f.a[i], 1), 0, rv, rsize(rs, vr))
+                let x = self.res(f, f.a[i])
+                if self.folds(f, x):
+                    self.addr_of(f, x, 1, 6)
+                    if self.am_idx >= 0:
+                        self.a.store_idx(self.am_base, self.am_idx, self.am_scale, 0, rv, rsize(rs, vr))
+                    else:
+                        self.a.store(self.am_base, self.am_disp, rv, rsize(rs, vr))
+                else:
+                    self.a.store(self.src(f, f.a[i], 1), 0, rv, rsize(rs, vr))
             return
         if op == int(Op.Alloc):
             self.a.mov_ri(7, f.ty[i])
@@ -1326,6 +1407,7 @@ class Gen:
         self.err = 0
         self.a.begin_fun()
         self.alloc_regs(f, rs)
+        self.count_uses(f)
         self.layout(f, rs)
         let start = self.a.pos()
         for b in 0..f.nb:
@@ -1388,7 +1470,7 @@ class Gen:
         return ok && self.err == 0
 
 fn new_gen() => Gen:
-    return Gen { a: new_asm(), o: new_obj(), voff: new_buf(int, 64), tmp: 0, frame: 0, err: 0, av: new_buf(int, 16), nav: 0, sbase: 256, soff: new_buf(int, 16), nstr: 0, home: new_buf(int, 64), did: new_buf(int, 64), nsaved: 0, saved: new_buf(int, 8), ed: new_buf(int, 16), ned: 0, ra_lo: new_buf(int, 1), ra_hi: new_buf(int, 1), ra_wt: new_buf(int, 1), ra_use: new_buf(int, 1), ra_def: new_buf(int, 1), ra_words: 0, ra_cp: new_buf(int, 16), ra_ncp: 0 }
+    return Gen { a: new_asm(), o: new_obj(), voff: new_buf(int, 64), tmp: 0, frame: 0, err: 0, av: new_buf(int, 16), nav: 0, sbase: 256, soff: new_buf(int, 16), nstr: 0, home: new_buf(int, 64), did: new_buf(int, 64), nsaved: 0, saved: new_buf(int, 8), ed: new_buf(int, 16), ned: 0, ra_lo: new_buf(int, 1), ra_hi: new_buf(int, 1), ra_wt: new_buf(int, 1), ra_use: new_buf(int, 1), ra_def: new_buf(int, 1), ra_words: 0, ra_cp: new_buf(int, 16), ra_ncp: 0, nuse: new_buf(int, 64), am_base: 0, am_idx: -1, am_scale: 1, am_disp: 0 }
 
 /#/ The multiplier that divides by `d` (not a power of two; `l` is the log2 of `d` rounded up):
 /#/ 1 + floor(2^(63 + l) / d), taken as a 64-bit pattern, by long division one bit at a time.

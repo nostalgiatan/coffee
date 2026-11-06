@@ -247,6 +247,56 @@ class Asm:
             self.sib(base)
             self.le32(disp)
 
+    /#/ `opc` with a register and the memory operand `[base + idx * scale + disp]`.
+    fn rmem_idx(self, w: int, opc: int, opc2: int, reg: int, base: int, idx: int, scale: int, disp: int, force: bool) => void:
+        let ss = 0
+        if scale == 2:
+            ss = 1
+        elif scale == 4:
+            ss = 2
+        elif scale == 8:
+            ss = 3
+        let v = 64 | (w << 3) | ((reg >> 3) << 2) | ((idx >> 3) << 1) | (base >> 3)
+        if v != 64 || force:
+            self.byte(v)
+        self.byte(opc)
+        if opc2 >= 0:
+            self.byte(opc2)
+        let md = 2
+        if disp == 0 && (base & 7) != 5:
+            md = 0
+        elif disp >= 0 - 128 && disp < 128:
+            md = 1
+        self.byte((md << 6) | ((reg & 7) << 3) | 4)
+        self.byte((ss << 6) | ((idx & 7) << 3) | (base & 7))
+        if md == 1:
+            self.byte(disp)
+        elif md == 2:
+            self.le32(disp)
+
+    /#/ dst = the `n` bytes at [base + idx * scale + disp], zero-extended.
+    fn load_idx(self, dst: int, base: int, idx: int, scale: int, disp: int, n: int) => void:
+        if n == 1:
+            self.rmem_idx(0, 15, 182, dst, base, idx, scale, disp, false)
+        elif n == 2:
+            self.rmem_idx(0, 15, 183, dst, base, idx, scale, disp, false)
+        elif n == 4:
+            self.rmem_idx(0, 139, 0 - 1, dst, base, idx, scale, disp, false)
+        else:
+            self.rmem_idx(1, 139, 0 - 1, dst, base, idx, scale, disp, false)
+
+    /#/ The low `n` bytes of src to [base + idx * scale + disp].
+    fn store_idx(self, base: int, idx: int, scale: int, disp: int, src: int, n: int) => void:
+        if n == 1:
+            self.rmem_idx(0, 136, 0 - 1, src, base, idx, scale, disp, true)
+        elif n == 2:
+            self.byte(102)
+            self.rmem_idx(0, 137, 0 - 1, src, base, idx, scale, disp, false)
+        elif n == 4:
+            self.rmem_idx(0, 137, 0 - 1, src, base, idx, scale, disp, false)
+        else:
+            self.rmem_idx(1, 137, 0 - 1, src, base, idx, scale, disp, false)
+
     /#/ rsp and r12 as a base need the byte that says "no index".
     fn sib(self, base: int) => void:
         if (base & 7) == 4:
