@@ -17,6 +17,10 @@ fn nested_collides(a: &Ast, f: int, c: int) => bool:
 /#/ `src` with the colliding nested class names made unique; empty when nothing collides.
 fn renamed_classes(src: &Txt) => Txt:
     let a = parse_bytes_flat(copy_bytes(&src.b, src.n), src.n)
+    return renamed_classes_in(&a, src)
+
+/#/ Like `renamed_classes`, for the tree `a` that `parse_bytes_flat` made of `src`.
+fn renamed_classes_in(a: &Ast, src: &Txt) => Txt:
     if a.err_count > 0:
         return new_txt()
     let rn = new_buf(int, a.toks.count + 1)
@@ -26,10 +30,10 @@ fn renamed_classes(src: &Txt) => Txt:
             continue
         let c = a.child[a.pc[f]]
         while c >= 0:
-            if a.kind[c] == int(Nk.Class) && a.pa[c] >= 0 && nested_collides(&a, f, c):
+            if a.kind[c] == int(Nk.Class) && a.pa[c] >= 0 && nested_collides(a, f, c):
                 any = true
                 for q in a.tok[f]..a.end[f]:
-                    if a.toks.kind[q] == int(Tk.Ident) && same_tok(&a, q, a.pa[c]) && !(q > 0 && a.toks.kind[q - 1] == int(Tk.Dot)):
+                    if a.toks.kind[q] == int(Tk.Ident) && same_tok(a, q, a.pa[c]) && !(q > 0 && a.toks.kind[q - 1] == int(Tk.Dot)):
                         rn[q] = f + 1
             c = a.next[c]
     if !any:

@@ -19,7 +19,7 @@ fn same_ident(t: &Txt, tk: &Tokens, x: int, y: int) => bool:
 
 /#/ `src` with the aliases of its `use` lines applied; empty when it has none.
 fn renamed_aliases(src: &Txt) => Txt:
-    let tk = lex(&txt_str(src))
+    let tk = lex_bytes(&src.b, src.n)
     /#/ to[q] = the token whose text replaces identifier token q, -1 for none
     let to = new_buf(int, tk.count + 1)
     for q in 0..tk.count + 1:

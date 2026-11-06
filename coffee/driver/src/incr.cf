@@ -470,10 +470,8 @@ fn online_cpus() => int:
     return total
 
 /#/ Builds the program in `fl` into `dir`, linking `out`. Returns 0 when it worked.
-fn build_incremental(fl: &Flat, dir: &Txt, out: &Txt, opt: int, jobs: int, static_link: bool) => int:
+fn build_incremental(fl: &Flat, a0: Ast, dir: &Txt, out: &Txt, opt: int, jobs: int, static_link: bool) => int:
     system(txt_str(&mkdir_cmd(dir)))
-    let size = fl.out.n
-    let a0 = parse_bytes(copy_bytes(&fl.out.b, size), size)
     if a0.err_count > 0:
         printf("front end: %d parse errors\n", a0.err_count)
         return 1
@@ -535,6 +533,14 @@ fn build_incremental(fl: &Flat, dir: &Txt, out: &Txt, opt: int, jobs: int, stati
                             a0.pc[c] = 0 - 1
                         c = a0.next[c]
             top = a0.next[top]
+        /#/ the work of each unit, by the tokens of its items
+        let cost: buf<int> = new_buf(int, n + 1)
+        let t2 = a0.child[a0.root]
+        while t2 >= 0:
+            let tu = unit[t2]
+            if tu < n:
+                cost[tu] = cost[tu] + a0.end[t2] - a0.tok[t2] + 1
+            t2 = a0.next[t2]
         let prep = prepare_ast(a0, cfc, &t, &g)
         if !prep.ok:
             return 1
@@ -552,16 +558,34 @@ fn build_incremental(fl: &Flat, dir: &Txt, out: &Txt, opt: int, jobs: int, stati
             /#/ each worker is a copy of this process (the front end's result is shared, not redone)
             /#/ that builds every `workers`-th stale unit
             fflush(0)
+            /#/ the biggest units go first, each to the worker with the least work so far
+            for i in 1..ntodo:
+                let v = todo[i]
+                let j = i
+                while j > 0 && cost[todo[j - 1]] < cost[v]:
+                    todo[j] = todo[j - 1]
+                    j = j - 1
+                todo[j] = v
+            let owner: buf<int> = new_buf(int, ntodo + 1)
+            let load: buf<int> = new_buf(int, workers)
+            for i in 0..ntodo:
+                let best = 0
+                for w in 1..workers:
+                    if load[w] < load[best]:
+                        best = w
+                owner[i] = best
+                load[best] = load[best] + cost[todo[i]] + 1
             let pids: buf<int> = new_buf(int, workers)
             for w in 0..workers:
                 let pid = fork()
                 if pid == 0:
                     let ok = true
-                    let i = w
+                    let i = 0
                     while i < ntodo && ok:
-                        let u = todo[i]
-                        ok = compile_unit(&prep, &t, &g, opt, u, &unit, &names[u], &slice(&keys, u * 33, u * 33 + 32), dir, &kk)
-                        i = i + workers
+                        if owner[i] == w:
+                            let u = todo[i]
+                            ok = compile_unit(&prep, &t, &g, opt, u, &unit, &names[u], &slice(&keys, u * 33, u * 33 + 32), dir, &kk)
+                        i = i + 1
                     fflush(0)
                     if ok:
                         _exit(0)

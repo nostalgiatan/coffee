@@ -182,9 +182,11 @@ fn main() => int:
     if fl.errs > 0:
         return 1
     phase("flatten")
-    let fixed = renamed_classes(&fl.out)
+    let tree = parse_bytes_flat(copy_bytes(&fl.out.b, fl.out.n), fl.out.n)
+    let fixed = renamed_classes_in(&tree, &fl.out)
     if fixed.n > 0:
         fl.out = fixed
+        tree = parse_bytes_flat(copy_bytes(&fl.out.b, fl.out.n), fl.out.n)
     phase("rename")
     if cli.flat_only:
         let flat_path = cli.out_path()
@@ -200,7 +202,8 @@ fn main() => int:
             jobs = online_cpus()
         if jobs > 16:
             jobs = 16
-        return build_incremental(&fl, &cli.cache, &target, opt, jobs, cli.static_link)
+        hoist_classes(&tree)
+        return build_incremental(&fl, tree, &cli.cache, &target, opt, jobs, cli.static_link)
     if cli.static_link:
         fl.out.put("\n")
         let mrt = min_rt_text()
