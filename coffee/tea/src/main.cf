@@ -3,6 +3,7 @@
 /#/     tea test    run the tests of this directory (src/cmd_test.cf)
 /#/     tea build   compile the entry of coffee.toml (src/cmd_build.cf)
 /#/     tea run     build, then run the program
+/#/     tea jit     run the program through the JIT (src/cmd_jit.cf)
 use * in txt
 use * in cstr
 use * in files
@@ -11,10 +12,11 @@ use * in toml
 use * in project
 use * in cmd_test
 use * in cmd_build
+use * in cmd_jit
 use fflush in libc of c
 
 fn usage() => int:
-    say("usage: tea <command> [options]\n\ncommands:\n  test    run the tests of this directory\n  build   compile the entry of coffee.toml\n  run     build, then run the program\n")
+    say("usage: tea <command> [options]\n\ncommands:\n  test    run the tests of this directory\n  build   compile the entry of coffee.toml\n  run     build, then run the program\n  jit     run the program through the JIT\n")
     fflush(0)
     return 2
 
@@ -28,5 +30,7 @@ fn main() => int:
         return run_build(&a)
     if a.is(1, "run"):
         return run_run(&a)
+    if a.is(1, "jit"):
+        return run_jit(&a)
     say("tea: unknown command\n")
     return usage()

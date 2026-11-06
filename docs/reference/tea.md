@@ -13,6 +13,7 @@ tea <command> [options]
 | `test` | 运行当前目录 `tests/` 里的测试。 |
 | `build` | 编译 `coffee.toml` 的入口,得到 `target/build/<包名>`。 |
 | `run` | 先 `build`,再运行程序;`--` 后面的词交给程序。 |
+| `jit` | 用 JIT 运行程序:`coffee2 --emit-cir` 做 `.cir`,`cfjit` 在内存里生成代码并运行。 |
 
 ## tea test
 
@@ -81,3 +82,11 @@ include = ["kit"]
 ## 相关
 
 - 操作:[如何运行测试](../how-to/run-the-tests.md)
+
+## tea jit
+
+```
+tea jit [file.cf] [-I dir]... [--compiler path] [--jit path] [--no-run] [-- 程序参数...]
+```
+
+省略文件时用 `[build] main`。`.cir` 放在 `target/jit/<文件名>.cir`。它只在以下情况重做:文件不存在、`coffee2` 比它新、入口所在目录或某个 include 目录里有更新的 `.cf` 文件(按修改时间判断,和 make 一样)。`--no-run` 只做 `.cir`。`cfjit` 默认从 `PATH` 找,`--jit path` 指定。返回程序的退出码;前端失败时返回 1。

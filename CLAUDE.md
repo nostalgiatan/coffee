@@ -11,7 +11,7 @@ For syntax see `SYNTAX.md` (written for the first generation; the self-hosted co
 ## Build & test
 
 ```bash
-coffee/driver/tools/build-from-seed.sh /tmp/w          # needs no C compiler; leaves /tmp/w/coffee2 and /tmp/w/tea
+coffee/driver/tools/build-from-seed.sh /tmp/w          # needs no C compiler; leaves /tmp/w/coffee2, /tmp/w/tea and /tmp/w/cfjit
 coffee/driver/tools/build-from-seed.sh /tmp/w --refresh # also rewrite the committed seed (do this when a compiler change should be in the seed)
 cd coffee/compat && PATH=/tmp/w:$PATH tea test --compiler /tmp/w/coffee2 -j 16   # 1023 ported cases
 ```

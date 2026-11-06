@@ -1,0 +1,135 @@
+/#/ `tea jit`: run a program through the JIT. The front end (`coffee2 --emit-cir`) makes a `.cir`
+/#/ in `target/jit`, and `cfjit` generates the machine code in memory and calls `main`.
+/#/
+/#/     tea jit [file.cf] [-I dir]... [--compiler path] [--jit path] [--no-run] [-- program arguments...]
+/#/
+/#/ Without a file the entry of `coffee.toml` is used. The `.cir` is made again only when the
+/#/ compiler or a `.cf` file of the entry's directory or of an include directory is newer than it.
+use system, fflush in libc of c
+
+class Jit:
+    compiler: Txt
+    jit: Txt
+    file: Txt
+    /#/ ` -I 'dir'` for each directory given on the command line
+    inc: Txt
+    run: bool
+    bad: int
+
+fn parse_jit(a: &Args) => Jit:
+    let j = Jit { compiler: txt_of("coffee2"), jit: txt_of("cfjit"), file: new_txt(), inc: new_txt(), run: true, bad: 0 }
+    let i = 2
+    while i < a.n:
+        let w = a.get(i)
+        if w.is("--"):
+            break
+        elif w.is("-I") && i + 1 < a.n:
+            let d = a.get(i + 1)
+            j.inc.put(" -I '")
+            j.inc.put_all(&d)
+            j.inc.put("'")
+            i = i + 1
+        elif w.is("--compiler") && i + 1 < a.n:
+            j.compiler = a.get(i + 1)
+            i = i + 1
+        elif w.is("--jit") && i + 1 < a.n:
+            j.jit = a.get(i + 1)
+            i = i + 1
+        elif w.is("--no-run"):
+            j.run = false
+        elif w.n > 0 && w.b[0] != '-' && j.file.n == 0:
+            j.file = w
+        else:
+            say(f"tea: unknown option '{txt_str(&w)}'\n")
+            j.bad = 1
+        i = i + 1
+    return j
+
+/#/ The directories named in ` -I 'a' -I 'b'`, as `'a' 'b'`.
+fn dirs_of(inc: &Txt) => Txt:
+    let out = new_txt()
+    let i = 0
+    while i + 5 < inc.n:
+        if inc.b[i] == ' ' && inc.b[i + 1] == '-' && inc.b[i + 2] == 'I' && inc.b[i + 3] == ' ' && inc.b[i + 4] == '\'':
+            let s = i + 4
+            let e = s + 1
+            while e < inc.n && inc.b[e] != '\'':
+                e = e + 1
+            out.put_byte(' ')
+            for k in s..e + 1:
+                out.put_byte(inc.b[k])
+            i = e
+        i = i + 1
+    return out
+
+/#/ The directory part of `f`, `.` when it has none.
+fn dir_part(f: &Txt) => Txt:
+    let hi = 0
+    for i in 0..f.n:
+        if f.b[i] == '/':
+            hi = i
+    if hi == 0:
+        return txt_of(".")
+    return cut(f, 0, hi)
+
+fn run_jit(a: &Args) => int:
+    let j = parse_jit(a)
+    if j.bad > 0:
+        return 2
+    let pr = load_project(false)
+    if j.file.n == 0:
+        j.file = clone pr.main
+    let cir = txt_of("target/jit/")
+    cir.put_all(&stem_of(&j.file))
+    cir.put(".cir")
+    let inc = copy_txt(&j.inc)
+    inc.put_all(&pr.build_inc)
+    /#/ stale: no .cir, or the compiler or some source is newer
+    let dirs = dirs_of(&inc)
+    let chk = txt_of("test ! -f '")
+    chk.put_all(&cir)
+    chk.put("' || [ \"$(command -v '")
+    chk.put_all(&j.compiler)
+    chk.put("')\" -nt '")
+    chk.put_all(&cir)
+    chk.put("' ] || [ -n \"$(find '")
+    chk.put_all(&dir_part(&j.file))
+    chk.put("'")
+    chk.put_all(&dirs)
+    chk.put(" -name '*.cf' -newer '")
+    chk.put_all(&cir)
+    chk.put("' 2>/dev/null | head -1)\" ]")
+    if system(txt_str(&chk)) == 0:
+        system("mkdir -p target/jit")
+        let c = txt_of("'")
+        c.put_all(&j.compiler)
+        c.put("' '")
+        c.put_all(&j.file)
+        c.put("'")
+        c.put_all(&inc)
+        c.put(" --emit-cir -o '")
+        c.put_all(&cir)
+        c.put("'")
+        if system(txt_str(&c)) != 0:
+            say("tea: build failed\n")
+            fflush(0)
+            return 1
+    if !j.run:
+        return 0
+    let r = txt_of("'")
+    r.put_all(&j.jit)
+    r.put("' '")
+    r.put_all(&cir)
+    r.put("'")
+    let rest = false
+    for i in 2..a.n:
+        let w = a.get(i)
+        if rest:
+            r.put(" '")
+            quote_into(&r, &w)
+            r.put("'")
+        elif w.is("--"):
+            rest = true
+    fflush(0)
+    let st = system(txt_str(&r))
+    return (st >> 8) & 255
