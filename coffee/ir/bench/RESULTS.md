@@ -53,3 +53,7 @@ and the executable is 1.47 MB.
 xmm 家之后:mandel 0.44 → 0.26 秒,其余不变。
 
 xmm 家与 fmt_int 改写之后:strings 1.09 → 0.34 秒(整数转文字原来每个数字拼接一次,现在只分配两次)。
+
+优化器一轮之后(GVN、判定条件折叠、循环不变量外提、短路条件用跳转、循环旋转与冷块置后),callgrind 指令数(百万):
+fib 2276、acc 7600、sieve 866→784、mandel 2420→2306、objects 6600→5560、sort 3721→3588、matmul 6070→4491、hash 8201→8401、bits 7500、collatz 2690→2864、strings 8873→7341。
+collatz 与 hash 略差:块参数的复制(`lea 1(%r9),%r13; mov %r13,%r9`)还没合并。
