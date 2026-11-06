@@ -492,6 +492,14 @@ match e:
         return m * 2
 ```
 
+或模式：`A | B => ...`。可以绑定名字，但每个分支必须绑定同一组名字，类型也要相同，否则是错误；绑定的资源（如 `str` 载荷）在任一分支下都归这条 arm 所有。穷尽性检查把每个分支都算上。
+
+```coffee
+match e:
+    E.A(n) | E.B(n) => return n
+    _ => return 0
+```
+
 `match` 是语句，不是可以放在 `let` 右侧的表达式。当它是**非 void 函数（或方法）的最后一条语句**时，写成裸表达式的分支值就是返回值（等价于 `return <表达式>`）。其它位置的 `match` 分支值会被丢弃。
 
 非 void 函数的每条路径都必须以 `return` 或 `raise` 结束，否则报 `missing return`。`if` 要有 `else` 且各分支都返回；`match` 要所有分支都返回；`while true:` 且循环内没有 `break` 视为不会落出。

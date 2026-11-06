@@ -724,6 +724,9 @@ class Flow:
             while f >= 0:
                 self.pattern(t, g, ty, a, a.pa[f])
                 f = a.next[f]
+        elif k == int(Nk.Binary) && a.pc[p] == int(Tk.Pipe):
+            /#/ the alternatives bind the same names: the first one makes the variables
+            self.pattern(t, g, ty, a, a.pa[p])
 
     fn match_stmt(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => void:
         let s = a.pa[n]

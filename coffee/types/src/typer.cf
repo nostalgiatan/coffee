@@ -1364,10 +1364,8 @@ class Typer:
         let st = self.expr(t, g, a, a.pa[n], -1)
         let arm = a.child[n]
         let first = -1
-        let wild = false
-        let covered = new_buf(int, 16)
-        let seen = 0
-        let truth = 0
+        /#/ covered[0..16) the variants matched; 16: how many; 17: bits for `true` (1) and `false` (2); 18: a catch-all
+        let covered = new_buf(int, 19)
         let sc = self.strip_refs(t, st)
         let en = -1
         if t.kind[sc] == int(Ty.Named) && g.kind[t.a[sc]] == int(Sk.Enum):
@@ -1379,27 +1377,7 @@ class Typer:
                 self.cond(t, g, a, a.pc[arm])
             else:
                 /#/ an arm with a guard may not match, so it covers nothing
-                let p = a.pa[arm]
-                if self.irrefutable(a, p):
-                    wild = true
-                elif p >= 0 && a.kind[p] == int(Nk.Bool):
-                    if tok_is(a, a.tok[p], "true"):
-                        truth = truth | 1
-                    else:
-                        truth = truth | 2
-                elif en >= 0 && p >= 0:
-                    let v = p
-                    if a.kind[p] == int(Nk.Call):
-                        v = a.pa[p]
-                    if v >= 0 && a.kind[v] == int(Nk.Member):
-                        let vr = member_of(g, a, en, a.tok[v], int(Sk.Variant))
-                        let dup = false
-                        for i in 0..seen:
-                            if covered[i] == vr:
-                                dup = true
-                        if vr >= 0 && !dup && seen < 16:
-                            covered[seen] = vr
-                            seen = seen + 1
+                self.cover(t, g, a, en, a.pa[arm], &covered)
             if a.pb[arm] >= 0:
                 let c = a.child[a.pb[arm]]
                 let only = c
@@ -1416,7 +1394,9 @@ class Typer:
                             self.err(a.tok[only], int(Te.Mismatch), first, x)
             self.pop(mark)
             arm = a.next[arm]
-        if wild || a.child[n] < 0:
+        let seen = covered[16]
+        let truth = covered[17]
+        if covered[18] != 0 || a.child[n] < 0:
             return
         let total = 0
         if en >= 0:
@@ -1430,6 +1410,35 @@ class Typer:
         elif t.is_error(sc):
             return
         self.err(a.tok[n], int(Te.NonExhaustive), 0, st)
+
+    /#/ What the pattern `p` of an unguarded arm covers, recorded in `cov` (see `match_stmt`);
+    /#/ every alternative of an or-pattern counts.
+    fn cover(self, t: &Tys, g: &Syms, a: &Ast, en: int, p: int, cov: &buf<int>) => void:
+        if p < 0:
+            return
+        if a.kind[p] == int(Nk.Binary) && a.pc[p] == int(Tk.Pipe):
+            self.cover(t, g, a, en, a.pa[p], cov)
+            self.cover(t, g, a, en, a.pb[p], cov)
+        elif self.irrefutable(a, p):
+            cov[18] = 1
+        elif a.kind[p] == int(Nk.Bool):
+            if tok_is(a, a.tok[p], "true"):
+                cov[17] = cov[17] | 1
+            else:
+                cov[17] = cov[17] | 2
+        elif en >= 0:
+            let v = p
+            if a.kind[p] == int(Nk.Call):
+                v = a.pa[p]
+            if v >= 0 && a.kind[v] == int(Nk.Member):
+                let vr = member_of(g, a, en, a.tok[v], int(Sk.Variant))
+                let dup = false
+                for i in 0..cov[16]:
+                    if cov[i] == vr:
+                        dup = true
+                if vr >= 0 && !dup && cov[16] < 16:
+                    cov[cov[16]] = vr
+                    cov[16] = cov[16] + 1
 
     /#/ A pattern of type `st`: names bind, `E.V(p, ...)` binds the payload, anything else is
     /#/ a value of that type.
@@ -1481,6 +1490,18 @@ class Typer:
                 self.pattern(t, g, a, c, pt)
                 i = i + 1
                 c = a.next[c]
+        elif k == int(Nk.Binary) && a.pc[p] == int(Tk.Pipe):
+            /#/ `A(n) | B(n)`: the second alternative's names must have the types the first gave
+            let mark = self.rd.sc.loc.n
+            self.pattern(t, g, a, a.pa[p], st0)
+            let mid = self.rd.sc.loc.n
+            self.pattern(t, g, a, a.pb[p], st0)
+            for r in mid..self.rd.sc.loc.n:
+                for j in mark..mid:
+                    if self.rd.sc.loc.hash[r] == self.rd.sc.loc.hash[j] && self.rd.sc.loc.size[r] == self.rd.sc.loc.size[j] && self.rd.sc.loc.ty[r] != self.rd.sc.loc.ty[j] && self.rd.sc.loc.kind[j] == int(Sk.Local):
+                        self.err(a.tok[p], int(Te.Mismatch), self.rd.sc.loc.ty[j], self.rd.sc.loc.ty[r])
+            self.rd.sc.loc.truncate(mid)
+            self.set(p, st0)
         elif k == int(Nk.StructLit):
             let tn = a.pa[p]
             let ci = -1

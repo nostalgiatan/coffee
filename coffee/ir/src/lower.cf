@@ -260,6 +260,8 @@ class Lower:
     rt_memcpy: int
     rt_strcmp: int
     rt_write: int
+    /#/ while the later alternative of an or-pattern binds: the scope row where its names start
+    or_mark: int
     /#/ 0: the function is emitted as lowered; above: the optimizer runs first
     opt: int
     /#/ 0: LLVM text, 1: x86-64 machine code in an object file
@@ -2029,6 +2031,24 @@ class Lower:
                 self.pattern_bind(t, g, ty, a, c, self.f.extract(self.rep(t, g, et), v, i), et)
                 i = i + 1
                 c = a.next[c]
+        elif k == int(Nk.Binary) && a.pc[p] == int(Tk.Pipe):
+            /#/ `A(n) | B(n)`: the first alternative that matches binds; the second writes the
+            /#/ same variables, so the names are one variable on both paths
+            let second = self.new_block()
+            let join = self.new_block()
+            let saved = self.or_mark
+            let mark = self.sc.n
+            self.pat_test(t, g, ty, a, a.pa[p], v, x, second)
+            self.pattern_bind(t, g, ty, a, a.pa[p], v, x)
+            self.jump(join)
+            self.seal(second)
+            self.f.set_block(second)
+            self.or_mark = mark
+            self.pattern_bind(t, g, ty, a, a.pb[p], v, x)
+            self.or_mark = saved
+            self.jump(join)
+            self.seal(join)
+            self.f.set_block(join)
 
     /#/ Binds the payload names of the variant pattern `p`.
     fn bind_variant(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, p: int, v: int, x: int, en: int) => void:
@@ -2238,6 +2258,14 @@ class Lower:
 
     /#/ A new variable named by `tok` holding `val`: in a slot when `&` is taken of it.
     fn bind_var(self, t: &Tys, g: &Syms, a: &Ast, tok: int, vt: int, val: int) => int:
+        if self.or_mark >= 0:
+            let row = self.sc.find_tok(a, tok, self.or_mark)
+            if row >= 0 && self.sc.kind[row] == int(Sk.Local):
+                let old = self.sc.info[row]
+                self.var_write(old, val)
+                if self.v_flag[old] >= 0:
+                    self.write_var(self.v_flag[old], self.f.cur, self.f.cint(int(Rp.I8), 1))
+                return old
         let vr = self.rep(t, g, vt)
         let v = self.new_var(a, tok, vr, vt)
         if tok >= 0 && !is_handle(t, g, vt) && self.is_addr(a, tok):
@@ -3126,4 +3154,4 @@ fn new_lower() => Lower:
     return lw
 
 fn make_lower() => Lower:
-    return Lower { f: new_fun("", 0), rs: new_reps(), names: new_names(), nstr: 0, cd_name: new_buf(int, 8), cd_sig: new_buf(int, 8), cd_var: new_buf(int, 8), cd_n: 0, sc: new_syms(), v_rep: new_buf(int, 16), v_ty: new_buf(int, 16), v_slot: new_buf(int, 16), v_flag: new_buf(int, 16), tmp_v: new_buf(int, 8), tmp_ty: new_buf(int, 8), tmp_n: 0, no_own: 0, own_st: new_buf(int, 16), own_n: 0, ld: new_buf(int, 8), glue_ty: new_buf(int, 8), glue_kind: new_buf(int, 8), glue_n: 0, glue_done: 0, lay_ty: new_buf(int, 8), lay_off: new_buf(int, 8), lay_n: 0, addr: new_names(), scanned: 0, fty: 0, rt_exit: 0, rt_calloc: 0, rt_strlen: 0, rt_malloc: 0, rt_free: 0, rt_strdup: 0, rt_memcpy: 0, rt_strcmp: 0, rt_write: 0, opt: 1, mc: new_gen(), sbytes: new_txt(), mc_err: 0, ver_err: 0, lib: new_lib(), cur_id: -1, penv: -1, ue: new_buf(int, 16), iq_node: new_buf(int, 8), iq_env: new_buf(int, 8), iq_cls: new_buf(int, 8), iq_nm: new_buf(int, 8), nf_tok: new_buf(int, 8), nf_node: new_buf(int, 8), nf_id: new_buf(int, 8), nf_n: 0, pnm: -1, gl_name: new_buf(int, 8), gl_size: new_buf(int, 8), gl_n: 0, tailb: -1, tailm: -1, retx: -1, iq_n: 0, iq_done: 0, lis: -1, nv: 0, dk: new_buf(int, 64), dv: new_buf(int, 64), dn: 0, sealed: new_buf(int, 16), inc_head: new_buf(int, 16), inc_var: new_buf(int, 16), inc_par: new_buf(int, 16), inc_next: new_buf(int, 16), inc_n: 0, pe_head: new_buf(int, 16), pe_next: new_buf(int, 16), lc: new_buf(int, 8), lb: new_buf(int, 8), nloops: 0, ret_ty: 0, bad: 0, bad_node: -1 }
+    return Lower { f: new_fun("", 0), rs: new_reps(), names: new_names(), nstr: 0, cd_name: new_buf(int, 8), cd_sig: new_buf(int, 8), cd_var: new_buf(int, 8), cd_n: 0, sc: new_syms(), v_rep: new_buf(int, 16), v_ty: new_buf(int, 16), v_slot: new_buf(int, 16), v_flag: new_buf(int, 16), tmp_v: new_buf(int, 8), tmp_ty: new_buf(int, 8), tmp_n: 0, no_own: 0, own_st: new_buf(int, 16), own_n: 0, ld: new_buf(int, 8), glue_ty: new_buf(int, 8), glue_kind: new_buf(int, 8), glue_n: 0, glue_done: 0, lay_ty: new_buf(int, 8), lay_off: new_buf(int, 8), lay_n: 0, addr: new_names(), scanned: 0, fty: 0, rt_exit: 0, rt_calloc: 0, rt_strlen: 0, rt_malloc: 0, rt_free: 0, rt_strdup: 0, rt_memcpy: 0, rt_strcmp: 0, rt_write: 0, or_mark: -1, opt: 1, mc: new_gen(), sbytes: new_txt(), mc_err: 0, ver_err: 0, lib: new_lib(), cur_id: -1, penv: -1, ue: new_buf(int, 16), iq_node: new_buf(int, 8), iq_env: new_buf(int, 8), iq_cls: new_buf(int, 8), iq_nm: new_buf(int, 8), nf_tok: new_buf(int, 8), nf_node: new_buf(int, 8), nf_id: new_buf(int, 8), nf_n: 0, pnm: -1, gl_name: new_buf(int, 8), gl_size: new_buf(int, 8), gl_n: 0, tailb: -1, tailm: -1, retx: -1, iq_n: 0, iq_done: 0, lis: -1, nv: 0, dk: new_buf(int, 64), dv: new_buf(int, 64), dn: 0, sealed: new_buf(int, 16), inc_head: new_buf(int, 16), inc_var: new_buf(int, 16), inc_par: new_buf(int, 16), inc_next: new_buf(int, 16), inc_n: 0, pe_head: new_buf(int, 16), pe_next: new_buf(int, 16), lc: new_buf(int, 8), lb: new_buf(int, 8), nloops: 0, ret_ty: 0, bad: 0, bad_node: -1 }

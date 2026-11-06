@@ -1,0 +1,55 @@
+/#/ Or-patterns that bind: `E.A(n) | E.B(n) => ...`, run under the leak checker.
+use * in drive
+use printf, fflush in libc of c
+
+fn expect(what: int, got: int, want: int) => int:
+    if got != want:
+        printf("MISS #%d: got %d, want %d\n", what, got, want)
+        fflush(0)
+        return 1
+    return 0
+
+fn ints() => str:
+    return "enum E:\n    A(n: int)\n    B(n: int)\n    C\n\nfn f(e: E) => int:\n    match e:\n        E.A(n) | E.B(n) => return n\n        _ => return 0\n\nfn main() => int:\n    return f(E.A(3)) * 100 + f(E.B(4)) * 10 + f(E.C) - 340\n"
+
+/#/ the payload is a str, so the bound name owns a copy that must be released on both paths
+fn strs() => str:
+    return "enum E:\n    A(s: str)\n    B(s: str)\n    C\n\nfn f(e: E) => int:\n    match e:\n        E.A(s) | E.B(s) => return len(s)\n        _ => return 0\n\nfn main() => int:\n    return f(E.A(\"abc\")) * 10 + f(E.B(\"de\")) + f(E.C) - 32\n"
+
+fn guarded() => str:
+    return "enum E:\n    A(n: int)\n    B(n: int)\n\nfn f(e: E) => int:\n    match e:\n        E.A(n) | E.B(n) if n > 5 => return 1\n        _ => return 0\n\nfn main() => int:\n    return f(E.A(9)) + f(E.B(9)) + f(E.A(1)) - 2\n"
+
+fn mixed() => str:
+    return "enum E:\n    A(n: int, m: int)\n    B(m: int, n: int)\n\nfn f(e: E) => int:\n    match e:\n        E.A(n, m) | E.B(m, n) => return n * 10 + m\n\nfn main() => int:\n    return f(E.A(1, 2)) + f(E.B(2, 1)) - 24\n"
+
+fn three() => str:
+    return "enum E:\n    A(n: int)\n    B(n: int)\n    C(n: int)\n    D\n\nfn f(e: E) => int:\n    match e:\n        E.A(n) | E.B(n) | E.C(n) => return n\n        E.D => return 100\n\nfn main() => int:\n    return f(E.A(1)) + f(E.B(2)) + f(E.C(3)) + f(E.D) - 106\n"
+
+fn tuples() => str:
+    return "fn f(t: (int, int)) => int:\n    match t:\n        (0, x) | (1, x) => return x\n        _ => return -1\n\nfn main() => int:\n    return f((0, 5)) + f((1, 6)) + f((2, 7)) - 10\n"
+
+fn no_binding() => str:
+    return "enum E:\n    A\n    B\n    C\n\nfn f(e: E) => int:\n    match e:\n        E.A | E.B => return 1\n        E.C => return 2\n\nfn main() => int:\n    return f(E.A) + f(E.B) + f(E.C) - 4\n"
+
+fn missing_name() => str:
+    return "enum E:\n    A(n: int)\n    B\n\nfn f(e: E) => int:\n    match e:\n        E.A(n) | E.B => return n\n        _ => return 0\n\nfn main() => int:\n    return f(E.B)\n"
+
+fn extra_name() => str:
+    return "enum E:\n    A\n    B(n: int)\n\nfn f(e: E) => int:\n    match e:\n        E.A | E.B(n) => return n\n        _ => return 0\n\nfn main() => int:\n    return f(E.A)\n"
+
+fn other_type() => str:
+    return "enum E:\n    A(n: int)\n    B(n: str)\n\nfn f(e: E) => int:\n    match e:\n        E.A(n) | E.B(n) => return 1\n        _ => return 0\n\nfn main() => int:\n    return f(E.A(1))\n"
+
+fn main() => int:
+    let m = 0
+    m = m + expect(1, run_src(ints(), true), 0)
+    m = m + expect(2, run_src(strs(), true), 0)
+    m = m + expect(3, run_src(guarded(), true), 0)
+    m = m + expect(4, run_src(mixed(), true), 0)
+    m = m + expect(5, run_src(three(), true), 0)
+    m = m + expect(6, run_src(tuples(), true), 0)
+    m = m + expect(7, run_src(no_binding(), true), 0)
+    m = m + expect(8, first_error(missing_name()), 200)
+    m = m + expect(9, first_error(extra_name()), 200)
+    m = m + expect(10, first_error(other_type()), 100)
+    return m

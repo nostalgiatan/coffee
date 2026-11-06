@@ -584,6 +584,58 @@ class Checker:
             while f >= 0:
                 self.pattern(a, g, a.pa[f])
                 f = a.next[f]
+        elif k == int(Nk.Binary) && a.pc[p] == int(Tk.Pipe):
+            /#/ `A(n) | B(n)`: every alternative binds the same names
+            let mark = self.loc.n
+            self.pattern(a, g, a.pa[p])
+            let mid = self.loc.n
+            let seen: buf<int> = new_buf(int, mid - mark + 1)
+            self.pattern_alt(a, g, a.pb[p], mark, mid, &seen)
+            for i in 0..mid - mark:
+                if seen[i] == 0 && self.loc.kind[mark + i] == int(Sk.Local):
+                    self.diag(a.tok[p], int(Sc.UndefinedName))
+        else:
+            self.expr(a, g, p)
+
+    /#/ A later alternative of an or-pattern: its names are the ones rows `mark..mid` already bound.
+    fn pattern_alt(self, a: &Ast, g: &Syms, p: int, mark: int, mid: int, seen: &buf<int>) => void:
+        if p < 0:
+            return
+        let k = a.kind[p]
+        if k == int(Nk.Name):
+            if tok_is(a, a.tok[p], "_"):
+                return
+            let i = self.loc.find_tok(a, a.tok[p], mark)
+            if i >= 0 && i < mid:
+                seen[i - mark] = 1
+                return
+            let o = self.loc.find_tok(a, a.tok[p], 0)
+            if o >= 0 && self.loc.kind[o] != int(Sk.Local) && self.loc.kind[o] != int(Sk.Param):
+                self.loc.used[o] = 1
+            else:
+                self.diag(a.tok[p], int(Sc.UndefinedName))
+        elif k == int(Nk.Call):
+            self.expr(a, g, a.pa[p])
+            let c = a.child[p]
+            while c >= 0:
+                self.pattern_alt(a, g, c, mark, mid, seen)
+                c = a.next[c]
+        elif k == int(Nk.Tuple):
+            let c = a.child[p]
+            while c >= 0:
+                self.pattern_alt(a, g, c, mark, mid, seen)
+                c = a.next[c]
+        elif k == int(Nk.StructLit):
+            let t = a.pa[p]
+            if t >= 0 && a.kind[t] == int(Nk.Name):
+                self.use_name(a, a.tok[t])
+            let f = a.child[p]
+            while f >= 0:
+                self.pattern_alt(a, g, a.pa[f], mark, mid, seen)
+                f = a.next[f]
+        elif k == int(Nk.Binary) && a.pc[p] == int(Tk.Pipe):
+            self.pattern_alt(a, g, a.pa[p], mark, mid, seen)
+            self.pattern_alt(a, g, a.pb[p], mark, mid, seen)
         else:
             self.expr(a, g, p)
 
