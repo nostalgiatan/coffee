@@ -51,6 +51,19 @@ fn r_pc32() => int:
 fn r_plt32() => int:
     return 4
 
+/#/ Where the code at old position `p` is once the jumps are shortened: `st` are the starts of the
+/#/ `n` jumps, and `pref[k]` the bytes saved by the jumps before the `k`th.
+fn new_pos(st: &buf<int>, pref: &buf<int>, n: int, p: int) => int:
+    let lo = 0
+    let hi = n
+    while lo < hi:
+        let mid = (lo + hi) // 2
+        if st[mid] < p:
+            lo = mid + 1
+        else:
+            hi = mid
+    return p - pref[lo]
+
 class Asm:
     c: Txt
     /#/ labels of the function being assembled: absolute positions in `c`, -1 while unbound
@@ -58,7 +71,11 @@ class Asm:
     nlab: int
     fx_at: buf<int>
     fx_lab: buf<int>
+    fx_kind: buf<int>
     nfx: int
+    /#/ where the function being assembled starts, and the first of its relocations
+    fs: int
+    rl0: int
     /#/ relocations of the whole object
     rl_at: buf<int>
     rl_sym: buf<int>
@@ -90,6 +107,8 @@ class Asm:
             self.c.put_byte(204)
         self.nlab = 0
         self.nfx = 0
+        self.fs = self.c.n
+        self.rl0 = self.nrl
 
     fn new_label(self) => int:
         if self.nlab >= len(self.lab):
@@ -101,29 +120,84 @@ class Asm:
     fn bind(self, l: int) => void:
         self.lab[l] = self.c.n
 
-    /#/ A 32-bit offset to label `l`, from the end of the field.
-    fn rel_to(self, l: int) => void:
+    /#/ A 32-bit offset to label `l`, from the end of the field; `kind` is 0 for a `jmp` (one opcode
+    /#/ byte before the field) and 1 for a `jcc` (two).
+    fn rel_to(self, l: int, kind: int) => void:
         if self.nfx >= len(self.fx_at):
             self.fx_at = buf_resize(self.fx_at, (self.nfx + 1) * 2)
             self.fx_lab = buf_resize(self.fx_lab, (self.nfx + 1) * 2)
+            self.fx_kind = buf_resize(self.fx_kind, (self.nfx + 1) * 2)
         self.fx_at[self.nfx] = self.c.n
         self.fx_lab[self.nfx] = l
+        self.fx_kind[self.nfx] = kind
         self.nfx = self.nfx + 1
         self.le32(0)
 
-    /#/ Patches the jumps of the function just assembled; false if a label was never bound.
+    /#/ Resolves the jumps of the function just assembled: each is the short form when its target
+    /#/ is within reach (and gone when it targets the next instruction), the rest are patched.
+    /#/ False if a label was never bound.
     fn end_fun(self) => bool:
-        let ok = true
-        for k in 0..self.nfx:
-            let to = self.lab[self.fx_lab[k]]
-            if to < 0:
-                ok = false
-            else:
-                let at = self.fx_at[k]
-                let d = to - (at + 4)
+        let n = self.nfx
+        for k in 0..n:
+            if self.lab[self.fx_lab[k]] < 0:
+                return false
+        let st = new_buf(int, n + 1)
+        let sz = new_buf(int, n + 1)
+        let pref = new_buf(int, n + 2)
+        for k in 0..n:
+            st[k] = self.fx_at[k] - 1 - self.fx_kind[k]
+            sz[k] = 5 + self.fx_kind[k]
+        let changed = true
+        while changed:
+            changed = false
+            let sum = 0
+            for k in 0..n:
+                pref[k] = sum
+                sum = sum + (5 + self.fx_kind[k]) - sz[k]
+            pref[n] = sum
+            for k in 0..n:
+                if sz[k] > 2:
+                    let to = self.lab[self.fx_lab[k]]
+                    if self.fx_kind[k] == 0 && to == self.fx_at[k] + 4:
+                        sz[k] = 0
+                        changed = true
+                    else:
+                        let d = new_pos(&st, &pref, n, to) - (st[k] - pref[k] + 2)
+                        if d >= 0 - 128 && d < 128:
+                            sz[k] = 2
+                            changed = true
+        let sum = 0
+        for k in 0..n:
+            pref[k] = sum
+            sum = sum + (5 + self.fx_kind[k]) - sz[k]
+        pref[n] = sum
+        let out = new_txt()
+        let at = self.fs
+        for k in 0..n:
+            for q in at..st[k]:
+                out.put_byte(self.c.b[q])
+            at = self.fx_at[k] + 4
+            let to = new_pos(&st, &pref, n, self.lab[self.fx_lab[k]])
+            let here = st[k] - pref[k]
+            if sz[k] == 2:
+                if self.fx_kind[k] == 0:
+                    out.put_byte(235)
+                else:
+                    out.put_byte(self.c.b[self.fx_at[k] - 1] - 16)
+                out.put_byte((to - (here + 2)) & 255)
+            elif sz[k] > 2:
+                for q in st[k]..self.fx_at[k]:
+                    out.put_byte(self.c.b[q])
+                let d = to - (here + sz[k])
                 for q in 0..4:
-                    self.c.b[at + q] = (d >> (8 * q)) & 255
-        return ok
+                    out.put_byte((d >> (8 * q)) & 255)
+        for q in at..self.c.n:
+            out.put_byte(self.c.b[q])
+        for r in self.rl0..self.nrl:
+            self.rl_at[r] = new_pos(&st, &pref, n, self.rl_at[r])
+        self.c.n = self.fs
+        self.c.put_all(&out)
+        return true
 
     fn reloc(self, sym: int, ty: int, addend: int) => void:
         if self.nrl >= len(self.rl_at):
@@ -161,8 +235,14 @@ class Asm:
         self.byte(opc)
         if opc2 >= 0:
             self.byte(opc2)
-        self.byte(128 | ((reg & 7) << 3) | (base & 7))
-        self.le32(disp)
+        if disp == 0 && (base & 7) != 5:
+            self.byte(((reg & 7) << 3) | (base & 7))
+        elif disp >= 0 - 128 && disp < 128:
+            self.byte(64 | ((reg & 7) << 3) | (base & 7))
+            self.byte(disp)
+        else:
+            self.byte(128 | ((reg & 7) << 3) | (base & 7))
+            self.le32(disp)
 
     /#/ ---- moves -------------------------------------------------------------
 
@@ -264,24 +344,30 @@ class Asm:
     fn imul_rr(self, dst: int, src: int) => void:
         self.rr(1, 15, 175, dst, src, false)
 
-    /#/ reg += imm32 (sub with `sub_ri`)
-    fn add_ri(self, r: int, v: int) => void:
+    /#/ `ext` (add 0, sub 5, cmp 7) of a register and an immediate, in the short form when it fits
+    fn alu_ri(self, ext: int, r: int, v: int) => void:
         self.rex(1, 0, r, false)
-        self.byte(129)
-        self.byte(192 | (r & 7))
-        self.le32(v)
+        if v >= 0 - 128 && v < 128:
+            self.byte(131)
+            self.byte(192 | (ext << 3) | (r & 7))
+            self.byte(v)
+        else:
+            self.byte(129)
+            self.byte(192 | (ext << 3) | (r & 7))
+            self.le32(v)
+
+    /#/ reg += imm (sub with `sub_ri`)
+    fn add_ri(self, r: int, v: int) => void:
+        self.alu_ri(0, r, v)
 
     fn sub_ri(self, r: int, v: int) => void:
-        self.rex(1, 0, r, false)
-        self.byte(129)
-        self.byte(192 | (5 << 3) | (r & 7))
-        self.le32(v)
+        self.alu_ri(5, r, v)
 
     fn cmp_ri(self, r: int, v: int) => void:
-        self.rex(1, 0, r, false)
-        self.byte(129)
-        self.byte(192 | (7 << 3) | (r & 7))
-        self.le32(v)
+        if v == 0:
+            self.test_rr(r, r)
+        else:
+            self.alu_ri(7, r, v)
 
     /#/ the group-3 instructions: not 2, neg 3, div 6, idiv 7
     fn grp3(self, ext: int, r: int) => void:
@@ -330,12 +416,12 @@ class Asm:
 
     fn jmp(self, l: int) => void:
         self.byte(233)
-        self.rel_to(l)
+        self.rel_to(l, 0)
 
     fn jcc(self, cc: int, l: int) => void:
         self.byte(15)
         self.byte(128 + cc)
-        self.rel_to(l)
+        self.rel_to(l, 1)
 
     fn call_sym(self, sym: int) => void:
         self.byte(232)
@@ -421,4 +507,4 @@ class Asm:
         self.rr(0, 15, 90, dst, src, false)
 
 fn new_asm() => Asm:
-    return Asm { c: new_txt(), lab: new_buf(int, 64), nlab: 0, fx_at: new_buf(int, 64), fx_lab: new_buf(int, 64), nfx: 0, rl_at: new_buf(int, 64), rl_sym: new_buf(int, 64), rl_ty: new_buf(int, 64), rl_add: new_buf(int, 64), nrl: 0 }
+    return Asm { c: new_txt(), lab: new_buf(int, 64), nlab: 0, fx_at: new_buf(int, 64), fx_lab: new_buf(int, 64), fx_kind: new_buf(int, 64), nfx: 0, fs: 0, rl0: 0, rl_at: new_buf(int, 64), rl_sym: new_buf(int, 64), rl_ty: new_buf(int, 64), rl_add: new_buf(int, 64), nrl: 0 }

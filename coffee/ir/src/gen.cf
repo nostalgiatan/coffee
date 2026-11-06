@@ -1050,6 +1050,22 @@ class Gen:
                 self.ld_ext(0, f, f.a[i], false)
                 self.a.extend(0, 0, 1, false)
                 self.a.test_rr(0, 0)
+            if f.eargn[e1] == 0 && f.eargn[e2] == 0:
+                /#/ no moves on either edge: one conditional jump, the other way falls through
+                if f.eto[e2] == next:
+                    self.a.jcc(cc, f.eto[e1])
+                elif f.eto[e1] == next:
+                    self.a.jcc(cc ^ 1, f.eto[e2])
+                else:
+                    self.a.jcc(cc, f.eto[e1])
+                    self.a.jmp(f.eto[e2])
+                return
+            if f.eargn[e2] == 0 && f.eto[e2] == next:
+                /#/ the false edge falls through: test the other way round
+                let te = e1
+                e1 = e2
+                e2 = te
+                cc = cc ^ 1
             let yes = self.a.new_label()
             self.a.jcc(cc, yes)
             self.edge_copy(f, rs, e2)
