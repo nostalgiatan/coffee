@@ -64,4 +64,19 @@ fn main() => int:
     m = m + expect(18, (system("proj/target/build/app") >> 8) & 255, 2)
     m = m + expect(19, build(), 0)
     m = m + expect(20, said("0 compiled, 4 reused"), 0)
+    /#/ a file sees the items it names, and what their interfaces name in turn: `main` never says `P`,
+    /#/ but `mk` returns one, so a new type of its field reaches `main`; `other` names nothing of util
+    put("proj/src/util.cf", "class P:\n    x: int\n\nfn mk() => P:\n    return P { x: 5 }\n\nfn unrelated() => int:\n    return 1\n")
+    put("proj/src/other.cf", "fn standalone() => int:\n    return 2\n")
+    put("proj/src/main.cf", "use * in other\nuse * in util\n\nfn main() => int:\n    let v = mk().x\n    return len(f\"{v}\") + standalone()\n")
+    m = m + expect(21, build(), 0)
+    m = m + expect(22, (system("proj/target/build/app") >> 8) & 255, 3)
+    put("proj/src/util.cf", "class P:\n    x: float\n\nfn mk() => P:\n    return P { x: 5.0 }\n\nfn unrelated() => int:\n    return 1\n")
+    m = m + expect(23, build(), 0)
+    m = m + expect(24, said("2 compiled, 2 reused"), 0)
+    m = m + expect(25, (system("proj/target/build/app") >> 8) & 255, 5)
+    /#/ a function nobody names changes: only its own file is rebuilt
+    put("proj/src/util.cf", "class P:\n    x: float\n\nfn mk() => P:\n    return P { x: 5.0 }\n\nfn unrelated(n: int) => int:\n    return n\n")
+    m = m + expect(26, build(), 0)
+    m = m + expect(27, said("1 compiled, 3 reused"), 0)
     return m

@@ -1,12 +1,15 @@
 /#/ Incremental builds: one object per source file, kept in a cache directory and reused while
 /#/ nothing it depends on changed.
 /#/
-/#/ The front end still sees the whole program, so types and calls are checked as always; only the
-/#/ lowering, optimizing and machine code of a file are skipped when its object is current. A file's
-/#/ object is rebuilt when
+/#/ The front end sees the whole program, but only the bodies of the files being rebuilt are checked
+/#/ (the others are declarations); the lowering, optimizing and machine code of a file are skipped
+/#/ when its object is current. A file's object is rebuilt when
 /#/   - its own tokens changed (comments and blank lines do not count), or
-/#/   - the interface of another file changed: function headers, class fields and method headers,
-/#/     enums, aliases, module-level `let`s, and the whole of generic functions and classes, or
+/#/   - the interface of an item it can see changed: function headers, class fields and method
+/#/     headers, enums, aliases, module-level `let`s, and the whole of generic functions and classes.
+/#/     A file sees the items its tokens name and, transitively, the items their interfaces name
+/#/     (a value's type reaches it through the function that returned it); the file with `main` also
+/#/     sees every module-level `let`, which it initializes), or
 /#/   - the compiler, the `.cfc` text or the optimization level is another one.
 /#/ Names the compiler makes (glue, generic instances) carry a per-file suffix, so objects built at
 /#/ different times never define the same symbol. The optimizer works inside one file only, so a
@@ -55,17 +58,44 @@ fn hash_tokens(h: &Hash, a: &Ast, lo: int, hi: int) => void:
             h.add(a.byte_at(k))
         h.add(257)
 
-/#/ Adds what other files may depend on in the top-level item `n`.
-fn hash_interface(h: &Hash, a: &Ast, n: int) => void:
+/#/ A hash that also remembers the identifier tokens it went over.
+class Walk:
+    a: int
+    b: int
+    ids: buf<int>
+    n: int
+
+fn new_walk() => Walk:
+    let h = new_hash()
+    return Walk { a: h.a, b: h.b, ids: new_buf(int, 16), n: 0 }
+
+/#/ Adds the tokens `lo` up to `hi` of `a` (kind and spelling), and notes the identifiers.
+fn walk_tokens(w: &Walk, a: &Ast, lo: int, hi: int) => void:
+    let h = Hash { a: w.a, b: w.b }
+    for q in lo..hi:
+        h.add(a.toks.kind[q])
+        for k in a.toks.start[q]..a.toks.end[q]:
+            h.add(a.byte_at(k))
+        h.add(257)
+        if a.toks.kind[q] == int(Tk.Ident):
+            if w.n >= len(w.ids):
+                w.ids = buf_resize(w.ids, w.n * 2)
+            w.ids[w.n] = q
+            w.n = w.n + 1
+    w.a = h.a
+    w.b = h.b
+
+/#/ Adds what other files may depend on in the top-level item `n`: a function's header, a class's
+/#/ fields and method headers, and the whole of a generic function or class and of everything else.
+fn walk_interface(w: &Walk, a: &Ast, n: int) => void:
     let k = a.kind[n]
     let lo = a.tok[n]
     let hi = a.end[n]
     if k == int(Nk.Fn):
         if type_param_count(a, n) == 0 && a.pc[n] >= 0:
             hi = a.tok[a.pc[n]]
-        hash_tokens(h, a, lo, hi)
+        walk_tokens(w, a, lo, hi)
     elif k == int(Nk.Class) && type_param_count(a, n) == 0:
-        /#/ fields and method headers, not the method bodies
         let q = lo
         let m = a.child[n]
         while q < hi:
@@ -74,14 +104,14 @@ fn hash_interface(h: &Hash, a: &Ast, n: int) => void:
             let stop = hi
             if m >= 0:
                 stop = a.tok[a.pc[m]]
-            hash_tokens(h, a, q, stop)
+            walk_tokens(w, a, q, stop)
             if m < 0:
                 q = hi
             else:
                 q = a.end[m]
                 m = a.next[m]
     else:
-        hash_tokens(h, a, lo, hi)
+        walk_tokens(w, a, lo, hi)
 
 /#/ The number of the file a top-level node is from, going by the line of its first token.
 fn node_unit(fl: &Flat, a: &Ast, n: int, runtime: int) => int:
@@ -140,30 +170,6 @@ fn key_current(dir: &Txt, name: &Txt, want: &Txt) => bool:
     let o = read_file(&op)
     return o.n > 0
 
-/#/ The hash of the interface of each file, one line of 32 hex digits each.
-fn unit_interfaces(fl: &Flat, a: &Ast, n: int) => Txt:
-    let ha: buf<int> = new_buf(int, n + 1)
-    let hb: buf<int> = new_buf(int, n + 1)
-    for u in 0..n:
-        let h = new_hash()
-        ha[u] = h.a
-        hb[u] = h.b
-    let it = a.child[a.root]
-    while it >= 0:
-        let u = node_unit(fl, a, it, n)
-        if u < n:
-            let h = Hash { a: ha[u], b: hb[u] }
-            hash_interface(&h, a, it)
-            ha[u] = h.a
-            hb[u] = h.b
-        it = a.next[it]
-    let out = new_txt()
-    for u in 0..n:
-        let h = Hash { a: ha[u], b: hb[u] }
-        out.put_all(&h.hex())
-        out.put_byte(10)
-    return out
-
 /#/ The hash of the tokens of each file, one line of 32 hex digits each.
 fn unit_bodies(fl: &Flat, a: &Ast, n: int) => Txt:
     let ha: buf<int> = new_buf(int, n + 1)
@@ -187,23 +193,170 @@ fn unit_bodies(fl: &Flat, a: &Ast, n: int) => Txt:
         out.put_byte(10)
     return out
 
-/#/ The key of file `u`: the compiler, the level, the `.cfc` text, its own tokens and the interfaces
-/#/ (`ifcs`, one line per file) of all the others.
-fn unit_key(u: int, ch: &Txt, opt: int, cfc: &str, bodies: &Txt, ifcs: &Txt) => Txt:
-    let k = new_hash()
-    k.add_txt(ch)
-    k.add(opt)
-    k.add_txt(&txt_of(cfc))
-    k.add_txt(&slice(bodies, u * 33, u * 33 + 32))
-    let s = 0
-    let v = 0
-    for i in 0..ifcs.n:
-        if ifcs.b[i] == 10:
-            if v != u:
-                k.add_txt(&slice(ifcs, s, i))
-            s = i + 1
-            v = v + 1
-    return k.hex()
+/#/ The named top-level items, each with the hash of its interface and the items its interface
+/#/ names. A file's key holds the interfaces of the items its tokens name, and of the items those
+/#/ name in turn, so a change reaches only the files that can see it.
+class Items:
+    count: int
+    node: buf<int>
+    unit: buf<int>
+    ia: buf<int>
+    ib: buf<int>
+    /#/ the items named by item i are m_list[m_at[i] .. m_at[i + 1])
+    m_at: buf<int>
+    m_list: buf<int>
+    /#/ name table: open addressing, item + 1
+    ht: buf<int>
+    /#/ the hash of the C imports, which every file sees
+    cimp_a: int
+    cimp_b: int
+
+/#/ The name of top-level node `n` as a token, -1 for an item with no name.
+fn item_name(a: &Ast, n: int) => int:
+    let k = a.kind[n]
+    if k == int(Nk.Fn) || k == int(Nk.Class) || k == int(Nk.Enum) || k == int(Nk.Let) || k == int(Nk.TypeAlias):
+        return a.pa[n]
+    return 0 - 1
+
+fn ident_hash(a: &Ast, tok: int) => int:
+    let h = 5381
+    for k in a.toks.start[tok]..a.toks.end[tok]:
+        h = (h * 33 + a.byte_at(k)) & 1073741823
+    return h
+
+/#/ Calls nothing: fills `out` (cleared first) with the items named like token `tok`.
+fn items_named(it: &Items, a: &Ast, tok: int, out: &buf<int>) => int:
+    let mask = len(it.ht) - 1
+    let i = ident_hash(a, tok) & mask
+    let n = 0
+    while it.ht[i] != 0:
+        let x = it.ht[i] - 1
+        if same_tok(a, item_name(a, it.node[x]), tok):
+            if n < len(out):
+                out[n] = x
+                n = n + 1
+        i = (i + 1) & mask
+    return n
+
+fn build_items(fl: &Flat, a: &Ast, n: int) => Items:
+    let cap = 16
+    let top = a.child[a.root]
+    let named = 0
+    while top >= 0:
+        if item_name(a, top) >= 0:
+            named = named + 1
+        top = a.next[top]
+    while cap < named * 2 + 2:
+        cap = cap * 2
+    let it = Items { count: 0, node: new_buf(int, named + 1), unit: new_buf(int, named + 1), ia: new_buf(int, named + 1), ib: new_buf(int, named + 1), m_at: new_buf(int, named + 2), m_list: new_buf(int, 16), ht: new_buf(int, cap), cimp_a: 0, cimp_b: 0 }
+    top = a.child[a.root]
+    let cimp = new_walk()
+    while top >= 0:
+        let u = node_unit(fl, a, top, n)
+        if item_name(a, top) >= 0 && u < n:
+            it.node[it.count] = top
+            it.unit[it.count] = u
+            let mask = cap - 1
+            let i = ident_hash(a, item_name(a, top)) & mask
+            while it.ht[i] != 0:
+                i = (i + 1) & mask
+            it.ht[i] = it.count + 1
+            it.count = it.count + 1
+        elif a.kind[top] == int(Nk.Use) && a.pc[top] == 1:
+            walk_tokens(&cimp, a, a.tok[top], a.end[top])
+        top = a.next[top]
+    it.cimp_a = cimp.a
+    it.cimp_b = cimp.b
+    /#/ interfaces and the names in them
+    let found: buf<int> = new_buf(int, 64)
+    let nm = 0
+    for x in 0..it.count:
+        let w = new_walk()
+        walk_interface(&w, a, it.node[x])
+        it.ia[x] = w.a
+        it.ib[x] = w.b
+        it.m_at[x] = nm
+        for j in 0..w.n:
+            let c = items_named(&it, a, w.ids[j], &found)
+            for f in 0..c:
+                if nm >= len(it.m_list):
+                    it.m_list = buf_resize(it.m_list, nm * 2)
+                it.m_list[nm] = found[f]
+                nm = nm + 1
+    it.m_at[it.count] = nm
+    return it
+
+/#/ The key of each file, one line of 32 hex digits each: the compiler, the level, the `.cfc` text,
+/#/ the C imports, the file's own tokens (`bodies`), and the interfaces of the items it can see.
+/#/ The file with `main` also runs every module-level `let`, so it sees them all.
+fn unit_keys(fl: &Flat, a: &Ast, n: int, ch: &Txt, opt: int, cfc: &str, bodies: &Txt) => Txt:
+    let it = build_items(fl, a, n)
+    /#/ the identifier tokens of each file
+    let tu: buf<int> = new_buf(int, a.toks.count + 1)
+    let cnt: buf<int> = new_buf(int, n + 2)
+    for q in 0..a.toks.count:
+        tu[q] = n
+        let line = a.toks.line[q]
+        if line - 1 < fl.lines:
+            tu[q] = fl.unit_of_line(line)
+        if a.toks.kind[q] == int(Tk.Ident) && tu[q] < n:
+            cnt[tu[q] + 1] = cnt[tu[q] + 1] + 1
+    for u in 0..n + 1:
+        cnt[u + 1] = cnt[u + 1] + cnt[u]
+    let at: buf<int> = new_buf(int, n + 1)
+    let toks: buf<int> = new_buf(int, cnt[n] + 1)
+    for q in 0..a.toks.count:
+        if a.toks.kind[q] == int(Tk.Ident) && tu[q] < n:
+            toks[cnt[tu[q]] + at[tu[q]]] = q
+            at[tu[q]] = at[tu[q]] + 1
+    let has_main: buf<int> = new_buf(int, n + 1)
+    for x in 0..it.count:
+        if a.kind[it.node[x]] == int(Nk.Fn) && tok_is(a, item_name(a, it.node[x]), "main"):
+            has_main[it.unit[x]] = 1
+    let mark: buf<int> = new_buf(int, it.count + 1)
+    let stack: buf<int> = new_buf(int, it.count + 1)
+    let found: buf<int> = new_buf(int, 64)
+    let keys = new_txt()
+    let cfc_t = txt_of(cfc)
+    for u in 0..n:
+        let sp = 0
+        if has_main[u] == 1:
+            for x in 0..it.count:
+                if it.unit[x] != u && a.kind[it.node[x]] == int(Nk.Let):
+                    mark[x] = u + 1
+                    stack[sp] = x
+                    sp = sp + 1
+        for j in cnt[u]..cnt[u + 1]:
+            let c = items_named(&it, a, toks[j], &found)
+            for f in 0..c:
+                let x = found[f]
+                if it.unit[x] != u && mark[x] != u + 1:
+                    mark[x] = u + 1
+                    stack[sp] = x
+                    sp = sp + 1
+        while sp > 0:
+            sp = sp - 1
+            let x = stack[sp]
+            for j in it.m_at[x]..it.m_at[x + 1]:
+                let y = it.m_list[j]
+                if it.unit[y] != u && mark[y] != u + 1:
+                    mark[y] = u + 1
+                    stack[sp] = y
+                    sp = sp + 1
+        let k = new_hash()
+        k.add_txt(ch)
+        k.add(opt)
+        k.add_txt(&cfc_t)
+        k.add_txt(&slice(bodies, u * 33, u * 33 + 32))
+        k.add(it.cimp_a)
+        k.add(it.cimp_b)
+        for x in 0..it.count:
+            if mark[x] == u + 1:
+                k.add(it.ia[x])
+                k.add(it.ib[x])
+        keys.put_all(&k.hex())
+        keys.put_byte(10)
+    return keys
 
 /#/ Does the program define the number-printing runtime itself (the runtime's own tests do)?
 fn defines_runtime(a: &Ast) => bool:
@@ -216,8 +369,10 @@ fn defines_runtime(a: &Ast) => bool:
 
 /#/ Builds the object of unit `u` into `dir`, with the key `kt`. False when the unit has findings.
 fn compile_unit(prep: &Prep, t: &Tys, g: &Syms, opt: int, u: int, unit: &buf<int>, name: &Txt, kt: &Txt, dir: &Txt) => bool:
-    let tag = txt_of("_u")
-    tag.put_int(u)
+    /#/ the names the compiler makes end in the object's own name, so objects built at different
+    /#/ times (and numbers of files) never define the same symbol
+    let tag = txt_of("_u_")
+    tag.put_all(name)
     let ts = txt_str(&tag)
     let t0 = now_ms()
     let lw = lower_prepared(prep, t, g, opt, u, unit, &ts)
@@ -281,17 +436,11 @@ fn build_incremental(fl: &Flat, dir: &Txt, out: &Txt, opt: int, jobs: int) => in
     let ch = compiler_hash()
     let cfc = fl.cfc_str()
     let n = fl.nunit
-    /#/ the interface of each file, one line each, then the key of each file
-    let ifcs = unit_interfaces(fl, &a0, n)
     let bodies = unit_bodies(fl, &a0, n)
     phase("hashes")
-    let keys = new_txt()
+    let keys = unit_keys(fl, &a0, n, &ch, opt, &cfc, &bodies)
     let all = new_hash()
-    for u in 0..n:
-        let k = unit_key(u, &ch, opt, &cfc, &bodies, &ifcs)
-        keys.put_all(&k)
-        keys.put_byte(10)
-        all.add_txt(&k)
+    all.add_txt(&keys)
     phase("keys")
     let want_state = all.hex()
     let state_path = cache_path(dir, &txt_of("state"), "")
