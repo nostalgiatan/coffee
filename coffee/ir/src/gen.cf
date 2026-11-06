@@ -644,6 +644,10 @@ class Gen:
                         if ok:
                             coal[dx] = dp
                     pp = f.nx[pp]
+        /#/ what a register is worth to a value: its uses (weighted by loop depth) per position of its range
+        let dn: buf<int> = new_buf(int, nd + 1)
+        for d in 0..nd:
+            dn[d] = self.ra_wt[d] * 1024 // (self.ra_hi[d] - self.ra_lo[d] + 2)
         /#/ linear scan, by start
         let top = pos + 4
         let first: buf<int> = new_buf(int, top + 1)
@@ -742,9 +746,9 @@ class Gen:
                     let worst = -1
                     for r in 0..10:
                         if self.reg_ok(r, cm, restr):
-                            if worst < 0 || self.ra_wt[occ[r]] < self.ra_wt[occ[worst]]:
+                            if worst < 0 || dn[occ[r]] < dn[occ[worst]]:
                                 worst = r
-                    if self.ra_wt[occ[worst]] < self.ra_wt[d]:
+                    if dn[occ[worst]] < dn[d]:
                         self.home[dv[occ[worst]]] = -1
                         self.home[dv[d]] = regs[worst]
                         occ[worst] = d
