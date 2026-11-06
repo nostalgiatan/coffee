@@ -1052,7 +1052,16 @@ class Lower:
             self.branch(l, join, rhs)
         self.seal(rhs)
         self.f.set_block(rhs)
+        /#/ the temporaries of the right side exist only on this path: they are released here, not at the
+        /#/ end of the statement where the paths have met
+        let mark = self.tmp_n
         let r = self.ex(t, g, ty, a, a.pb[n])
+        if self.reachable():
+            let q = self.tmp_n - 1
+            while q >= mark:
+                self.drop_value(t, g, self.tmp_v[q], self.tmp_ty[q])
+                q = q - 1
+        self.tmp_n = mark
         self.write_var(res, self.f.cur, r)
         self.jump(join)
         self.seal(join)
