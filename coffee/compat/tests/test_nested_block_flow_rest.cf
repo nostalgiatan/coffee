@@ -1,0 +1,21 @@
+/#/ Ported from tests/nested_block_flow_tests.rs: the cases the first port left out.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + exits("nested_block_flow::test_assignment_after_if", "fn main() => int:\n    let acc = 0\n    if true:\n        acc = 1\n    acc = acc + 10\n    return acc\n", 11)
+    bad = bad + exits("nested_block_flow::test_call_statement_after_if", "fn bump(n: int) => int:\n    return n\n\nfn main() => int:\n    let acc = 0\n    if true:\n        acc = 1\n    bump(acc)\n    acc = acc + 10\n    return acc\n", 11)
+    bad = bad + exits("nested_block_flow::test_assignment_after_if_else", "fn main() => int:\n    let a = 0\n    if false:\n        a = 1\n    else:\n        a = 2\n    a = a + 10\n    return a\n", 12)
+    bad = bad + exits("nested_block_flow::test_assignment_after_while", "fn main() => int:\n    let i = 0\n    while i < 3:\n        i = i + 1\n    i = i + 10\n    return i\n", 13)
+    bad = bad + exits("nested_block_flow::test_assignment_after_for", "fn main() => int:\n    let acc = 0\n    for i in 0..3:\n        acc = acc + i\n    acc = acc + 10\n    return acc\n", 13)
+    bad = bad + exits("nested_block_flow::test_increment_after_if_inside_while", "fn main() => int:\n    let i = 0\n    let hits = 0\n    while i < 5:\n        if i == 2:\n            hits = hits + 1\n        i = i + 1\n    return hits * 10 + i\n", 15)
+    bad = bad + exits("nested_block_flow::test_statements_after_nested_blocks_two_deep", "fn main() => int:\n    let i = 0\n    let acc = 0\n    while i < 3:\n        let j = 0\n        while j < 2:\n            acc = acc + 1\n            j = j + 1\n        acc = acc + 10\n        i = i + 1\n    return acc\n", 36)
+    bad = bad + exits("nested_block_flow::test_assignment_after_match", "enum E:\n    A\n    B(n: int)\n\nfn main() => int:\n    let acc = 0\n    let e: E = E.B(2)\n    match e:\n        E.A => acc = 100\n        E.B(n) => acc = n\n    acc = acc + 1\n    return acc\n", 3)
+    bad = bad + exits("nested_block_flow::test_break_and_continue_after_if", "fn main() => int:\n    let i = 0\n    let acc = 0\n    while i < 10:\n        i = i + 1\n        if i == 3:\n            continue\n        acc = acc + 1\n        if i == 6:\n            break\n    return acc\n", 5)
+    bad = bad + exits("nested_block_flow::test_multiline_struct_literal_still_collected", "class P:\n    x: int\n    y: int\n\nfn main() => int:\n    let p: P = P {\n        x: 1,\n        y: 2\n    }\n    return p.x + p.y\n", 3)
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

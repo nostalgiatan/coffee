@@ -46,3 +46,14 @@ fn parses(name: str, src: str) => int:
         fflush(0)
         return 1
     return 0
+
+/#/ The program runs without leaking, double freeing or corrupting memory, whatever it returns
+/#/ (the Rust test counted malloc and free; here the address sanitizer says so).
+fn balanced(name: str, src: str) => int:
+    let dup = clone src
+    let r = run_src(src, true)
+    if r < 0 || r == 99:
+        printf("FAIL %s: exit %d (memory error or leak)\n%s\n", name, r, dup)
+        fflush(0)
+        return 1
+    return 0

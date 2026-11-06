@@ -1,0 +1,15 @@
+/#/ Ported from tests/frontend_parity_tests.rs: the cases the first port left out.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + compiles("frontend_parity::test_single_file_compiles_tiny_program", "\nfn main() => int:\n    let x: int = 1\n    rm x\n    return 0\n")
+    bad = bad + compiles("frontend_parity::test_single_and_project_emit_llvm_both_succeed", "\nfn main() => int:\n    let x: int = 1\n    rm x\n    return 0\n")
+    bad = bad + compiles("frontend_parity::test_member_then_rm_compiles_from_mir", "\nclass Point:\n    x: int\n\nfn main() => int:\n    let p: Point = Point { x: 1 }\n    let n: int = p.x\n    rm p\n    return n\n")
+    bad = bad + compiles("frontend_parity::test_default_compile_stderr_has_no_debug_prefix", "\nfn main() => int:\n    let x: int = 1\n    rm x\n    return 0\n")
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

@@ -1,0 +1,14 @@
+/#/ Ported from tests/syntax_error_location_tests.rs: the cases the first port left out.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + rejected("syntax_error_location::test_unclosed_paren_points_at_its_line", "fn main() => int:\n    let a: int = 1\n    let b: int = 2\n    let c: int = (3 +\n    return a\n", 0)
+    bad = bad + rejected("syntax_error_location::test_bad_statement_in_second_function_points_at_its_line", "fn f() => int:\n    return 1\n\nfn main() => int:\n    let a: int = 1\n    let b: int = * *\n    return a\n", 0)
+    bad = bad + exits("syntax_error_location::test_valid_program_is_not_flagged", "fn main() => int:\n    let a: int = (1 +\n        2)\n    return a\n", 3)
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

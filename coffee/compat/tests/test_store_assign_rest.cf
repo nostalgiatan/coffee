@@ -1,0 +1,19 @@
+/#/ Ported from tests/store_assign_tests.rs: the cases the first port left out.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + exits("store_assign::test_index_assign_then_read", "fn main() => int:\n    let a = [1, 2, 3]\n    a[1] = 9\n    return a[1]\n", 9)
+    bad = bad + exits("store_assign::test_index_assign_does_not_touch_neighbours", "fn main() => int:\n    let a = [1, 2, 3]\n    a[1] = 9\n    return a[0] + a[2]\n", 4)
+    bad = bad + exits("store_assign::test_index_assign_with_computed_index_and_value", "fn main() => int:\n    let a = [0, 0, 0, 0]\n    let i = 0\n    while i < 4:\n        a[i] = i * 2\n        i = i + 1\n    return a[3]\n", 6)
+    bad = bad + exits("store_assign::test_deref_assign_through_mut_ref", "fn set(r: &mut int) => void:\n    *r = 7\n\nfn main() => int:\n    let x = 1\n    set(&mut x)\n    return x\n", 7)
+    bad = bad + exits("store_assign::test_deref_assign_uses_old_value", "fn bump(r: &mut int) => void:\n    *r = *r + 1\n\nfn main() => int:\n    let x = 4\n    bump(&mut x)\n    bump(&mut x)\n    return x\n", 6)
+    bad = bad + rejected("store_assign::test_assign_through_shared_ref_is_an_error", "fn set(r: &int) => void:\n    *r = 7\n\nfn main() => int:\n    let x = 1\n    set(&x)\n    return x\n", 0)
+    bad = bad + rejected("store_assign::test_index_assign_type_mismatch_is_an_error", "fn main() => int:\n    let a = [1, 2]\n    a[0] = \"x\"\n    return 0\n", 0)
+    bad = bad + rejected("store_assign::test_index_assign_of_resource_is_an_error", "fn main() => int:\n    let a = [\"x\", \"y\"]\n    a[0] = \"z\"\n    return 0\n", 0)
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

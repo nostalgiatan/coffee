@@ -1,0 +1,15 @@
+/#/ Ported from tests/buf_type_tests.rs: the cases the first port left out.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + compiles("buf_type::test_buf_field_drop_frees_pointer", "\nclass Holder:\n    p: buf\n    n: int\n\n    fn new(p: buf) => Holder:\n        Holder { p: p, n: 0 }\n\nfn main() => int:\n    return 0\n")
+    bad = bad + compiles("buf_type::test_object_field_drop_does_not_free_pointee", "\nclass Box:\n    p: object\n    n: int\n\n    fn new(p: object) => Box:\n        Box { p: p, n: 0 }\n\nfn main() => int:\n    return 0\n")
+    bad = bad + compiles("buf_type::test_malloc_into_buf_rm_frees", "\nuse malloc in libc of c\n\nfn main() => int:\n    let p: buf = malloc(8)\n    rm p\n    return 0\n")
+    bad = bad + compiles("buf_type::test_malloc_into_buf_scope_end_frees", "\nuse malloc in libc of c\n\nfn main() => int:\n    let p: buf = malloc(8)\n    return 0\n")
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

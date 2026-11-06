@@ -1,0 +1,14 @@
+/#/ Ported from tests/error_division_of_labor_tests.rs: the cases the first port left out.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + exits("error_division_of_labor::test_enum_result_ok_path", "\nenum ParseResult:\n    Ok(v: int)\n    Bad(pos: int)\n\nfn parse_digit(c: int, pos: int) => ParseResult:\n    if c >= 48 && c <= 57:\n        return ParseResult.Ok(c - 48)\n    return ParseResult.Bad(pos)\n\nfn code_of(c: int, pos: int) => int:\n    let r: ParseResult = parse_digit(c, pos)\n    match r:\n        ParseResult.Ok(v) => v\n        ParseResult.Bad(p) => 100 + p\n\nfn main() => int:\n    return code_of(55, 3)\n", 7)
+    bad = bad + exits("error_division_of_labor::test_enum_result_error_path_is_distinguishable_from_zero", "\nenum ParseResult:\n    Ok(v: int)\n    Bad(pos: int)\n\nfn parse_digit(c: int, pos: int) => ParseResult:\n    if c >= 48 && c <= 57:\n        return ParseResult.Ok(c - 48)\n    return ParseResult.Bad(pos)\n\nfn code_of(c: int, pos: int) => int:\n    let r: ParseResult = parse_digit(c, pos)\n    match r:\n        ParseResult.Ok(v) => v\n        ParseResult.Bad(p) => 100 + p\n\nfn main() => int:\n    return code_of(120, 3)\n", 103)
+    bad = bad + balanced("error_division_of_labor::test_enum_result_is_balanced", "\nenum ParseResult:\n    Ok(v: int)\n    Bad(pos: int)\n\nfn parse_digit(c: int, pos: int) => ParseResult:\n    if c >= 48 && c <= 57:\n        return ParseResult.Ok(c - 48)\n    return ParseResult.Bad(pos)\n\nfn code_of(c: int, pos: int) => int:\n    let r: ParseResult = parse_digit(c, pos)\n    match r:\n        ParseResult.Ok(v) => v\n        ParseResult.Bad(p) => 100 + p\n\nfn main() => int:\n    return code_of(55, 3)\n")
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

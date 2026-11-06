@@ -1,0 +1,22 @@
+/#/ Ported from tests/str_ownership_tests.rs: the cases the first port left out.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + balanced("str_ownership::test_local_literal_is_balanced", "fn main() => int:\n    let s: str = \"abc\"\n    return 0\n")
+    bad = bad + balanced("str_ownership::test_rm_literal_local_is_balanced", "fn main() => int:\n    let s: str = \"abc\"\n    rm s\n    return 0\n")
+    bad = bad + balanced("str_ownership::test_literal_in_class_field_without_constructor", "\nclass N:\n    name: str\n    v: int\n\nfn main() => int:\n    let n: N = N { name: \"hello\", v: 1 }\n    return n.v\n")
+    bad = bad + balanced("str_ownership::test_literal_in_class_field_through_constructor", "\nclass N:\n    name: str\n    v: int\n\n    fn new(v: int) => N:\n        return N { name: \"hello\", v: v }\n\nfn main() => int:\n    let n: N = N::new(1)\n    return n.v\n")
+    bad = bad + balanced("str_ownership::test_return_literal_from_function", "\nfn mk() => str:\n    return \"abc\"\n\nfn main() => int:\n    let s: str = mk()\n    return 0\n")
+    bad = bad + balanced("str_ownership::test_pass_str_by_value_to_callee", "\nfn take(s: str) => int:\n    return 1\n\nfn main() => int:\n    let s: str = \"abc\"\n    return take(s)\n")
+    bad = bad + balanced("str_ownership::test_literal_passed_directly_to_coffee_function", "\nfn take(s: str) => int:\n    return 1\n\nfn main() => int:\n    return take(\"abc\")\n")
+    bad = bad + balanced("str_ownership::test_last_use_move_between_str_locals", "\nfn main() => int:\n    let a: str = \"abc\"\n    let b: str = a\n    return 0\n")
+    bad = bad + balanced("str_ownership::test_str_returned_through_two_calls", "\nfn inner() => str:\n    let s: str = \"abc\"\n    return s\n\nfn outer() => str:\n    return inner()\n\nfn main() => int:\n    let s: str = outer()\n    return 0\n")
+    bad = bad + balanced("str_ownership::test_fstring_local_is_freed", "\nfn main() => int:\n    let a: int = 3\n    let s: str = f\"v={a}\"\n    return 0\n")
+    bad = bad + balanced("str_ownership::test_literal_in_nested_class_field", "\nclass In:\n    name: str\n\nclass Out:\n    inner: In\n    tag: str\n\nfn main() => int:\n    let i: In = In { name: \"a\" }\n    let o: Out = Out { inner: i, tag: \"b\" }\n    return 0\n")
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

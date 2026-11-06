@@ -1,0 +1,15 @@
+/#/ Ported from tests/newtype_pipeline_tests.rs: the cases the first port left out.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + compiles("newtype_pipeline::type_decl_as_object_compiles", "\nuse fopen in libc of c\nfn main() => int:\n    let f: FILE = fopen(\"a\", \"r\")\n    let q: object = f as object\n    let f2: FILE = q as FILE\n    return 0\n")
+    bad = bad + compiles("newtype_pipeline::user_hwnd_newtype_as_compiles", "\ntype HWND: object\nfn main() => int:\n    let p: object = 0\n    let h: HWND = p as HWND\n    let q: object = h as object\n    return 0\n")
+    bad = bad + compiles("newtype_pipeline::fopen_binds_file_without_as", "\nuse fopen in libc of c\nfn main() => int:\n    let f: FILE = fopen(\"a\", \"r\")\n    return 0\n")
+    bad = bad + compiles("newtype_pipeline::fopen_to_object_without_as_fails", "\nuse fopen in libc of c\nfn main() => int:\n    let p: object = fopen(\"a\", \"r\")\n    return 0\n")
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

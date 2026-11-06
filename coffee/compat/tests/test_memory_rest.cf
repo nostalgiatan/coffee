@@ -1,0 +1,28 @@
+/#/ Ported from tests/memory_tests.rs: the cases the first port left out.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + compiles("memory::test_enable_safety_emits_bounds_panic_block#1", "\nfn main() => int:\n    let arr: [int; 2] = [1, 2]\n    let i: int = 1\n    let x: int = arr[i]\n    rm x\n    rm i\n    rm arr\n    return 0\n")
+    bad = bad + compiles("memory::test_enable_safety_emits_bounds_panic_block#2", "\nfn main() => int:\n    let arr: [int; 2] = [1, 2]\n    let i: int = 1\n    let x: int = arr[i]\n    rm x\n    rm i\n    rm arr\n    return 0\n")
+    bad = bad + compiles("memory::test_nested_class_drop_calls_inner_drop", "\nclass Inner:\n    n: int\n\n    fn new(n: int) => Inner:\n        Inner { n: n }\n\nclass Outer:\n    a: Inner\n    b: int\n\n    fn new(a: Inner) => Outer:\n        Outer { a: a, b: 1 }\n\nfn main() => int:\n    return 0\n")
+    bad = bad + compiles("memory::test_nested_class_drop_last_field_first", "\nclass First:\n    x: int\n\n    fn new(x: int) => First:\n        First { x: x }\n\nclass Second:\n    y: int\n\n    fn new(y: int) => Second:\n        Second { y: y }\n\nclass Pair:\n    first: First\n    second: Second\n\n    fn new(first: First, second: Second) => Pair:\n        Pair { first: first, second: second }\n\nfn main() => int:\n    return 0\n")
+    bad = bad + compiles("memory::test_pointer_rm_calls_class_drop_before_free", "\nclass Point:\n    x: int\n    y: int\n\n    fn new(x: int, y: int) => Point:\n        Point { x: x, y: y }\n\nfn main() => int:\n    let p: Point = Point::new(10, 20)\n    rm p\n    return 0\n")
+    bad = bad + compiles("memory::test_str_field_drop_loads_and_frees_pointer", "\nclass Holder:\n    s: str\n    n: int\n\n    fn new(s: str) => Holder:\n        Holder { s: s, n: 0 }\n\nfn main() => int:\n    return 0\n")
+    bad = bad + compiles("memory::test_str_array_field_drop_frees_each_element", "\nclass Holder:\n    items: [str; 2]\n\n    fn new(a: str, b: str) => Holder:\n        Holder { items: [a, b] }\n\nfn main() => int:\n    return 0\n")
+    bad = bad + compiles("memory::test_tuple_class_field_drop_calls_both", "\nclass Point:\n    x: int\n\n    fn new(x: int) => Point:\n        Point { x: x }\n\nclass Pair:\n    ab: (Point, Point)\n\n    fn new(a: Point, b: Point) => Pair:\n        Pair { ab: (a, b) }\n\nfn main() => int:\n    return 0\n")
+    bad = bad + compiles("memory::test_object_field_drop_does_not_free_pointee", "\nclass Box:\n    p: object\n    n: int\n\n    fn new(p: object) => Box:\n        Box { p: p, n: 0 }\n\nfn main() => int:\n    return 0\n")
+    bad = bad + compiles("memory::test_local_str_array_scope_drop_frees_elements", "\nfn main() => int:\n    let a: [str; 2] = [\"x\", \"y\"]\n    return 0\n")
+    bad = bad + compiles("memory::test_unary_clone_class_malloc_memcpy", "\nclass Box:\n    n: int\n\n    fn new(n: int) => Box:\n        Box { n: n }\n\nfn main() => int:\n    let a: Box = Box::new(1)\n    let b: Box = clone a\n    rm a\n    rm b\n    return 0\n")
+    bad = bad + compiles("memory::test_statement_clone_class_malloc_memcpy", "\nclass Box:\n    n: int\n\n    fn new(n: int) => Box:\n        Box { n: n }\n\nfn main() => int:\n    let a: Box = Box::new(1)\n    clone a b\n    rm a\n    rm b\n    return 0\n")
+    bad = bad + compiles("memory::test_clone_str_strlen_malloc_memcpy", "\nfn main() => int:\n    let a: str = \"hello\"\n    let b: str = clone a\n    rm a\n    rm b\n    return 0\n")
+    bad = bad + compiles("memory::test_clone_class_str_field_extra_malloc_memcpy", "\nclass Holder:\n    s: str\n    n: int\n\n    fn new(s: str) => Holder:\n        Holder { s: s, n: 0 }\n\nfn main() => int:\n    let a: Holder = Holder::new(\"hi\")\n    let b: Holder = clone a\n    rm a\n    rm b\n    return 0\n")
+    bad = bad + compiles("memory::test_clone_nested_class_field_calls_inner_clone", "\nclass Inner:\n    n: int\n\n    fn new(n: int) => Inner:\n        Inner { n: n }\n\nclass Outer:\n    a: Inner\n    b: int\n\n    fn new(a: Inner) => Outer:\n        Outer { a: a, b: 1 }\n\nfn main() => int:\n    let i: Inner = Inner::new(1)\n    let a: Outer = Outer::new(i)\n    let b: Outer = clone a\n    rm a\n    rm b\n    return 0\n")
+    bad = bad + compiles("memory::test_clone_skips_object_pointee", "\nclass Wrap:\n    p: object\n    n: int\n\n    fn new(p: object) => Wrap:\n        Wrap { p: p, n: 0 }\n\nfn main() => int:\n    return 0\n")
+    bad = bad + rejected("memory::test_copy_keyword_remains_type_error#1", "\nfn main() => int:\n    let a: int = 1\n    copy a b\n    return 0\n", 0)
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

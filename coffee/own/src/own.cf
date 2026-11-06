@@ -385,7 +385,10 @@ class Flow:
         elif k == int(Nk.StructLit):
             let f = a.child[n]
             while f >= 0:
-                self.ex(t, g, ty, a, a.pa[f], false)
+                /#/ a field taken out of another value is a copy of a resource; a variable is
+                /#/ only looked at (the later `rm` of it is accepted)
+                let fk = a.kind[a.pa[f]]
+                self.ex(t, g, ty, a, a.pa[f], fk == int(Nk.Member) || fk == int(Nk.Index))
                 f = a.next[f]
         elif k == int(Nk.Tuple) || k == int(Nk.Array):
             let c = a.child[n]

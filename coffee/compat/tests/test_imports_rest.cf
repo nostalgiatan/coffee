@@ -1,0 +1,12 @@
+/#/ Ported from tests/imports_tests.rs: the cases the first port left out.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + compiles("imports::test_printf_format_and_variadic_args", "\nuse printf in libc of c\n\nfn main() => int:\n    printf(\"Hello\")\n    return 0\n\n")
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

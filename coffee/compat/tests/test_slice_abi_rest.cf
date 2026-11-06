@@ -1,0 +1,14 @@
+/#/ Ported from tests/slice_abi_tests.rs: the cases the first port left out.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + compiles("slice_abi::test_slice_param_sum_compiles", "\nfn sum(xs: [int]) => int:\n    for x in xs:\n        let n: int = x\n    let i: int = 0\n    return xs[i]\n\nfn main() => int:\n    return 0\n")
+    bad = bad + rejected("slice_abi::test_c_fn_slice_param_errors", "\nc fn bad(xs: [int]) => int:\n\nfn main() => int:\n    return 0\n", 0)
+    bad = bad + compiles("slice_abi::test_slice_str_field_drop_frees_elements_not_buffer", "\nclass Holder:\n    xs: [str]\n\n    fn new(xs: [str]) => Holder:\n        Holder { xs: xs }\n\nfn main() => int:\n    return 0\n")
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

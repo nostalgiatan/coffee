@@ -1,0 +1,12 @@
+/#/ Ported from tests/c_dep_project_tests.rs: the cases the first port left out.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + rejected("c_dep_project::missing_cfc_error_mentions_coffee_c_or_c_libraries", "\nuse zlibVersion in z of c\n\nfn main() => int:\n    return 0\n", 0)
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

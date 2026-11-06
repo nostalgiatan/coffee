@@ -1,0 +1,17 @@
+/#/ Ported from tests/match_block_arm_tests.rs: the cases the first port left out.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + exits("match_block_arm::test_block_arm_with_let_and_return", "\nenum E:\n    A\n    B(n: int)\n    C(n: int)\n\nfn f(e: E) => int:\n    match e:\n        E.A => return 0\n        E.B(n) =>\n            let m = n + 1\n            return m * 2\n        E.C(n) => return n\n\nfn main() => int:\n    return f(E.B(4))\n", 10)
+    bad = bad + exits("match_block_arm::test_block_arm_is_not_the_last_arm", "\nenum E:\n    A\n    B(n: int)\n    C(n: int)\n\nfn f(e: E) => int:\n    match e:\n        E.B(n) =>\n            let m = n + 1\n            return m\n        E.A => return 0\n        E.C(n) => return n\n\nfn main() => int:\n    return f(E.C(7))\n", 7)
+    bad = bad + exits("match_block_arm::test_block_arm_with_nested_if", "\nenum E:\n    A\n    B(n: int)\n    C(n: int)\n\nfn f(e: E) => int:\n    match e:\n        E.A => return 0\n        E.B(n) =>\n            if n > 3:\n                return 1\n            else:\n                return 2\n        E.C(n) => return n\n\nfn main() => int:\n    return f(E.B(9))\n", 1)
+    bad = bad + exits("match_block_arm::test_block_arm_statements_run_in_order_and_fall_through_to_the_code_after", "\nenum E:\n    A\n    B(n: int)\n    C(n: int)\n\nfn f(e: E) => int:\n    let total = 0\n    match e:\n        E.A => total = 1\n        E.B(n) =>\n            total = n\n            total = total + 10\n        E.C(n) => total = n\n    return total\n\nfn main() => int:\n    return f(E.B(5))\n", 15)
+    bad = bad + exits("match_block_arm::test_block_arm_in_loop_with_blank_line", "\nenum E:\n    A\n    B(n: int)\n    C(n: int)\n\nfn main() => int:\n    let i = 0\n    let acc = 0\n    while i < 3:\n        let e: E = E.B(i)\n        match e:\n            E.A => acc = acc + 100\n            E.B(n) =>\n                let k = n + 1\n\n                acc = acc + k\n            E.C(n) => acc = acc + n\n        i = i + 1\n    return acc\n", 6)
+    bad = bad + exits("match_block_arm::test_single_line_arms_still_work", "\nenum E:\n    A\n    B(n: int)\n    C(n: int)\n\nfn f(e: E) => int:\n    match e:\n        E.A => 0\n        E.B(n) => n\n        E.C(n) => n + 1\n\nfn main() => int:\n    return f(E.C(4))\n", 5)
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

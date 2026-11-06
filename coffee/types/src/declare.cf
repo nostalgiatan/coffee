@@ -53,6 +53,15 @@ fn declare_c_lib(t: &Tys, g: &Syms, src: str, name: &str, bundled: bool) => void
     let m = declare_module(g, &a, name)
     declare_module_types(t, g, &a, m)
     let it = a.child[a.root]
+    /#/ a type the `.cfc` declares (`type FILE: object`) is visible to every program
+    while it >= 0:
+        if a.kind[it] == int(Nk.TypeAlias) && a.pa[it] >= 0:
+            let r = g.find_in_module(&a, a.pa[it], m)
+            if r >= 0 && g.ty[r] >= 0:
+                let w = g.add_tok(&a, a.pa[it], int(Sk.Alias), -1, -1)
+                g.ty[w] = g.ty[r]
+        it = a.next[it]
+    it = a.child[a.root]
     while it >= 0:
         if a.kind[it] == int(Nk.Fn) && a.pa[it] >= 0:
             let r = g.find_in_module(&a, a.pa[it], m)

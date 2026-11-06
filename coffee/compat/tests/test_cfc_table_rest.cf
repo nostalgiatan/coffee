@@ -1,0 +1,13 @@
+/#/ Ported from tests/cfc_table_tests.rs: the cases the first port left out.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + compiles("cfc_table::write_from_libc_appears_in_llvm_ir", "\nuse write, malloc, free in libc of c\nfn main() => int:\n    let p: object = malloc(1)\n    write(1, p, 1)\n    free(p)\n    return 0\n")
+    bad = bad + compiles("cfc_table::write_accepts_str_and_memcpy_accepts_buf", "\nuse write, memcpy, malloc, free in libc of c\nfn main() => int:\n    write(1, \"x\", 1)\n    let a: buf = malloc(8)\n    let b: buf = malloc(8)\n    memcpy(a, b, 8)\n    rm a\n    rm b\n    return 0\n")
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

@@ -1,0 +1,13 @@
+/#/ Ported from tests/stack_growth_tests.rs: the cases the first port left out.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + compiles("stack_growth::test_loop_arithmetic_allocas_stay_in_entry_block", "\nfn main() => int:\n    let i: int = 0\n    let acc: int = 0\n    while i < 1000:\n        acc = acc + i * 2 - 1\n        i = i + 1\n    if acc > 0:\n        return 0\n    else:\n        return 1\n")
+    bad = bad + exits("stack_growth::test_long_loop_does_not_overflow_the_stack", "\nfn main() => int:\n    let i: int = 0\n    let acc: int = 0\n    while i < 5000000:\n        acc = acc + i * 2 - 1\n        i = i + 1\n    if acc > 0:\n        return 0\n    else:\n        return 1\n", 0)
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

@@ -1,0 +1,25 @@
+/#/ Ported from tests/str_concat_tests.rs: the cases the first port left out.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + exits("str_concat::test_concat_two_variables_has_right_length_and_content", "use strlen, strcmp in libc of c\n\nfn main() => int:\n    let a: str = \"ab\"\n    let b: str = \"cde\"\n    let c: str = a + b\n    if strcmp(c, \"abcde\") == 0:\n        return strlen(c)\n    else:\n        return 99\n", 5)
+    bad = bad + exits("str_concat::test_concat_chain_of_three", "use strlen, strcmp in libc of c\n\nfn main() => int:\n    let a: str = \"x\"\n    let b: str = \"yy\"\n    let c: str = a + b + \"zzz\"\n    if strcmp(c, \"xyyzzz\") == 0:\n        return strlen(c)\n    else:\n        return 99\n", 6)
+    bad = bad + exits("str_concat::test_concat_of_two_literals", "use strlen, strcmp in libc of c\n\nfn main() => int:\n    let c: str = \"ab\" + \"cd\"\n    if strcmp(c, \"abcd\") == 0:\n        return 4\n    else:\n        return 99\n", 4)
+    bad = bad + exits("str_concat::test_concat_with_empty_string", "use strlen, strcmp in libc of c\n\nfn main() => int:\n    let a: str = \"\"\n    let c: str = a + \"q\"\n    if strcmp(c, \"q\") == 0:\n        return strlen(c)\n    else:\n        return 99\n", 1)
+    bad = bad + exits("str_concat::test_operands_are_borrowed_and_still_usable", "use strlen, strcmp in libc of c\n\nfn main() => int:\n    let a: str = \"ab\"\n    let b: str = \"cd\"\n    let c: str = a + b\n    return strlen(a) + strlen(b) + strlen(c)\n", 8)
+    bad = bad + balanced("str_concat::test_concat_is_balanced", "use strlen, strcmp in libc of c\n\nfn main() => int:\n    let a: str = \"ab\"\n    let b: str = \"cd\"\n    let c: str = a + b\n    return 0\n")
+    bad = bad + balanced("str_concat::test_concat_chain_is_balanced", "use strlen, strcmp in libc of c\n\nfn main() => int:\n    let a: str = \"ab\"\n    let c: str = a + \"-\" + a + \"-\" + a\n    return 0\n")
+    bad = bad + balanced("str_concat::test_call_result_operand_is_freed", "use strlen, strcmp in libc of c\n\nfn mk() => str:\n    return \"tmp\"\n\nfn main() => int:\n    let a: str = \"ab\"\n    let c: str = a + mk()\n    return 0\n")
+    bad = bad + balanced("str_concat::test_fstring_operand_is_freed", "use strlen, strcmp in libc of c\n\nfn main() => int:\n    let n: int = 7\n    let c: str = \"n=\" + f\"{n}\"\n    return 0\n")
+    bad = bad + balanced("str_concat::test_concat_passed_directly_to_function", "use strlen, strcmp in libc of c\n\nfn take(s: str) => int:\n    return strlen(s)\n\nfn main() => int:\n    let a: str = \"ab\"\n    return take(a + \"cd\")\n")
+    bad = bad + balanced("str_concat::test_concat_returned_from_function", "use strlen, strcmp in libc of c\n\nfn join(a: str, b: str) => str:\n    return a + b\n\nfn main() => int:\n    let r: str = join(\"x\", \"y\")\n    return 0\n")
+    bad = bad + balanced("str_concat::test_concat_in_a_loop_does_not_leak", "use strlen, strcmp in libc of c\n\nfn step(n: int) => int:\n    let s: str = \"a\" + \"b\"\n    return strlen(s) + n\n\nfn main() => int:\n    let i = 0\n    let acc = 0\n    while i < 5:\n        acc = acc + step(i)\n        i = i + 1\n    return 0\n")
+    bad = bad + balanced("str_concat::test_concat_stored_in_class_field", "use strlen, strcmp in libc of c\n\nclass N:\n    name: str\n\nfn main() => int:\n    let a: str = \"ab\"\n    let n: N = N { name: a + \"cd\" }\n    return 0\n")
+    bad = bad + rejected("str_concat::test_str_plus_int_is_still_an_error", "fn main() => int:\n    let a: str = \"ab\"\n    let b = a + 1\n    return 0\n", 0)
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

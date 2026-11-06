@@ -52,6 +52,21 @@ fn rep_of(t: &Tys, g: &Syms, x: int) => int:
             return int(Rp.I64)
     return -1
 
+/#/ Does `w` spell `s`?
+fn txt_spells(w: &Txt, s: str) => bool:
+    if w.n != len(s):
+        return false
+    for i in 0..w.n:
+        if w.b[i] != s[i]:
+            return false
+    return true
+
+/#/ A function of the program named like one the generated code calls in the C library would take
+/#/ its place; its symbol gets a suffix.
+fn keep_off_runtime(w: &Txt) => void:
+    if txt_spells(w, "malloc") || txt_spells(w, "free") || txt_spells(w, "calloc") || txt_spells(w, "strlen") || txt_spells(w, "strdup") || txt_spells(w, "memcpy") || txt_spells(w, "strcmp") || txt_spells(w, "write") || txt_spells(w, "exit"):
+        w.put("__cf")
+
 /#/ Is `x` an integer type that is signed?
 fn is_signed(t: &Tys, x: int) => bool:
     return t.kind[x] == int(Ty.Int) && t.b[x] == 1
@@ -262,6 +277,7 @@ class Lower:
     rt_calloc: int
     rt_strlen: int
     rt_malloc: int
+    main_fn: bool
     rt_free: int
     rt_strdup: int
     rt_memcpy: int
@@ -611,6 +627,9 @@ class Lower:
             /#/ an array lent as a slice: its address and its length
             let sl = self.f.insert(self.f.undef(self.rep(t, g, to)), x, 0)
             return self.f.insert(sl, self.f.cint(int(Rp.I64), t.b[from]), 1)
+        if t.kind[to] == int(Ty.Slice) && t.kind[from] == int(Ty.Ref) && t.kind[t.a[from]] == int(Ty.Buf) && t.a[t.a[from]] >= 0:
+            /#/ a buffer lent as a slice: the buffer's own pointer and length
+            return self.f.load(self.rep(t, g, to), -1, x)
         return self.coerce_rep(t, x, from, self.rep(t, g, to), to)
 
     fn coerce_rep(self, t: &Tys, x: int, from: int, tr: int, to: int) => int:
@@ -1154,6 +1173,13 @@ class Lower:
         if k == int(Sk.Builtin):
             if tok_is(a, a.tok[callee], "len"):
                 return self.len_call(t, g, ty, a, n)
+            if tok_is(a, a.tok[callee], "sizeof"):
+                /#/ the bytes a value of the named type takes; for a class, its block
+                let sx = ty.rd.named_ty(t, a, a.tok[a.child[n]])
+                let sz = st_block(t, g, sx)
+                if sz < 0:
+                    sz = st_size(t, g, sx)
+                return self.f.cint(int(Rp.I64), sz)
             if tok_is(a, a.tok[callee], "new_buf"):
                 return self.new_buf_call(t, g, ty, a, n)
             if tok_is(a, a.tok[callee], "buf_resize"):
@@ -1235,6 +1261,8 @@ class Lower:
         let name = new_txt()
         for q in a.toks.start[a.tok[callee]]..a.toks.end[a.tok[callee]]:
             name.put_byte(a.byte_at(q))
+        if k != int(Sk.Extern) && inst_env < 0:
+            keep_off_runtime(&name)
         let id = self.names.intern(&name)
         if inst_env >= 0:
             id = self.inst_name(&name, inst_env)
@@ -1351,6 +1379,8 @@ class Lower:
         if k == int(Nk.Member):
             return self.member(t, g, ty, a, n)
         if k == int(Nk.Index):
+            if a.pb[n] >= 0 && a.kind[a.pb[n]] == int(Nk.Range):
+                return self.slice_range(t, g, ty, a, n)
             if t.kind[self.strip_refs(t, self.nd(t, ty, a.pa[n]))] == int(Ty.Str):
                 return self.str_byte(t, g, ty, a, n)
             let p = self.element_addr(t, g, ty, a, n)
@@ -1495,7 +1525,7 @@ class Lower:
                 if a.pa[n] >= 0:
                     self.ex(t, g, ty, a, a.pa[n])
                 self.drop_scope(t, g, a, 0)
-                self.f.ret_void()
+                self.ret_unit()
             self.dead_block()
         elif k == int(Nk.Raise):
             self.raise_stmt(t, g, ty, a, n)
@@ -2502,6 +2532,57 @@ class Lower:
         self.f.set_block(good)
         return self.f.load(r, -1, self.f.index(base, i, 1))
 
+    /#/ Returns from a function without a value; the program's exit status is 0 when `main` has none.
+    fn ret_unit(self) => void:
+        if self.main_fn:
+            self.f.ret_v(self.f.cint(int(Rp.I64), 0))
+        else:
+            self.f.ret_void()
+
+    /#/ Traps unless `cond` holds.
+    fn guard(self, cond: int) => void:
+        let good = self.new_block()
+        let bad = self.new_block()
+        self.branch(cond, good, bad)
+        self.seal(good)
+        self.seal(bad)
+        self.f.set_block(bad)
+        self.trap()
+        self.f.set_block(good)
+
+    /#/ `b[lo..hi]`: a view of part of a buffer, slice or array; an end left out is the start or
+    /#/ the length.
+    fn slice_range(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => int:
+        let o = a.pa[n]
+        let ot = self.strip_refs(t, self.nd(t, ty, o))
+        let k = t.kind[ot]
+        let sr = self.rep(t, g, self.nd(t, ty, n))
+        if sr < 0 || !((k == int(Ty.Buf) && t.a[ot] >= 0) || k == int(Ty.Slice) || k == int(Ty.Array)):
+            self.unsupported(n)
+            return self.f.undef(int(Rp.I64))
+        let data = -1
+        let count = -1
+        if k == int(Ty.Array):
+            data = self.ex(t, g, ty, a, o)
+            count = self.f.cint(int(Rp.I64), t.b[ot])
+        else:
+            let agg = self.agg_of(t, g, ty, a, o)
+            data = self.f.extract(int(Rp.Ptr), agg, 0)
+            count = self.f.extract(int(Rp.I64), agg, 1)
+        let r = a.pb[n]
+        let i64 = t.int_ty(8, true)
+        let lo = self.f.cint(int(Rp.I64), 0)
+        if a.pa[r] >= 0:
+            lo = self.coerce(t, g, self.ex(t, g, ty, a, a.pa[r]), self.nd(t, ty, a.pa[r]), i64)
+        let hi = count
+        if a.pb[r] >= 0:
+            hi = self.coerce(t, g, self.ex(t, g, ty, a, a.pb[r]), self.nd(t, ty, a.pb[r]), i64)
+        self.guard(self.f.cmp(int(Pr.ULe), lo, hi))
+        self.guard(self.f.cmp(int(Pr.ULe), hi, count))
+        let start = self.f.index(data, lo, st_size(t, g, t.a[ot]))
+        let len = self.f.bin(int(Op.Sub), hi, lo)
+        return self.f.insert(self.f.insert(self.f.undef(sr), start, 0), len, 1)
+
     fn element_addr(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => int:
         let o = a.pa[n]
         let ot = self.strip_refs(t, self.nd(t, ty, o))
@@ -3132,11 +3213,18 @@ class Lower:
         else:
             for q in a.toks.start[a.pa[fn_node]]..a.toks.end[a.pa[fn_node]]:
                 name.put_byte(a.byte_at(q))
+            if cls < 0 && self.penv < 0:
+                keep_off_runtime(&name)
             if self.penv >= 0:
                 name.put("__")
                 name.put_int(self.penv)
                 name.put_all(&self.tag)
-        self.f.reset(&name, rr)
+        let is_main = cls < 0 && self.pnm < 0 && self.penv < 0 && a.pa[fn_node] >= 0 && tok_is(a, a.pa[fn_node], "main")
+        if is_main && rr == int(Rp.Void):
+            /#/ a `main` without a value still hands the system an exit status: 0
+            self.f.reset(&name, int(Rp.I64))
+        else:
+            self.f.reset(&name, rr)
         self.cur_id = self.names.intern(&name)
         self.nf_n = 0
         if self.pnm >= 0:
@@ -3187,7 +3275,9 @@ class Lower:
                 self.no_own = 0
                 i = i + 1
             p = a.next[p]
+        self.main_fn = false
         if cls < 0 && self.pnm < 0 && self.penv < 0 && a.pa[fn_node] >= 0 && tok_is(a, a.pa[fn_node], "main"):
+            self.main_fn = true
             self.init_globals(t, g, ty, a)
         self.tailb = -1
         if rr != int(Rp.Void):
@@ -3199,7 +3289,7 @@ class Lower:
         if !self.f.terminated(self.f.cur):
             if rr == int(Rp.Void):
                 self.drop_scope(t, g, a, 0)
-                self.f.ret_void()
+                self.ret_unit()
             else:
                 self.f.unreachable()
         simplify_params(&self.f)
@@ -3281,4 +3371,4 @@ fn new_lower() => Lower:
     return lw
 
 fn make_lower() => Lower:
-    return Lower { f: new_fun("", 0), rs: new_reps(), names: new_names(), nstr: 0, cd_name: new_buf(int, 8), cd_sig: new_buf(int, 8), cd_var: new_buf(int, 8), cd_n: 0, sc: new_syms(), v_rep: new_buf(int, 16), v_ty: new_buf(int, 16), v_slot: new_buf(int, 16), v_flag: new_buf(int, 16), tmp_v: new_buf(int, 8), tmp_ty: new_buf(int, 8), tmp_n: 0, no_own: 0, own_st: new_buf(int, 16), own_n: 0, ld: new_buf(int, 8), glue_ty: new_buf(int, 8), glue_kind: new_buf(int, 8), glue_n: 0, glue_done: 0, lay_ty: new_buf(int, 8), lay_off: new_buf(int, 8), lay_n: 0, addr: new_names(), scanned: 0, fty: 0, rt_exit: 0, rt_calloc: 0, rt_strlen: 0, rt_malloc: 0, rt_free: 0, rt_strdup: 0, rt_memcpy: 0, rt_strcmp: 0, rt_write: 0, or_mark: -1, opt: 1, mc: new_gen(), sbytes: new_txt(), mc_err: 0, ver_err: 0, lib: new_lib(), cur_id: -1, penv: -1, ue: new_buf(int, 16), iq_node: new_buf(int, 8), iq_env: new_buf(int, 8), iq_cls: new_buf(int, 8), iq_nm: new_buf(int, 8), nf_tok: new_buf(int, 8), nf_node: new_buf(int, 8), nf_id: new_buf(int, 8), nf_n: 0, pnm: -1, tag: new_txt(), uses_rt: false, ext_mode: false, ext_slot: new_buf(int, 16), gl_name: new_buf(int, 8), gl_size: new_buf(int, 8), gl_n: 0, tailb: -1, tailm: -1, retx: -1, iq_n: 0, iq_done: 0, lis: -1, nv: 0, dk: new_buf(int, 64), dv: new_buf(int, 64), dn: 0, sealed: new_buf(int, 16), inc_head: new_buf(int, 16), inc_var: new_buf(int, 16), inc_par: new_buf(int, 16), inc_next: new_buf(int, 16), inc_n: 0, pe_head: new_buf(int, 16), pe_next: new_buf(int, 16), lc: new_buf(int, 8), lb: new_buf(int, 8), nloops: 0, ret_ty: 0, bad: 0, bad_node: -1 }
+    return Lower { f: new_fun("", 0), rs: new_reps(), names: new_names(), nstr: 0, cd_name: new_buf(int, 8), cd_sig: new_buf(int, 8), cd_var: new_buf(int, 8), cd_n: 0, sc: new_syms(), v_rep: new_buf(int, 16), v_ty: new_buf(int, 16), v_slot: new_buf(int, 16), v_flag: new_buf(int, 16), tmp_v: new_buf(int, 8), tmp_ty: new_buf(int, 8), tmp_n: 0, no_own: 0, own_st: new_buf(int, 16), own_n: 0, ld: new_buf(int, 8), glue_ty: new_buf(int, 8), glue_kind: new_buf(int, 8), glue_n: 0, glue_done: 0, lay_ty: new_buf(int, 8), lay_off: new_buf(int, 8), lay_n: 0, addr: new_names(), scanned: 0, fty: 0, rt_exit: 0, rt_calloc: 0, rt_strlen: 0, rt_malloc: 0, main_fn: false, rt_free: 0, rt_strdup: 0, rt_memcpy: 0, rt_strcmp: 0, rt_write: 0, or_mark: -1, opt: 1, mc: new_gen(), sbytes: new_txt(), mc_err: 0, ver_err: 0, lib: new_lib(), cur_id: -1, penv: -1, ue: new_buf(int, 16), iq_node: new_buf(int, 8), iq_env: new_buf(int, 8), iq_cls: new_buf(int, 8), iq_nm: new_buf(int, 8), nf_tok: new_buf(int, 8), nf_node: new_buf(int, 8), nf_id: new_buf(int, 8), nf_n: 0, pnm: -1, tag: new_txt(), uses_rt: false, ext_mode: false, ext_slot: new_buf(int, 16), gl_name: new_buf(int, 8), gl_size: new_buf(int, 8), gl_n: 0, tailb: -1, tailm: -1, retx: -1, iq_n: 0, iq_done: 0, lis: -1, nv: 0, dk: new_buf(int, 64), dv: new_buf(int, 64), dn: 0, sealed: new_buf(int, 16), inc_head: new_buf(int, 16), inc_var: new_buf(int, 16), inc_par: new_buf(int, 16), inc_next: new_buf(int, 16), inc_n: 0, pe_head: new_buf(int, 16), pe_next: new_buf(int, 16), lc: new_buf(int, 8), lb: new_buf(int, 8), nloops: 0, ret_ty: 0, bad: 0, bad_node: -1 }

@@ -411,7 +411,9 @@ class Ast:
             self.depth = self.depth - 1
             return e
         let start = self.pos
-        let left = self.parse_binary(1)
+        let left = -1
+        if !self.at(int(Tk.DotDot)):
+            left = self.parse_binary(1)
         if self.at(int(Tk.DotDot)):
             let r = self.add(int(Nk.Range), start)
             self.bump()

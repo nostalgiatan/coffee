@@ -1,0 +1,19 @@
+/#/ Ported from tests/ownership_hole_tests.rs: the cases the first port left out.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + rejected("ownership_hole::test_by_value_call_then_read_field_is_error", "class P:\n    n: int\n\nfn take(p: P) => int:\n    return 1\n\nfn main() => int:\n    let a: P = P { n: 1 }\n    let r: int = take(a)\n    return a.n\n", 0)
+    bad = bad + rejected("ownership_hole::test_by_value_call_twice_is_error", "class P:\n    n: int\n\nfn take(p: P) => int:\n    return 1\n\nfn main() => int:\n    let a: P = P { n: 1 }\n    let r: int = take(a)\n    let s: int = take(a)\n    return 0\n", 0)
+    bad = bad + rejected("ownership_hole::test_by_value_method_argument_then_use_is_error", "class P:\n    n: int\n\n    fn add(self, o: P) => int:\n        return self.n + o.n\n\nfn main() => int:\n    let a: P = P { n: 1 }\n    let b: P = P { n: 2 }\n    let r: int = a.add(b)\n    return b.n\n", 0)
+    bad = bad + exits("ownership_hole::test_by_value_call_as_last_use_is_a_move", "class P:\n    n: int\n\nfn take(p: P) => int:\n    return 1\n\nfn main() => int:\n    let a: P = P { n: 1 }\n    return take(a)\n", 1)
+    bad = bad + exits("ownership_hole::test_by_value_call_with_clone_keeps_original", "class P:\n    n: int\n\nfn take(p: P) => int:\n    return 1\n\nfn main() => int:\n    let a: P = P { n: 5 }\n    let r: int = take(clone a)\n    return a.n + r\n", 6)
+    bad = bad + exits("ownership_hole::test_by_value_call_with_explicit_mv_expression", "class P:\n    n: int\n\nfn take(p: P) => int:\n    return p.n\n\nfn main() => int:\n    let a: P = P { n: 7 }\n    mv a b\n    return take(b)\n", 7)
+    bad = bad + exits("ownership_hole::test_borrowed_argument_does_not_move", "class P:\n    n: int\n\nfn peek(p: &P) => int:\n    return 1\n\nfn main() => int:\n    let a: P = P { n: 3 }\n    let r: int = peek(&a)\n    return a.n + r\n", 4)
+    bad = bad + exits("ownership_hole::test_rm_of_value_type_in_returning_branch", "fn f(n: int) => int:\n    if n < 0:\n        rm n\n        return 1\n    return n\n\nfn main() => int:\n    return f(2)\n", 2)
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

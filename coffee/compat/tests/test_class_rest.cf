@@ -1,0 +1,14 @@
+/#/ Ported from tests/class_tests.rs: the cases the first port left out.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + compiles("class::test_bitfields_flag_off_keeps_one_llvm_member_per_field", "\nclass PackBits:\n    lo: int:3\n    hi: int:5\n\n    fn poke(self) => int:\n        self.lo = 1\n        self.hi = 2\n        let a: int = self.lo\n        let b: int = self.hi\n        return a + b * 10\n\nfn main() => int:\n    return 0\n")
+    bad = bad + compiles("class::test_enable_bitfields_packs_consecutive_fields_and_compiles_access", "\nclass PackBits:\n    lo: int:3\n    hi: int:5\n\n    fn poke(self) => int:\n        self.lo = 1\n        self.hi = 2\n        let a: int = self.lo\n        let b: int = self.hi\n        return a + b * 10\n\nfn main() => int:\n    return 0\n")
+    bad = bad + compiles("class::test_packed_class_bitfields_pack_without_enable_flag", "\npacked class PackedBits:\n    lo: int:3\n    hi: int:5\n\n    fn poke(self) => int:\n        self.lo = 1\n        self.hi = 2\n        let a: int = self.lo\n        let b: int = self.hi\n        return a + b * 10\n\nfn main() => int:\n    return 0\n")
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

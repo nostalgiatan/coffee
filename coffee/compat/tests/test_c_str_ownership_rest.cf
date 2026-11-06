@@ -1,0 +1,14 @@
+/#/ Ported from tests/c_str_ownership_tests.rs: the cases the first port left out.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + rejected("c_str_ownership::test_c_object_result_cannot_be_bound_to_str", "use getenv in libc of c\n\nfn main() => int:\n    let s: str = getenv(\"PATH\")\n    return 0\n", 0)
+    bad = bad + exits("c_str_ownership::test_object_from_c_is_not_freed_at_scope_end", "use getenv in libc of c\n\nfn main() => int:\n    let p: object = getenv(\"PATH\")\n    return 0\n", 0)
+    bad = bad + balanced("c_str_ownership::test_strdup_result_is_object_and_freed_explicitly", "use strdup, free in libc of c\n\nfn main() => int:\n    let p: object = strdup(\"abc\")\n    free(p)\n    return 0\n")
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

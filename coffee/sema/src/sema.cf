@@ -801,7 +801,7 @@ class Checker:
     /#/ Brings the builtins, the module's own names and its imports into scope.
     fn prelude(self, a: &Ast, g: &Syms, m: int) => void:
         for i in 0..g.n:
-            if g.mod[i] == -1 && (g.kind[i] == int(Sk.Builtin) || g.kind[i] == int(Sk.Extern) || g.kind[i] == int(Sk.Class)):
+            if g.mod[i] == -1 && (g.kind[i] == int(Sk.Builtin) || g.kind[i] == int(Sk.Extern) || g.kind[i] == int(Sk.Class) || g.kind[i] == int(Sk.Alias)):
                 self.loc.copy_row(g, i)
         for i in 0..g.n:
             if g.mod[i] == m && exported(g.kind[i]):

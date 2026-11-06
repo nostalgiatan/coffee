@@ -1,0 +1,15 @@
+/#/ Ported from tests/mv_clone_tests.rs: the cases the first port left out.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + exits("mv_clone::test_mv_target_field_is_readable", "class Box:\n    n: int\n    tag: str\n\nfn main() => int:\n    let a: Box = Box { n: 4, tag: \"x\" }\n    mv a b\n    return b.n\n", 4)
+    bad = bad + balanced("mv_clone::test_mv_is_balanced", "class Box:\n    n: int\n    tag: str\n\nfn main() => int:\n    let a: Box = Box { n: 4, tag: \"x\" }\n    mv a b\n    return b.n\n")
+    bad = bad + balanced("mv_clone::test_clone_target_is_independent_and_balanced", "class Box:\n    n: int\n    tag: str\n\nfn main() => int:\n    let a: Box = Box { n: 4, tag: \"x\" }\n    clone a b\n    return a.n + b.n\n")
+    bad = bad + exits("mv_clone::test_clone_target_field_is_readable", "class Box:\n    n: int\n    tag: str\n\nfn main() => int:\n    let a: Box = Box { n: 4, tag: \"x\" }\n    clone a b\n    return a.n + b.n\n", 8)
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

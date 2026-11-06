@@ -1,0 +1,12 @@
+/#/ Ported from tests/error_handling_tests.rs: the cases the first port left out.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + compiles("error_handling::test_listen_raise_subclass_variable_llvm_passes_instance_ptr", "\nclass AppError of Error:\n    kind: int\n\nfn on_err(err: Error) => int:\n    return -1\n\nfn risky() #on_err => int:\n    let err: AppError = AppError { kind: 7, code: 1, note: \"n\", e: 0 }\n    raise err\n\nfn main() => int:\n    return risky()\n\n")
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

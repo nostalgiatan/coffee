@@ -1,0 +1,19 @@
+/#/ Ported from tests/expressions_tests.rs: the cases the first port left out.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + compiles("expressions::test_bitwise_not_llvm_xor_all_ones", "\nfn main() => int:\n    let a: int = 15\n    let b: int = ~a\n    rm a, b\n    return 0\n")
+    bad = bad + compiles("expressions::test_fstring_snprintf_failure_is_unreachable", "\nfn main() => int:\n    let name: str = \"world\"\n    let s: str = f\"Hello {name}\"\n    rm s\n    rm name\n    return 0\n")
+    bad = bad + compiles("expressions::test_sub_overflow_llvm_unreachable", "\nfn main() => int:\n    let a: int = 1\n    let b: int = 2\n    let c: int = a - b\n    rm a, b, c\n    return 0\n")
+    bad = bad + compiles("expressions::test_mul_overflow_llvm_unreachable", "\nfn main() => int:\n    let a: int = 2\n    let b: int = 3\n    let c: int = a * b\n    rm a, b, c\n    return 0\n")
+    bad = bad + rejected("expressions::test_slash_on_two_ints_is_an_error", "fn main() => int:\n    let a: int = 7 / 2\n    return a\n", 0)
+    bad = bad + exits("expressions::test_double_slash_is_integer_division", "fn main() => int:\n    let a: int = 17\n    let b: int = 5\n    return a // b\n", 3)
+    bad = bad + rejected("expressions::test_double_slash_rejects_floats", "fn main() => int:\n    let a: float = 7.0 // 2.0\n    return 0\n", 0)
+    bad = bad + exits("expressions::test_slash_on_floats_is_still_float_division", "fn main() => int:\n    let a: float = 7.0 / 2.0\n    if a > 3.4:\n        return 1\n    return 0\n", 1)
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

@@ -202,7 +202,7 @@ class Typer:
         if tk == int(Ty.Object):
             return fk == int(Ty.Str) || fk == int(Ty.Named) || fk == int(Ty.Ref) || fk == int(Ty.Buf) || fk == int(Ty.Slice)
         if fk == int(Ty.Object):
-            return tk == int(Ty.Buf) || tk == int(Ty.Str)
+            return tk == int(Ty.Buf)
         if fk == int(Ty.Tuple) && tk == int(Ty.Tuple) && t.b[from] == t.b[to]:
             for i in 0..t.b[from]:
                 if !self.fits(t, g, t.arg(from, i), t.arg(to, i)):
@@ -920,6 +920,10 @@ class Typer:
         let first = a.child[n]
         if tok_is(a, tok, "len"):
             self.args_untyped(t, g, a, n)
+            if first >= 0:
+                let lk = t.kind[self.strip_refs(t, self.node[first])]
+                if lk == int(Ty.Int) || lk == int(Ty.Float) || lk == int(Ty.Bool) || lk == int(Ty.Named):
+                    self.err(tok, int(Te.InvalidOperation), 0, self.node[first])
             return t.int_ty(8, true)
         if tok_is(a, tok, "sizeof"):
             return t.int_ty(8, true)
@@ -1038,6 +1042,8 @@ class Typer:
             count = count + 1
             c = a.next[c]
         if elem < 0:
+            /#/ nothing says what an empty array holds
+            self.err(a.tok[n], int(Te.UnknownType), 0, 0)
             return 0
         return t.array_of(elem, count)
 
@@ -1201,6 +1207,15 @@ class Typer:
             self.let_stmt(t, g, a, n)
         elif k == int(Nk.Assign):
             let tt = self.expr(t, g, a, a.pa[n], -1)
+            let lhs = a.pa[n]
+            if a.kind[lhs] == int(Nk.Unary) && a.pc[lhs] == int(Tk.Star) && a.pa[lhs] >= 0:
+                /#/ a store through `&T` (not `&mut T`)
+                let rt = self.node[a.pa[lhs]]
+                if t.kind[rt] == int(Ty.Ref) && t.b[rt] == 0:
+                    self.err(a.tok[n], int(Te.InvalidOperation), 0, rt)
+            elif a.kind[lhs] == int(Nk.Index) && a.pa[lhs] >= 0 && t.kind[self.node[a.pa[lhs]]] == int(Ty.Array) && t.is_resource(tt):
+                /#/ an element that must be released cannot be overwritten in place
+                self.err(a.tok[n], int(Te.InvalidOperation), 0, tt)
             if t.is_error(tt):
                 self.value(t, g, a, a.pb[n], -1)
             else:
@@ -1272,6 +1287,10 @@ class Typer:
                 ty = self.value(t, g, a, a.pc[n], -1)
         if ty < 0:
             ty = 0
+        let init = a.pc[n]
+        if init >= 0 && a.kind[init] == int(Nk.Index) && a.pb[init] >= 0 && a.kind[a.pb[init]] == int(Nk.Range):
+            /#/ a view of a buffer lives only as long as the statement that makes it
+            self.err(a.tok[n], int(Te.InvalidType), 0, ty)
         /#/ the type of the variable a `let` declares is recorded on the statement
         self.node[n] = ty
         if a.pa[n] < 0:

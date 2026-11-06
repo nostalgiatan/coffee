@@ -1,0 +1,50 @@
+/#/ Ported from tests/mir_cfg_tests.rs: the cases the first port left out.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + compiles("mir_cfg::test_if_else_returns_compiles_via_mir#1", "\nfn main() => int:\n    if true:\n        return 1\n    else:\n        return 0\n\n")
+    bad = bad + compiles("mir_cfg::test_if_else_returns_compiles_via_mir#2", "\nfn main() => int:\n    if true:\n        return 1\n    else:\n        return 0\n\n")
+    bad = bad + compiles("mir_cfg::test_while_assign_then_return_compiles_via_mir#1", "\nfn main() => int:\n    let i: int = 0\n    while false:\n        i = 1\n    return 0\n\n")
+    bad = bad + compiles("mir_cfg::test_while_assign_then_return_compiles_via_mir#2", "\nfn main() => int:\n    let i: int = 0\n    while false:\n        i = 1\n    return 0\n\n")
+    bad = bad + compiles("mir_cfg::test_range_for_compiles_via_mir#1", "\nfn main() => int:\n    let s: int = 0\n    for i in 0..3:\n        s = s + i\n    return 0\n\n")
+    bad = bad + compiles("mir_cfg::test_range_for_compiles_via_mir#2", "\nfn main() => int:\n    let s: int = 0\n    for i in 0..3:\n        s = s + i\n    return 0\n\n")
+    bad = bad + compiles("mir_cfg::test_if_then_local_then_assign_after_compiles_via_mir#1", "\nfn main() => int:\n    let x: int = 10\n    if true:\n        let y: int = 1\n    x = 11\n    return 0\n\n")
+    bad = bad + compiles("mir_cfg::test_if_then_local_then_assign_after_compiles_via_mir#2", "\nfn main() => int:\n    let x: int = 10\n    if true:\n        let y: int = 1\n    x = 11\n    return 0\n\n")
+    bad = bad + compiles("mir_cfg::test_rm_local_compiles_via_mir#1", "\nfn main() => int:\n    let x: int = 1\n    rm x\n    return 0\n\n")
+    bad = bad + compiles("mir_cfg::test_rm_local_compiles_via_mir#2", "\nfn main() => int:\n    let x: int = 1\n    rm x\n    return 0\n\n")
+    bad = bad + compiles("mir_cfg::test_match_int_wildcard_compiles_via_mir#1", "\nfn main() => int:\n    let x: int = 5\n    match x:\n        1 => 10\n        2 => 20\n        _ => 0\n    rm x\n    return 0\n\n")
+    bad = bad + compiles("mir_cfg::test_match_int_wildcard_compiles_via_mir#2", "\nfn main() => int:\n    let x: int = 5\n    match x:\n        1 => 10\n        2 => 20\n        _ => 0\n    rm x\n    return 0\n\n")
+    bad = bad + compiles("mir_cfg::test_match_as_function_body_compiles_via_mir#1", "\nfn classify(x: int) => int:\n    match x:\n        0 => 0\n        1 => 1\n        _ => -1\n\nfn main() => int:\n    let result: int = classify(5)\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("mir_cfg::test_match_as_function_body_compiles_via_mir#2", "\nfn classify(x: int) => int:\n    match x:\n        0 => 0\n        1 => 1\n        _ => -1\n\nfn main() => int:\n    let result: int = classify(5)\n    rm result\n    return 0\n\n")
+    bad = bad + compiles("mir_cfg::test_nested_result_ok_option_some_match_compiles_via_mir#1", "\nenum Option:\n    Some(int)\n    None\n\nenum Result:\n    Ok(Option)\n    Error(str)\n\nfn main() => int:\n    let res: Result = Result.Ok(Option.Some(42))\n    match res:\n        Result.Ok(Option.Some(x)) => x * 2\n        Result.Ok(Option.None) => 0\n        Result.Error(msg) => -1\n    rm res\n    return 0\n\n")
+    bad = bad + compiles("mir_cfg::test_nested_result_ok_option_some_match_compiles_via_mir#2", "\nenum Option:\n    Some(int)\n    None\n\nenum Result:\n    Ok(Option)\n    Error(str)\n\nfn main() => int:\n    let res: Result = Result.Ok(Option.Some(42))\n    match res:\n        Result.Ok(Option.Some(x)) => x * 2\n        Result.Ok(Option.None) => 0\n        Result.Error(msg) => -1\n    rm res\n    return 0\n\n")
+    bad = bad + compiles("mir_cfg::test_match_or_literals_compiles_via_mir#1", "\nfn main() => int:\n    let x: int = 5\n    match x:\n        1 | 2 | 3 => 1\n        4 | 5 | 6 => 2\n        _ => 0\n    rm x\n    return 0\n\n")
+    bad = bad + compiles("mir_cfg::test_match_or_literals_compiles_via_mir#2", "\nfn main() => int:\n    let x: int = 5\n    match x:\n        1 | 2 | 3 => 1\n        4 | 5 | 6 => 2\n        _ => 0\n    rm x\n    return 0\n\n")
+    bad = bad + compiles("mir_cfg::test_collection_for_in_compiles_via_mir#1", "\nfn main() => int:\n    let xs: [int; 2] = [1, 2]\n    for x in xs:\n        let n: int = x\n    rm xs\n    return 0\n\n")
+    bad = bad + compiles("mir_cfg::test_collection_for_in_compiles_via_mir#2", "\nfn main() => int:\n    let xs: [int; 2] = [1, 2]\n    for x in xs:\n        let n: int = x\n    rm xs\n    return 0\n\n")
+    bad = bad + compiles("mir_cfg::test_collection_for_in_array_literal_compiles_via_mir#1", "\nfn main() => int:\n    for x in [1, 2]:\n        let n: int = x\n    return 0\n\n")
+    bad = bad + compiles("mir_cfg::test_collection_for_in_array_literal_compiles_via_mir#2", "\nfn main() => int:\n    for x in [1, 2]:\n        let n: int = x\n    return 0\n\n")
+    bad = bad + compiles("mir_cfg::test_collection_for_in_array_call_compiles_via_mir#1", "\nfn make_xs() => [int; 2]:\n    return [1, 2]\n\nfn main() => int:\n    for x in make_xs():\n        let n: int = x\n    return 0\n\n")
+    bad = bad + compiles("mir_cfg::test_collection_for_in_array_call_compiles_via_mir#2", "\nfn make_xs() => [int; 2]:\n    return [1, 2]\n\nfn main() => int:\n    for x in make_xs():\n        let n: int = x\n    return 0\n\n")
+    bad = bad + compiles("mir_cfg::test_collection_for_in_slice_call_compiles_via_mir#1", "\nfn make_xs() => [int]:\n    let xs: [int] = []\n    return xs\n\nfn main() => int:\n    for x in make_xs():\n        let n: int = x\n    return 0\n\n")
+    bad = bad + compiles("mir_cfg::test_collection_for_in_slice_call_compiles_via_mir#2", "\nfn make_xs() => [int]:\n    let xs: [int] = []\n    return xs\n\nfn main() => int:\n    for x in make_xs():\n        let n: int = x\n    return 0\n\n")
+    bad = bad + compiles("mir_cfg::test_collection_for_in_tuple_compiles_via_mir#1", "\nfn main() => int:\n    let t: (int, int) = (1, 2)\n    for x in t:\n        let n: int = x\n    rm t\n    return 0\n\n")
+    bad = bad + compiles("mir_cfg::test_collection_for_in_tuple_compiles_via_mir#2", "\nfn main() => int:\n    let t: (int, int) = (1, 2)\n    for x in t:\n        let n: int = x\n    rm t\n    return 0\n\n")
+    bad = bad + compiles("mir_cfg::test_raise_after_let_compiles_via_mir#1", "\nuse fprintf, exit in libc of c\n\nclass TestError of Error:\n    message: str\n\nfn main() => int:\n    let a: int = 10\n    raise TestError { message: \"Error after computation\", code: 1, note: \"n\", e: 0 }\n\n")
+    bad = bad + compiles("mir_cfg::test_raise_after_let_compiles_via_mir#2", "\nuse fprintf, exit in libc of c\n\nclass TestError of Error:\n    message: str\n\nfn main() => int:\n    let a: int = 10\n    raise TestError { message: \"Error after computation\", code: 1, note: \"n\", e: 0 }\n\n")
+    bad = bad + compiles("mir_cfg::test_raise_call_form_compiles_via_mir#1", "\nuse fprintf, exit in libc of c\n\nclass TestError of Error:\n    message: str\n\nfn main() => int:\n    raise TestError(\"An error occurred\")\n\n")
+    bad = bad + compiles("mir_cfg::test_raise_call_form_compiles_via_mir#2", "\nuse fprintf, exit in libc of c\n\nclass TestError of Error:\n    message: str\n\nfn main() => int:\n    raise TestError(\"An error occurred\")\n\n")
+    bad = bad + compiles("mir_cfg::test_nested_fn_in_main_compiles_via_mir#1", "\nfn main() => int:\n    fn helper() => int:\n        return 1\n    return 0\n\n")
+    bad = bad + compiles("mir_cfg::test_nested_fn_in_main_compiles_via_mir#2", "\nfn main() => int:\n    fn helper() => int:\n        return 1\n    return 0\n\n")
+    bad = bad + compiles("mir_cfg::test_nested_class_and_comment_in_main_compiles_via_mir#1", "\nfn main() => int:\n    /#/ nested type stays on MIR\n    class Point:\n        x: int\n    let p: Point = Point { x: 1 }\n    rm p\n    return 0\n\n")
+    bad = bad + compiles("mir_cfg::test_nested_class_and_comment_in_main_compiles_via_mir#2", "\nfn main() => int:\n    /#/ nested type stays on MIR\n    class Point:\n        x: int\n    let p: Point = Point { x: 1 }\n    rm p\n    return 0\n\n")
+    bad = bad + compiles("mir_cfg::test_while_two_breaks_compiles_via_mir#1", "\nfn main() => int:\n    let i: int = 0\n    let count: int = 0\n    while i < 100:\n        i = i + 1\n        if i == 10:\n            break\n        if i == 5:\n            break\n        count = count + 1\n    rm i, count\n    return 0\n\n")
+    bad = bad + compiles("mir_cfg::test_while_two_breaks_compiles_via_mir#2", "\nfn main() => int:\n    let i: int = 0\n    let count: int = 0\n    while i < 100:\n        i = i + 1\n        if i == 10:\n            break\n        if i == 5:\n            break\n        count = count + 1\n    rm i, count\n    return 0\n\n")
+    bad = bad + compiles("mir_cfg::test_mul_in_if_then_does_not_drop_later_stmts", "\nfn main() => int:\n    let a: int = 1\n    if a == 1:\n        let n: int = a * 2\n        let m: int = n + 1\n        return m\n    return 0\n\n")
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

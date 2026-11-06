@@ -1,0 +1,15 @@
+/#/ Ported from tests/name_collision_tests.rs: the cases the first port left out.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + exits("name_collision::test_user_fn_named_like_libc_read", "fn read(x: int) => int:\n    return x + 1\n\nfn main() => int:\n    return read(4)\n", 5)
+    bad = bad + exits("name_collision::test_user_fn_named_like_libc_round", "fn round(x: int) => int:\n    return x * 2\n\nfn main() => int:\n    return round(4)\n", 8)
+    bad = bad + exits("name_collision::test_user_fn_named_like_libc_write_and_exit", "fn write(a: int, b: int) => int:\n    return a - b\n\nfn exit(x: int) => int:\n    return x\n\nfn main() => int:\n    return write(9, 3) + exit(1)\n", 7)
+    bad = bad + exits("name_collision::test_user_fn_named_like_libc_free_and_malloc", "fn malloc(n: int) => int:\n    return n\n\nfn free(n: int) => int:\n    return n + 1\n\nfn main() => int:\n    return malloc(2) + free(2)\n", 5)
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

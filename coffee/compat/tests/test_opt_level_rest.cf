@@ -1,0 +1,20 @@
+/#/ Ported from tests/opt_level_tests.rs: the cases the first port left out.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + compiles("opt_level::compile_coffee_without_dash_o_does_not_leave_default_ll", "\nfn add(a: int, b: int) => int:\n    return a + b\n\nfn main() => int:\n    return add(1, 2)\n")
+    bad = bad + compiles("opt_level::test_o0_and_o3_emit_llvm_succeed#1", "\nfn add(a: int, b: int) => int:\n    return a + b\n\nfn main() => int:\n    return add(1, 2)\n")
+    bad = bad + compiles("opt_level::test_o0_and_o3_emit_llvm_succeed#2", "\nfn add(a: int, b: int) => int:\n    return a + b\n\nfn main() => int:\n    return add(1, 2)\n")
+    bad = bad + compiles("opt_level::test_o0_and_o1_emit_llvm_differ#1", "\nfn add(a: int, b: int) => int:\n    return a + b\n\nfn main() => int:\n    return add(1, 2)\n")
+    bad = bad + compiles("opt_level::test_o0_and_o1_emit_llvm_differ#2", "\nfn add(a: int, b: int) => int:\n    return a + b\n\nfn main() => int:\n    return add(1, 2)\n")
+    bad = bad + compiles("opt_level::test_each_opt_level_object_and_asm_codegen_succeeds#1", "\nfn add(a: int, b: int) => int:\n    return a + b\n\nfn main() => int:\n    return add(1, 2)\n")
+    bad = bad + compiles("opt_level::test_each_opt_level_object_and_asm_codegen_succeeds#2", "\nfn add(a: int, b: int) => int:\n    return a + b\n\nfn main() => int:\n    return add(1, 2)\n")
+    bad = bad + compiles("opt_level::test_o0_and_o3_assembly_may_differ#1", "\nfn add(a: int, b: int) => int:\n    return a + b\n\nfn main() => int:\n    return add(1, 2)\n")
+    bad = bad + compiles("opt_level::test_o0_and_o3_assembly_may_differ#2", "\nfn add(a: int, b: int) => int:\n    return a + b\n\nfn main() => int:\n    return add(1, 2)\n")
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

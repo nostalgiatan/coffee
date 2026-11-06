@@ -1,0 +1,19 @@
+/#/ Ported from tests/enum_runtime_tests.rs: the cases the first port left out.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + exits("enum_runtime::test_enum_multi_field_variant_payload", "\nenum Shape:\n    Circle(r: int)\n    Rect(w: int, h: int)\n    Dot\n\nfn area(s: Shape) => int:\n    match s:\n        Shape.Circle(r) => r * 3\n        Shape.Rect(w, h) => w * h\n        Shape.Dot => 0\n\nfn main() => int:\n    return area(Shape.Rect(3, 5))\n", 15)
+    bad = bad + exits("enum_runtime::test_enum_single_field_variant_payload", "\nenum Shape:\n    Circle(r: int)\n    Rect(w: int, h: int)\n    Dot\n\nfn area(s: Shape) => int:\n    match s:\n        Shape.Circle(r) => r * 3\n        Shape.Rect(w, h) => w * h\n        Shape.Dot => 0\n\nfn main() => int:\n    return area(Shape.Circle(4))\n", 12)
+    bad = bad + exits("enum_runtime::test_enum_unit_variant_in_payload_enum_passed_to_fn", "\nenum Shape:\n    Circle(r: int)\n    Rect(w: int, h: int)\n    Dot\n\nfn area(s: Shape) => int:\n    match s:\n        Shape.Circle(r) => r * 3\n        Shape.Rect(w, h) => w * h\n        Shape.Dot => 0\n\nfn main() => int:\n    return area(Shape.Dot) + 7\n", 7)
+    bad = bad + exits("enum_runtime::test_enum_unit_variant_in_local", "\nenum Shape:\n    Circle(r: int)\n    Rect(w: int, h: int)\n    Dot\n\nfn area(s: Shape) => int:\n    match s:\n        Shape.Circle(r) => r * 3\n        Shape.Rect(w, h) => w * h\n        Shape.Dot => 0\n\nfn main() => int:\n    let s: Shape = Shape.Dot\n    return area(s) + 9\n", 9)
+    bad = bad + exits("enum_runtime::test_enum_mixed_variants_in_one_function", "\nenum Shape:\n    Circle(r: int)\n    Rect(w: int, h: int)\n    Dot\n\nfn area(s: Shape) => int:\n    match s:\n        Shape.Circle(r) => r * 3\n        Shape.Rect(w, h) => w * h\n        Shape.Dot => 0\n\nfn main() => int:\n    let a: int = area(Shape.Rect(3, 4))\n    let b: int = area(Shape.Dot)\n    return a + b\n", 12)
+    bad = bad + exits("enum_runtime::test_enum_returned_from_function", "\nenum Shape:\n    Circle(r: int)\n    Rect(w: int, h: int)\n    Dot\n\nfn area(s: Shape) => int:\n    match s:\n        Shape.Circle(r) => r * 3\n        Shape.Rect(w, h) => w * h\n        Shape.Dot => 0\n\nfn make_rect() => Shape:\n    return Shape.Rect(3, 5)\n\nfn make_dot() => Shape:\n    return Shape.Dot\n\nfn main() => int:\n    return area(make_rect()) + area(make_dot())\n", 15)
+    bad = bad + exits("enum_runtime::test_recursive_enum_binding_passed_to_recursive_call", "\nenum Tree:\n    Leaf\n    Node(l: Tree, r: Tree)\n\nfn build(d: int) => Tree:\n    if d == 0:\n        return Tree.Leaf\n    else:\n        return Tree.Node(build(d - 1), build(d - 1))\n\nfn count(t: Tree) => int:\n    match t:\n        Tree.Leaf => 1\n        Tree.Node(l, r) => count(l) + count(r)\n\nfn main() => int:\n    let t: Tree = build(3)\n    return count(t)\n", 8)
+    bad = bad + balanced("enum_runtime::test_recursive_enum_tree_is_balanced", "\nenum Tree:\n    Leaf\n    Node(l: Tree, r: Tree)\n\nfn build(d: int) => Tree:\n    if d == 0:\n        return Tree.Leaf\n    else:\n        return Tree.Node(build(d - 1), build(d - 1))\n\nfn count(t: Tree) => int:\n    match t:\n        Tree.Leaf => 1\n        Tree.Node(l, r) => count(l) + count(r)\n\nfn main() => int:\n    let t: Tree = build(4)\n    return count(t)\n")
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

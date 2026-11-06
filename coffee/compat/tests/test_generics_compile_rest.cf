@@ -1,0 +1,12 @@
+/#/ Ported from tests/generics_compile_tests.rs: the cases the first port left out.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + compiles("generics_compile::test_generic_box_emit_llvm", "\nclass Box<T>:\n    v: T\n\nfn main() => int:\n    let b: Box<int> = Box { v: 1 }\n    rm b\n    return 0\n\n")
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

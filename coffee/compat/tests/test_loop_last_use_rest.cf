@@ -1,0 +1,16 @@
+/#/ Ported from tests/loop_last_use_tests.rs: the cases the first port left out.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + balanced("loop_last_use::test_local_declared_in_loop_body_moves_into_call", "fn take(s: str) => int:\n    return 1\n\nfn main() => int:\n    let i: int = 0\n    while i < 3:\n        let s: str = \"a\" + \"b\"\n        let n: int = take(s)\n        i = i + 1\n    return 0\n")
+    bad = bad + balanced("loop_last_use::test_local_declared_in_loop_body_moves_into_let", "fn main() => int:\n    let i: int = 0\n    while i < 3:\n        let a: str = \"a\" + \"b\"\n        let b: str = a\n        i = i + 1\n    return 0\n")
+    bad = bad + balanced("loop_last_use::test_local_in_for_body_moves_into_class_field", "class N:\n    s: str\n\nfn main() => int:\n    let i: int = 0\n    while i < 3:\n        let s: str = \"a\" + \"b\"\n        let n: N = N { s: s }\n        i = i + 1\n    return 0\n")
+    bad = bad + rejected("loop_last_use::test_outer_variable_moved_inside_loop_is_still_an_error", "fn take(s: str) => int:\n    return 1\n\nfn main() => int:\n    let s: str = \"a\"\n    let i: int = 0\n    while i < 2:\n        let n: int = take(s)\n        i = i + 1\n    return 0\n", 302)
+    bad = bad + rejected("loop_last_use::test_two_uses_in_loop_body_do_not_move_at_the_first", "fn take(s: str) => int:\n    return 1\n\nfn main() => int:\n    let i: int = 0\n    while i < 2:\n        let s: str = \"a\"\n        let n: int = take(s)\n        let m: int = take(s)\n        i = i + 1\n    return 0\n", 302)
+    return bad
+
+fn main() => int:
+    let bad = 0
+    bad = bad + part0()
+    return bad

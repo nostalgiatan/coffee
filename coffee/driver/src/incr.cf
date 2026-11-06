@@ -501,18 +501,14 @@ fn build_incremental(fl: &Flat, dir: &Txt, out: &Txt, opt: int, jobs: int) => in
     let stale: buf<int> = new_buf(int, n + 1)
     let todo: buf<int> = new_buf(int, n + 1)
     let ntodo = 0
-    let names = new_txt()
-    let name_at: buf<int> = new_buf(int, n + 1)
+    let names: buf<Txt> = new_buf(Txt, n + 1)
     for u in 0..n:
         let name = object_name(fl, u)
-        name_at[u] = names.n
-        names.put_all(&name)
-        names.put_byte(10)
         if !key_current(dir, &name, &slice(&keys, u * 33, u * 33 + 32)):
             stale[u] = 1
             todo[ntodo] = u
             ntodo = ntodo + 1
-    name_at[n] = names.n
+        names[u] = name
     let compiled = ntodo
     let reused = n - ntodo
     let objs = new_txt()
@@ -548,7 +544,7 @@ fn build_incremental(fl: &Flat, dir: &Txt, out: &Txt, opt: int, jobs: int) => in
         if workers <= 1:
             for i in 0..ntodo:
                 let u = todo[i]
-                if !compile_unit(&prep, &t, &g, opt, u, &unit, &slice(&names, name_at[u], name_at[u + 1] - 1), &slice(&keys, u * 33, u * 33 + 32), dir, &kk):
+                if !compile_unit(&prep, &t, &g, opt, u, &unit, &names[u], &slice(&keys, u * 33, u * 33 + 32), dir, &kk):
                     return 1
             unit_phases()
         else:
@@ -563,7 +559,7 @@ fn build_incremental(fl: &Flat, dir: &Txt, out: &Txt, opt: int, jobs: int) => in
                     let i = w
                     while i < ntodo && ok:
                         let u = todo[i]
-                        ok = compile_unit(&prep, &t, &g, opt, u, &unit, &slice(&names, name_at[u], name_at[u + 1] - 1), &slice(&keys, u * 33, u * 33 + 32), dir, &kk)
+                        ok = compile_unit(&prep, &t, &g, opt, u, &unit, &names[u], &slice(&keys, u * 33, u * 33 + 32), dir, &kk)
                         i = i + workers
                     fflush(0)
                     if ok:
@@ -583,7 +579,7 @@ fn build_incremental(fl: &Flat, dir: &Txt, out: &Txt, opt: int, jobs: int) => in
     /#/ the objects, and the number-printing runtime when some file calls it and none defines it
     let uses = false
     for u in 0..n:
-        let name = slice(&names, name_at[u], name_at[u + 1] - 1)
+        let name = clone names[u]
         objs.put(" '")
         objs.put_all(&cache_path(dir, &name, ".o"))
         objs.put("'")
