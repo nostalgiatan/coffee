@@ -1672,13 +1672,16 @@ class Gen:
                     cs = cs + 1
                 cx = cx + 1
             p = f.nx[p]
-        for b in 0..f.nb:
+        let ord: buf<int> = new_buf(int, f.nb + 1)
+        block_order(f, &ord)
+        for oi in 0..f.nb:
+            let b = ord[oi]
             self.a.bind(b)
             let i = f.bfirst[b]
             while i >= 0:
                 let nxt = -1
-                if f.nx[i] < 0:
-                    nxt = b + 1
+                if f.nx[i] < 0 && oi + 1 < f.nb:
+                    nxt = ord[oi + 1]
                 self.gen_inst(f, rs, sy, i, nxt)
                 i = f.nx[i]
         let ok = self.a.end_fun()

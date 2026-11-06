@@ -3435,8 +3435,11 @@ class Lower:
 
     /#/ The function in `self.f` as machine code; a verifier finding is counted.
     fn put_fun(self) => void:
-        if verify(&self.f).n > 0:
+        let vd = verify(&self.f)
+        if vd.n > 0:
             self.ver_err = self.ver_err + 1
+            if ir_dump:
+                say(f"verifier: {vd.n} findings in a function, first: code {vd.code[0]} instruction {vd.inst[0]} block {vd.blk[0]}\n")
         if !self.mc.gen_fun(&self.f, &self.rs, &self.names):
             self.mc_err = self.mc_err + 1
 

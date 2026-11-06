@@ -554,7 +554,7 @@ fn operands(f: &Fun, i: int, k: &buf<int>) => void:
 
 /#/ The blocks reachable from the entry in reverse post-order (`rpo`, the count returned) and their
 /#/ immediate dominators (`idom`, -1 for the unreachable).
-fn dominators(f: &Fun, rpo: &buf<int>, idom: &buf<int>) => int:
+fn dominators(f: &Fun, rpo: &buf<int>, idom: &buf<int>, pc: &buf<int>, pl: &buf<int>) => int:
     let nb = f.nb
     let visited: buf<int> = new_buf(int, nb + 1)
     let ci: buf<int> = new_buf(int, nb + 1)
@@ -584,8 +584,7 @@ fn dominators(f: &Fun, rpo: &buf<int>, idom: &buf<int>) => int:
     for b in 0..nb:
         idom[b] = -1
     idom[0] = 0
-    /#/ the predecessors, once
-    let pc: buf<int> = new_buf(int, nb + 2)
+    /#/ the predecessors: those of block b are pl[pc[b] .. pc[b + 1]]
     for k in 0..np:
         let b = rpo[k]
         for s in 0..f.nsucc(b):
@@ -595,7 +594,6 @@ fn dominators(f: &Fun, rpo: &buf<int>, idom: &buf<int>) => int:
     for b in 0..nb:
         pc[b + 1] = pc[b + 1] + pc[b]
     let fill: buf<int> = new_buf(int, nb + 1)
-    let pl: buf<int> = new_buf(int, pc[nb] + 1)
     for k in 0..np:
         let b = rpo[k]
         for s in 0..f.nsucc(b):
@@ -645,7 +643,9 @@ fn cse_branches(f: &Fun) => bool:
     let nb = f.nb
     let rpo: buf<int> = new_buf(int, nb + 1)
     let idom: buf<int> = new_buf(int, nb + 1)
-    let np = dominators(f, &rpo, &idom)
+    let pc: buf<int> = new_buf(int, nb + 2)
+    let pl: buf<int> = new_buf(int, f.ne + 1)
+    let np = dominators(f, &rpo, &idom, &pc, &pl)
     let changed = false
     /#/ the dominator tree, and the single predecessor of each block (-1: none or several)
     let head: buf<int> = new_buf(int, nb + 1)
@@ -750,6 +750,235 @@ fn cse_branches(f: &Fun) => bool:
                 ch = sib[ch]
     return changed
 
+/#/ ---- loop-invariant code ---------------------------------------------------
+
+/#/ Does instruction `i` write memory or call something?
+fn writes_memory(f: &Fun, i: int) => bool:
+    let o = f.op[i]
+    if o == int(Op.Store) || o == int(Op.Call) || o == int(Op.CCall) || o == int(Op.CallI) || o == int(Op.Alloc) || o == int(Op.Free) || o == int(Op.Drop) || o == int(Op.Clone) || o == int(Op.FRem):
+        return true
+    return f.tab.has(o, f_writes()) || f.tab.has(o, f_consumes())
+
+/#/ Moves the instructions of a loop that depend only on what is computed before it to just before
+/#/ the end of the block that enters the loop (made when the loop has several entries or the entry
+/#/ block branches two ways). A load moves when nothing in the loop writes memory and it is in the
+/#/ header, which runs whenever the loop is entered.
+fn hoist_invariants(f: &Fun) => bool:
+    if f.nb < 2:
+        return false
+    let nb = f.nb
+    let rpo: buf<int> = new_buf(int, nb + 1)
+    let idom: buf<int> = new_buf(int, nb + 1)
+    let pc: buf<int> = new_buf(int, nb + 2)
+    let pl: buf<int> = new_buf(int, f.ne + 1)
+    let np = dominators(f, &rpo, &idom, &pc, &pl)
+    let changed = false
+    let inl: buf<int> = new_buf(int, nb + 1)
+    let work: buf<int> = new_buf(int, nb + 1)
+    let moved: buf<int> = new_buf(int, f.ni + 1)
+    let list: buf<int> = new_buf(int, f.ni + 1)
+    let k = np - 1
+    let prev = 0
+    while k >= 1:
+        let h = rpo[k]
+        k = k - 1
+        /#/ what was marked for the loop before is not invariant in this one
+        for r in 0..prev:
+            moved[list[r]] = 0
+        prev = 0
+        /#/ the latches: predecessors that the header dominates
+        let nw = 0
+        for q in 0..nb:
+            inl[q] = 0
+        inl[h] = 1
+        for q in pc[h]..pc[h + 1]:
+            let t = pl[q]
+            let x = t
+            while x != h && x != 0 && idom[x] >= 0 && idom[x] != x:
+                x = idom[x]
+            if x == h && inl[t] == 0:
+                inl[t] = 1
+                work[nw] = t
+                nw = nw + 1
+        if nw == 0:
+            continue
+        while nw > 0:
+            nw = nw - 1
+            let b = work[nw]
+            for q in pc[b]..pc[b + 1]:
+                let t = pl[q]
+                if inl[t] == 0 && idom[t] >= 0:
+                    inl[t] = 1
+                    work[nw] = t
+                    nw = nw + 1
+        /#/ memory written in the loop?
+        let mem = false
+        for r in 0..np:
+            let b = rpo[r]
+            if inl[b] == 1:
+                let i = f.bfirst[b]
+                while i >= 0:
+                    if writes_memory(f, i):
+                        mem = true
+                    i = f.nx[i]
+        /#/ what can move, in order
+        let n = 0
+        for r in 0..np:
+            let b = rpo[r]
+            if inl[b] == 1:
+                let i = f.bfirst[b]
+                while i >= 0:
+                    let o = f.op[i]
+                    if f.fwd[i] < 0 && (pure_op(o) || (o == int(Op.Load) && !mem && b == h)):
+                        let ok = true
+                        for u in 0..f.nval(i):
+                            let v = f.val_at(i, u)
+                            if v >= 0:
+                                let x = f.follow(v)
+                                if f.blk[x] >= 0 && inl[f.blk[x]] == 1 && moved[x] == 0:
+                                    ok = false
+                        if ok:
+                            moved[i] = 1
+                            list[n] = i
+                            n = n + 1
+                    i = f.nx[i]
+        prev = n
+        if n == 0:
+            continue
+        /#/ the block to move them to
+        let outs = 0
+        let oe = -1
+        for e in 0..f.ne:
+            let to = f.eto[e]
+            if to == h:
+                let fb = f.efrom[e]
+                if fb >= 0 && fb < nb && inl[fb] == 0 && idom[fb] >= 0:
+                    outs = outs + 1
+                    oe = e
+        if outs == 0:
+            continue
+        let pre = -1
+        if outs == 1 && f.op[f.blast[f.efrom[oe]]] == int(Op.Br):
+            pre = f.efrom[oe]
+        else:
+            let keep = f.cur
+            pre = f.new_block()
+            f.set_block(pre)
+            let p = f.pfirst[h]
+            while p >= 0:
+                let q = f.param(pre, f.rep[p], f.ty[p])
+                f.arg(q)
+                p = f.nx[p]
+            f.br(h)
+            f.set_block(keep)
+            for e in 0..f.ne - 1:
+                if f.eto[e] == h:
+                    let fb = f.efrom[e]
+                    if fb >= 0 && fb < nb && inl[fb] == 0 && idom[fb] >= 0:
+                        f.eto[e] = pre
+            return true
+        let t = f.blast[pre]
+        for r in 0..n:
+            let i = list[r]
+            unlink(f, i)
+            f.blk[i] = pre
+            f.pv[i] = f.pv[t]
+            f.nx[i] = t
+            if f.pv[t] >= 0:
+                f.nx[f.pv[t]] = i
+            else:
+                f.bfirst[pre] = i
+            f.pv[t] = i
+        changed = true
+    return changed
+
+/#/ ---- block order -------------------------------------------------------------
+
+/#/ The order the blocks are emitted in, in `ord` (all `nb` blocks): reverse post-order, a loop's
+/#/ header moved after its last block (the test is at the bottom, entered by one jump), and the blocks
+/#/ that end in `unreachable` (the failed checks) at the end so the likely way is the fall-through.
+fn block_order(f: &Fun, ord: &buf<int>) => void:
+    let nb = f.nb
+    let rpo: buf<int> = new_buf(int, nb + 1)
+    let idom: buf<int> = new_buf(int, nb + 1)
+    let pc: buf<int> = new_buf(int, nb + 2)
+    let pl: buf<int> = new_buf(int, f.ne + 1)
+    let np = dominators(f, &rpo, &idom, &pc, &pl)
+    let seen: buf<int> = new_buf(int, nb + 1)
+    let hot: buf<int> = new_buf(int, nb + 1)
+    let nh = 0
+    for k in 0..np:
+        let b = rpo[k]
+        seen[b] = 1
+        let t = f.blast[b]
+        if k > 0 && t >= 0 && f.op[t] == int(Op.Unreachable):
+            continue
+        hot[nh] = b
+        nh = nh + 1
+    /#/ loops, outermost first (a header comes before the blocks it dominates in reverse post-order)
+    let inl: buf<int> = new_buf(int, nb + 1)
+    let work: buf<int> = new_buf(int, nb + 1)
+    let rot: buf<int> = new_buf(int, nb + 1)
+    for k in 1..np:
+        let h = rpo[k]
+        if rot[h] == 1:
+            continue
+        let t = f.blast[h]
+        if t < 0 || f.op[t] != int(Op.CondBr):
+            continue
+        let nw = 0
+        for q in 0..nb:
+            inl[q] = 0
+        inl[h] = 1
+        for q in pc[h]..pc[h + 1]:
+            let l = pl[q]
+            let x = l
+            while x != h && x != 0 && idom[x] >= 0 && idom[x] != x:
+                x = idom[x]
+            if x == h && inl[l] == 0:
+                inl[l] = 1
+                work[nw] = l
+                nw = nw + 1
+        if nw == 0:
+            continue
+        while nw > 0:
+            nw = nw - 1
+            let b = work[nw]
+            for q in pc[b]..pc[b + 1]:
+                let l = pl[q]
+                if inl[l] == 0 && idom[l] >= 0:
+                    inl[l] = 1
+                    work[nw] = l
+                    nw = nw + 1
+        /#/ the last block of the loop in the order, and where the header is
+        let last = -1
+        let at = -1
+        for q in 0..nh:
+            if hot[q] == h:
+                at = q
+            if inl[hot[q]] == 1:
+                last = q
+        if at < 0 || last <= at:
+            continue
+        for q in at..last:
+            hot[q] = hot[q + 1]
+        hot[last] = h
+        rot[h] = 1
+    let n = 0
+    for q in 0..nh:
+        ord[n] = hot[q]
+        n = n + 1
+    for k in 1..np:
+        let b = rpo[k]
+        let t = f.blast[b]
+        if t >= 0 && f.op[t] == int(Op.Unreachable):
+            ord[n] = b
+            n = n + 1
+    for b in 0..nb:
+        if seen[b] == 0:
+            ord[n] = b
+            n = n + 1
+
 /#/ An `extract` of an aggregate that is now known to be built by `insert`s (a parameter that turned
 /#/ out to be one value all along) becomes the value that was inserted.
 fn fold_extracts(f: &Fun) => bool:
@@ -782,6 +1011,8 @@ fn optimize(f: &Fun) => void:
         if fold_extracts(f):
             changed = true
         if cse_branches(f):
+            changed = true
+        if hoist_invariants(f):
             changed = true
         if thread_jumps(f):
             changed = true
