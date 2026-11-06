@@ -67,7 +67,7 @@ class Gen:
     /#/ the positions of the instructions that call something, in order
     ra_cp: buf<int>
     ra_ncp: int
-    /#/ per call position: the caller-saved registers (bit 0 r10, 1 r8, 2 r9) the callee may write
+    /#/ per call position: the caller-saved registers (bit 0 r10, 1 r8, 2 r9, 3 r11) the callee may write
     ra_cm: buf<int>
     /#/ the name id of the function being generated (-1: none), and per name id of a function of this
     /#/ object already generated, 8 + the registers it and everything it calls may write
@@ -283,9 +283,9 @@ class Gen:
     /#/ when its arguments go through them.
     fn site_mask(self, f: &Fun, i: int) => int:
         if f.op[i] != int(Op.Call):
-            return 7
+            return 15
         let id = f.aux[i]
-        let m = 7
+        let m = 15
         if id >= 0 && id < len(self.msk) && self.msk[id] > 0:
             m = self.msk[id] - 8
         if f.b[i] >= 5:
@@ -315,7 +315,7 @@ class Gen:
     /#/ May a value that lives across calls writing `cm` and (`restr`) is a parameter or an argument
     /#/ take register number `r` of the pool?
     fn reg_ok(self, r: int, cm: int, restr: bool) => bool:
-        if r >= 3:
+        if r >= 4:
             return true
         if ((cm >> r) & 1) == 1:
             return false
@@ -444,7 +444,7 @@ class Gen:
             self.did[v] = -1
         self.nsaved = 0
         self.ra_ncp = 0
-        self.fmask = 7
+        self.fmask = 15
         /#/ dense numbers, positions: uses at even numbers, definitions after them
         let nd = 0
         for b in 0..f.nb:
@@ -644,25 +644,26 @@ class Gen:
             sd = sd - 1
         /#/ the caller-saved registers first (r10, then r8 and r9, the registers of the fifth and sixth
         /#/ argument), then the saved ones
-        let regs: buf<int> = new_buf(int, 8)
+        let regs: buf<int> = new_buf(int, 9)
         regs[0] = 10
         regs[1] = 8
         regs[2] = 9
-        regs[3] = 3
-        regs[4] = 12
-        regs[5] = 13
-        regs[6] = 14
-        regs[7] = 15
+        regs[3] = 11
+        regs[4] = 3
+        regs[5] = 12
+        regs[6] = 13
+        regs[7] = 14
+        regs[8] = 15
         let ent: buf<int> = new_buf(int, nd + 1)
         let ep = f.pfirst[0]
         while ep >= 0:
             if self.did[ep] >= 0:
                 ent[self.did[ep]] = 1
             ep = f.nx[ep]
-        let occ: buf<int> = new_buf(int, 8)
-        for r in 0..8:
+        let occ: buf<int> = new_buf(int, 9)
+        for r in 0..9:
             occ[r] = -1
-        let used: buf<int> = new_buf(int, 8)
+        let used: buf<int> = new_buf(int, 9)
         /#/ the xmm registers 2 to 15 for floats that are not alive across a call (all are caller-saved);
         /#/ the arguments are loaded into xmm0 to xmm7, so a parameter or an argument stays in 8 to 15
         let occx: buf<int> = new_buf(int, 16)
@@ -697,7 +698,7 @@ class Gen:
                 /#/ parameter of the function (loading the arguments or the parameters would overwrite it)
                 let cm = self.cm_in(self.ra_lo[d], self.ra_hi[d])
                 let restr = ent[d] == 1 || self.at_call(self.ra_hi[d])
-                for r in 0..8:
+                for r in 0..9:
                     if occ[r] >= 0 && self.ra_hi[occ[r]] < self.ra_lo[d]:
                         occ[r] = -1
                 let fr = -1
@@ -705,16 +706,16 @@ class Gen:
                 let hint = self.hint_reg(f, dv[d])
                 let shared = -1
                 if coal[d] >= 0 && self.home[dv[coal[d]]] >= 0 && self.ra_lo[coal[d]] < self.ra_lo[d]:
-                    for r in 0..8:
+                    for r in 0..9:
                         if regs[r] == self.home[dv[coal[d]]] && occ[r] == coal[d] && self.reg_ok(r, cm, restr):
                             shared = r
                 if shared >= 0:
                     fr = shared
                 if hint >= 0 && fr < 0:
-                    for r in 0..8:
+                    for r in 0..9:
                         if regs[r] == hint && occ[r] < 0 && self.reg_ok(r, cm, restr):
                             fr = r
-                for r in 0..8:
+                for r in 0..9:
                     if occ[r] < 0 && fr < 0 && self.reg_ok(r, cm, restr):
                         fr = r
                 if fr >= 0:
@@ -725,7 +726,7 @@ class Gen:
                 else:
                     /#/ the least wanted of the live ones and this one goes to the frame
                     let worst = -1
-                    for r in 0..8:
+                    for r in 0..9:
                         if self.reg_ok(r, cm, restr):
                             if worst < 0 || self.ra_wt[occ[r]] < self.ra_wt[occ[worst]]:
                                 worst = r
@@ -738,12 +739,14 @@ class Gen:
         /#/ hold neither a parameter nor an argument of the call that ends the value
         for d in 0..nd:
             let h = self.home[dv[d]]
-            if h == 8 || h == 9 || h == 10:
+            if h == 8 || h == 9 || h == 10 || h == 11:
                 let bit = 0
                 if h == 8:
                     bit = 1
                 elif h == 9:
                     bit = 2
+                elif h == 11:
+                    bit = 3
                 if ((self.cm_in(self.ra_lo[d], self.ra_hi[d]) >> bit) & 1) == 1:
                     self.err = 1
                 if h != 10 && (ent[d] == 1 || self.at_call(self.ra_hi[d])):
@@ -756,13 +759,13 @@ class Gen:
                 if xh < 8 && (ent[d] == 1 || self.at_call(self.ra_hi[d])):
                     self.err = 1
         /#/ what this function may write: the registers of its calls, and its own caller-saved homes
-        for r in 0..3:
+        for r in 0..4:
             if used[r] == 1:
                 self.fmask = self.fmask | (1 << r)
         if len(self.saved) < 6:
             self.saved = new_buf(int, 8)
-        for r in 0..8:
-            if used[r] == 1 && r >= 3:
+        for r in 0..9:
+            if used[r] == 1 && r >= 4:
                 self.saved[self.nsaved] = regs[r]
                 self.nsaved = self.nsaved + 1
 
