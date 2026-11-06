@@ -67,7 +67,7 @@ class Gen:
     /#/ the positions of the instructions that call something, in order
     ra_cp: buf<int>
     ra_ncp: int
-    /#/ per call position: the caller-saved registers (bit 0 r10, 1 r8, 2 r9, 3 r11) the callee may write
+    /#/ per call position: the caller-saved registers (bit 0 r10, 1 r8, 2 r9, 3 r11, 4 rdi) the callee may write
     ra_cm: buf<int>
     /#/ the name id of the function being generated (-1: none), and per name id of a function of this
     /#/ object already generated, 8 + the registers it and everything it calls may write
@@ -276,16 +276,27 @@ class Gen:
     /#/ Does instruction `i` make a call (so that the registers a callee may write are lost)?
     fn is_clobber(self, f: &Fun, i: int) => bool:
         let op = f.op[i]
+        if self.uses_rdi(f, i):
+            return true
         return op == int(Op.Call) || op == int(Op.CCall) || op == int(Op.CallI) || op == int(Op.Drop) || op == int(Op.Clone) || op == int(Op.Alloc) || op == int(Op.Free) || op == int(Op.FRem)
+
+    /#/ Does instruction `i` use rdi as a scratch register (the aggregate store and return)?
+    fn uses_rdi(self, f: &Fun, i: int) => bool:
+        let op = f.op[i]
+        if op == int(Op.Store) && f.rep[self.res(f, f.b[i])] >= rp_first_agg():
+            return true
+        return op == int(Op.Ret) && f.a[i] >= 0 && f.rep[self.res(f, f.a[i])] >= rp_first_agg()
 
     /#/ The caller-saved registers that the call `i` may write: all of them unless it is a call of a
     /#/ function of this object that was generated before (then what that one writes), and r8 and r9
     /#/ when its arguments go through them.
     fn site_mask(self, f: &Fun, i: int) => int:
+        if self.uses_rdi(f, i):
+            return 16
         if f.op[i] != int(Op.Call):
-            return 15
+            return 31
         let id = f.aux[i]
-        let m = 15
+        let m = 31
         if id >= 0 && id < len(self.msk) && self.msk[id] > 0:
             m = self.msk[id] - 8
         if f.b[i] >= 5:
@@ -294,6 +305,8 @@ class Gen:
             m = m | 4
         if f.rep[i] >= rp_first_agg():
             m = m | 2
+        if f.b[i] >= 1 || f.rep[i] >= rp_first_agg():
+            m = m | 16
         return m
 
     /#/ The registers written by the calls strictly between positions `lo` and `hi`.
@@ -315,7 +328,7 @@ class Gen:
     /#/ May a value that lives across calls writing `cm` and (`restr`) is a parameter or an argument
     /#/ take register number `r` of the pool?
     fn reg_ok(self, r: int, cm: int, restr: bool) => bool:
-        if r >= 4:
+        if r >= 5:
             return true
         if ((cm >> r) & 1) == 1:
             return false
@@ -444,7 +457,7 @@ class Gen:
             self.did[v] = -1
         self.nsaved = 0
         self.ra_ncp = 0
-        self.fmask = 15
+        self.fmask = 31
         /#/ dense numbers, positions: uses at even numbers, definitions after them
         let nd = 0
         for b in 0..f.nb:
@@ -644,26 +657,27 @@ class Gen:
             sd = sd - 1
         /#/ the caller-saved registers first (r10, then r8 and r9, the registers of the fifth and sixth
         /#/ argument), then the saved ones
-        let regs: buf<int> = new_buf(int, 9)
+        let regs: buf<int> = new_buf(int, 10)
         regs[0] = 10
         regs[1] = 8
         regs[2] = 9
         regs[3] = 11
-        regs[4] = 3
-        regs[5] = 12
-        regs[6] = 13
-        regs[7] = 14
-        regs[8] = 15
+        regs[4] = 7
+        regs[5] = 3
+        regs[6] = 12
+        regs[7] = 13
+        regs[8] = 14
+        regs[9] = 15
         let ent: buf<int> = new_buf(int, nd + 1)
         let ep = f.pfirst[0]
         while ep >= 0:
             if self.did[ep] >= 0:
                 ent[self.did[ep]] = 1
             ep = f.nx[ep]
-        let occ: buf<int> = new_buf(int, 9)
-        for r in 0..9:
+        let occ: buf<int> = new_buf(int, 10)
+        for r in 0..10:
             occ[r] = -1
-        let used: buf<int> = new_buf(int, 9)
+        let used: buf<int> = new_buf(int, 10)
         /#/ the xmm registers 2 to 15 for floats that are not alive across a call (all are caller-saved);
         /#/ the arguments are loaded into xmm0 to xmm7, so a parameter or an argument stays in 8 to 15
         let occx: buf<int> = new_buf(int, 16)
@@ -698,7 +712,7 @@ class Gen:
                 /#/ parameter of the function (loading the arguments or the parameters would overwrite it)
                 let cm = self.cm_in(self.ra_lo[d], self.ra_hi[d])
                 let restr = ent[d] == 1 || self.at_call(self.ra_hi[d])
-                for r in 0..9:
+                for r in 0..10:
                     if occ[r] >= 0 && self.ra_hi[occ[r]] < self.ra_lo[d]:
                         occ[r] = -1
                 let fr = -1
@@ -706,16 +720,16 @@ class Gen:
                 let hint = self.hint_reg(f, dv[d])
                 let shared = -1
                 if coal[d] >= 0 && self.home[dv[coal[d]]] >= 0 && self.ra_lo[coal[d]] < self.ra_lo[d]:
-                    for r in 0..9:
+                    for r in 0..10:
                         if regs[r] == self.home[dv[coal[d]]] && occ[r] == coal[d] && self.reg_ok(r, cm, restr):
                             shared = r
                 if shared >= 0:
                     fr = shared
                 if hint >= 0 && fr < 0:
-                    for r in 0..9:
+                    for r in 0..10:
                         if regs[r] == hint && occ[r] < 0 && self.reg_ok(r, cm, restr):
                             fr = r
-                for r in 0..9:
+                for r in 0..10:
                     if occ[r] < 0 && fr < 0 && self.reg_ok(r, cm, restr):
                         fr = r
                 if fr >= 0:
@@ -726,7 +740,7 @@ class Gen:
                 else:
                     /#/ the least wanted of the live ones and this one goes to the frame
                     let worst = -1
-                    for r in 0..9:
+                    for r in 0..10:
                         if self.reg_ok(r, cm, restr):
                             if worst < 0 || self.ra_wt[occ[r]] < self.ra_wt[occ[worst]]:
                                 worst = r
@@ -739,7 +753,7 @@ class Gen:
         /#/ hold neither a parameter nor an argument of the call that ends the value
         for d in 0..nd:
             let h = self.home[dv[d]]
-            if h == 8 || h == 9 || h == 10 || h == 11:
+            if h == 7 || h == 8 || h == 9 || h == 10 || h == 11:
                 let bit = 0
                 if h == 8:
                     bit = 1
@@ -747,6 +761,8 @@ class Gen:
                     bit = 2
                 elif h == 11:
                     bit = 3
+                elif h == 7:
+                    bit = 4
                 if ((self.cm_in(self.ra_lo[d], self.ra_hi[d]) >> bit) & 1) == 1:
                     self.err = 1
                 if h != 10 && (ent[d] == 1 || self.at_call(self.ra_hi[d])):
@@ -759,13 +775,13 @@ class Gen:
                 if xh < 8 && (ent[d] == 1 || self.at_call(self.ra_hi[d])):
                     self.err = 1
         /#/ what this function may write: the registers of its calls, and its own caller-saved homes
-        for r in 0..4:
+        for r in 0..5:
             if used[r] == 1:
                 self.fmask = self.fmask | (1 << r)
         if len(self.saved) < 6:
             self.saved = new_buf(int, 8)
-        for r in 0..9:
-            if used[r] == 1 && r >= 4:
+        for r in 0..10:
+            if used[r] == 1 && r >= 5:
                 self.saved[self.nsaved] = regs[r]
                 self.nsaved = self.nsaved + 1
 
