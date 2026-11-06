@@ -857,8 +857,17 @@ class Lower:
 
     /#/ Releases the string `x`; a null string (an element of a new buffer) is left alone.
     fn str_free(self, x: int) => void:
-        let live = self.f.conv(int(Op.ZExt), int(Rp.I64), self.f.cmp(int(Pr.Ne), self.f.conv(int(Op.PtrToInt), int(Rp.I64), x), self.f.cint(int(Rp.I64), 0)))
-        self.f.free(self.f.index(x, self.f.bin(int(Op.Mul), live, self.f.cint(int(Rp.I64), -8)), 1))
+        if self.f.terminated(self.f.cur):
+            return
+        let yes = self.new_block()
+        let join = self.new_block()
+        self.branch(self.f.cmp(int(Pr.Ne), self.f.conv(int(Op.PtrToInt), int(Rp.I64), x), self.f.cint(int(Rp.I64), 0)), yes, join)
+        self.seal(yes)
+        self.f.set_block(yes)
+        self.f.free(self.f.index(x, self.f.cint(int(Rp.I64), -8), 1))
+        self.jump(join)
+        self.seal(join)
+        self.f.set_block(join)
 
     /#/ A new string: the text of `x` and then the text of `y`.
     fn str_cat(self, x: int, y: int) => int:
