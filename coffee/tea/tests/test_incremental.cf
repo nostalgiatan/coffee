@@ -42,10 +42,10 @@ fn main() => int:
     put("proj/src/other.cf", "use * in util\n\n/#/ twice\nfn twice(a: int) => int:\n    return add(a, a)\n")
     m = m + expect(6, build(), 0)
     m = m + expect(7, said("0 compiled, 3 reused"), 0)
-    /#/ a body that others only call
+    /#/ a body that others only call: `twice` is small, so `main`, which inlines it, is rebuilt too
     put("proj/src/other.cf", "use * in util\n\nfn twice(a: int) => int:\n    return add(a, a) + 1\n")
     m = m + expect(8, build(), 0)
-    m = m + expect(9, said("1 compiled, 2 reused"), 0)
+    m = m + expect(9, said("2 compiled, 1 reused"), 0)
     m = m + expect(10, (system("proj/target/build/app") >> 8) & 255, 7)
     /#/ a new parameter reaches every file that sees the function
     put("proj/src/util.cf", "fn add(a: int, b: int, c: int) => int:\n    return a + b + c\n")
@@ -79,4 +79,15 @@ fn main() => int:
     put("proj/src/util.cf", "class P:\n    x: float\n\nfn mk() => P:\n    return P { x: 5.0 }\n\nfn unrelated(n: int) => int:\n    return n\n")
     m = m + expect(26, build(), 0)
     m = m + expect(27, said("1 compiled, 3 reused"), 0)
+    /#/ a small function's body is part of its interface: the files that call it inline it, so they
+    /#/ are rebuilt when it changes (a longer one is only a header)
+    put("proj/src/util.cf", "fn bump(n: int) => int:\n    return n + 3\n")
+    put("proj/src/other.cf", "fn standalone() => int:\n    return 2\n")
+    put("proj/src/main.cf", "use * in other\nuse * in util\n\nfn main() => int:\n    return bump(1) + standalone()\n")
+    m = m + expect(28, build(), 0)
+    m = m + expect(29, (system("proj/target/build/app") >> 8) & 255, 6)
+    put("proj/src/util.cf", "fn bump(n: int) => int:\n    return n + 4\n")
+    m = m + expect(30, build(), 0)
+    m = m + expect(31, said("2 compiled, 1 reused"), 0)
+    m = m + expect(32, (system("proj/target/build/app") >> 8) & 255, 7)
     return m

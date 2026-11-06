@@ -181,32 +181,37 @@ fn prepare_ast(a: Ast, cfc: str, t: &Tys, g: &Syms) => Prep:
 /#/ The functions of a prepared program lowered and optimized, not yet generated. With `only` >= 0
 /#/ just the top-level items whose `unit[node]` is `only` are lowered (the rest are called by name from
 /#/ other objects), and the names the compiler makes end in `tag`.
-fn lower_prepared(p: &Prep, t: &Tys, g: &Syms, opt: int, only: int, unit: &buf<int>, tag: &str) => Lower:
+fn lower_prepared(p: &Prep, t: &Tys, g: &Syms, opt: int, only: int, unit: &buf<int>, tag: &str, ext: &buf<int>) => Lower:
     let lw = new_lower()
     lw.opt = opt
     lw.tag.put(tag)
     let body = new_txt()
     let it = p.a.child[p.a.root]
     while it >= 0:
-        if only >= 0 && unit[it] != only:
-            it = p.a.next[it]
-            continue
+        /#/ small functions of other files are lowered too (`ext[node]` is 1), for the optimizer to
+        /#/ inline; they are not generated here, their own file has them
+        let other = only >= 0 && unit[it] != only
         if p.a.kind[it] == int(Nk.Fn) && type_param_count(&p.a, it) == 0:
-            lw.function(t, g, &p.ty, &p.a, it, -1)
-            if lw.bad > 0:
-                report_unsupported(&p.a, lw.bad_node)
-                return lw
-            lw.keep_current()
+            if !other || ext[it] == 1:
+                lw.ext_mode = other
+                lw.function(t, g, &p.ty, &p.a, it, -1)
+                if lw.bad > 0:
+                    report_unsupported(&p.a, lw.bad_node)
+                    return lw
+                lw.keep_current()
+                lw.ext_mode = false
         elif p.a.kind[it] == int(Nk.Class) && type_param_count(&p.a, it) == 0:
             let row = g.find_in_module(&p.a, p.a.pa[it], p.ty.cur)
             let c = p.a.child[it]
             while c >= 0:
-                if p.a.kind[c] == int(Nk.Fn):
+                if p.a.kind[c] == int(Nk.Fn) && (!other || ext[c] == 1):
+                    lw.ext_mode = other
                     lw.function(t, g, &p.ty, &p.a, c, row)
                     if lw.bad > 0:
                         report_unsupported(&p.a, lw.bad_node)
                         return lw
                     lw.keep_current()
+                    lw.ext_mode = false
                 c = p.a.next[c]
         it = p.a.next[it]
     lw.run_instances(t, g, &p.ty, &p.a, &body)
@@ -225,7 +230,7 @@ fn module_of(bytes: buf<int>, size: int, opt: int, cfc: str, t: &Tys, g: &Syms) 
         lw.bad = 1
         return lw
     let none: buf<int> = new_buf(int, 1)
-    return lower_prepared(&p, t, g, opt, -1, &none, "")
+    return lower_prepared(&p, t, g, opt, -1, &none, "", &none)
 
 /#/ Compiles `src` through our front end and IR, with clang as the linker, and runs it: the exit
 /#/ code, or -2 when something did not compile.

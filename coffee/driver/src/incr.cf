@@ -12,8 +12,9 @@
 /#/     sees every module-level `let`, which it initializes), or
 /#/   - the compiler, the `.cfc` text or the optimization level is another one.
 /#/ Names the compiler makes (glue, generic instances) carry a per-file suffix, so objects built at
-/#/ different times never define the same symbol. The optimizer works inside one file only, so a
-/#/ call into another file is never inlined.
+/#/ different times never define the same symbol. The optimizer works inside one file, but the small
+/#/ functions and methods (`small_fn`) of the files a file can see are lowered into it as well, for
+/#/ inlining only: their bodies are part of their interface, and their code stays in their own file.
 use printf, system, fflush, fork, waitpid, _exit in libc of c
 
 /#/ Two 64-bit FNV lanes.
@@ -85,21 +86,36 @@ fn walk_tokens(w: &Walk, a: &Ast, lo: int, hi: int) => void:
     w.a = h.a
     w.b = h.b
 
+/#/ A function (or method) small enough that other files get its body to inline: not generic, not
+/#/ `main`, at most 60 tokens, and with no function inside it.
+fn small_fn(a: &Ast, f: int) => bool:
+    if a.kind[f] != int(Nk.Fn) || a.pc[f] < 0 || type_param_count(a, f) != 0:
+        return false
+    if a.pa[f] >= 0 && tok_is(a, a.pa[f], "main"):
+        return false
+    if a.end[f] - a.tok[f] > 60:
+        return false
+    for q in a.tok[f] + 1..a.end[f]:
+        if a.toks.kind[q] == int(Tk.KwFn):
+            return false
+    return true
+
 /#/ Adds what other files may depend on in the top-level item `n`: a function's header, a class's
-/#/ fields and method headers, and the whole of a generic function or class and of everything else.
+/#/ fields and method headers, the bodies of the small functions and methods, and the whole of a
+/#/ generic function or class and of everything else.
 fn walk_interface(w: &Walk, a: &Ast, n: int) => void:
     let k = a.kind[n]
     let lo = a.tok[n]
     let hi = a.end[n]
     if k == int(Nk.Fn):
-        if type_param_count(a, n) == 0 && a.pc[n] >= 0:
+        if type_param_count(a, n) == 0 && a.pc[n] >= 0 && !small_fn(a, n):
             hi = a.tok[a.pc[n]]
         walk_tokens(w, a, lo, hi)
     elif k == int(Nk.Class) && type_param_count(a, n) == 0:
         let q = lo
         let m = a.child[n]
         while q < hi:
-            while m >= 0 && !(a.kind[m] == int(Nk.Fn) && a.pc[m] >= 0 && a.tok[a.pc[m]] >= q):
+            while m >= 0 && !(a.kind[m] == int(Nk.Fn) && a.pc[m] >= 0 && a.tok[a.pc[m]] >= q && !small_fn(a, m)):
                 m = a.next[m]
             let stop = hi
             if m >= 0:
@@ -286,10 +302,17 @@ fn build_items(fl: &Flat, a: &Ast, n: int) => Items:
     it.m_at[it.count] = nm
     return it
 
+/#/ The keys of the files, and for each file the nodes whose small functions it gets to inline.
+class Keys:
+    text: Txt
+    /#/ the nodes of file u are ext_nodes[ext_at[u] .. ext_at[u + 1])
+    ext_at: buf<int>
+    ext_nodes: buf<int>
+
 /#/ The key of each file, one line of 32 hex digits each: the compiler, the level, the `.cfc` text,
 /#/ the C imports, the file's own tokens (`bodies`), and the interfaces of the items it can see.
 /#/ The file with `main` also runs every module-level `let`, so it sees them all.
-fn unit_keys(fl: &Flat, a: &Ast, n: int, ch: &Txt, opt: int, cfc: &str, bodies: &Txt) => Txt:
+fn unit_keys(fl: &Flat, a: &Ast, n: int, ch: &Txt, opt: int, cfc: &str, bodies: &Txt) => Keys:
     let it = build_items(fl, a, n)
     /#/ the identifier tokens of each file
     let tu: buf<int> = new_buf(int, a.toks.count + 1)
@@ -317,9 +340,13 @@ fn unit_keys(fl: &Flat, a: &Ast, n: int, ch: &Txt, opt: int, cfc: &str, bodies: 
     let stack: buf<int> = new_buf(int, it.count + 1)
     let found: buf<int> = new_buf(int, 64)
     let keys = new_txt()
+    let ext_at: buf<int> = new_buf(int, n + 2)
+    let ext_nodes: buf<int> = new_buf(int, 16)
+    let ne = 0
     let cfc_t = txt_of(cfc)
     for u in 0..n:
         let sp = 0
+        ext_at[u] = ne
         if has_main[u] == 1:
             for x in 0..it.count:
                 if it.unit[x] != u && a.kind[it.node[x]] == int(Nk.Let):
@@ -354,9 +381,16 @@ fn unit_keys(fl: &Flat, a: &Ast, n: int, ch: &Txt, opt: int, cfc: &str, bodies: 
             if mark[x] == u + 1:
                 k.add(it.ia[x])
                 k.add(it.ib[x])
+                let kd = a.kind[it.node[x]]
+                if kd == int(Nk.Class) || (kd == int(Nk.Fn) && small_fn(a, it.node[x])):
+                    if ne >= len(ext_nodes):
+                        ext_nodes = buf_resize(ext_nodes, ne * 2)
+                    ext_nodes[ne] = it.node[x]
+                    ne = ne + 1
         keys.put_all(&k.hex())
         keys.put_byte(10)
-    return keys
+    ext_at[n] = ne
+    return Keys { text: keys, ext_at: ext_at, ext_nodes: ext_nodes }
 
 /#/ Does the program define the number-printing runtime itself (the runtime's own tests do)?
 fn defines_runtime(a: &Ast) => bool:
@@ -368,14 +402,26 @@ fn defines_runtime(a: &Ast) => bool:
     return false
 
 /#/ Builds the object of unit `u` into `dir`, with the key `kt`. False when the unit has findings.
-fn compile_unit(prep: &Prep, t: &Tys, g: &Syms, opt: int, u: int, unit: &buf<int>, name: &Txt, kt: &Txt, dir: &Txt) => bool:
+fn compile_unit(prep: &Prep, t: &Tys, g: &Syms, opt: int, u: int, unit: &buf<int>, name: &Txt, kt: &Txt, dir: &Txt, kk: &Keys) => bool:
     /#/ the names the compiler makes end in the object's own name, so objects built at different
     /#/ times (and numbers of files) never define the same symbol
     let tag = txt_of("_u_")
     tag.put_all(name)
     let ts = txt_str(&tag)
+    /#/ the small functions of the files this one can see, for inlining
+    let ext: buf<int> = new_buf(int, prep.a.count + 1)
+    for j in kk.ext_at[u]..kk.ext_at[u + 1]:
+        let x = kk.ext_nodes[j]
+        if prep.a.kind[x] == int(Nk.Fn):
+            ext[x] = 1
+        else:
+            let c = prep.a.child[x]
+            while c >= 0:
+                if small_fn(&prep.a, c):
+                    ext[c] = 1
+                c = prep.a.next[c]
     let t0 = now_ms()
-    let lw = lower_prepared(prep, t, g, opt, u, unit, &ts)
+    let lw = lower_prepared(prep, t, g, opt, u, unit, &ts, &ext)
     if lw.bad > 0:
         return false
     let t1 = now_ms()
@@ -438,7 +484,8 @@ fn build_incremental(fl: &Flat, dir: &Txt, out: &Txt, opt: int, jobs: int) => in
     let n = fl.nunit
     let bodies = unit_bodies(fl, &a0, n)
     phase("hashes")
-    let keys = unit_keys(fl, &a0, n, &ch, opt, &cfc, &bodies)
+    let kk = unit_keys(fl, &a0, n, &ch, opt, &cfc, &bodies)
+    let keys = copy_txt(&kk.text)
     let all = new_hash()
     all.add_txt(&keys)
     phase("keys")
@@ -482,11 +529,12 @@ fn build_incremental(fl: &Flat, dir: &Txt, out: &Txt, opt: int, jobs: int) => in
             unit[top] = u
             if u < n && stale[u] == 0:
                 if a0.kind[top] == int(Nk.Fn) && type_param_count(&a0, top) == 0:
-                    a0.pc[top] = 0 - 1
+                    if !small_fn(&a0, top):
+                        a0.pc[top] = 0 - 1
                 elif a0.kind[top] == int(Nk.Class) && type_param_count(&a0, top) == 0:
                     let c = a0.child[top]
                     while c >= 0:
-                        if a0.kind[c] == int(Nk.Fn):
+                        if a0.kind[c] == int(Nk.Fn) && !small_fn(&a0, c):
                             a0.pc[c] = 0 - 1
                         c = a0.next[c]
             top = a0.next[top]
@@ -500,7 +548,7 @@ fn build_incremental(fl: &Flat, dir: &Txt, out: &Txt, opt: int, jobs: int) => in
         if workers <= 1:
             for i in 0..ntodo:
                 let u = todo[i]
-                if !compile_unit(&prep, &t, &g, opt, u, &unit, &slice(&names, name_at[u], name_at[u + 1] - 1), &slice(&keys, u * 33, u * 33 + 32), dir):
+                if !compile_unit(&prep, &t, &g, opt, u, &unit, &slice(&names, name_at[u], name_at[u + 1] - 1), &slice(&keys, u * 33, u * 33 + 32), dir, &kk):
                     return 1
             unit_phases()
         else:
@@ -515,7 +563,7 @@ fn build_incremental(fl: &Flat, dir: &Txt, out: &Txt, opt: int, jobs: int) => in
                     let i = w
                     while i < ntodo && ok:
                         let u = todo[i]
-                        ok = compile_unit(&prep, &t, &g, opt, u, &unit, &slice(&names, name_at[u], name_at[u + 1] - 1), &slice(&keys, u * 33, u * 33 + 32), dir)
+                        ok = compile_unit(&prep, &t, &g, opt, u, &unit, &slice(&names, name_at[u], name_at[u + 1] - 1), &slice(&keys, u * 33, u * 33 + 32), dir, &kk)
                         i = i + workers
                     fflush(0)
                     if ok:
