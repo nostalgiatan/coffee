@@ -54,6 +54,7 @@ fn part1() => int:
     bad = bad + rejected("expressions::test_bitwise_not_on_float_is_error", "\nfn main() => int:\n    let a: float = 1.0\n    let b: int = ~a\n    return 0\n\n", 0)
     bad = bad + rejected("expressions::test_bitwise_not_on_bool_is_error", "\nfn main() => int:\n    let a: bool = true\n    let b: int = ~a\n    return 0\n\n", 0)
     bad = bad + rejected("expressions::test_bitwise_not_on_pointer_is_error", "\nfn main() => int:\n    let a: int = 1\n    let r: &int = &a\n    let b: int = ~r\n    return 0\n\n", 0)
+    bad = bad + compiles("expressions::test_fstring_compiles", "\nfn main() => int:\n    let name: str = \"world\"\n    let s: str = f\"Hello {name}\"\n    rm s\n    rm name\n    return 0\n\n")
     return bad
 
 fn main() => int:

@@ -8,21 +8,11 @@ self-hosted compiler with `tea test`. A case is a program and one expectation:
   (`assert_compile_error`; messages are not compared, only `E100`-style numbers);
 - `exits(name, src, n)`: the program runs and exits with `n` (`assert_exit_code`).
 
-`tests/` holds the 564 cases that pass; each file is named after the Rust file it came from.
-`pending/` holds the 63 that do not yet. They are not run: move a case back to `tests/` when it passes.
+`tests/` holds all 627 cases; each file is named after the Rust file it came from. Every one passes.
 
-## What the pending cases are
-
-Counted from the first run:
-
-| gap | cases |
-|---|---|
-| lowering: some `for` forms | 4 |
-| lowering: `&` expressions | 4 |
-| lowering: `Option`, f-strings, `class` in some position | 4 |
-| error expected, none reported (checks the self-hosted front end lacks) | 18 |
-| error reported with another number | 18 |
-| wrong exit code | 12 |
+Some ports differ from the Rust test on purpose. Four `imports` cases only check that the `use`
+syntax parses (`parses`): the Rust helper does not resolve modules, the self-hosted driver does. Two
+Rust tests assert `is_err()` under a name that says so; they are `rejected` here.
 
 ## Not ported
 

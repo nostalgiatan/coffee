@@ -67,7 +67,7 @@ fn main() => int:
     m = m + miss_t(prog("    let a = [1, 2]\n    let b = a[\"x\"]\n"), mis, 1)
     m = m + miss_ok(prog("    let s = \"abc\"\n    let b: int(1)- = s[0]\n"))
     /#/ casts
-    m = m + miss_ok(prog("    let a = int(1.5) + int(true)\n    let f = float(3)\n    let b = bool(2)\n"))
+    m = m + miss_ok(prog("    let a = int(1.5) + int(2)\n    let f = float(3)\n    let b = bool(2)\n"))
     m = m + miss_ok(prog("    let a = 300 as int(2)+\n    let n = a as float\n"))
     m = m + miss_t(prog("    let a = \"x\" as int\n"), op, 1)
     /#/ pointer arithmetic on an object

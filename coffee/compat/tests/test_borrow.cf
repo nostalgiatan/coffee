@@ -6,13 +6,23 @@ fn part0() => int:
     bad = bad + compiles("borrow::test_shared_borrow_and_deref_compiles", "\nfn main() => int:\n    let x: int = 10\n    let y: &int = &x\n    return *y\n\n")
     bad = bad + rejected("borrow::test_cannot_move_while_borrowed", "\nfn main() => int:\n    let x: int = 10\n    let y: &int = &x\n    mv x z\n    return *y\n\n", 0)
     bad = bad + rejected("borrow::test_cannot_assign_while_borrowed", "\nfn main() => int:\n    let x: int = 10\n    let y: &int = &x\n    x = 11\n    return *y\n\n", 0)
+    bad = bad + rejected("borrow::test_shared_and_mut_borrow_conflict", "\nfn main() => int:\n    let x: int = 10\n    let y: &mut int = &mut x\n    let z: &int = &x\n    return *z\n\n", 0)
     bad = bad + compiles("borrow::test_two_shared_borrows_ok", "\nfn main() => int:\n    let x: int = 10\n    let y: &int = &x\n    let z: &int = &x\n    return *y\n\n")
     bad = bad + rejected("borrow::test_cannot_return_ref_to_local", "\nfn get_ref() => &int:\n    let x: int = 10\n    return &x\n\nfn main() => int:\n    return 0\n\n", 0)
     bad = bad + compiles("borrow::test_return_ref_to_param_ok", "\nfn get_ref(x: int) => &int:\n    return &x\n\nfn main() => int:\n    return 0\n\n")
     bad = bad + compiles("borrow::test_borrow_ends_with_if_scope", "\nfn main() => int:\n    let x: int = 10\n    if true:\n        let y: &int = &x\n        let n: int = *y\n    x = 11\n    return x\n\n")
+    bad = bad + compiles("borrow::test_field_borrow_compiles", "\nclass Point:\n    x: int\n    y: int\n\nfn main() => int:\n    let p: Point = Point { x: 10, y: 20 }\n    let r: &int = &p.x\n    return *r\n\n")
+    bad = bad + rejected("borrow::test_whole_and_field_mut_borrow_conflict", "\nclass Point:\n    x: int\n    y: int\n\nfn main() => int:\n    let p: Point = Point { x: 10, y: 20 }\n    let r: &Point = &p\n    let q: &mut int = &mut p.x\n    return *q\n\n", 0)
     bad = bad + rejected("borrow::test_cannot_move_while_field_borrowed", "\nclass Point:\n    x: int\n    y: int\n\nfn main() => int:\n    let p: Point = Point { x: 10, y: 20 }\n    let r: &int = &p.x\n    mv p q\n    return *r\n\n", 0)
+    bad = bad + compiles("borrow::test_inherited_field_borrow_compiles", "\nclass Base:\n    x: int\n\nclass Child of Base:\n    y: int\n\nfn main() => int:\n    let c: Child = Child { x: 7, y: 9 }\n    let r: &int = &c.x\n    return *r\n\n")
     bad = bad + compiles("borrow::test_nll_assign_after_last_use_compiles", "\nfn main() => int:\n    let x: int = 10\n    let y: &int = &x\n    let n: int = *y\n    x = 11\n    return x\n\n")
+    bad = bad + compiles("borrow::test_index_borrow_compiles", "\nfn main() => int:\n    let a: [int; 3] = [1, 2, 3]\n    let i: int = 1\n    let r: &int = &a[i]\n    return *r\n\n")
+    bad = bad + compiles("borrow::test_mut_index_borrow_compiles", "\nfn main() => int:\n    let a: [int; 3] = [1, 2, 3]\n    let i: int = 0\n    let r: &mut int = &mut a[i]\n    return *r\n\n")
+    bad = bad + rejected("borrow::test_whole_and_index_mut_borrow_conflict", "\nfn main() => int:\n    let a: [int; 3] = [1, 2, 3]\n    let r: &[int; 3] = &a\n    let q: &mut int = &mut a[0]\n    return *q\n\n", 0)
+    bad = bad + rejected("borrow::test_index_loans_conflict_conservatively", "\nfn main() => int:\n    let a: [int; 3] = [1, 2, 3]\n    let r: &mut int = &mut a[0]\n    let q: &int = &a[1]\n    return *q\n\n", 0)
     bad = bad + compiles("borrow::test_ref_return_aliases_only_returned_param", "\nfn foo(p: &int, q: &int) => &int:\n    return p\n\nfn main() => int:\n    let a: int = 1\n    let b: int = 2\n    let r: &int = foo(&a, &b)\n    mv b z\n    return *r\n\n")
+    bad = bad + rejected("borrow::test_ref_return_alias_still_borrows_returned_arg", "\nfn foo(p: &int, q: &int) => &int:\n    return p\n\nfn main() => int:\n    let a: int = 1\n    let b: int = 2\n    let r: &int = foo(&a, &b)\n    mv a z\n    return *r\n\n", 0)
+    bad = bad + rejected("borrow::test_opaque_ref_returning_call_pins_all_ref_args", "\nfn main() => int:\n    let a: int = 1\n    let b: int = 2\n    let f: fn(&int, &int) => &int = fn(p: &int, q: &int) => &int:\n        return p\n    let r: &int = f(&a, &b)\n    mv b z\n    return *r\n\n", 0)
     return bad
 
 fn main() => int:

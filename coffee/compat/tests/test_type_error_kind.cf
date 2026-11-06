@@ -6,6 +6,8 @@ fn part0() => int:
     bad = bad + rejected("type_error_kind::type_mismatch_is_e100", "\nfn main() => int:\n    let x: int = true\n    rm x\n    return 0\n\n", 100)
     bad = bad + rejected("type_error_kind::invalid_unary_is_e104", "\nfn main() => int:\n    let x: int = -true\n    rm x\n    return 0\n\n", 104)
     bad = bad + rejected("type_error_kind::undefined_variable_is_e200", "\nfn main() => int:\n    let x: int = missing\n    rm x\n    return 0\n\n", 200)
+    bad = bad + rejected("type_error_kind::missing_method_is_e107", "\nclass Box:\n    n: int\n\n    fn new(n: int) => Box:\n        Box { n: n }\n\nfn main() => int:\n    let b: Box = Box::new(1)\n    b.nope(1)\n    rm b\n    return 0\n\n", 107)
+    bad = bad + rejected("type_error_kind::break_outside_loop_is_e111", "\nfn main() => int:\n    break\n    return 0\n\n", 111)
     bad = bad + rejected("type_error_kind::incomplete_match_is_e112", "\nenum Flag:\n    A\n    B\n\nfn main() => int:\n    let f: Flag = Flag.A\n    match f:\n        Flag.A => 1\n    rm f\n    return 0\n\n", 112)
     bad = bad + rejected("type_error_kind::undefined_variable_suggests_similar_name", "\nfn main() => int:\n    let count: int = 1\n    let x: int = coutn\n    return 0\n\n", 200)
     bad = bad + rejected("type_error_kind::undefined_variable_suggests_similar_name_2", "\nfn main() => int:\n    let count: int = 1\n    let x: int = coutn\n    return 0\n\n", 0)

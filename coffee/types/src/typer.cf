@@ -479,6 +479,11 @@ class Typer:
             if !t.is_error(ty):
                 self.err(tok, int(Te.InvalidOperation), ty, ty)
             return 0
+        if k == int(Tk.KwClone):
+            let ty = self.value(t, g, a, o, want)
+            if t.kind[ty] == int(Ty.Buf):
+                self.err(tok, int(Te.InvalidOperation), ty, ty)
+            return ty
         return self.value(t, g, a, o, want)
 
     /#/ ---- generics ------------------------------------------------------------
@@ -693,7 +698,10 @@ class Typer:
                 if !self.extern_fits(t, g, a, c, p, x):
                     self.err(a.tok[c], int(Te.Mismatch), p, x)
             else:
-                self.value(t, g, a, c, -1)
+                let x = self.value(t, g, a, c, -1)
+                /#/ C has no `bool` to pass in a variadic tail
+                if t.kind[x] == int(Ty.Bool):
+                    self.err(a.tok[c], int(Te.Mismatch), 0, x)
             i = i + 1
             c = a.next[c]
         return t.c[sig]
@@ -729,8 +737,6 @@ class Typer:
         if (fk == int(Ty.Int) || fk == int(Ty.Float)) && (tk == int(Ty.Int) || tk == int(Ty.Float)):
             return true
         if (fk == int(Ty.Int) || fk == int(Ty.Float)) && tk == int(Ty.Bool):
-            return true
-        if fk == int(Ty.Bool) && tk == int(Ty.Int):
             return true
         if fk == int(Ty.Object) && (tk == int(Ty.Int) || tk == int(Ty.Ref) || tk == int(Ty.Buf) || tk == int(Ty.Str) || tk == int(Ty.Named)):
             return true
@@ -783,7 +789,30 @@ class Typer:
             self.args_untyped(t, g, a, n)
             return 0
         self.reset_binds()
-        return self.check_args(t, g, a, n, fty, 0, tok)
+        let res = self.check_args(t, g, a, n, fty, 0, tok)
+        if ck == int(Nk.Name):
+            /#/ every type parameter of the function must be fixed by the arguments
+            let tp = self.tparams_of(a, tok)
+            for k in 0..tp:
+                if k < 16 && self.binds[k] < 0:
+                    self.err(tok, int(Te.InvalidOperation), 0, 0)
+                    break
+        return res
+
+    /#/ How many type parameters the top-level function named by `tok` has.
+    fn tparams_of(self, a: &Ast, tok: int) => int:
+        let it = a.child[a.root]
+        while it >= 0:
+            if a.kind[it] == int(Nk.Fn) && a.pa[it] >= 0 && same_tok(a, a.pa[it], tok):
+                let k = 0
+                let c = a.child[it]
+                while c >= 0:
+                    if a.kind[c] == int(Nk.TypeParam):
+                        k = k + 1
+                    c = a.next[c]
+                return k
+            it = a.next[it]
+        return 0
 
     /#/ `Class::name(args)`: a function of the class that takes no `self`.
     fn static_call(self, t: &Tys, g: &Syms, a: &Ast, n: int, callee: int) => int:
@@ -836,7 +865,20 @@ class Typer:
         if m < 0:
             /#/ `obj.assign("field", v)` is part of every class
             if tok_is(a, tok, "assign"):
-                self.args_untyped(t, g, a, n)
+                let nm = a.child[n]
+                let fr = -1
+                if nm >= 0 && a.next[nm] >= 0 && a.kind[nm] == int(Nk.Str):
+                    let s0 = a.toks.start[a.tok[nm]] + 1
+                    let e0 = a.toks.end[a.tok[nm]] - 1
+                    let h0 = g.span_hash(a, s0, e0)
+                    for i in 0..g.n:
+                        if g.info[i] == t.a[ot] && g.kind[i] == int(Sk.Field) && g.ty[i] >= 0 && g.same_span(i, a, s0, e0, h0):
+                            fr = i
+                if fr >= 0:
+                    self.value(t, g, a, nm, -1)
+                    self.expect(t, g, a, a.next[nm], g.ty[fr])
+                else:
+                    self.args_untyped(t, g, a, n)
                 return t.simple(int(Ty.Void))
             let f = self.find_member(g, a, t.a[ot], tok, int(Sk.Field))
             if f >= 0 && g.ty[f] >= 0 && t.kind[g.ty[f]] == int(Ty.Fn):
@@ -1022,10 +1064,36 @@ class Typer:
 
     /#/ Checks the body of function `f` and returns its type. `class_ty` is the class type of a
     /#/ method (its `self`), -1 otherwise.
+    /#/ `#name` after a signature names a function that takes the error: not the function itself,
+    /#/ and one parameter that is a class.
+    fn check_listeners(self, t: &Tys, a: &Ast, f: int) => void:
+        let l = a.child[f]
+        while l >= 0:
+            if a.kind[l] == int(Nk.Listener):
+                let s = a.toks.start[a.tok[l]] + 1
+                let e = a.toks.end[a.tok[l]]
+                if a.pa[f] >= 0 && e - s == a.toks.end[a.pa[f]] - a.toks.start[a.pa[f]]:
+                    let same = true
+                    for q in 0..e - s:
+                        if a.byte_at(s + q) != a.byte_at(a.toks.start[a.pa[f]] + q):
+                            same = false
+                    if same:
+                        self.err(a.tok[l], int(Te.Mismatch), 0, 0)
+                        l = a.next[l]
+                        continue
+                let r = self.rd.sc.loc.find_span(a, s, e, 0)
+                if r >= 0 && self.rd.sc.loc.kind[r] == int(Sk.Fn):
+                    let sig = self.rd.sc.loc.ty[r]
+                    if sig >= 0 && t.kind[sig] == int(Ty.Fn):
+                        if t.count_of(sig) != 1 || t.kind[t.arg(sig, 0)] != int(Ty.Named):
+                            self.err(a.tok[l], int(Te.Mismatch), 0, 0)
+            l = a.next[l]
+
     fn function(self, t: &Tys, g: &Syms, a: &Ast, f: int, class_ty: int) => int:
         let fty = self.rd.fn_sig(t, a, f, class_ty)
         if a.pc[f] < 0:
             return fty
+        self.check_listeners(t, a, f)
         let saved_ret = self.ret
         let saved_loops = self.loops
         let saved_in = self.in_fn
@@ -1128,7 +1196,10 @@ class Typer:
                 ok = true
             if !ok:
                 self.err(a.tok[n], int(Te.Mismatch), 0, x)
-        elif k == int(Nk.ExprStmt) || k == int(Nk.Rm) || k == int(Nk.Clean):
+        elif k == int(Nk.Clean):
+            /#/ `clean out` is gone: a resource is released with `rm`
+            self.err(a.tok[n], int(Te.InvalidType), 0, 0)
+        elif k == int(Nk.ExprStmt) || k == int(Nk.Rm):
             self.expr(t, g, a, a.pa[n], -1)
             let extra = a.child[n]
             while extra >= 0:
@@ -1137,6 +1208,8 @@ class Typer:
         elif k == int(Nk.Mv):
             let ty = self.expr(t, g, a, a.pa[n], -1)
             self.node[n] = ty
+            if a.pc[n] == 1 && t.kind[ty] == int(Ty.Buf):
+                self.err(a.tok[a.pa[n]], int(Te.InvalidOperation), ty, ty)
             if a.pb[n] >= 0:
                 self.declare_local(a, a.pb[n], int(Sk.Local), ty)
         elif k == int(Nk.TypeAlias):
@@ -1230,6 +1303,28 @@ class Typer:
                 elem = j
             elif t.is_int(lt):
                 elem = lt
+            self.set(it, 0)
+        elif it >= 0 && a.kind[it] == int(Nk.Call) && a.pa[it] >= 0 && a.kind[a.pa[it]] == int(Nk.Name) && tok_is(a, a.tok[a.pa[it]], "range") && a.child[it] >= 0 && (a.next[a.child[it]] < 0 || a.next[a.next[a.child[it]]] < 0):
+            /#/ `range(a, b)` and `range(b)` count like `a..b`
+            let c0 = a.child[it]
+            let l = c0
+            let r = a.next[c0]
+            if r < 0:
+                r = c0
+                l = -1
+            let rt = self.value(t, g, a, r, -1)
+            let lt = rt
+            if l >= 0:
+                lt = self.value(t, g, a, l, rt)
+            if !t.is_int(lt) && !t.is_error(lt):
+                self.err(a.tok[c0], int(Te.Mismatch), t.int_ty(8, true), lt)
+            if !t.is_int(rt) && !t.is_error(rt):
+                self.err(a.tok[r], int(Te.Mismatch), t.int_ty(8, true), rt)
+            let j = self.join(t, g, lt, rt)
+            if j >= 0 && t.is_int(lt) && t.is_int(rt):
+                elem = j
+            elif t.is_int(rt):
+                elem = rt
             self.set(it, 0)
         else:
             let ct = self.strip_refs(t, self.value(t, g, a, it, -1))
@@ -1365,6 +1460,8 @@ class Typer:
                     self.err(a.tok[p], int(Te.Mismatch), st, e)
             self.set(p, st)
         elif k == int(Nk.Tuple):
+            if t.kind[st] != int(Ty.Tuple) && !t.is_error(st):
+                self.err(a.tok[p], int(Te.Mismatch), st, st)
             let i = 0
             let c = a.child[p]
             while c >= 0:

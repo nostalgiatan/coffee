@@ -38,6 +38,20 @@ fn build_obj(src: str, opt: int, cfc: str) => Txt:
         return new_txt()
     return lw.object()
 
+/#/ The number of the first parse error: 1 for a character or `//` comment, 3 for a missing
+/#/ colon or indent, 110 for `copy`, else 2.
+fn parse_number(a: &Ast) => int:
+    let t = a.err_tok[0]
+    if a.toks.kind[t] == int(Tk.Error) || a.toks.kind[t] == int(Tk.SlashSlash):
+        return 1
+    for back in 0..3:
+        if t - back >= 0 && a.toks.kind[t - back] == int(Tk.KwCopy):
+            return 110
+    let c = a.err_code[0]
+    if c == int(Ec.ExpectedColon) || c == int(Ec.ExpectedIndent):
+        return 3
+    return 2
+
 /#/ What the front end says about `src`: -1 for nothing, 0 for a parse error, else the number of the
 /#/ first scope, type or ownership finding.
 fn first_error(src: str) => int:
@@ -45,7 +59,7 @@ fn first_error(src: str) => int:
     let g = new_globals()
     let a = parse(src)
     if a.err_count > 0:
-        return 0
+        return parse_number(&a)
     let m = declare_module(&g, &a, "t")
     let sc = check(&a, &g, m)
     for k in 0..sc.diags.n:

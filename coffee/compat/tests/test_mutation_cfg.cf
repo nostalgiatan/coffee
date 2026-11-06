@@ -3,8 +3,12 @@ use * in harness
 
 fn part0() => int:
     let bad = 0
+    bad = bad + rejected("mutation_cfg::continue_outside_loop_is_e111", "\nfn main() => int:\n    continue\n    return 0\n\n", 111)
+    bad = bad + rejected("mutation_cfg::continue_in_if_not_loop_is_e111", "\nfn main() => int:\n    if true:\n        continue\n    return 0\n\n", 111)
+    bad = bad + rejected("mutation_cfg::break_in_function_with_no_loop_is_e111", "\nfn helper() => int:\n    break\n    return 0\n\nfn main() => int:\n    return helper()\n\n", 111)
     bad = bad + rejected("mutation_cfg::match_enum_missing_variant_is_e112", "\nenum Color:\n    Red\n    Green\n    Blue\n\nfn main() => int:\n    let c: Color = Color.Red\n    match c:\n        Color.Red => 1\n        Color.Green => 2\n    rm c\n    return 0\n\n", 112)
     bad = bad + rejected("mutation_cfg::for_range_end_bool_is_e100", "\nfn main() => int:\n    for i in 1..true:\n        i = i\n    return 0\n\n", 100)
+    bad = bad + rejected("mutation_cfg::duplicate_fn_main_is_e001", "\nfn main() => int:\n    return 0\n\nfn main() => int:\n    return 1\n\n", 1)
     bad = bad + compiles("mutation_cfg::while_false_increment_only_compiles", "\nfn main() => int:\n    let i: int = 0\n    while false:\n        i = i + 1\n    rm i\n    return 0\n\n")
     bad = bad + compiles("mutation_cfg::while_zero_iterations_increment_only_compiles", "\nfn main() => int:\n    let i: int = 0\n    while i < 0:\n        i = i + 1\n    rm i\n    return 0\n\n")
     return bad

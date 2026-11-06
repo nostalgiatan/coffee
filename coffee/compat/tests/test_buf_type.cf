@@ -1,4 +1,4 @@
-/#/ Ported from tests/buf_type_tests.rs; the self-hosted compiler does not pass these yet.
+/#/ Ported from tests/buf_type_tests.rs.
 use * in harness
 
 fn part0() => int:

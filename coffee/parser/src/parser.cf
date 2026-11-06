@@ -773,6 +773,14 @@ class Ast:
                 self.record(self.pos, int(Ec.ExpectedName))
                 break
             names = names + 1
+            /#/ `use f as g in m`
+            if self.at(int(Tk.KwAs)):
+                self.bump()
+                if self.at(int(Tk.Ident)):
+                    self.pb[n] = self.pos
+                    self.bump()
+                else:
+                    self.record(self.pos, int(Ec.ExpectedName))
             if first < 0:
                 first = sym
             else:
@@ -1041,8 +1049,36 @@ fn new_ast(src: str, toks: Tokens) => Ast:
     return Ast { src: src, toks: toks, kind: new_buf(int, 64), tok: new_buf(int, 64), end: new_buf(int, 64), pa: new_buf(int, 64), pb: new_buf(int, 64), pc: new_buf(int, 64), pd: new_buf(int, 64), child: new_buf(int, 64), next: new_buf(int, 64), count: 0, root: -1, pos: 0, half: 0, depth: 0, err_tok: new_buf(int, 8), err_code: new_buf(int, 8), err_count: 0 }
 
 /#/ Lexes and parses `src`; the result owns the source and the tokens.
+/#/ Moves the classes declared inside function bodies to the end of the program's items: a class
+/#/ is a module-level thing for every later stage.
+fn hoist_classes(a: &Ast) => void:
+    let last = a.child[a.root]
+    if last < 0:
+        return
+    while a.next[last] >= 0:
+        last = a.next[last]
+    for b in 0..a.count:
+        if a.kind[b] != int(Nk.Block):
+            continue
+        let prev = -1
+        let c = a.child[b]
+        while c >= 0:
+            let nx = a.next[c]
+            if a.kind[c] == int(Nk.Class):
+                if prev < 0:
+                    a.child[b] = nx
+                else:
+                    a.next[prev] = nx
+                a.next[c] = -1
+                a.next[last] = c
+                last = c
+            else:
+                prev = c
+            c = nx
+
 fn parse(src: str) => Ast:
     let toks = lex(&src)
     let ast = new_ast(src, toks)
     ast.parse_program()
+    hoist_classes(&ast)
     return ast

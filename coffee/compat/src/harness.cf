@@ -36,3 +36,13 @@ fn exits(name: str, src: str, want: int) => int:
         fflush(0)
         return 1
     return 0
+
+/#/ The program parses; whether its imports resolve is the driver's business.
+fn parses(name: str, src: str) => int:
+    let dup = clone src
+    let a = parse(src)
+    if a.err_count > 0:
+        printf("FAIL %s: does not parse\n%s\n", name, dup)
+        fflush(0)
+        return 1
+    return 0

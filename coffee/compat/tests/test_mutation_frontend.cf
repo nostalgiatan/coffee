@@ -14,7 +14,16 @@ fn part0() => int:
     bad = bad + rejected("mutation_frontend::mutate_unknown_type_annotation_is_e101", "\nfn main() => int:\n    let x: NoSuchType = 1\n    return 0\n\n", 101)
     bad = bad + rejected("mutation_frontend::mutate_call_arity_is_e103", "\nfn id(n: int) => int:\n    return n\n\nfn main() => int:\n    return id(1, 2)\n\n", 103)
     bad = bad + rejected("mutation_frontend::mutate_missing_class_field_is_e106", "\nclass Box:\n    n: int\n\nfn main() => int:\n    let b: Box = Box { n: 1 }\n    let x: int = b.nope\n    return 0\n\n", 106)
+    bad = bad + rejected("mutation_frontend::mutate_continue_outside_loop_is_e111", "\nfn main() => int:\n    continue\n    return 0\n\n", 111)
     bad = bad + rejected("mutation_frontend::mutate_duplicate_let_is_e201", "\nfn main() => int:\n    let x: int = 1\n    let x: int = 2\n    return 0\n\n", 201)
+    bad = bad + rejected("mutation_frontend::mutate_extra_main_is_e001", "\nfn main() => int:\n    return 0\n\nfn main() => int:\n    return 1\n\n", 1)
+    bad = bad + rejected("mutation_frontend::mutate_python_def_colon_is_e002", "\ndef foo():\n    return 0\n\nfn main() => int:\n    return 0\n\n", 2)
+    bad = bad + rejected("mutation_frontend::mutate_hash_comment_is_e001", "\n# not a coffee comment\nfn main() => int:\n    return 0\n\n", 1)
+    bad = bad + rejected("mutation_frontend::mutate_slash_slash_inside_fn_is_e001", "\nfn main() => int:\n    // trailing style comment\n    return 0\n\n", 1)
+    bad = bad + rejected("mutation_frontend::mutate_unclosed_if_indent_is_e003", "\nfn main() => int:\n    if true:\n", 3)
+    bad = bad + rejected("mutation_frontend::mutate_fn_missing_body_indent_is_e003", "\nfn main() => int:\n", 3)
+    bad = bad + rejected("mutation_frontend::mutate_copy_keyword_is_e110", "\nfn main() => int:\n    let a: int = 1\n    copy a b\n    return 0\n\n", 110)
+    bad = bad + rejected("mutation_frontend::mutate_clean_out_keyword_is_e110", "\nfn main() => int:\n    let a: int = 1\n    clean out\n    return 0\n\n", 110)
     return bad
 
 fn main() => int:

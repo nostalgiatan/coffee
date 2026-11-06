@@ -292,6 +292,11 @@ class Lower:
     nf_n: int
     /#/ the name the function being lowered is given, -1 for the one its node spells
     pnm: int
+    /#/ the block whose last expression is the value returned, the `match` whose arms' blocks are
+    /#/ such blocks, and the expression statement to lower as a `return`; -1 for none
+    tailb: int
+    tailm: int
+    retx: int
     /#/ the module-level `let`s: the symbol name and the size in bytes
     gl_name: buf<int>
     gl_size: buf<int>
@@ -630,8 +635,10 @@ class Lower:
 
     /#/ The bytes of string literal token `tok`, escapes resolved.
     fn str_text(self, a: &Ast, tok: int) => Txt:
-        let s = a.toks.start[tok] + 1
-        let e = a.toks.end[tok] - 1
+        return self.str_range(a, a.toks.start[tok] + 1, a.toks.end[tok] - 1)
+
+    /#/ The bytes `s`..`e` of the source read as the inside of a string literal.
+    fn str_range(self, a: &Ast, s: int, e: int) => Txt:
         let body = new_txt()
         let k = s
         while k < e:
@@ -753,6 +760,10 @@ class Lower:
         if op != int(Bop.Add):
             self.unsupported(n)
             return self.f.undef(int(Rp.Ptr))
+        return self.str_cat(x, y)
+
+    /#/ A new string: the text of `x` and then the text of `y`.
+    fn str_cat(self, x: int, y: int) => int:
         self.f.arg(x)
         let lx = self.f.ccall(int(Rp.I64), 1, self.rt_strlen, 0)
         self.f.arg(y)
@@ -769,6 +780,52 @@ class Lower:
         self.f.arg(self.f.bin(int(Op.Add), ly, self.f.cint(int(Rp.I64), 1)))
         self.f.ccall(int(Rp.Ptr), 3, self.rt_memcpy, 0)
         return p
+
+    /#/ `f"text {name} text"`: the strings joined; a name is a variable holding a string.
+    fn fstr(self, t: &Tys, g: &Syms, a: &Ast, n: int) => int:
+        let tk = a.tok[n]
+        let i = a.toks.start[tk] + 2
+        let e = a.toks.end[tk] - 1
+        let acc = self.f.strlit(self.text_global(&new_txt()))
+        let owned = false
+        let lit_from = i
+        while i <= e:
+            let part = -1
+            let lit_to = i
+            let next = i + 1
+            if i == e:
+                part = -2
+            elif a.byte_at(i) == '{':
+                let j = i + 1
+                while j < e && is_ident_byte(a.byte_at(j)):
+                    j = j + 1
+                if j > i + 1 && j < e && a.byte_at(j) == '}':
+                    let r = self.sc.find_span(a, i + 1, j, 0)
+                    if r >= 0 && self.sc.kind[r] == int(Sk.Local) && t.kind[self.v_ty[self.sc.info[r]]] == int(Ty.Str):
+                        part = self.var_read(self.sc.info[r])
+                        next = j + 1
+                    else:
+                        self.unsupported(n)
+                        return acc
+            if part != -1:
+                if lit_to > lit_from:
+                    let body = self.str_range(a, lit_from, lit_to)
+                    let nx = self.str_cat(acc, self.f.strlit(self.text_global(&body)))
+                    if owned:
+                        self.f.free(acc)
+                    acc = nx
+                    owned = true
+                if part >= 0:
+                    let nx = self.str_cat(acc, part)
+                    if owned:
+                        self.f.free(acc)
+                    acc = nx
+                    owned = true
+                lit_from = next
+            i = next
+        if !owned:
+            acc = self.str_cat(acc, self.f.strlit(self.text_global(&new_txt())))
+        return acc
 
     fn compare(self, t: &Tys, g: &Syms, op: int, x: int, y: int, lt: int, rt: int) => int:
         let fx = self.f.rep[x]
@@ -1148,6 +1205,8 @@ class Lower:
             return lit
         if k == int(Nk.Fn) && a.pa[n] < 0:
             return self.anon_fn(a, n)
+        if k == int(Nk.FStr):
+            return self.fstr(t, g, a, n)
         if k == int(Nk.Name):
             let v = self.lookup(a, a.tok[n])
             if v < 0:
@@ -1247,6 +1306,10 @@ class Lower:
             let v = self.lookup(a, a.tok[o])
             if v >= 0 && self.v_slot[v] >= 0:
                 return self.v_slot[v]
+        if a.kind[o] == int(Nk.Member) && t.kind[self.strip_refs(t, self.nd(t, ty, a.pa[o]))] == int(Ty.Named) && self.rep(t, g, x) >= 0:
+            return self.field_addr(t, g, ty, a, o)
+        if a.kind[o] == int(Nk.Index) && self.rep(t, g, x) >= 0:
+            return self.element_addr(t, g, ty, a, o)
         self.unsupported(n)
         return self.f.undef(int(Rp.Ptr))
 
@@ -1256,7 +1319,13 @@ class Lower:
         let mark = self.sc.n
         let own_mark = self.own_n
         let c = a.child[b]
+        let is_tail = b == self.tailb
         while c >= 0:
+            if is_tail && a.next[c] < 0:
+                if a.kind[c] == int(Nk.ExprStmt) && a.pa[c] >= 0 && t.kind[self.ret_ty] != int(Ty.Void) && t.kind[self.nd(t, ty, a.pa[c])] != int(Ty.Void):
+                    self.retx = c
+                elif a.kind[c] == int(Nk.Match):
+                    self.tailm = c
             self.stmt(t, g, ty, a, c)
             c = a.next[c]
         if !self.f.terminated(self.f.cur):
@@ -1270,6 +1339,9 @@ class Lower:
 
     fn stmt_inner(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => void:
         let k = a.kind[n]
+        if k == int(Nk.ExprStmt) && self.retx == n:
+            k = int(Nk.Return)
+            self.retx = -1
         if k == int(Nk.Let):
             let vt = self.nd(t, ty, n)
             let vr = self.rep(t, g, vt)
@@ -1332,6 +1404,16 @@ class Lower:
             self.dead_block()
         elif k == int(Nk.Fn) && a.pa[n] >= 0:
             self.nested_declare(a, n)
+        elif k == int(Nk.Class) && type_param_count(a, n) == 0:
+            let row = g.find_in_module(a, a.pa[n], ty.cur)
+            if row < 0:
+                self.unsupported(n)
+                return
+            let m = a.child[n]
+            while m >= 0:
+                if a.kind[m] == int(Nk.Fn):
+                    self.want_instance(m, -1, row)
+                m = a.next[m]
         else:
             self.unsupported(n)
 
@@ -1479,12 +1561,35 @@ class Lower:
         let data = -1
         let cr = vr
         let ct = vt
+        /#/ `range(a, b)` and `range(b)` are the same as `a..b`
+        let rlo = -1
+        let rhi = -1
+        let is_range = false
         if a.kind[it] == int(Nk.Range):
+            rlo = a.pa[it]
+            rhi = a.pb[it]
+            is_range = true
+        elif a.kind[it] == int(Nk.Call) && a.pa[it] >= 0 && a.kind[a.pa[it]] == int(Nk.Name) && tok_is(a, a.tok[a.pa[it]], "range"):
+            let c0 = a.child[it]
+            if c0 >= 0 && a.next[c0] >= 0 && a.next[a.next[c0]] < 0:
+                rlo = c0
+                rhi = a.next[c0]
+                is_range = true
+            elif c0 >= 0 && a.next[c0] < 0:
+                rhi = c0
+                is_range = true
+        if is_range:
             if !rp_is_int(vr):
                 self.unsupported(n)
                 return
-            lo = self.coerce(t, g, self.ex(t, g, ty, a, a.pa[it]), self.nd(t, ty, a.pa[it]), vt)
-            hi = self.coerce(t, g, self.ex(t, g, ty, a, a.pb[it]), self.nd(t, ty, a.pb[it]), vt)
+            if rlo >= 0:
+                lo = self.coerce(t, g, self.ex(t, g, ty, a, rlo), self.nd(t, ty, rlo), vt)
+            else:
+                lo = self.f.cint(vr, 0)
+            hi = self.coerce(t, g, self.ex(t, g, ty, a, rhi), self.nd(t, ty, rhi), vt)
+        elif t.kind[self.strip_refs(t, self.nd(t, ty, it))] == int(Ty.Tuple):
+            self.for_tuple(t, g, ty, a, n, vt, vr)
+            return
         else:
             /#/ the elements of an array, buffer or slice, taken one by one (copies only)
             let ot = self.strip_refs(t, self.nd(t, ty, it))
@@ -1533,6 +1638,34 @@ class Lower:
         self.write_var(counter, latch, self.f.bin(int(Op.Add), cur, self.f.cint(cr, 1)))
         self.jump(head)
         self.seal(head)
+        self.seal(exit)
+        self.f.set_block(exit)
+
+    /#/ `for x in tuple`: the body once per element, in order.
+    fn for_tuple(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int, vt: int, vr: int) => void:
+        let it = a.pb[n]
+        let tt = self.strip_refs(t, self.nd(t, ty, it))
+        if needs_drop(t, g, vt):
+            self.unsupported(n)
+            return
+        for i in 0..t.count_of(tt):
+            if self.rep(t, g, t.arg(tt, i)) != vr:
+                self.unsupported(n)
+                return
+        let agg = self.agg_of(t, g, ty, a, it)
+        let exit = self.new_block()
+        for i in 0..t.count_of(tt):
+            let nxt = self.new_block()
+            let mark = self.sc.n
+            self.bind_var(t, g, a, a.pa[n], vt, self.f.extract(vr, agg, i))
+            self.push_loop(nxt, exit)
+            self.block(t, g, ty, a, a.pc[n])
+            self.nloops = self.nloops - 1
+            self.sc.truncate(mark)
+            self.jump(nxt)
+            self.seal(nxt)
+            self.f.set_block(nxt)
+        self.jump(exit)
         self.seal(exit)
         self.f.set_block(exit)
 
@@ -1762,6 +1895,30 @@ class Lower:
         let k = a.kind[p]
         if k == int(Nk.Name):
             return
+        if k == int(Nk.Binary) && a.pc[p] == int(Tk.Pipe):
+            /#/ `A | B`: B is tried when A fails
+            let second = self.new_block()
+            let join = self.new_block()
+            self.pat_test(t, g, ty, a, a.pa[p], v, x, second)
+            self.jump(join)
+            self.seal(second)
+            self.f.set_block(second)
+            self.pat_test(t, g, ty, a, a.pb[p], v, x, fail)
+            self.jump(join)
+            self.seal(join)
+            self.f.set_block(join)
+            return
+        if k == int(Nk.StructLit) && t.kind[x] == int(Ty.Named) && g.kind[t.a[x]] == int(Sk.Class):
+            let fi = a.child[p]
+            while fi >= 0:
+                let off = self.find_field(t, g, a, x, a.tok[fi])
+                let ft = self.fty
+                if off < 0 || self.rep(t, g, ft) < 0:
+                    self.unsupported(fi)
+                    return
+                self.pat_test(t, g, ty, a, a.pa[fi], self.f.load(self.rep(t, g, ft), -1, self.f.field(v, off)), ft, fail)
+                fi = a.next[fi]
+            return
         let en = -1
         if t.kind[x] == int(Ty.Named) && g.kind[t.a[x]] == int(Sk.Enum):
             en = t.a[x]
@@ -1828,6 +1985,14 @@ class Lower:
                 self.bind_var(t, g, a, a.tok[p], x, val)
         elif k == int(Nk.Call) && t.kind[x] == int(Ty.Named) && g.kind[t.a[x]] == int(Sk.Enum):
             self.bind_variant(t, g, ty, a, p, v, x, t.a[x])
+        elif k == int(Nk.StructLit) && t.kind[x] == int(Ty.Named) && g.kind[t.a[x]] == int(Sk.Class):
+            let fi = a.child[p]
+            while fi >= 0:
+                let off = self.find_field(t, g, a, x, a.tok[fi])
+                let ft = self.fty
+                if off >= 0 && self.rep(t, g, ft) >= 0:
+                    self.pattern_bind(t, g, ty, a, a.pa[fi], self.f.load(self.rep(t, g, ft), -1, self.f.field(v, off)), ft)
+                fi = a.next[fi]
         elif k == int(Nk.Tuple) && t.kind[x] == int(Ty.Tuple):
             let c = a.child[p]
             let i = 0
@@ -1872,6 +2037,8 @@ class Lower:
             self.unsupported(n)
             return
         let join = self.new_block()
+        let tail_arms = self.tailm == n
+        self.tailm = -1
         let arm = a.child[n]
         while arm >= 0:
             let p = a.pa[arm]
@@ -1890,7 +2057,10 @@ class Lower:
                 self.drop_scope(t, g, a, own_mark)
                 self.jump(next)
                 self.f.set_block(ok)
+            if tail_arms:
+                self.tailb = a.pb[arm]
             self.block(t, g, ty, a, a.pb[arm])
+            self.tailb = -1
             if !self.f.terminated(self.f.cur):
                 self.drop_scope(t, g, a, own_mark)
             self.own_n = own_mark
@@ -2083,8 +2253,25 @@ class Lower:
                 if g.info[i] == cur && g.kind[i] == int(Sk.Parent):
                     next = g.find_class_row(i)
             cur = next
-        let s = a.toks.start[tok]
-        let e = a.toks.end[tok]
+        return self.find_field_span(t, g, a, cls, chain, n, a.toks.start[tok], a.toks.end[tok])
+
+    /#/ Like `find_field`, for the name spelled by the bytes `s`..`e` of the source.
+    fn find_field_by(self, t: &Tys, g: &Syms, a: &Ast, cls: int, s: int, e: int) => int:
+        let chain: buf<int> = new_buf(int, 8)
+        let n = 0
+        let cur = t.a[cls]
+        while cur >= 0 && n < 8:
+            chain[n] = cur
+            n = n + 1
+            let next = -1
+            for i in 0..g.n:
+                if g.info[i] == cur && g.kind[i] == int(Sk.Parent):
+                    next = g.find_class_row(i)
+            cur = next
+        return self.find_field_span(t, g, a, cls, chain, n, s, e)
+
+    /#/ The search of `find_field_by`, given the `n` classes of the chain, root first at `n - 1`.
+    fn find_field_span(self, t: &Tys, g: &Syms, a: &Ast, cls: int, chain: buf<int>, n: int, s: int, e: int) => int:
         let h = g.span_hash(a, s, e)
         let off = 0
         let c = n - 1
@@ -2320,10 +2507,34 @@ class Lower:
         return self.names.intern(&w)
 
     /#/ `obj.m(args)` and `Class::f(args)`.
+    /#/ `obj.assign("field", v)`: stores `v` in the field of that name.
+    fn assign_call(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => int:
+        let callee = a.pa[n]
+        let o = a.pa[callee]
+        let ot = self.strip_refs(t, self.nd(t, ty, o))
+        let name = a.child[n]
+        let val = -1
+        if name >= 0:
+            val = a.next[name]
+        if t.kind[ot] != int(Ty.Named) || g.kind[t.a[ot]] != int(Sk.Class) || name < 0 || val < 0 || a.kind[name] != int(Nk.Str):
+            self.unsupported(n)
+            return self.f.undef(int(Rp.Void))
+        let off = self.find_field_by(t, g, a, ot, a.toks.start[a.tok[name]] + 1, a.toks.end[a.tok[name]] - 1)
+        let ft = self.fty
+        if off < 0 || self.rep(t, g, ft) < 0 || needs_drop(t, g, ft):
+            self.unsupported(n)
+            return self.f.undef(int(Rp.Void))
+        let recv = self.exb(t, g, ty, a, o)
+        let v = self.sink(t, g, ty, a, val, ft)
+        self.f.store(self.f.field(recv, off), v)
+        return self.f.undef(int(Rp.Void))
+
     fn member_call(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => int:
         let callee = a.pa[n]
         let sig = self.nd(t, ty, callee)
         let o = a.pa[callee]
+        if tok_is(a, a.tok[callee], "assign") && (sig < 0 || t.kind[sig] != int(Ty.Fn)):
+            return self.assign_call(t, g, ty, a, n)
         if sig < 0 || t.kind[sig] != int(Ty.Fn) || o < 0:
             self.unsupported(n)
             return self.f.undef(int(Rp.I64))
@@ -2802,7 +3013,13 @@ class Lower:
             p = a.next[p]
         if cls < 0 && self.pnm < 0 && self.penv < 0 && a.pa[fn_node] >= 0 && tok_is(a, a.pa[fn_node], "main"):
             self.init_globals(t, g, ty, a)
+        self.tailb = -1
+        if rr != int(Rp.Void):
+            self.tailb = body
+        self.tailm = -1
+        self.retx = -1
         self.block(t, g, ty, a, body)
+        self.tailb = -1
         if !self.f.terminated(self.f.cur):
             if rr == int(Rp.Void):
                 self.drop_scope(t, g, a, 0)
@@ -2881,4 +3098,4 @@ fn new_lower() => Lower:
     return lw
 
 fn make_lower() => Lower:
-    return Lower { f: new_fun("", 0), rs: new_reps(), names: new_names(), nstr: 0, cd_name: new_buf(int, 8), cd_sig: new_buf(int, 8), cd_var: new_buf(int, 8), cd_n: 0, sc: new_syms(), v_rep: new_buf(int, 16), v_ty: new_buf(int, 16), v_slot: new_buf(int, 16), v_flag: new_buf(int, 16), tmp_v: new_buf(int, 8), tmp_ty: new_buf(int, 8), tmp_n: 0, no_own: 0, own_st: new_buf(int, 16), own_n: 0, ld: new_buf(int, 8), glue_ty: new_buf(int, 8), glue_kind: new_buf(int, 8), glue_n: 0, glue_done: 0, lay_ty: new_buf(int, 8), lay_off: new_buf(int, 8), lay_n: 0, addr: new_names(), scanned: 0, fty: 0, rt_exit: 0, rt_calloc: 0, rt_strlen: 0, rt_malloc: 0, rt_free: 0, rt_strdup: 0, rt_memcpy: 0, rt_strcmp: 0, rt_write: 0, opt: 1, mc: new_gen(), sbytes: new_txt(), mc_err: 0, ver_err: 0, lib: new_lib(), cur_id: -1, penv: -1, ue: new_buf(int, 16), iq_node: new_buf(int, 8), iq_env: new_buf(int, 8), iq_cls: new_buf(int, 8), iq_nm: new_buf(int, 8), nf_tok: new_buf(int, 8), nf_node: new_buf(int, 8), nf_id: new_buf(int, 8), nf_n: 0, pnm: -1, gl_name: new_buf(int, 8), gl_size: new_buf(int, 8), gl_n: 0, iq_n: 0, iq_done: 0, lis: -1, nv: 0, dk: new_buf(int, 64), dv: new_buf(int, 64), dn: 0, sealed: new_buf(int, 16), inc_head: new_buf(int, 16), inc_var: new_buf(int, 16), inc_par: new_buf(int, 16), inc_next: new_buf(int, 16), inc_n: 0, pe_head: new_buf(int, 16), pe_next: new_buf(int, 16), lc: new_buf(int, 8), lb: new_buf(int, 8), nloops: 0, ret_ty: 0, bad: 0, bad_node: -1 }
+    return Lower { f: new_fun("", 0), rs: new_reps(), names: new_names(), nstr: 0, cd_name: new_buf(int, 8), cd_sig: new_buf(int, 8), cd_var: new_buf(int, 8), cd_n: 0, sc: new_syms(), v_rep: new_buf(int, 16), v_ty: new_buf(int, 16), v_slot: new_buf(int, 16), v_flag: new_buf(int, 16), tmp_v: new_buf(int, 8), tmp_ty: new_buf(int, 8), tmp_n: 0, no_own: 0, own_st: new_buf(int, 16), own_n: 0, ld: new_buf(int, 8), glue_ty: new_buf(int, 8), glue_kind: new_buf(int, 8), glue_n: 0, glue_done: 0, lay_ty: new_buf(int, 8), lay_off: new_buf(int, 8), lay_n: 0, addr: new_names(), scanned: 0, fty: 0, rt_exit: 0, rt_calloc: 0, rt_strlen: 0, rt_malloc: 0, rt_free: 0, rt_strdup: 0, rt_memcpy: 0, rt_strcmp: 0, rt_write: 0, opt: 1, mc: new_gen(), sbytes: new_txt(), mc_err: 0, ver_err: 0, lib: new_lib(), cur_id: -1, penv: -1, ue: new_buf(int, 16), iq_node: new_buf(int, 8), iq_env: new_buf(int, 8), iq_cls: new_buf(int, 8), iq_nm: new_buf(int, 8), nf_tok: new_buf(int, 8), nf_node: new_buf(int, 8), nf_id: new_buf(int, 8), nf_n: 0, pnm: -1, gl_name: new_buf(int, 8), gl_size: new_buf(int, 8), gl_n: 0, tailb: -1, tailm: -1, retx: -1, iq_n: 0, iq_done: 0, lis: -1, nv: 0, dk: new_buf(int, 64), dv: new_buf(int, 64), dn: 0, sealed: new_buf(int, 16), inc_head: new_buf(int, 16), inc_var: new_buf(int, 16), inc_par: new_buf(int, 16), inc_next: new_buf(int, 16), inc_n: 0, pe_head: new_buf(int, 16), pe_next: new_buf(int, 16), lc: new_buf(int, 8), lb: new_buf(int, 8), nloops: 0, ret_ty: 0, bad: 0, bad_node: -1 }

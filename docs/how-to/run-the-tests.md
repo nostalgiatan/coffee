@@ -36,7 +36,7 @@ cd coffee/compat
 /tmp/coffee-seed/tea test --compiler /tmp/coffee-seed/coffee2
 ```
 
-还没通过的用例放在 `coffee/compat/pending/`,不会运行。分类和没有移植的部分见 `coffee/compat/README.md`。
+兼容用例全部通过。没有移植的部分见 `coffee/compat/README.md`。
 
 ## 用 stage0 运行
 

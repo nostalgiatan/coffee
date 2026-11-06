@@ -21,6 +21,9 @@ enum Sc:
     NotAClass
     CaptureViolation
     UnusedVariable
+    DuplicateMain
+    UnknownMethod
+    UnknownCSymbol
 
 /#/ Rust's code for each diagnostic, for messages.
 fn sc_number(code: int) => int:
@@ -36,6 +39,12 @@ fn sc_number(code: int) => int:
         return 106
     if code == int(Sc.MissingReturn) || code == int(Sc.CaptureViolation):
         return 600
+    if code == int(Sc.BreakOutsideLoop) || code == int(Sc.ContinueOutsideLoop):
+        return 111
+    if code == int(Sc.DuplicateMain):
+        return 1
+    if code == int(Sc.UnknownMethod):
+        return 107
     return 700 + code
 
 /#/ Only an unused variable is a warning.

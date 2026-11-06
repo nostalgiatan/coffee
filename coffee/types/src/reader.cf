@@ -79,6 +79,9 @@ class Reader:
         if k == int(Tk.LParen):
             t.set_pos(t.pos + 1)
             let items = self.read_list(t, a, end, int(Tk.RParen))
+            /#/ `()` is the type of nothing
+            if items == 0:
+                return t.simple(int(Ty.Void))
             return t.intern(int(Ty.Tuple), 0, items, 0, t.args_n - items)
         if k == int(Tk.KwFn):
             t.set_pos(t.pos + 1)

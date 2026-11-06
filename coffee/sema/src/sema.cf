@@ -320,7 +320,12 @@ class Checker:
 
     fn call(self, a: &Ast, g: &Syms, n: int) => void:
         let callee = a.pa[n]
+        let before = self.diags.n
         self.expr(a, g, callee)
+        /#/ an unknown member that is called is a missing method, not a missing field
+        for k in before..self.diags.n:
+            if self.diags.code[k] == int(Sc.UnknownField) && callee >= 0 && a.kind[callee] == int(Nk.Member) && self.diags.tok[k] == a.tok[callee]:
+                self.diags.code[k] = int(Sc.UnknownMethod)
         let argc = 0
         let c = a.child[n]
         while c >= 0:
@@ -450,6 +455,12 @@ class Checker:
         let k = a.kind[n]
         if k == int(Nk.Let):
             self.expr(a, g, a.pc[n])
+            /#/ a class or enum name alone is a type, not a value
+            let init = a.pc[n]
+            if init >= 0 && a.kind[init] == int(Nk.Name):
+                let ir = self.loc.find_tok(a, a.tok[init], 0)
+                if ir >= 0 && (self.loc.kind[ir] == int(Sk.Class) || self.loc.kind[ir] == int(Sk.Enum)):
+                    self.diag(a.tok[init], int(Sc.UndefinedName))
             self.type_ref(a, a.pb[n])
             if a.pa[n] >= 0:
                 if self.in_fn == 0:
@@ -471,7 +482,10 @@ class Checker:
             self.expr(a, g, a.pb[n])
         elif k == int(Nk.Return):
             self.ret(a, g, n)
-        elif k == int(Nk.Raise) || k == int(Nk.Rm) || k == int(Nk.Clean) || k == int(Nk.ExprStmt):
+        elif k == int(Nk.Clean):
+            /#/ `clean out` is a type error, not an undefined name
+            return
+        elif k == int(Nk.Raise) || k == int(Nk.Rm) || k == int(Nk.ExprStmt):
             self.expr(a, g, a.pa[n])
             let extra = a.child[n]
             while extra >= 0:
@@ -777,6 +791,9 @@ class Checker:
                 if a.kind[s] == int(Nk.Name):
                     let r = self.loc.add_tok(a, a.tok[s], int(Sk.Extern), -1, -1)
                     self.bundled_sig(a, g, r, a.tok[s])
+                    if self.loc.ty[r] < 0 && !tok_is(a, a.pa[u], "libc") && !tok_is(a, a.pa[u], "libm"):
+                        /#/ no `.cfc` gave this function a signature
+                        self.diag(a.tok[s], int(Sc.UnknownCSymbol))
                 s = a.next[s]
             return
         let mid = g.find_module(a, a.pa[u])
@@ -836,7 +853,10 @@ class Checker:
                 while o != it:
                     let other = self.item_name(a, o)
                     if other >= 0 && same_tok(a, other, name):
-                        self.diag(name, int(Sc.DuplicateName))
+                        if a.kind[it] == int(Nk.Fn) && tok_is(a, name, "main"):
+                            self.diag(name, int(Sc.DuplicateMain))
+                        else:
+                            self.diag(name, int(Sc.DuplicateName))
                         break
                     o = a.next[o]
             it = a.next[it]

@@ -28,6 +28,67 @@ fn tok_hash(a: &Ast, tok: int) => int:
         h = hash_step(h, a.byte_at(k))
     return h
 
+/#/ The top-level function named like token `tok`, -1 if none.
+fn top_fn(a: &Ast, tok: int) => int:
+    let it = a.child[a.root]
+    while it >= 0:
+        if a.kind[it] == int(Nk.Fn) && a.pa[it] >= 0 && same_tok(a, a.pa[it], tok):
+            return it
+        it = a.next[it]
+    return -1
+
+/#/ The index of the parameter of `f` named like token `tok`, -1 if none.
+fn param_index(a: &Ast, f: int, tok: int) => int:
+    let i = 0
+    let p = a.child[f]
+    while p >= 0:
+        if a.kind[p] == int(Nk.Param):
+            if same_tok(a, a.tok[p], tok):
+                return i
+            i = i + 1
+        p = a.next[p]
+    return -1
+
+/#/ The returns of statement `c` (in function `f`) as a mask of the parameters they give back;
+/#/ -1 when one gives back something else.
+fn returns_of(a: &Ast, f: int, c: int, mask: int) => int:
+    if c < 0 || mask == -1:
+        return mask
+    let k = a.kind[c]
+    if k == int(Nk.Return):
+        let e = a.pa[c]
+        if e < 0:
+            return mask
+        if a.kind[e] != int(Nk.Name):
+            return -1
+        let pi = param_index(a, f, a.tok[e])
+        if pi < 0 || pi >= 60:
+            return -1
+        return mask | (1 << pi)
+    if k == int(Nk.Block):
+        let s = a.child[c]
+        while s >= 0:
+            mask = returns_of(a, f, s, mask)
+            s = a.next[s]
+        return mask
+    if k == int(Nk.If):
+        mask = returns_of(a, f, a.pb[c], mask)
+        return returns_of(a, f, a.pc[c], mask)
+    if k == int(Nk.While):
+        return returns_of(a, f, a.pb[c], mask)
+    if k == int(Nk.For):
+        return returns_of(a, f, a.pc[c], mask)
+    if k == int(Nk.Match):
+        let arm = a.child[c]
+        while arm >= 0:
+            mask = returns_of(a, f, a.pb[arm], mask)
+            arm = a.next[arm]
+    return mask
+
+/#/ Which parameters of `f` it can return, as a mask; -1 for any.
+fn returned_params(a: &Ast, f: int) => int:
+    return returns_of(a, f, a.pc[f], 0)
+
 class Flow:
     /#/ events: kind, variable, node, and four operands whose meaning depends on the kind
     ek: buf<int>
@@ -421,7 +482,35 @@ class Flow:
             return
         if self.nl > self.s0 && a.kind[init] == int(Nk.Unary):
             self.ev_add(int(Ev.Bind), dst, init, self.s0, self.nl, 0, 0)
+        elif self.nl > self.s0 && a.kind[init] == int(Nk.Call):
+            self.bind_call_loans(a, dst, init)
         self.flow_from(a, dst, init)
+
+    /#/ `dst = f(&a, &b)`: it holds the loans of the arguments the function can return; for a
+    /#/ function that is not known, all of them.
+    fn bind_call_loans(self, a: &Ast, dst: int, init: int) => void:
+        let mask = -1
+        let callee = a.pa[init]
+        if callee >= 0 && a.kind[callee] == int(Nk.Name) && self.lookup_var(a, a.tok[callee]) < 0:
+            let f = top_fn(a, a.tok[callee])
+            if f >= 0:
+                mask = returned_params(a, f)
+        if mask == -1:
+            self.ev_add(int(Ev.Bind), dst, init, self.s0, self.nl, 0, 0)
+            return
+        let l = self.s0
+        let i = 0
+        let c = a.child[init]
+        while c >= 0:
+            if a.kind[c] != int(Nk.Unary) || a.pc[c] != int(Tk.Amp):
+                self.ev_add(int(Ev.Bind), dst, init, self.s0, self.nl, 0, 0)
+                return
+            if l < self.nl && (mask & (1 << i)) != 0:
+                self.ev_add(int(Ev.Bind), dst, init, l, l + 1, 0, 0)
+            if l < self.nl:
+                l = l + 1
+            i = i + 1
+            c = a.next[c]
 
     fn flow_from(self, a: &Ast, dst: int, e: int) => void:
         if e < 0:
@@ -734,18 +823,19 @@ class Flow:
         return true
 
     /#/ The loans in force at event `i`: those of the statement so far, and those held by a
-    /#/ variable that is still used later.
-    fn active(self, i: int) => int:
+    /#/ variable that is still used later (`scoped`: still in scope, which is what a new borrow
+    /#/ is checked against).
+    fn active(self, i: int, scoped: bool) => int:
         let nv = self.nv
         let m = self.w[2 * nv]
         for h in 0..nv:
-            if self.w[nv + h] != 0 && self.live_at(i, h):
+            if self.w[nv + h] != 0 && (scoped || self.live_at(i, h)):
                 m = m | self.w[nv + h]
         return m
 
     /#/ kind: 0 read, 1 write/move/drop, 2 shared borrow, 3 mutable borrow
     fn access(self, a: &Ast, i: int, node: int, v: int, ps: int, pl: int, kind: int) => void:
-        let m = self.active(i)
+        let m = self.active(i, kind >= 2)
         if m == 0:
             return
         for l in 0..self.nl:
