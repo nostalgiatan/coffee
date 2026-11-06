@@ -11,12 +11,6 @@ use * in image
 use * in asm
 use * in loader
 
-/#/ The bytes of `t` in a `Txt` of their own.
-fn copy_of(t: &Txt) => Txt:
-    let out = new_txt()
-    out.put_all(t)
-    return out
-
 fn page_up(n: int) => int:
     return (n + 4095) // 4096 * 4096
 
@@ -48,7 +42,7 @@ fn stub_enter(ss_top: int, entry: int) => Txt:
     a.pop(5)
     a.ret()
     a.end_fun()
-    return copy_of(&a.c)
+    return clone a.c
 
 /#/ Reached after the handler moved the faulting instruction here: back to the host with rax 0.
 fn stub_trap(ctrl: int) => Txt:
@@ -65,7 +59,7 @@ fn stub_trap(ctrl: int) => Txt:
     a.pop(5)
     a.ret()
     a.end_fun()
-    return copy_of(&a.c)
+    return clone a.c
 
 /#/ Where the exit of the sandbox code goes (rax holds the status): back to the host with it.
 fn stub_exit(ctrl: int) => Txt:
@@ -81,7 +75,7 @@ fn stub_exit(ctrl: int) => Txt:
     a.pop(5)
     a.ret()
     a.end_fun()
-    return copy_of(&a.c)
+    return clone a.c
 
 /#/ The signal handler (rdi the signal, rdx the saved state): when the instruction that faulted is
 /#/ in the code of the sandbox, it is replaced by the trap stub and the signal is noted; else exit.
@@ -107,7 +101,7 @@ fn stub_handler(code_lo: int, code_hi: int, trap: int, ctrl: int) => Txt:
     a.byte(15)
     a.byte(5)
     a.end_fun()
-    return copy_of(&a.c)
+    return clone a.c
 
 /#/ The host side of `read` (n 0) and `write` (n 1), reached from the sandbox with rdi the number,
 /#/ rsi the descriptor, rdx the offset of the buffer and rcx its length. The descriptor must be
@@ -151,7 +145,7 @@ fn stub_io(n: int, ctrl: int, base: int, limit: int) => Txt:
     a.mov_ri(0, 0 - 14)
     a.ret()
     a.end_fun()
-    return copy_of(&a.c)
+    return clone a.c
 
 /#/ The handler of the CPU quota (SIGALRM; rdi the signal, rdx the saved state). When the code of the
 /#/ sandbox was running, it is stopped like on a fault. When the host stub was (a read that waits, say),
@@ -181,7 +175,7 @@ fn stub_alarm(code_lo: int, code_hi: int, trap: int, ctrl: int) => Txt:
     a.byte(5)
     a.ret()
     a.end_fun()
-    return copy_of(&a.c)
+    return clone a.c
 
 fn stub_restorer() => Txt:
     let a = new_asm()
@@ -190,7 +184,7 @@ fn stub_restorer() => Txt:
     a.byte(15)
     a.byte(5)
     a.end_fun()
-    return copy_of(&a.c)
+    return clone a.c
 
 /#/ Makes the signal `sig` run the handler at `handler`, on the alternate stack.
 fn catch_signal(sig: int, handler: int, restorer: int, act: int) => int:

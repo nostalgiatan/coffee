@@ -9,6 +9,7 @@
 /#/   return address. `lea` computes and does not access.
 /#/ - rsp and rbp change only as a function frame does: push, pop rbp, `mov rbp, rsp`, `mov rsp, rbp`,
 /#/   `lea rsp, [rbp - n]`, `leave`, and `add`/`sub rsp, imm` with an immediate up to 32768.
+/#/ - The last instruction does not run on into what follows the code.
 /#/ - Every direct jump or call lands on the start of an instruction of the code (or on `entry`, the
 /#/   system call function of the image, which comes after the code).
 /#/
@@ -20,9 +21,11 @@ class Dec:
     tgt: int
     kind: int
     why: int
+    /#/ the instruction never goes on to the next one (ret, jmp, ud2, int3)
+    ends: bool
 
 fn new_dec() => Dec:
-    return Dec { tgt: -1, kind: 0, why: 0 }
+    return Dec { tgt: -1, kind: 0, why: 0, ends: false }
 
 /#/ Why the last instruction was refused (a number from `dec_no`), for the message of the loader.
 let sbx_why = 0
@@ -49,6 +52,7 @@ fn dec_s8(code: &Txt, i: int) => int:
 fn sbx_decode(code: &Txt, at: int, n: int, d: &Dec) => int:
     d.tgt = -1
     d.kind = 0
+    d.ends = false
     let i = at
     let p66 = false
     let p67 = false
@@ -269,6 +273,7 @@ fn sbx_decode(code: &Txt, at: int, n: int, d: &Dec) => int:
             i = i + imm
         if dst == 4 || (dst == 5 && !popbp):
             return dec_no(d, 13)
+    d.ends = op == 195 || op == 233 || op == 235 || op == 204 || (op == 15 && op2 == 11)
     if rel > 0:
         if i + rel > n:
             return dec_no(d, 1)
@@ -287,12 +292,22 @@ fn sbx_verify(code: &Txt, n: int, entry: int) => int:
         bnd[k] = 0
     let d = new_dec()
     let i = 0
+    let last = 0
+    let falls = false
     while i < n:
         let l = sbx_decode(code, i, n, &d)
         if l < 0:
             return i
         bnd[i] = 1
+        last = i
+        if !d.ends:
+            falls = true
+        else:
+            falls = false
         i = i + l
+    /#/ the code after the last instruction is not the code's: it must not run on into it
+    if falls:
+        return last
     i = 0
     while i < n:
         let l = sbx_decode(code, i, n, &d)

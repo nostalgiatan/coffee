@@ -5,6 +5,7 @@ use * in image
 use * in loader
 use * in sandbox
 use * in sbxcheck
+use * in imgfile
 use * in cstr
 use * in files
 
@@ -25,14 +26,14 @@ fn image_for(lw: &Lower, sbx: bool) => Image:
         return image_sbx_of(lw)
     return image_of(lw)
 
-/#/ Is `--sandbox` on the command line?
-fn sandbox_arg() => bool:
+/#/ Is the word `flag` on the command line?
+fn flag_arg(flag: &str) => bool:
     let raw = read_file(&txt_of("/proc/self/cmdline"))
     let w = new_txt()
     let on = false
     for i in 0..raw.n:
         if raw.b[i] == 0:
-            if w.is("--sandbox"):
+            if w.is(flag):
                 on = true
             w.clear()
         else:
@@ -91,7 +92,7 @@ fn num_arg(key: &str) => int:
     return v
 
 fn main() => int:
-    let sbx = sandbox_arg()
+    let sbx = flag_arg("--sandbox")
     let path = path_arg()
     if path.n == 0:
         say("usage: cfjit program.cir\n")
@@ -100,29 +101,50 @@ fn main() => int:
     if cir.n < 0:
         say("cfjit: cannot read the file\n")
         return 2
-    let lw = new_lower()
-    lw.mc.a.sbx = sbx
-    let e = read_cir(&cir, &lw)
-    if e != 0:
-        say(f"cfjit: not a usable .cir (code {e})\n")
-        return 2
-    prune_unreached(&lw)
-    lw.generate()
-    if lw.mc_err > 0:
-        say(f"cfjit: {lw.mc_err} functions could not be translated\n")
-        return 2
-    let im = image_for(&lw, sbx)
-    if im.err != 0:
-        say("cfjit: a relocation could not be applied\n")
-        return 2
-    if im.nimp > 0:
-        say("cfjit: the module calls functions the loader does not offer\n")
-        return 2
-    let want = txt_of("main")
-    let at = im.find(&want)
+    /#/ with --cache the image is kept next to the .cir, and used while the .cir and the mode are the same
+    let use_cache = flag_arg("--cache")
+    let mode = 0
+    let cache_path = new_txt()
+    cache_path.put_all(&path)
+    if sbx:
+        mode = 1
+        cache_path.put(".sbx")
+    cache_path.put(".cim")
+    let key = cim_key(&cir, mode)
+    let im = blank_image()
+    let at = 0 - 1
+    if use_cache:
+        let ct = read_file(&cache_path)
+        if ct.n > 0:
+            at = read_cim(&ct, key, &im)
+            if at < 0:
+                im = blank_image()
     if at < 0:
-        say("cfjit: the module has no main\n")
-        return 2
+        let lw = new_lower()
+        lw.mc.a.sbx = sbx
+        let e = read_cir(&cir, &lw)
+        if e != 0:
+            say(f"cfjit: not a usable .cir (code {e})\n")
+            return 2
+        prune_unreached(&lw)
+        lw.generate()
+        if lw.mc_err > 0:
+            say(f"cfjit: {lw.mc_err} functions could not be translated\n")
+            return 2
+        im = image_for(&lw, sbx)
+        if im.err != 0:
+            say("cfjit: a relocation could not be applied\n")
+            return 2
+        if im.nimp > 0:
+            say("cfjit: the module calls functions the loader does not offer\n")
+            return 2
+        let want = txt_of("main")
+        at = im.find(&want)
+        if at < 0:
+            say("cfjit: the module has no main\n")
+            return 2
+        if use_cache:
+            write_file(&cache_path, &write_cim(&im, at, key))
     if sbx:
         let bad = sbx_verify(&im.b, im.text_n, im.sys_at)
         if bad >= 0:

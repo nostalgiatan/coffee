@@ -272,13 +272,9 @@ fn make_image_sbx(o: &Obj, a: &Asm) => Image:
         sys_at = im.b.n
         for q in from..sa.c.n:
             im.b.put_byte(sa.c.b[q])
-        /#/ the slots are after the first `jmp [rip+2]; int3; int3` (the assembler may shorten jumps, so look for it)
         im.sys_at = sys_at
-        let q = sys_at
-        while im.hc_at == 0 && q + 8 < im.b.n:
-            if im.b.b[q] == 255 && im.b.b[q + 1] == 37 && im.b.b[q + 2] == 2 && im.b.b[q + 6] == 204 && im.b.b[q + 7] == 204:
-                im.hc_at = q + 8
-            q = q + 1
+        /#/ the slot of the first stub, where the assembler left the label (it shortens jumps)
+        im.hc_at = sys_at + sa.lab[wr] - from + 8
         /#/ jmp to the exit stub, which sits 16 bytes on
         let after = im.b.n + 5
         let to = image_round(after, 16)

@@ -217,6 +217,10 @@ class Asm:
             out.put_byte(self.c.b[q])
         for r in self.rl0..self.nrl:
             self.rl_at[r] = new_pos(&st, &pref, n, self.rl_at[r])
+        /#/ the labels of the function stay valid for whoever asks where one is (`lab[l]`)
+        for l in 0..self.nlab:
+            if self.lab[l] >= 0:
+                self.lab[l] = new_pos(&st, &pref, n, self.lab[l])
         self.c.n = self.fs
         self.c.put_all(&out)
         return true

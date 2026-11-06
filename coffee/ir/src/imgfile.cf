@@ -1,0 +1,87 @@
+/#/ An image on disk (`.cim`): the flat image of a module as `image_of` or `image_sbx_of` made it, so
+/#/ a later run is a read and a `mmap` instead of reading the `.cir`, optimizing and generating. The
+/#/ file holds the key it was made for (the hash of the `.cir`, the mode), the places a loader needs, the
+/#/ code and the linear memory, and a hash of all of that. A file that does not match its key or
+/#/ itself is not used; a file that does match is still only as safe as the disk it came from, so the
+/#/ sandbox checks the code of an image again whatever its source.
+use * in image
+
+/#/ FNV-1a, 64 bits, of the bytes of `t` after the state `h`.
+fn fnv64(t: &Txt, h0: int) => int:
+    let h = h0
+    for i in 0..t.n:
+        h = (h ^ int(t.b[i])) * 1099511628211
+    return h
+
+fn fnv64_start() => int:
+    return 0 - 3750763034362895579
+
+/#/ The key of a `.cir` for a mode (0 native, 1 sandbox): its content, and the mode.
+fn cim_key(cir: &Txt, mode: int) => int:
+    return fnv64(cir, fnv64_start() ^ (mode + 1))
+
+fn blank_image() => Image:
+    return Image { b: new_txt(), text_n: 0, ro_at: 0, data_at: 0, stub_at: 0, names: new_txt(), sym_name: new_buf(int, 1), sym_at: new_buf(int, 1), nsym: 0, imp_name: new_buf(int, 1), imp_slot: new_buf(int, 1), nimp: 0, err: 0, lin: new_txt(), lin_at: 0, data_lin: 0, ss_base: 0, ss_top: 0, limit: 0, exit_at: 0, hc_at: 0, sys_at: -1 }
+
+/#/ The file for `im` (whose `main` is at `main_at`) made for `key`.
+fn write_cim(im: &Image, main_at: int, key: int) => Txt:
+    let out = new_txt()
+    out.put("CIM1")
+    w64(&out, key)
+    w64(&out, main_at)
+    w64(&out, im.text_n)
+    w64(&out, im.exit_at)
+    w64(&out, im.hc_at)
+    w64(&out, im.sys_at)
+    w64(&out, im.lin_at)
+    w64(&out, im.data_lin)
+    w64(&out, im.ss_base)
+    w64(&out, im.ss_top)
+    w64(&out, im.limit)
+    w64(&out, im.b.n)
+    w64(&out, im.lin.n)
+    out.put_all(&im.b)
+    out.put_all(&im.lin)
+    w64(&out, fnv64(&out, fnv64_start()))
+    return out
+
+fn cim_word(t: &Txt, at: int) => int:
+    let v = 0
+    for q in 0..8:
+        v = v | (int(t.b[at + q]) << (8 * q))
+    return v
+
+/#/ Fills `im` from the file `t` when it was made for `key` and is whole: the place of `main`; else -1.
+fn read_cim(t: &Txt, key: int, im: &Image) => int:
+    let head = 4 + 13 * 8
+    if t.n < head + 8:
+        return 0 - 1
+    if t.b[0] != 67 || t.b[1] != 73 || t.b[2] != 77 || t.b[3] != 49:
+        return 0 - 1
+    if cim_word(t, 4) != key:
+        return 0 - 1
+    let nb = cim_word(t, 4 + 11 * 8)
+    let nl = cim_word(t, 4 + 12 * 8)
+    if nb < 0 || nl < 0 || nb > t.n || nl > t.n || head + nb + nl + 8 != t.n:
+        return 0 - 1
+    let body = new_txt()
+    for i in 0..t.n - 8:
+        body.put_byte(int(t.b[i]))
+    if fnv64(&body, fnv64_start()) != cim_word(t, t.n - 8):
+        return 0 - 1
+    im.text_n = cim_word(t, 4 + 2 * 8)
+    im.exit_at = cim_word(t, 4 + 3 * 8)
+    im.hc_at = cim_word(t, 4 + 4 * 8)
+    im.sys_at = cim_word(t, 4 + 5 * 8)
+    im.lin_at = cim_word(t, 4 + 6 * 8)
+    im.data_lin = cim_word(t, 4 + 7 * 8)
+    im.ss_base = cim_word(t, 4 + 8 * 8)
+    im.ss_top = cim_word(t, 4 + 9 * 8)
+    im.limit = cim_word(t, 4 + 10 * 8)
+    for i in 0..nb:
+        im.b.put_byte(int(t.b[head + i]))
+    for i in 0..nl:
+        im.lin.put_byte(int(t.b[head + nb + i]))
+    if im.text_n < 0 || im.text_n > nb:
+        return 0 - 1
+    return cim_word(t, 4 + 8)

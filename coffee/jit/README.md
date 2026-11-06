@@ -16,4 +16,6 @@ Before the sandbox code runs, `ir/src/sbxcheck.cf` checks its machine code (only
 
 `SANDBOX=1 tests/compare.sh ...` compares exit codes and output.
 
+`cfjit prog.cir --cache` keeps the generated image next to the `.cir` (`prog.cir.cim`, `prog.cir.sbx.cim`) and uses it while the `.cir` is unchanged (`tea jit` passes it).
+
 Limits of this first version: the image is mapped read-write-execute in one piece; a module may only call system calls (the runtime is lowered into it), anything else is refused; no sandbox yet. See `docs/explanation/jit-design.md`.

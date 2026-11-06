@@ -1,0 +1,44 @@
+/#/ `clone` of a class (or a field of a class) that holds a buffer is a block of its own: the copy
+/#/ outlives the original and changing one does not change the other. (A bare `buf` cannot be cloned.)
+class Inner:
+    b: buf<int>
+
+class Box:
+    inner: Inner
+    n: int
+
+fn make() => Box:
+    let x = Box { inner: Inner { b: new_buf(int, 6) }, n: 6 }
+    for i in 0..6:
+        x.inner.b[i] = 10 + i
+    return x
+
+fn field_copy() => Inner:
+    let x = make()
+    return clone x.inner
+
+fn box_copy() => Box:
+    let x = make()
+    return clone x
+
+fn main() => int:
+    let miss = 0
+    /#/ the original is gone when the copy is read
+    let f = field_copy()
+    let junk = new_buf(int, 64)
+    for i in 0..64:
+        junk[i] = 999
+    for i in 0..6:
+        if f.b[i] != 10 + i:
+            miss = miss + 1
+    let c = box_copy()
+    for i in 0..6:
+        if c.inner.b[i] != 10 + i:
+            miss = miss + 1
+    /#/ the two do not share
+    let x = make()
+    let y = clone x
+    y.inner.b[0] = 77
+    if x.inner.b[0] != 10 || y.inner.b[0] != 77 || len(y.inner.b) != 6:
+        miss = miss + 1
+    return miss

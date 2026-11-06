@@ -70,6 +70,9 @@ fn main() => int:
     let t = bytes_of("232 11 0 0 0 195")
     m = m + expect(27, sbx_verify(&t, t.n, 16), -1)
     m = m + expect(28, sbx_verify(&t, t.n, 17), 0)
+    /#/ the last instruction must not fall off the end
+    m = m + expect(30, check("72 3 193"), 0)
+    m = m + expect(31, check("72 3 193 195 72 3 193"), 4)
     /#/ cut short
     m = m + expect(29, check("72 139"), 0)
     return m

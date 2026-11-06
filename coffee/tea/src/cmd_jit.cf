@@ -120,7 +120,7 @@ fn run_jit(a: &Args) => int:
     r.put_all(&j.jit)
     r.put("' '")
     r.put_all(&cir)
-    r.put("'")
+    r.put("' --cache")
     let rest = false
     for i in 2..a.n:
         let w = a.get(i)

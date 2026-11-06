@@ -89,4 +89,4 @@ include = ["kit"]
 tea jit [file.cf] [-I dir]... [--compiler path] [--jit path] [--no-run] [-- 程序参数...]
 ```
 
-省略文件时用 `[build] main`。`.cir` 放在 `target/jit/<文件名>.cir`。它只在以下情况重做:文件不存在、`coffee2` 比它新、入口所在目录或某个 include 目录里有更新的 `.cf` 文件(按修改时间判断,和 make 一样)。`--no-run` 只做 `.cir`。`cfjit` 默认从 `PATH` 找,`--jit path` 指定。返回程序的退出码;前端失败时返回 1。
+省略文件时用 `[build] main`。`.cir` 放在 `target/jit/<文件名>.cir`。它只在以下情况重做:文件不存在、`coffee2` 比它新、入口所在目录或某个 include 目录里有更新的 `.cf` 文件(按修改时间判断,和 make 一样)。`--no-run` 只做 `.cir`。`cfjit` 带 `--cache` 运行:生成好的映像存在 `.cir` 旁边的 `.cir.cim`,`.cir` 内容不变就直接用它。`cfjit` 默认从 `PATH` 找,`--jit path` 指定。返回程序的退出码;前端失败时返回 1。

@@ -3138,6 +3138,20 @@ class Lower:
             self.f.arg(self.f.cint(int(Rp.I64), bytes))
             self.f.ccall(int(Rp.Ptr), 3, self.rt_memcpy, 0)
             return p
+        if k == int(Ty.Buf) && t.a[x] >= 0 && !needs_drop(t, g, t.a[x]):
+            /#/ a buffer of plain elements: a block of its own with the same elements
+            let size = st_size(t, g, t.a[x])
+            let data = self.f.extract(int(Rp.Ptr), v, 0)
+            let cnt = self.f.extract(int(Rp.I64), v, 1)
+            self.f.arg(cnt)
+            self.f.arg(self.f.cint(int(Rp.I64), size))
+            let p = self.f.ccall(int(Rp.Ptr), 2, self.rt_calloc, 0)
+            self.f.arg(p)
+            self.f.arg(data)
+            self.f.arg(self.f.bin(int(Op.Mul), cnt, self.f.cint(int(Rp.I64), size)))
+            self.f.ccall(int(Rp.Ptr), 3, self.rt_memcpy, 0)
+            let agg = self.f.insert(self.f.undef(self.rep(t, g, x)), p, 0)
+            return self.f.insert(agg, cnt, 1)
         if k == int(Ty.Named) || k == int(Ty.Array):
             return self.f.clone_of(v, self.glue(x, 1))
         if k == int(Ty.Tuple):
