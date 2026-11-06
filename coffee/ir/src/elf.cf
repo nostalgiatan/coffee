@@ -47,6 +47,9 @@ class Obj:
     fn dump_ro(self, t: &Txt) => void:
         t.put_all(&self.ro)
 
+    fn dump_data(self, t: &Txt) => void:
+        t.put_all(&self.data)
+
     fn dump_str(self, t: &Txt) => void:
         t.put_all(&self.names)
 
@@ -56,7 +59,8 @@ class Obj:
 
     /#/ Makes `size` zero bytes of `.data` the object `sym`.
     fn define_data(self, sym: int, size: int) => void:
-        pad_to(&self.data, 8)
+        while self.data.n % 8 != 0:
+            self.data.put_byte(0)
         self.s_def[sym - 2] = self.data.n
         self.s_size[sym - 2] = size
         self.s_sec[sym - 2] = 8
@@ -180,7 +184,7 @@ fn write_elf(o: &Obj, a: &Asm) => Txt:
     o.dump_ro(&out)
     pad_to(&out, 8)
     let off_data = out.n
-    out.put_all(&o.data)
+    o.dump_data(&out)
     pad_to(&out, 8)
     let off_rela = out.n
     out.put_all(&rela)

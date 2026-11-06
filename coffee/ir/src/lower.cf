@@ -786,7 +786,8 @@ class Lower:
         let tk = a.tok[n]
         let i = a.toks.start[tk] + 2
         let e = a.toks.end[tk] - 1
-        let acc = self.f.strlit(self.text_global(&new_txt()))
+        let empty = new_txt()
+        let acc = self.f.strlit(self.text_global(&empty))
         let owned = false
         let lit_from = i
         while i <= e:
@@ -824,7 +825,7 @@ class Lower:
                 lit_from = next
             i = next
         if !owned:
-            acc = self.str_cat(acc, self.f.strlit(self.text_global(&new_txt())))
+            acc = self.str_cat(acc, self.f.strlit(self.text_global(&empty)))
         return acc
 
     fn compare(self, t: &Tys, g: &Syms, op: int, x: int, y: int, lt: int, rt: int) => int:
