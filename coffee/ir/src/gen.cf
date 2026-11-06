@@ -160,6 +160,9 @@ class Gen:
         self.ld(reg, f, v)
         let x = self.res(f, v)
         let r = f.rep[x]
+        if f.op[x] == int(Op.Cmp):
+            /#/ the result of a compare is 0 or 1 in a whole register already
+            return
         if r == int(Rp.I8) || r == int(Rp.I16) || r == int(Rp.I32):
             self.a.extend(reg, reg, rsize_scalar(r), signed)
 
@@ -1312,8 +1315,11 @@ class Gen:
             if self.fused(f, i):
                 return
             self.cmp_flags(f, i)
-            self.a.setcc(self.cc_of(f.aux[i]), 0)
-            self.st(i, 0)
+            if self.home[i] >= 0:
+                self.a.setcc(self.cc_of(f.aux[i]), self.home[i])
+            else:
+                self.a.setcc(self.cc_of(f.aux[i]), 0)
+                self.st(i, 0)
             return
         if op == int(Op.FCmp):
             let p = f.aux[i]
