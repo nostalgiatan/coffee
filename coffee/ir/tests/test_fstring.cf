@@ -17,7 +17,7 @@ fn main() => int:
     let m = 0
     m = m + expect(1, run_src(same("", "n={n}", "n=5"), true), 0)
     m = m + expect(2, run_src(same("", "{n + 1}|{n * n - 1}", "6|24"), true), 0)
-    m = m + expect(3, run_src(same("", "{x} {x * 2.0} {0.1}", "2.5 5 0.1"), true), 0)
+    m = m + expect(3, run_src(same("", "{x} {x * 2.0} {0.1}", "2.5 5.0 0.1"), true), 0)
     m = m + expect(4, run_src(same("", "{b} {!b} {n > 3}", "true false true"), true), 0)
     m = m + expect(5, run_src(same("", "{name}/{p.name}/{p.n}", "ab/pp/7"), true), 0)
     m = m + expect(6, run_src(same("", "{who(&name)} {five()} {-n}", "<ab> 5 -5"), true), 0)

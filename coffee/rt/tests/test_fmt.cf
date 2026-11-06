@@ -1,0 +1,96 @@
+/#/ The f-string number text, checked against libc: every float text reads back as the same
+/#/ double (atof), and no decimal one digit shorter does.
+use * in fmt
+use printf, fflush, atof in libc of c
+
+fn expect(what: int, got: str, want: str) => int:
+    if got != want:
+        printf("MISS #%d: got %s, want %s\n", what, got, want)
+        fflush(0)
+        return 1
+    return 0
+
+/#/ Does the text read back as `x`?
+fn reads_back(s: &str, x: float) => bool:
+    return atof(s) == x
+
+/#/ Is there a decimal with one digit fewer than the shortest text that also reads back as `x`?
+/#/ The only candidates are the shortest digits cut one short, and that value plus one unit.
+fn shorter_exists(f: int, e: int, x: float) => bool:
+    let dg: buf<int> = new_buf(int, 48)
+    let k = __cf_digits(f, e, &dg)
+    let n = dg[40]
+    if n == 1:
+        return false
+    let m = 0
+    for i in 0..n - 1:
+        m = m * 10 + dg[i]
+    let p = k - (n - 1)
+    let lo = f"{m}e{p}"
+    let hi = f"{m + 1}e{p}"
+    return atof(&lo) == x || atof(&hi) == x
+
+/#/ x = f * 2^e for a 53-bit f taken from the generator state
+fn make(f: int, e: int) => float:
+    let x = float(f)
+    let i = 0
+    while i < e:
+        x = x * 2.0
+        i += 1
+    while i > e:
+        x = x / 2.0
+        i -= 1
+    return x
+
+fn main() => int:
+    let m = 0
+    m = m + expect(1, __cf_fmt_int(0), "0")
+    m = m + expect(2, __cf_fmt_int(-42), "-42")
+    m = m + expect(3, __cf_fmt_int(9000000000), "9000000000")
+    m = m + expect(4, __cf_fmt_int(-9223372036854775807 - 1), "-9223372036854775808")
+    m = m + expect(5, __cf_fmt_int(9223372036854775807), "9223372036854775807")
+    m = m + expect(6, __cf_fmt_float(5.0), "5.0")
+    m = m + expect(7, __cf_fmt_float(0.1), "0.1")
+    m = m + expect(8, __cf_fmt_float(-2.5), "-2.5")
+    m = m + expect(9, __cf_fmt_float(1e16), "1e+16")
+    m = m + expect(10, __cf_fmt_float(123456789.125), "123456789.125")
+    m = m + expect(11, __cf_fmt_float(0.0001), "0.0001")
+    m = m + expect(12, __cf_fmt_float(0.00001), "1e-05")
+    m = m + expect(13, __cf_fmt_float(1e22), "1e+22")
+    m = m + expect(14, __cf_fmt_float(0.0 - 0.0), "0.0")
+    m = m + expect(15, __cf_fmt_float(1.0 / 0.0), "inf")
+    m = m + expect(16, __cf_fmt_float(0.0 - 1.0 / 0.0), "-inf")
+    m = m + expect(17, __cf_fmt_float(0.0 / 0.0), "nan")
+    m = m + expect(18, __cf_fmt_float(100.0), "100.0")
+    m = m + expect(19, __cf_fmt_float(1234567.0), "1234567.0")
+    m = m + expect(20, __cf_fmt_float(1.5e-7), "1.5e-07")
+    /#/ the extremes and a spread of pseudo-random doubles
+    let bad = 0
+    let state = 88172645463325252
+    for k in 0..400:
+        state = state * 6364136223846793005 + 1442695040888963407
+        let v = state // 8
+        if v < 0:
+            v = 0 - v
+        let f = 4503599627370496 + v % 4503599627370496
+        let e = (v // 4503599627370496) % 400 - 200
+        if k % 7 == 0:
+            e = e * 4
+        if k == 0:
+            e = 0 - 1074
+        if k == 1:
+            e = 0 - 52
+        let x = make(f, e)
+        if k == 2:
+            x = make(4503599627370496, 0 - 1022)
+        let s = __cf_fmt_float(x)
+        if !reads_back(&s, x):
+            printf("NO ROUND TRIP %s\n", s)
+            bad += 1
+        elif shorter_exists(f, e, x):
+            printf("NOT SHORTEST %s\n", s)
+            bad += 1
+    fflush(0)
+    if bad > 0:
+        m += 1
+    return m

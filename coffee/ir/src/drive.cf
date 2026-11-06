@@ -1,5 +1,6 @@
 /#/ Test support: source text through our front end, IR and machine code, linked by clang, and run.
 use * in lower
+use * in fmtrt
 use fopen, fputc, fclose, system, putchar, printf, fflush, access in libc of c
 
 /#/ Says which node the lowering could not handle: its kind, line, and the text of its token.
@@ -21,6 +22,11 @@ fn build_src(src: str, opt: int) => Txt:
 
 /#/ Like `build_src`, with the text of the program's own `.cfc` files (empty for none).
 fn build_obj(src: str, opt: int, cfc: str) => Txt:
+    if prints_numbers(&src, &cfc):
+        return build_text(src + "\n" + fmt_rt_text(), opt, cfc)
+    return build_text(src, opt, cfc)
+
+fn build_text(src: str, opt: int, cfc: str) => Txt:
     let t = new_tys()
     let g = new_globals()
     let lw = module_of(src, opt, cfc, &t, &g)
@@ -37,6 +43,40 @@ fn build_obj(src: str, opt: int, cfc: str) => Txt:
         fflush(0)
         return new_txt()
     return lw.object()
+
+/#/ Does an f-string of `src` print an int or a float? Then the program needs the runtime that
+/#/ makes their text (`fmt_rt_text`). A program the front end refuses needs nothing: it is not built.
+fn prints_numbers(src: &str, cfc: &str) => bool:
+    let a = parse(src + "")
+    if a.err_count > 0:
+        return false
+    let any = false
+    for n in 0..a.count:
+        if a.kind[n] == int(Nk.FStr):
+            any = true
+        /#/ a program that has the runtime itself (the runtime's own tests) is left as it is
+        if a.kind[n] == int(Nk.Fn) && a.pa[n] >= 0 && tok_is(&a, a.pa[n], "__cf_fmt_int"):
+            return false
+    if !any:
+        return false
+    let t = new_tys()
+    let g = new_globals()
+    if len(cfc) > 0:
+        declare_user_cfc(&t, &g, cfc + "", "user.cfc")
+    let m = declare_module(&g, &a, "t")
+    let sc = check(&a, &g, m)
+    declare_types(&t, &g, &a, m)
+    let ty = check_types(&t, &g, &a, m)
+    if sc.diags.errors() > 0 || ty.diags.n > 0:
+        return false
+    for n in 0..a.count:
+        if a.kind[n] == int(Nk.FPart):
+            let x = ty.node[a.pa[n]]
+            while t.kind[x] == int(Ty.Ref):
+                x = t.a[x]
+            if t.kind[x] == int(Ty.Int) || t.kind[x] == int(Ty.Float):
+                return true
+    return false
 
 /#/ The number of the first parse error: 1 for a character or `//` comment, 3 for a missing
 /#/ colon or indent, 110 for `copy`, else 2.

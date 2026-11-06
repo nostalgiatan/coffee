@@ -784,7 +784,7 @@ class Lower:
         return p
 
     /#/ `f"text {expr} text"`: the text pieces and the expressions, each as text, joined. A string
-    /#/ expression is only read; an int or float is printed (`%lld`, `%g`) into a fresh buffer.
+    /#/ expression is only read; an int or float is printed by the runtime into a fresh string.
     fn fstr(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => int:
         let tk = a.tok[n]
         let from = a.toks.start[tk] + 2
@@ -816,23 +816,17 @@ class Lower:
                 let flag = self.f.conv(int(Op.ZExt), int(Rp.I64), self.ex(t, g, ty, a, x))
                 v = self.f.index(base, self.f.bin(int(Op.Mul), flag, self.f.cint(int(Rp.I64), 6)), 1)
             elif t.kind[xt] == int(Ty.Int) || t.kind[xt] == int(Ty.Float):
-                let fmt = new_txt()
+                /#/ the text comes from the runtime in rt/src/fmt.cf, which the driver adds to the program
                 let num = self.ex(t, g, ty, a, x)
+                let rt = new_txt()
                 if t.kind[xt] == int(Ty.Int):
-                    fmt.put("%lld")
+                    rt.put("__cf_fmt_int")
                     num = self.coerce(t, g, num, self.nd(t, ty, x), t.int_ty(8, true))
                 else:
-                    fmt.put("%g")
+                    rt.put("__cf_fmt_float")
                     num = self.coerce(t, g, num, self.nd(t, ty, x), t.float_ty(8))
-                self.f.arg(self.f.cint(int(Rp.I64), 40))
-                fresh = self.f.ccall(int(Rp.Ptr), 1, self.rt_malloc, 0)
-                self.f.arg(fresh)
-                self.f.arg(self.f.cint(int(Rp.I64), 40))
-                self.f.arg(self.f.strlit(self.text_global(&fmt)))
                 self.f.arg(num)
-                let sn = new_txt()
-                sn.put("snprintf")
-                self.f.ccall(int(Rp.I32), 3, self.names.intern(&sn), 1)
+                fresh = self.f.call(int(Rp.Ptr), -1, self.names.intern(&rt))
                 v = fresh
             else:
                 self.unsupported(n)
