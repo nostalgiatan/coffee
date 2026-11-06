@@ -1772,13 +1772,42 @@ class Lower:
             v = self.consume(t, g, a, src, v, x)
         self.bind_var(t, g, a, a.pb[n], x, v)
 
+    /#/ Branches to `yes` or `no` on the condition `n`: `&&`, `||` and `!` become jumps, not a value that
+    /#/ is made and then tested.
+    fn cond_jump(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int, yes: int, no: int) => void:
+        let k = a.kind[n]
+        if k == int(Nk.Binary):
+            let op = op_of(a.pc[n])
+            if op == int(Bop.And) || op == int(Bop.Or):
+                let mid = self.new_block()
+                if op == int(Bop.And):
+                    self.cond_jump(t, g, ty, a, a.pa[n], mid, no)
+                else:
+                    self.cond_jump(t, g, ty, a, a.pa[n], yes, mid)
+                self.seal(mid)
+                self.f.set_block(mid)
+                self.cond_jump(t, g, ty, a, a.pb[n], yes, no)
+                return
+        if k == int(Nk.Unary) && a.pc[n] == int(Tk.Bang):
+            self.cond_jump(t, g, ty, a, a.pa[n], no, yes)
+            return
+        /#/ the temporaries of this test live only on the path that made them
+        let mark = self.tmp_n
+        let c = self.ex(t, g, ty, a, n)
+        if self.reachable():
+            let q = self.tmp_n - 1
+            while q >= mark:
+                self.drop_value(t, g, self.tmp_v[q], self.tmp_ty[q])
+                q = q - 1
+        self.tmp_n = mark
+        self.branch(c, yes, no)
+
     fn if_stmt(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => void:
-        let c = self.ex(t, g, ty, a, a.pa[n])
-        self.flush_temps(t, g)
         let yes = self.new_block()
         let no = self.new_block()
         let join = self.new_block()
-        self.branch(c, yes, no)
+        self.cond_jump(t, g, ty, a, a.pa[n], yes, no)
+        self.flush_temps(t, g)
         self.seal(yes)
         self.seal(no)
         self.f.set_block(yes)
@@ -1811,9 +1840,8 @@ class Lower:
         let exit = self.new_block()
         self.jump(head)
         self.f.set_block(head)
-        let c = self.ex(t, g, ty, a, a.pa[n])
+        self.cond_jump(t, g, ty, a, a.pa[n], body, exit)
         self.flush_temps(t, g)
-        self.branch(c, body, exit)
         self.seal(body)
         self.f.set_block(body)
         self.push_loop(head, exit)

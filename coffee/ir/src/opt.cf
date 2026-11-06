@@ -567,7 +567,8 @@ fn dominators(f: &Fun, rpo: &buf<int>, idom: &buf<int>, pc: &buf<int>, pl: &buf<
     while sp > 0:
         let b = stack[sp - 1]
         if f.terminated(b) && ci[b] < f.nsucc(b):
-            let t = f.eto[f.succ_edge(b, ci[b])]
+            /#/ the last successor first, so that the first one comes first in reverse post-order
+            let t = f.eto[f.succ_edge(b, f.nsucc(b) - 1 - ci[b])]
             ci[b] = ci[b] + 1
             if t >= 0 && t < nb && visited[t] == 0:
                 visited[t] = 1
@@ -894,10 +895,10 @@ fn hoist_invariants(f: &Fun) => bool:
 
 /#/ ---- block order -------------------------------------------------------------
 
-/#/ The order the blocks are emitted in, in `ord` (all `nb` blocks): reverse post-order, a loop's
-/#/ header moved after its last block (the test is at the bottom, entered by one jump), and the blocks
+/#/ An order of the blocks, in `ord` (all `nb` blocks): reverse post-order; with `rotate`, a loop's
+/#/ header moved after its last block (the test is at the bottom, entered by one jump); and the blocks
 /#/ that end in `unreachable` (the failed checks) at the end so the likely way is the fall-through.
-fn block_order(f: &Fun, ord: &buf<int>) => void:
+fn block_order(f: &Fun, ord: &buf<int>, rotate: bool) => void:
     let nb = f.nb
     let rpo: buf<int> = new_buf(int, nb + 1)
     let idom: buf<int> = new_buf(int, nb + 1)
@@ -921,7 +922,7 @@ fn block_order(f: &Fun, ord: &buf<int>) => void:
     let rot: buf<int> = new_buf(int, nb + 1)
     for k in 1..np:
         let h = rpo[k]
-        if rot[h] == 1:
+        if rot[h] == 1 || !rotate:
             continue
         let t = f.blast[h]
         if t < 0 || f.op[t] != int(Op.CondBr):

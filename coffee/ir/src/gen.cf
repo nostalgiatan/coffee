@@ -94,6 +94,9 @@ class Gen:
     /#/ the register a value lives in, -1 for the frame; the registers used (saved in the prologue)
     home: buf<int>
     xhome: buf<int>
+    /#/ the order the blocks of the function are emitted in
+    ord: buf<int>
+    emit: buf<int>
     xsg: buf<int>
     did: buf<int>
     nsaved: int
@@ -501,17 +504,22 @@ class Gen:
         for d in 0..nd:
             self.ra_lo[d] = 1000000000
             self.ra_hi[d] = -1
-        /#/ loop depth: a back edge (to a block not after its source) wraps the blocks between
+        /#/ loop depth: a back edge (to a block not after its source in the order of the code) wraps the
+        /#/ blocks between
+        let at: buf<int> = new_buf(int, f.nb + 1)
+        for oi in 0..f.nb:
+            at[self.ord[oi]] = oi
         for b in 0..f.nb:
             self.term_edges(f, b)
             for k in 0..self.ned:
                 let t = f.eto[self.ed[k]]
-                if t >= 0 && t <= b:
-                    for q in t..b + 1:
-                        depth[q] = depth[q] + 1
+                if t >= 0 && at[t] <= at[b]:
+                    for q in at[t]..at[b] + 1:
+                        depth[self.ord[q]] = depth[self.ord[q]] + 1
         self.fmask = 0
         let pos = 0
-        for b in 0..f.nb:
+        for oi in 0..f.nb:
+            let b = self.ord[oi]
             bs[b] = pos + 1
             let p = f.pfirst[b]
             let w = 1
@@ -1318,10 +1326,16 @@ class Gen:
             self.st(i, 0)
             return
         if op == int(Op.Trunc) || op == int(Op.Bitcast) || op == int(Op.PtrToInt) || op == int(Op.IntToPtr):
+            if self.home[i] >= 0:
+                self.ld(self.home[i], f, f.a[i])
+                return
             self.ld(0, f, f.a[i])
             self.st(i, 0)
             return
         if op == int(Op.SExt) || op == int(Op.ZExt):
+            if self.home[i] >= 0:
+                self.ld_ext(self.home[i], f, f.a[i], op == int(Op.SExt))
+                return
             self.ld_ext(0, f, f.a[i], op == int(Op.SExt))
             self.st(i, 0)
             return
@@ -1623,6 +1637,13 @@ class Gen:
     fn gen_fun(self, f: &Fun, rs: &Reps, sy: &Names) => bool:
         self.err = 0
         self.a.begin_fun()
+        if len(self.ord) < f.nb + 1:
+            self.ord = new_buf(int, f.nb + 1)
+            self.emit = new_buf(int, f.nb + 1)
+        /#/ the registers are given along the plain order (a header before its loop), the code is
+        /#/ written in the rotated one
+        block_order(f, &self.ord, false)
+        block_order(f, &self.emit, true)
         self.alloc_regs(f, rs)
         self.count_uses(f)
         self.layout(f, rs)
@@ -1672,16 +1693,14 @@ class Gen:
                     cs = cs + 1
                 cx = cx + 1
             p = f.nx[p]
-        let ord: buf<int> = new_buf(int, f.nb + 1)
-        block_order(f, &ord)
         for oi in 0..f.nb:
-            let b = ord[oi]
+            let b = self.emit[oi]
             self.a.bind(b)
             let i = f.bfirst[b]
             while i >= 0:
                 let nxt = -1
                 if f.nx[i] < 0 && oi + 1 < f.nb:
-                    nxt = ord[oi + 1]
+                    nxt = self.emit[oi + 1]
                 self.gen_inst(f, rs, sy, i, nxt)
                 i = f.nx[i]
         let ok = self.a.end_fun()
@@ -1700,7 +1719,7 @@ class Gen:
         return ok && self.err == 0
 
 fn new_gen() => Gen:
-    return Gen { a: new_asm(), o: new_obj(), voff: new_buf(int, 64), tmp: 0, frame: 0, err: 0, av: new_buf(int, 16), nav: 0, sbase: 256, soff: new_buf(int, 16), nstr: 0, home: new_buf(int, 64), xhome: new_buf(int, 64), xsg: new_buf(int, 64), did: new_buf(int, 64), nsaved: 0, saved: new_buf(int, 8), ed: new_buf(int, 16), ned: 0, ra_lo: new_buf(int, 1), ra_hi: new_buf(int, 1), ra_wt: new_buf(int, 1), ra_use: new_buf(int, 1), ra_def: new_buf(int, 1), ra_words: 0, ra_cp: new_buf(int, 16), ra_ncp: 0, ra_cm: new_buf(int, 16), cur: -1, msk: new_buf(int, 16), fmask: 0, nuse: new_buf(int, 64), am_base: 0, am_idx: -1, am_scale: 1, am_disp: 0 }
+    return Gen { a: new_asm(), o: new_obj(), voff: new_buf(int, 64), tmp: 0, frame: 0, err: 0, av: new_buf(int, 16), nav: 0, sbase: 256, soff: new_buf(int, 16), nstr: 0, home: new_buf(int, 64), xhome: new_buf(int, 64), ord: new_buf(int, 16), emit: new_buf(int, 16), xsg: new_buf(int, 64), did: new_buf(int, 64), nsaved: 0, saved: new_buf(int, 8), ed: new_buf(int, 16), ned: 0, ra_lo: new_buf(int, 1), ra_hi: new_buf(int, 1), ra_wt: new_buf(int, 1), ra_use: new_buf(int, 1), ra_def: new_buf(int, 1), ra_words: 0, ra_cp: new_buf(int, 16), ra_ncp: 0, ra_cm: new_buf(int, 16), cur: -1, msk: new_buf(int, 16), fmask: 0, nuse: new_buf(int, 64), am_base: 0, am_idx: -1, am_scale: 1, am_disp: 0 }
 
 /#/ The multiplier that divides by `d` (not a power of two; `l` is the log2 of `d` rounded up):
 /#/ 1 + floor(2^(63 + l) / d), taken as a 64-bit pattern, by long division one bit at a time.
