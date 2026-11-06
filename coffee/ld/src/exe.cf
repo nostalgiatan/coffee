@@ -40,6 +40,7 @@ fn link_exe(l: &Linker) => Txt:
     if entry < 0:
         l.msg("no entry point: define _start or main")
         return none
+    l.gc(entry)
     l.layout()
     if l.errs > 0:
         return none

@@ -206,7 +206,7 @@ fn main() => int:
     write_file(&obj_path, &obj)
     if cli.emit_only:
         return 0
-    let cmd = txt_of("cc -w -o '")
+    let cmd = txt_of("cc -w -Wl,--gc-sections -o '")
     cmd.put_all(&out)
     cmd.put("' '")
     cmd.put_all(&obj_path)

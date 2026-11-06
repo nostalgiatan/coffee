@@ -12,13 +12,21 @@ $CC -o seed seed.o -lm
 ./seed "$H/src/main.cf" $INC --emit-obj -o gen1.o
 $CC -o coffee2 gen1.o -lm
 ./coffee2 "$H/src/main.cf" $INC --emit-obj -o gen2.o
-cmp gen1.o gen2.o || { echo "no fixed point: gen1 and gen2 objects differ"; exit 1; }
+FIN=gen1.o
+if ! cmp -s gen1.o gen2.o; then
+    # the object format changed since the seed was made: the seed's output is in the old format, so
+    # one more round is needed before two stages agree
+    $CC -o coffee2 gen2.o -lm
+    ./coffee2 "$H/src/main.cf" $INC --emit-obj -o gen3.o
+    cmp gen2.o gen3.o || { echo "no fixed point: gen2 and gen3 objects differ"; exit 1; }
+    FIN=gen2.o
+fi
 ./coffee2 "$H/../tea/src/main.cf" -I "$H/../tea/src" -I "$H/src" -I "$H/../ir/src" -o tea
-if cmp -s seed.o gen1.o; then
+if cmp -s seed.o $FIN; then
     echo "seed is current; coffee2 built in $D"
 elif [ "$2" = "--refresh" ]; then
-    gzip -9 -n -c gen1.o > "$H/seed/coffee2-x86_64.o.gz"
-    echo "seed refreshed ($(wc -c < gen1.o) bytes); coffee2 built in $D"
+    gzip -9 -n -c $FIN > "$H/seed/coffee2-x86_64.o.gz"
+    echo "seed refreshed ($(wc -c < $FIN) bytes); coffee2 built in $D"
 else
     echo "coffee2 built in $D; the seed is older than the sources (run with --refresh to update it)"
 fi

@@ -100,6 +100,9 @@ class Linker:
     sg_flags: Col
     /#/ size of the whole image
     image_size: int
+    /#/ after `gc`: the text sections some root reaches (1) or not (0)
+    gc_on: bool
+    live: buf<int>
 
     fn err(self, what: &str, who: &Txt) => void:
         self.errs = self.errs + 1
@@ -425,6 +428,49 @@ class Linker:
             return g_data()
         return g_ro()
 
+    /#/ Drops the text sections that `entry` (a symbol) does not reach through relocations. Data
+    /#/ sections are all kept, so what they point at stays too. Call it before `layout`.
+    fn gc(self, entry: int) => void:
+        let ns = self.sc_type.n
+        let live: buf<int> = new_buf(int, ns + 1)
+        /#/ the relocations of each section, found by counting
+        let first: buf<int> = new_buf(int, ns + 2)
+        for r in 0..self.r_type.n:
+            first[self.r_sec.b[r] + 1] = first[self.r_sec.b[r] + 1] + 1
+        for s in 0..ns + 1:
+            first[s + 1] = first[s + 1] + first[s]
+        let fill: buf<int> = new_buf(int, ns + 1)
+        let order: buf<int> = new_buf(int, self.r_type.n + 1)
+        for r in 0..self.r_type.n:
+            let s = self.r_sec.b[r]
+            order[first[s] + fill[s]] = r
+            fill[s] = fill[s] + 1
+        let stack: buf<int> = new_buf(int, ns + 1)
+        let sp = 0
+        for s in 0..ns:
+            let g = self.group_of(s)
+            if g >= 0 && g != g_text():
+                live[s] = 1
+                stack[sp] = s
+                sp = sp + 1
+        let es = self.y_sec.b[entry]
+        if es >= 0 && live[es] == 0:
+            live[es] = 1
+            stack[sp] = es
+            sp = sp + 1
+        while sp > 0:
+            sp = sp - 1
+            let s = stack[sp]
+            for k in first[s]..first[s + 1]:
+                let f = self.final_sym(self.r_sym.b[order[k]])
+                let t = self.y_sec.b[f]
+                if t >= 0 && live[t] == 0:
+                    live[t] = 1
+                    stack[sp] = t
+                    sp = sp + 1
+        self.live = live
+        self.gc_on = true
+
     /#/ Decides where everything goes: the group and image address of each section, the slots of
     /#/ the GOT, the common symbols, and the pieces of the file.
     fn layout(self) => void:
@@ -435,6 +481,8 @@ class Linker:
             self.galign[g] = 1
         for s in 0..self.sc_type.n:
             let g = self.group_of(s)
+            if g == g_text() && self.gc_on && self.live[s] == 0:
+                g = 0 - 1
             self.sc_grp.b[s] = g
             if g == 0 - 2:
                 self.msg("thread-local storage is not supported")
@@ -610,4 +658,4 @@ class Linker:
         return 1
 
 fn new_linker() => Linker:
-    return Linker { blob: new_txt(), errs: 0, nin: 0, in_sec0: new_col(), in_sym0: new_col(), sc_type: new_col(), sc_flags: new_col(), sc_off: new_col(), sc_size: new_col(), sc_align: new_col(), sc_grp: new_col(), sc_goff: new_col(), sc_rva: new_col(), y_sec: new_col(), y_val: new_col(), y_size: new_col(), y_bind: new_col(), y_type: new_col(), y_nm: new_col(), y_rva: new_col(), y_got: new_col(), r_sec: new_col(), r_off: new_col(), r_type: new_col(), r_sym: new_col(), r_add: new_col(), pool: new_txt(), nm_off: new_col(), ht: new_buf(int, 64), g_def: new_col(), g_how: new_col(), g_need: new_col(), pulled: new_col(), gsize: new_buf(int, 4), galign: new_buf(int, 4), gbase: new_buf(int, 4), ngot: 0, got_rva: 0, sg_off: new_col(), sg_rva: new_col(), sg_fsz: new_col(), sg_msz: new_col(), sg_flags: new_col(), image_size: 0 }
+    return Linker { blob: new_txt(), errs: 0, nin: 0, in_sec0: new_col(), in_sym0: new_col(), sc_type: new_col(), sc_flags: new_col(), sc_off: new_col(), sc_size: new_col(), sc_align: new_col(), sc_grp: new_col(), sc_goff: new_col(), sc_rva: new_col(), y_sec: new_col(), y_val: new_col(), y_size: new_col(), y_bind: new_col(), y_type: new_col(), y_nm: new_col(), y_rva: new_col(), y_got: new_col(), r_sec: new_col(), r_off: new_col(), r_type: new_col(), r_sym: new_col(), r_add: new_col(), pool: new_txt(), nm_off: new_col(), ht: new_buf(int, 64), g_def: new_col(), g_how: new_col(), g_need: new_col(), pulled: new_col(), gsize: new_buf(int, 4), galign: new_buf(int, 4), gbase: new_buf(int, 4), ngot: 0, got_rva: 0, sg_off: new_col(), sg_rva: new_col(), sg_fsz: new_col(), sg_msz: new_col(), sg_flags: new_col(), image_size: 0, gc_on: false, live: new_buf(int, 1) }

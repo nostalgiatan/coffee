@@ -416,7 +416,7 @@ fn build_incremental(fl: &Flat, dir: &Txt, out: &Txt, opt: int, jobs: int) => in
         objs.put("'")
     printf("incremental: %d compiled, %d reused\n", compiled, reused)
     fflush(0)
-    let cmd = txt_of("cc -w -o '")
+    let cmd = txt_of("cc -w -Wl,--gc-sections -o '")
     cmd.put_all(out)
     cmd.put("'")
     cmd.put_all(&objs)

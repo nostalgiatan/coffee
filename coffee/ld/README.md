@@ -40,13 +40,20 @@ and in memory, so the file has no page padding).
 - Archives with a symbol index: members are pulled in until nothing is needed, in command-line order
   (tested against the glibc `libc.a` index: only the pulling, not a working link).
 
+## Dropping what nothing reaches
+
+The compiler writes one `.text.<name>` section (and `.rela.text.<name>`) per function, and
+`Linker.gc(entry)` (called by `link_exe`) keeps a text section only when `_start` reaches it through
+relocations; data sections are all kept, and so is what they point at. `cc` gets `-Wl,--gc-sections`
+from the driver for the same effect. (`tests/test_gc.cf`)
+
 ## Not yet (for linking against glibc's `libc.a` / `-l` libraries)
 
 - TLS sections and relocations, IFUNC (`R_X86_64_IRELATIVE`), `.init_array`/`.fini_array` and the
   `__init_array_start`-style linker-defined symbols, `_GLOBAL_OFFSET_TABLE_`, `__ehdr_start`.
 - `crt1.o`/`crti.o`/`crtn.o` and `libgcc.a`; linker scripts; shared libraries (`-l` finds only `.a`).
-- Section garbage collection, `COMDAT`/`.group`, `SHF_MERGE` string merging, `.eh_frame_hdr`.
-- Relaxation of GOTPCREL, `--gc-sections`, a symbol table in the output.
+- `COMDAT`/`.group`, `SHF_MERGE` string merging, `.eh_frame_hdr`.
+- Relaxation of GOTPCREL, a symbol table in the output.
 
 ## Tests
 

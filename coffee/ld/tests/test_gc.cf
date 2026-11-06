@@ -1,0 +1,59 @@
+/#/ Sections nothing reaches are left out of the executable: `dead` is in the object but no
+/#/ symbol that `_start` can reach calls it, so linking drops it (the file is shorter) and the
+/#/ program still runs. When `main` does call `dead`, it stays.
+use * in elf
+use * in kit
+
+/#/ An object with `main` -> `helper`, and a `dead` function of 400 bytes; `main` calls `dead`
+/#/ when `keep` is set.
+fn object(keep: bool) => Txt:
+    let o = new_obj()
+    let a = new_asm()
+    let s_main = o.sym(&txt_of("main"))
+    let s_help = o.sym(&txt_of("helper"))
+    let s_dead = o.sym(&txt_of("dead"))
+    a.begin_fun()
+    let h_at = a.pos()
+    a.mov_ri(0, 5)
+    a.ret()
+    a.end_fun()
+    o.define(s_help, h_at, a.pos() - h_at)
+    a.begin_fun()
+    let d_at = a.pos()
+    for k in 0..100:
+        a.mov_ri(1, k)
+    a.mov_ri(0, 9)
+    a.ret()
+    a.end_fun()
+    o.define(s_dead, d_at, a.pos() - d_at)
+    a.begin_fun()
+    let m_at = a.pos()
+    a.call_sym(s_help)
+    if keep:
+        a.call_sym(s_dead)
+    a.ret()
+    a.end_fun()
+    o.define(s_main, m_at, a.pos() - m_at)
+    return write_elf(&o, &a)
+
+fn exe_size(keep: bool) => int:
+    let l = new_linker()
+    add_obj(&l, &object(keep), "gc.o")
+    let exe = link_exe(&l)
+    return exe.n
+
+fn main() => int:
+    let small = exe_size(false)
+    let big = exe_size(true)
+    if small <= 0 || big <= 0:
+        return 1
+    /#/ the dead function is at least 100 instructions of 5 bytes
+    if big - small < 400:
+        return 2
+    let l = new_linker()
+    add_obj(&l, &object(false), "gc.o")
+    if !write_linked(&l, "./prog"):
+        return 3
+    if run_code("./prog") != 5:
+        return 4
+    return 0
