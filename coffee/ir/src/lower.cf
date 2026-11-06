@@ -1577,7 +1577,20 @@ class Lower:
             else:
                 p = self.ex(t, g, ty, a, a.pa[target])
             if needs_drop(t, g, tt):
-                self.drop_value(t, g, self.f.load(self.rep(t, g, tt), -1, p), tt)
+                let old = self.f.load(self.rep(t, g, tt), -1, p)
+                if tk == int(Nk.Index) && self.rep(t, g, tt) == int(Rp.Ptr):
+                    /#/ the elements of a new buffer are zero: nothing to release in them yet
+                    let yes = self.new_block()
+                    let join = self.new_block()
+                    self.branch(self.f.cmp(int(Pr.Ne), old, self.f.cint(int(Rp.Ptr), 0)), yes, join)
+                    self.seal(yes)
+                    self.f.set_block(yes)
+                    self.drop_value(t, g, old, tt)
+                    self.jump(join)
+                    self.seal(join)
+                    self.f.set_block(join)
+                else:
+                    self.drop_value(t, g, old, tt)
             self.f.store(p, val)
         else:
             self.unsupported(n)

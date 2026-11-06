@@ -21,8 +21,13 @@ fn nested_class() => str:
 fn twice() => str:
     return "class Q:\n    name: str\n\nfn main() => int:\n    let q = Q { name: \"a\" }\n    q.assign(\"name\", \"bb\")\n    q.assign(\"name\", \"ccc\")\n    return len(q.name) - 3\n"
 
+/#/ the elements of a new buffer are zero: assigning one releases nothing, assigning it again releases the first
+fn buffer_elements() => str:
+    return "class T:\n    n: int\n    name: str\n\nfn main() => int:\n    let a: buf<T> = new_buf(T, 3)\n    a[0] = T { n: 1, name: \"x\" }\n    a[1] = T { n: 2, name: \"yy\" }\n    a[0] = T { n: 5, name: \"zzz\" }\n    return a[0].n + a[1].n - 7\n"
+
 fn main() => int:
     let m = 0
+    m = m + expect(5, run_src(buffer_elements(), false), 0)
     m = m + expect(1, run_src(strs(), true), 0)
     m = m + expect(2, run_src(from_variable(), true), 0)
     m = m + expect(3, run_src(nested_class(), true), 0)
