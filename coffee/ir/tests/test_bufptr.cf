@@ -1,0 +1,16 @@
+/#/ `buf_ptr(b)` hands a buffer's block to C without moving the buffer: no double free, right pointer.
+use * in drive
+use printf, fflush in libc of c
+
+fn expect(what: int, got: int, want: int) => int:
+    if got != want:
+        printf("MISS #%d: got %d, want %d\n", what, got, want)
+        fflush(0)
+        return 1
+    return 0
+
+fn main() => int:
+    let m = 0
+    let prog = "use memcpy, memset in libc of c\n\nfn main() => int:\n    let b: buf<int> = new_buf(int, 4)\n    let c: buf<int> = new_buf(int, 4)\n    b[0] = 7\n    b[1] = 9\n    memcpy(buf_ptr(c), buf_ptr(b), 16)\n    if c[0] != 7 || c[1] != 9:\n        return 1\n    memset(buf_ptr(b), 0, 32)\n    return b[0] + b[1]\n"
+    m = m + expect(1, run_src(prog, true), 0)
+    return m

@@ -12,6 +12,7 @@
 /#/ and C functions. Anything else sets `bad` and the function is not emitted.
 use * in gen
 use * in own
+use * in decimal
 
 /#/ The IR representation of a type; -1 when it has none yet.
 fn rep_of(t: &Tys, g: &Syms, x: int) => int:
@@ -65,7 +66,8 @@ fn bytes_of_rep(r: int) => int:
     return 8
 
 /#/ The bits of the float literal at `tok`, as a double or (`single`) as a float; -1 when
-/#/ the literal is not one this can convert exactly (more than 15 digits, a huge exponent).
+/#/ the literal is not one this can convert exactly (more than 18 digits, an exponent out of range,
+/#/ and for a `float(4)` a long mantissa or a large exponent).
 fn float_bits(a: &Ast, tok: int, single: bool) => int:
     let s = a.toks.start[tok]
     let e = a.toks.end[tok]
@@ -78,7 +80,8 @@ fn float_bits(a: &Ast, tok: int, single: bool) => int:
         let c = a.byte_at(k)
         if c >= '0' && c <= '9':
             m = m * 10 + (c - '0')
-            digits = digits + 1
+            if m > 0:
+                digits = digits + 1
             if seen_dot:
                 scale = scale - 1
         elif c == '.':
@@ -104,10 +107,14 @@ fn float_bits(a: &Ast, tok: int, single: bool) => int:
     while scale < 0 && m > 0 && m % 10 == 0:
         m = m // 10
         scale = scale + 1
-    if digits > 18 || m > 9007199254740992 || scale > 22 || scale < -22:
+    if digits > 18:
         return -1
     if m == 0:
         return 0
+    if m > 9007199254740992 || scale > 22 || scale < -22:
+        if single:
+            return -1
+        return decimal_bits(m, scale)
     let v = float(m)
     let p = 1.0
     let q = scale
@@ -1085,6 +1092,15 @@ class Lower:
                 return self.new_buf_call(t, g, ty, a, n)
             if tok_is(a, a.tok[callee], "buf_resize"):
                 return self.buf_resize_call(t, g, ty, a, n)
+            if tok_is(a, a.tok[callee], "buf_ptr"):
+                /#/ the buffer is only borrowed: reading it as a value would move it into a temporary
+                /#/ that is freed at the end of the statement
+                let arg = a.child[n]
+                let v = self.exb(t, g, ty, a, arg)
+                let at = self.strip_refs(t, self.nd(t, ty, arg))
+                if t.kind[at] == int(Ty.Buf) || t.kind[at] == int(Ty.Slice):
+                    return self.f.extract(int(Rp.Ptr), v, 0)
+                return v
             return self.cast_call(t, g, ty, a, n)
         if k != int(Sk.Fn) && k != int(Sk.Extern):
             self.unsupported(n)
