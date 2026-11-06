@@ -109,6 +109,50 @@ fn stub_handler(code_lo: int, code_hi: int, trap: int, ctrl: int) => Txt:
     a.end_fun()
     return copy_of(&a.c)
 
+/#/ The host side of `read` (n 0) and `write` (n 1), reached from the sandbox with rdi the number,
+/#/ rsi the descriptor, rdx the offset of the buffer and rcx its length. The descriptor must be
+/#/ marked in the table of the control block (ctrl + 512 + 64 * n + fd) and the buffer must lie
+/#/ inside the linear memory, else the call fails (EBADF, EFAULT) and nothing reaches the kernel.
+/#/ This is the only place with a `syscall` instruction. It runs on the stack of the sandbox.
+fn stub_io(n: int, ctrl: int, base: int, limit: int) => Txt:
+    let a = new_asm()
+    a.begin_fun()
+    let badfd = a.new_label()
+    let efault = a.new_label()
+    a.cmp_ri(6, 63)
+    a.jcc(cc_a(), badfd)
+    a.mov_ri(0, ctrl + 512 + 64 * n)
+    a.add_rr(0, 6)
+    a.load(0, 0, 0, 1)
+    a.cmp_ri(0, 0)
+    a.jcc(cc_e(), badfd)
+    a.mov_ri(0, limit)
+    a.cmp_rr(1, 0)
+    a.jcc(cc_a(), efault)
+    a.mov_ri(0, 4294967295)
+    a.and_rr(2, 0)
+    a.mov_rr(0, 2)
+    a.add_rr(0, 1)
+    a.mov_ri(11, limit)
+    a.cmp_rr(0, 11)
+    a.jcc(cc_a(), efault)
+    a.mov_rr(7, 6)
+    a.mov_ri(6, base)
+    a.add_rr(6, 2)
+    a.mov_rr(2, 1)
+    a.mov_ri(0, n)
+    a.byte(15)
+    a.byte(5)
+    a.ret()
+    a.bind(badfd)
+    a.mov_ri(0, 0 - 9)
+    a.ret()
+    a.bind(efault)
+    a.mov_ri(0, 0 - 14)
+    a.ret()
+    a.end_fun()
+    return copy_of(&a.c)
+
 fn stub_restorer() => Txt:
     let a = new_asm()
     a.begin_fun()
@@ -126,9 +170,9 @@ fn catch_signal(sig: int, handler: int, restorer: int, act: int) => int:
     poke64(act + 24, 0)
     return syscall(13, sig, act, 0, 8, 0, 0)
 
-/#/ Runs `main` (at `main_at` in the code of `im`) in the sandbox. Returns its result, or -1 when
+/#/ Runs `main` (at `main_at` in the code of `im`) in the sandbox. `allow` says which standard streams it may use (see below). Returns its result, or -1 when
 /#/ the sandbox could not be made, or -2 when it trapped (the signal is in `trap_signal()`).
-fn sandbox_run(im: &Image, main_at: int) => int:
+fn sandbox_run(im: &Image, main_at: int, allow: int) => int:
     let region = sys_mmap(4294967296 + 131072, 0, 16418)
     if !mapped(region):
         return 0 - 1
@@ -161,6 +205,18 @@ fn sandbox_run(im: &Image, main_at: int) => int:
     copy_in(stubs + 256, &stub_trap(ctrl))
     copy_in(stubs + 512, &stub_handler(code, code + im.b.n, stubs + 256, ctrl))
     copy_in(stubs + 768, &stub_restorer())
+    copy_in(stubs + 1024, &stub_io(1, ctrl, region, im.limit))
+    copy_in(stubs + 1280, &stub_io(0, ctrl, region, im.limit))
+    if im.hc_at > 0:
+        poke64(code + im.hc_at, stubs + 1024)
+        poke64(code + im.hc_at + 16, stubs + 1280)
+    /#/ the descriptors that may be used: bit 0 of `allow` reads 0, bit 1 writes 1, bit 2 writes 2
+    if (allow & 1) != 0:
+        poke8(ctrl + 512, 1)
+    if (allow & 2) != 0:
+        poke8(ctrl + 576 + 1, 1)
+    if (allow & 4) != 0:
+        poke8(ctrl + 576 + 2, 1)
     poke64(ctrl + 320, alt)
     poke64(ctrl + 328, 0)
     poke64(ctrl + 336, 65536)

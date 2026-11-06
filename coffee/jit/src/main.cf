@@ -38,6 +38,33 @@ fn sandbox_arg() => bool:
             w.put_byte(raw.b[i])
     return on
 
+/#/ The streams a sandbox may use: `--allow=stdin,stdout,stderr` (a subset; `--allow=` is none).
+/#/ Bits 0, 1, 2 of the result. Without the option all three.
+fn allow_arg() => int:
+    let raw = read_file(&txt_of("/proc/self/cmdline"))
+    let w = new_txt()
+    let mask = 7
+    for i in 0..raw.n + 1:
+        if i == raw.n || raw.b[i] == 0:
+            if w.n >= 8 && w.b[0] == 45 && w.b[1] == 45 && w.b[2] == 97 && w.b[6] == 119 && w.b[7] == 61:
+                mask = 0
+                let item = new_txt()
+                for k in 8..w.n + 1:
+                    if k == w.n || w.b[k] == 44:
+                        if item.is("stdin"):
+                            mask = mask | 1
+                        if item.is("stdout"):
+                            mask = mask | 2
+                        if item.is("stderr"):
+                            mask = mask | 4
+                        item.clear()
+                    else:
+                        item.put_byte(w.b[k])
+            w.clear()
+        else:
+            w.put_byte(raw.b[i])
+    return mask
+
 fn main() => int:
     let sbx = sandbox_arg()
     let path = path_arg()
@@ -72,7 +99,7 @@ fn main() => int:
         say("cfjit: the module has no main\n")
         return 2
     if sbx:
-        let rs = sandbox_run(&im, at)
+        let rs = sandbox_run(&im, at, allow_arg())
         if rs == 0 - 1:
             say("cfjit: the sandbox could not be made\n")
             return 2

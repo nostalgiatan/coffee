@@ -16,12 +16,24 @@ fn expect(what: int, got: int, want: int) => int:
     return 0
 
 /#/ Writes `src` as a program and runs it in the sandbox: its exit code. The stderr is left in `sbx.err`.
-fn run_sbx(src: str) => int:
+fn run_sbx_with(src: str, opts: str) => int:
     write_file(&txt_of("sbx.cf"), &txt_of(&src))
     if system("coffee2 sbx.cf --emit-cir -o sbx.cir > sbx.log 2>&1") != 0:
         return -1
-    let st = system("cfjit sbx.cir --sandbox > sbx.out 2>&1")
+    let c = txt_of("cfjit sbx.cir --sandbox ")
+    c.put(&opts)
+    c.put(" > sbx.out 2>&1")
+    let st = system(txt_str(&c))
     return (st >> 8) & 255
+
+fn run_sbx(src: str) => int:
+    return run_sbx_with(src, "")
+
+fn out_is(want: str) => int:
+    let c = txt_of("test \"$(cat sbx.out)\" = '")
+    c.put(&want)
+    c.put("'")
+    return system(txt_str(&c))
 
 fn trapped(sig: str) => int:
     let c = txt_of("grep -q 'trapped (signal ")
@@ -53,5 +65,14 @@ fn main() => int:
     m = m + expect(14, run_sbx("fn main() => int:\n    poke8(65600, 7)\n    poke8(4294967296 + 65600, 9)\n    return peek8(65600)\n"), 9)
     /#/ a system call other than exit and mmap fails, and the module is not stopped
     m = m + expect(15, run_sbx("fn main() => int:\n    let r = syscall(39, 0, 0, 0, 0, 0, 0)\n    if r < 0:\n        return 4\n    return 5\n"), 4)
+    /#/ write: the bytes arrive; a stream that is not allowed, and a buffer outside the memory, fail
+    let w = "fn main() => int:\n    let s = \"hi\\n\"\n    return syscall(1, 1, int(s as object), 3)\n"
+    m = m + expect(16, run_sbx(clone w), 3)
+    m = m + expect(17, out_is("hi"), 0)
+    m = m + expect(18, run_sbx_with(clone w, "--allow=stderr"), 247)
+    m = m + expect(19, run_sbx_with(clone w, "--allow=stdout,stderr"), 3)
+    m = m + expect(20, run_sbx("fn main() => int:\n    return syscall(1, 1, 65600, 4294967296, 0, 0) + 100\n"), 86)
+    m = m + expect(21, run_sbx("fn main() => int:\n    return syscall(1, 1, 4294967290, 100, 0, 0) + 100\n"), 86)
+    m = m + expect(22, run_sbx("fn main() => int:\n    return syscall(1, 77, 65600, 1, 0, 0) + 100\n"), 91)
     system("rm -f sbx.cf sbx.cir sbx.log sbx.out")
     return m
