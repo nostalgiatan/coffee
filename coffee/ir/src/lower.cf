@@ -985,7 +985,7 @@ class Lower:
             if a.kind[it] == int(Nk.Let) && a.pa[it] >= 0:
                 let vt = self.nd(t, ty, it)
                 let vr = self.rep(t, g, vt)
-                if vr < 0 || vr == int(Rp.Void) || vr >= rp_first_agg() || needs_drop(t, g, vt) || a.pc[it] < 0:
+                if vr < 0 || vr == int(Rp.Void) || vr >= rp_first_agg() || a.pc[it] < 0:
                     self.unsupported(it)
                     return
                 let id = self.global_sym(a, a.pa[it])
@@ -1458,7 +1458,11 @@ class Lower:
                     self.unsupported(n)
                     return
                 let gv = self.sink(t, g, ty, a, a.pb[n], gt)
-                self.f.store(self.f.fnaddr(self.global_sym(a, a.tok[target])), gv)
+                let slot = self.f.fnaddr(self.global_sym(a, a.tok[target]))
+                /#/ what the global owned is released once the new value is known
+                if needs_drop(t, g, gt):
+                    self.drop_value(t, g, self.f.load(self.rep(t, g, gt), -1, slot), gt)
+                self.f.store(slot, gv)
                 return
             if v < 0:
                 self.unsupported(n)
@@ -2817,6 +2821,9 @@ class Lower:
                 if is_moved(t, g, x):
                     self.write_var(self.v_flag[var], self.f.cur, self.f.cint(int(Rp.I8), 0))
                     return v
+                return self.clone_value(t, g, v, x)
+            if var < 0 && t.kind[x] == int(Ty.Array):
+                /#/ a module-level array is read in place; a copy is a new block
                 return self.clone_value(t, g, v, x)
             return v
         if (k == int(Nk.Member) || k == int(Nk.Index)) && t.kind[x] == int(Ty.Array):

@@ -1,0 +1,41 @@
+/#/ Module-level `let` of str, class, enum and array, run under the address sanitizer and the leak checker.
+use * in drive
+use printf, fflush in libc of c
+
+fn expect(what: int, got: int, want: int) => int:
+    if got != want:
+        printf("MISS #%d: got %d, want %d\n", what, got, want)
+        fflush(0)
+        return 1
+    return 0
+
+fn head() => str:
+    return "class Q:\n    n: int\n    name: str\n\nenum E:\n    A(n: int)\n    B\n\nlet greeting: str = \"hi\"\nlet q: Q = Q { n: 5, name: \"qq\" }\nlet e: E = E.A(3)\nlet table: [int; 3] = [1, 2, 3]\nlet words: [str; 2] = [\"a\", \"bc\"]\nlet count = 0\n\n"
+
+fn prog(body: str) => str:
+    return head() + "fn sum(x: &Q) => int:\n    return x.n\n\nfn main() => int:\n" + body
+
+fn main() => int:
+    let m = 0
+    /#/ reads
+    m = m + expect(1, run_src(prog("    let s = f\"{greeting}/{q.n}/{q.name}\"\n    if s == \"hi/5/qq\" && len(greeting) == 2 && greeting == \"hi\":\n        return sum(&q) - 5\n    return 1\n"), true), 0)
+    m = m + expect(2, run_src(prog("    match e:\n        E.A(n) => return n - 3\n        E.B => return 1\n"), true), 0)
+    m = m + expect(3, run_src(prog("    return table[2] + len(words[1]) - 5\n"), true), 0)
+    /#/ writes: the old value is released, once
+    m = m + expect(4, run_src(prog("    greeting = \"abc\"\n    greeting = \"defg\"\n    return len(greeting) - 4\n"), true), 0)
+    m = m + expect(5, run_src(prog("    q.n = 9\n    q.name = \"zzz\"\n    return q.n + len(q.name) - 12\n"), true), 0)
+    m = m + expect(6, run_src(prog("    table[1] = 5\n    table = [7, 8, 9]\n    return table[1] + table[2] - 17\n"), true), 0)
+    m = m + expect(7, run_src(prog("    words = [\"x\", \"yz\"]\n    return len(words[1]) - 2\n"), true), 0)
+    m = m + expect(8, run_src(prog("    q = Q { n: 1, name: \"new\" }\n    return q.n + len(q.name) - 4\n"), true), 0)
+    m = m + expect(9, run_src(prog("    count += 2\n    count += 3\n    return count - 5\n"), true), 0)
+    m = m + expect(10, run_src(prog("    let c = clone greeting\n    return len(c) - 2\n"), true), 0)
+    /#/ an array read as a value is a copy
+    m = m + expect(17, run_src(prog("    let c = table\n    c[0] = 9\n    return table[0] + c[0] - 10\n"), true), 0)
+    /#/ a global is read in place: it cannot be moved, copied out or dropped
+    m = m + expect(11, first_error(prog("    let s: str = greeting\n    return 0\n")), 302)
+    m = m + expect(12, first_error(head() + "fn take(s: str) => int:\n    return len(s)\n\nfn main() => int:\n    return take(greeting)\n"), 302)
+    m = m + expect(13, first_error(head() + "fn get() => str:\n    return greeting\n\nfn main() => int:\n    return len(get())\n"), 302)
+    m = m + expect(14, first_error(prog("    let n = q.name\n    return 0\n")), 302)
+    m = m + expect(15, first_error(prog("    mv greeting other\n    return 0\n")), 302)
+    m = m + expect(16, first_error(prog("    rm greeting\n    return 0\n")), 302)
+    return m

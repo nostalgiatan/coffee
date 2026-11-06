@@ -250,6 +250,21 @@ class Flow:
     /#/ ---- places ------------------------------------------------------------
 
     /#/ Is `n` a place (a variable, or fields and indexes of one)? Fills `pvar` and `pt`.
+    /#/ Does the place expression `n` start at a module-level `let`? Those are owned by the program
+    /#/ for its whole run: a resource is read in place, never moved or copied out.
+    fn global_root(self, g: &Syms, ty: &Typer, a: &Ast, n: int) => bool:
+        if n < 0:
+            return false
+        let k = a.kind[n]
+        if k == int(Nk.Name):
+            if self.lookup_var(a, a.tok[n]) >= 0:
+                return false
+            let r = g.find_in_module(a, a.tok[n], ty.cur)
+            return r >= 0 && g.kind[r] == int(Sk.Global)
+        if (k == int(Nk.Member) && a.pd[n] != 1) || k == int(Nk.Index):
+            return self.global_root(g, ty, a, a.pa[n])
+        return false
+
     fn place(self, a: &Ast, n: int) => bool:
         if n < 0:
             return false
@@ -342,6 +357,8 @@ class Flow:
         if k == int(Nk.Name):
             let v = self.lookup_var(a, a.tok[n])
             if v < 0:
+                if value && x >= 0 && self.global_root(g, ty, a, n) && self.own_of(t, g, x) == int(Own.Move):
+                    self.diags.add(a.tok[n], int(Oe.CopyResource))
                 return
             if value && self.own_of(t, g, self.v_ty[v]) == int(Own.Move):
                 self.ev_add(int(Ev.Consume), v, n, 0, 0, 0, 0)
@@ -354,6 +371,8 @@ class Flow:
                 if value && x >= 0 && self.own_of(t, g, x) == int(Own.Move) && !self.is_target(a, n) && !self.is_slice_of(a, n):
                     self.diags.add(a.tok[n], int(Oe.CopyResource))
                 self.ev_add(int(Ev.Use), v, n, self.keep_path(), self.plen, 0, 0)
+            elif value && x >= 0 && self.own_of(t, g, x) == int(Own.Move) && !self.is_target(a, n) && !self.is_slice_of(a, n) && self.global_root(g, ty, a, n):
+                self.diags.add(a.tok[n], int(Oe.CopyResource))
         elif k == int(Nk.Unary):
             self.unary(t, g, ty, a, n, value)
         elif k == int(Nk.Binary):
@@ -570,6 +589,8 @@ class Flow:
                     self.ev_add(int(Ev.Use), src, a.pa[n], 0, 0, 0, 0)
                 else:
                     self.ev_add(int(Ev.Move), src, a.pa[n], 0, 0, 0, 0)
+            elif a.pc[n] != 1 && self.global_root(g, ty, a, a.pa[n]):
+                self.diags.add(a.tok[a.pa[n]], int(Oe.CopyResource))
             if a.pb[n] >= 0:
                 let ty_of = 0
                 if src >= 0:
@@ -605,6 +626,9 @@ class Flow:
             let v = self.lookup_var(a, a.tok[e])
             if v >= 0:
                 self.ev_add(int(Ev.Drop), v, e, 0, 0, 0, 0)
+            elif self.global_root(g, ty, a, e):
+                /#/ a module-level `let` lives as long as the program
+                self.diags.add(a.tok[e], int(Oe.CopyResource))
         else:
             self.ex(t, g, ty, a, e, false)
 

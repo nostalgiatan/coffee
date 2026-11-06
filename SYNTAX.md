@@ -198,6 +198,19 @@ let total = n + 8          /#/ int
 
 数字字面量推断为默认的 `int` / `float`（8 字节）；需要 `int(4)+` 这类窄类型时仍写标注。推断不出的值（空数组 `[]`、返回 `void` 的调用）是错误，要加标注。
 
+### 模块级 `let`
+
+函数外的 `let` 是全局变量，在 `main` 开头按书写顺序求值：
+
+```coffee
+let limit = 10
+let greeting: str = "hi"
+let table: [int; 3] = [1, 2, 3]
+let origin: Point = Point { x: 0, y: 0 }
+```
+
+类型可以是标量、`str`、类、枚举、定长数组。全局变量归程序所有，到进程结束才释放，所以只能就地读写：`len(greeting)`、`origin.x`、`&origin`、`table[1] = 5`、整体赋值 `greeting = "new"`（旧值先释放）都可以；把资源从它里面搬走或复制出来（`let s = greeting`、`take(greeting)`、`return greeting`、`mv` / `rm`）是 E302，要复制写 `clone greeting`。数组按值读出是一份新拷贝。元组、切片、`buf<T>` 的全局变量暂不支持。
+
 ### 赋值语句
 
 ```coffee
