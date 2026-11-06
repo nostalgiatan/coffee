@@ -161,6 +161,31 @@ fn live_count(lib: &Lib, n: int) => int:
             i = lib.nx[i0 + i]
     return k
 
+/#/ Does a path of edges lead from block `b` back to `b`?
+fn in_loop(f: &Fun, b: int) => bool:
+    let seen: buf<int> = new_buf(int, f.nb + 1)
+    let stack: buf<int> = new_buf(int, f.nb + 1)
+    let sp = 1
+    stack[0] = b
+    while sp > 0:
+        sp = sp - 1
+        let x = stack[sp]
+        for k in 0..f.nsucc(x):
+            let to = f.eto[f.succ_edge(x, k)]
+            if to == b:
+                return true
+            if to >= 0 && seen[to] == 0:
+                seen[to] = 1
+                stack[sp] = to
+                sp = sp + 1
+    return false
+
+/#/ How many instructions a body may have to be inlined outside a loop (beyond the call's own
+/#/ argument moves): the copy then costs about what the call did. Inside a loop the call is paid
+/#/ many times, so a body up to `loop_inline` instructions is copied.
+let plain_inline = 4
+let loop_inline = 40
+
 /#/ Is the call `c` of `f` to one that may be inlined: a finished function of the module, small,
 /#/ other than `f`, taking as many arguments as the call passes?
 fn inlinable(f: &Fun, lib: &Lib, c: int, cur: int) => int:
@@ -171,7 +196,7 @@ fn inlinable(f: &Fun, lib: &Lib, c: int, cur: int) => int:
         return -1
     if lib.f_nb[n] == 0 || lib.npar[lib.f_b0[n]] != f.b[c] || lib.f_ret[n] != f.rep[c]:
         return -1
-    if live_count(lib, n) > 40:
+    if live_count(lib, n) > 12:
         return -1
     /#/ a function that calls itself would only unroll
     let i0 = lib.f_i0[n]
