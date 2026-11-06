@@ -621,6 +621,42 @@ class Gen:
                                     self.ra_hi[d] = be[b] + 1
                                 if be[b] + 1 < self.ra_lo[d]:
                                     self.ra_lo[d] = be[b] + 1
+        /#/ coalescing: a value computed in block `b` and passed on a back edge to the parameter `p` may
+        /#/ take p's register when p is not read after it (in `b`, or in what follows `b`) and the value
+        /#/ does not leave `b`; their ranges overlap only because p stays alive on its other paths
+        let coal: buf<int> = new_buf(int, nd + 1)
+        for d in 0..nd:
+            coal[d] = -1
+        for b in 0..f.nb:
+            self.term_edges(f, b)
+            for k in 0..self.ned:
+                let e = self.ed[k]
+                let t = f.eto[e]
+                if t < 0 || at[t] > at[b]:
+                    continue
+                let pp = f.pfirst[t]
+                for j in 0..f.eargn[e]:
+                    let x = self.res(f, f.pool[f.eargs[e] + j])
+                    let dx = self.did[x]
+                    let dp = self.did[pp]
+                    if dx >= 0 && dp >= 0 && f.op[x] != int(Op.Param) && f.blk[x] == b && coal[dx] < 0:
+                        let ok = ((live_out[b * words + (dx >> 5)] >> (dx & 31)) & 1) == 0
+                        if ((live_out[b * words + (dp >> 5)] >> (dp & 31)) & 1) == 1:
+                            ok = false
+                        let i = f.nx[x]
+                        while ok && i >= 0:
+                            for q in 0..f.nval(i):
+                                if f.val_at(i, q) >= 0 && self.res(f, f.val_at(i, q)) == pp:
+                                    ok = false
+                            i = f.nx[i]
+                        for k2 in 0..self.ned:
+                            let e2 = self.ed[k2]
+                            for j2 in 0..f.eargn[e2]:
+                                if self.res(f, f.pool[f.eargs[e2] + j2]) == pp:
+                                    ok = false
+                        if ok:
+                            coal[dx] = dp
+                    pp = f.nx[pp]
         /#/ linear scan, by start
         let top = pos + 4
         let first: buf<int> = new_buf(int, top + 1)
@@ -693,7 +729,14 @@ class Gen:
                 let fr = -1
                 /#/ the hint: the register of the first operand when it ends where `d` begins
                 let hint = self.hint_reg(f, dv[d])
-                if hint >= 0:
+                let shared = -1
+                if coal[d] >= 0 && self.home[dv[coal[d]]] >= 0 && self.ra_lo[coal[d]] < self.ra_lo[d]:
+                    for r in 0..8:
+                        if regs[r] == self.home[dv[coal[d]]] && occ[r] == coal[d] && self.reg_ok(r, cm, restr):
+                            shared = r
+                if shared >= 0:
+                    fr = shared
+                if hint >= 0 && fr < 0:
                     for r in 0..8:
                         if regs[r] == hint && occ[r] < 0 && self.reg_ok(r, cm, restr):
                             fr = r
@@ -701,7 +744,8 @@ class Gen:
                     if occ[r] < 0 && fr < 0 && self.reg_ok(r, cm, restr):
                         fr = r
                 if fr >= 0:
-                    occ[fr] = d
+                    if shared < 0 || self.ra_hi[d] > self.ra_hi[occ[fr]]:
+                        occ[fr] = d
                     self.home[dv[d]] = regs[fr]
                     used[fr] = 1
                 else:

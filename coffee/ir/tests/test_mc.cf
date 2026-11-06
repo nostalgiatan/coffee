@@ -63,4 +63,7 @@ fn main() => int:
     m = m + expect_mc("fn bump(a: &mut buf<int>, n: int) => int:\n    let s = 0\n    let i = 0\n    while i < n:\n        s = s + a[0]\n        a[0] = a[0] + 1\n        i = i + 1\n    return s\n\nfn main() => int:\n    let a: buf<int> = new_buf(int, 2)\n    a[0] = 3\n    return bump(&mut a, 5)\n", 25)
     m = m + expect_mc("fn sum(a: &buf<int>, n: int) => int:\n    let s = 0\n    let i = 0\n    while i < n:\n        s = s + a[i] * 2\n        i = i + 1\n    return s\n\nfn main() => int:\n    let a: buf<int> = new_buf(int, 6)\n    for i in 0..6:\n        a[i] = i + 1\n    return sum(&a, 0) + sum(&a, 6)\n", 42)
     m = m + expect_mc("fn main() => int:\n    let c = 0\n    for i in 0..5:\n        let j = 0\n        while true:\n            j = j + 1\n            if j > i:\n                break\n            c = c + 3\n    return c\n", 30)
+    /#/ a loop-carried value that takes its parameter's register, and one that must not (read after the update)
+    m = m + expect_mc("fn main() => int:\n    let a = 1\n    let b = 2\n    let n = 0\n    while n < 10:\n        let t = a + b\n        a = b\n        b = t\n        n = n + 1\n    return b % 256\n", 233)
+    m = m + expect_mc("fn main() => int:\n    let s = 0\n    let last = 0\n    for i in 0..20:\n        let nl = last + i\n        s = s + last\n        last = nl\n    return (s + last) % 256\n", 50)
     return m
