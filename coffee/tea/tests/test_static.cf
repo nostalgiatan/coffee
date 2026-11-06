@@ -31,4 +31,8 @@ fn main() => int:
     put("st/v.cf", "fn main() => void:\n    let a = 1\n")
     m = m + expect(6, status("coffee2 st/v.cf --static -o st/v"), 0)
     m = m + expect(7, status("st/v"), 0)
+    /#/ strlen, memcpy and strcmp over every length and alignment
+    put("st/l.cf", "fn main() => int:\n    let s = \"\"\n    for n in 0..70:\n        if len(s) != n:\n            return 1\n        let t = s + \"x\"\n        let u = s + \"x\"\n        if t != u:\n            return 2\n        s = t\n    return 0\n")
+    m = m + expect(8, status("coffee2 st/l.cf --static -o st/l"), 0)
+    m = m + expect(9, status("st/l"), 0)
     return m

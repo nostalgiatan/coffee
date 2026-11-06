@@ -57,6 +57,16 @@ c fn memcpy(dst: object, src: object, n: int) => object:
     let d = int(dst)
     let s = int(src)
     let i = 0
+    while i + 32 <= n:
+        let a = peek64((s + i) as object)
+        let b = peek64((s + i + 8) as object)
+        let c = peek64((s + i + 16) as object)
+        let e = peek64((s + i + 24) as object)
+        poke64((d + i) as object, a)
+        poke64((d + i + 8) as object, b)
+        poke64((d + i + 16) as object, c)
+        poke64((d + i + 24) as object, e)
+        i = i + 32
     while i + 8 <= n:
         poke64((d + i) as object, peek64((s + i) as object))
         i = i + 8
@@ -81,6 +91,17 @@ c fn calloc(n: int, m: int) => object:
 c fn strlen(s: object) => int:
     let a = int(s)
     let n = 0
+    /#/ bytes up to an 8-byte boundary, then a word at a time (an aligned word never crosses a page)
+    while (a + n) & 7 != 0:
+        if peek8((a + n) as object) == 0:
+            return n
+        n = n + 1
+    while true:
+        let v = peek64((a + n) as object)
+        /#/ some byte of v is zero when (v - 0x0101..01) & ~v & 0x8080..80 is not zero
+        if (v - 72340172838076673) & (0 - 1 - v) & (0 - 9187201950435737472) != 0:
+            break
+        n = n + 8
     while peek8((a + n) as object) != 0:
         n = n + 1
     return n

@@ -28,8 +28,8 @@ file names, `.o` as the default product.
 
     tools/build-from-seed.sh <dir>            (add --refresh to update the seed)
 
-The committed seed object (`seed/`) is linked with `cc` into a first `coffee2`; it compiles the sources
-to `gen1.o`, the result compiles them again to `gen2.o`, and the two are byte for byte the same, so the
-compiler reproduces itself (about 35 s). When the object format has changed since the seed was made, one
-more round is run. The seed came from the Rust compiler (git tag `rust-stage0-final`), which is no
-longer in the tree.
+The committed seed (`seed/coffee2-x86_64.gz`) is a static executable of the compiler. It compiles the
+sources to `gen1`, `gen1` compiles them again to `gen2`, and the two are byte for byte the same, so the
+compiler reproduces itself (about 10 s); when the seed is older than a change in the output, one more
+round is run. No C compiler is involved. The first seed came from the Rust compiler (git tag
+`rust-stage0-final`), which is no longer in the tree.

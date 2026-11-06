@@ -8,7 +8,7 @@
 /#/     tea test [-I dir]... [--compiler path] [-j N] [file.cf]...
 /#/
 /#/ Include directories also come from `coffee.toml`: `[build] include` and `[test] include`.
-use system, printf, fflush in libc of c
+use system, fflush in libc of c
 
 class Plan:
     compiler: Txt
@@ -61,7 +61,7 @@ fn parse_plan(a: &Args) => Plan:
             let n = a.get(i + 1)
             p.jobs = parse_int(&n)
             if p.jobs < 1:
-                printf("tea: -j wants a positive number\n")
+                say("tea: -j wants a positive number\n")
                 p.bad = 1
             i = i + 1
         elif w.is("--one") && i + 1 < a.n:
@@ -70,7 +70,7 @@ fn parse_plan(a: &Args) => Plan:
         elif ends_with(&w, ".cf"):
             p.add_file(&w)
         else:
-            printf("tea: unknown option '%s'\n", txt_str(&w))
+            say(f"tea: unknown option '{txt_str(&w)}'\n")
             p.bad = 1
         i = i + 1
     return p
@@ -156,19 +156,19 @@ fn report(p: &Plan) => int:
         sp.put("/status")
         let st = read_file(&sp)
         if st.is("0"):
-            printf("    %s ... ok\n", txt_str(&f))
+            say(f"    {txt_str(&f)} ... ok\n")
             passed = passed + 1
             continue
         failed = failed + 1
         let log = copy_txt(&d)
         if st.is("compile"):
-            printf("    %s ... FAILED (compile)\n", txt_str(&f))
+            say(f"    {txt_str(&f)} ... FAILED (compile)\n")
             log.put("/compile.log")
         elif st.n <= 0:
-            printf("    %s ... FAILED (no result)\n", txt_str(&f))
+            say(f"    {txt_str(&f)} ... FAILED (no result)\n")
             log.put("/compile.log")
         else:
-            printf("    %s ... FAILED (exit %s)\n", txt_str(&f), txt_str(&st))
+            say(f"    {txt_str(&f)} ... FAILED (exit {txt_str(&st)})\n")
             log.put("/run.log")
         fflush(0)
         let tail = txt_of("tail -n 30 '")
@@ -176,9 +176,9 @@ fn report(p: &Plan) => int:
         tail.put("'")
         system(txt_str(&tail))
     if failed == 0:
-        printf("\ntest result: ok. %d passed; 0 failed\n", passed)
+        say(f"\ntest result: ok. {passed} passed; 0 failed\n")
     else:
-        printf("\ntest result: FAILED. %d passed; %d failed\n", passed, failed)
+        say(f"\ntest result: FAILED. {passed} passed; {failed} failed\n")
     fflush(0)
     return failed
 
@@ -195,7 +195,7 @@ fn run_test(a: &Args) => int:
         let list = txt_of("target/test/list")
         p.files = read_file(&list)
         if p.files.n <= 0:
-            printf("tea: no tests in tests/\n")
+            say("tea: no tests in tests/\n")
             return 1
     let me = a.get(0)
     run_all(&p, &me)

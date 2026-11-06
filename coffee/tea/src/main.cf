@@ -11,10 +11,10 @@ use * in toml
 use * in project
 use * in cmd_test
 use * in cmd_build
-use printf, fflush in libc of c
+use fflush in libc of c
 
 fn usage() => int:
-    printf("usage: tea <command> [options]\n\ncommands:\n  test    run the tests of this directory\n  build   compile the entry of coffee.toml\n  run     build, then run the program\n")
+    say("usage: tea <command> [options]\n\ncommands:\n  test    run the tests of this directory\n  build   compile the entry of coffee.toml\n  run     build, then run the program\n")
     fflush(0)
     return 2
 
@@ -28,5 +28,5 @@ fn main() => int:
         return run_build(&a)
     if a.is(1, "run"):
         return run_run(&a)
-    printf("tea: unknown command\n")
+    say("tea: unknown command\n")
     return usage()

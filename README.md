@@ -2,13 +2,13 @@
 
 Statically typed language with Python-like indentation, compiled to x86-64 machine code by a compiler written in Coffee. Source files are `.cf`; projects use `coffee.toml`. Headline feature: **bidirectional C interop** through `.cfc` files (no original C headers required). Long-term goal: the smallest possible footprint, down to an embedded JIT.
 
-- **Compiler:** self-hosted, in [coffee/](coffee/): lexer, parser, semantic analysis, types, ownership, SSA IR with an optimizer, x86-64 code generator, ELF object writer, linker (`cfld`). The system `cc` links; no LLVM, no Rust.
+- **Compiler:** self-hosted, in [coffee/](coffee/): lexer, parser, semantic analysis, types, ownership, SSA IR with an optimizer, x86-64 code generator, ELF object writer, linker (`cfld`). It links with its own linker; `cc` is used only for programs that call C functions the built-in C library lacks (`printf`, `fopen`, ...). No LLVM, no Rust.
 - **Docs:** [docs/](docs/README.md) (中文; tutorial, how-to, reference, explanation). Syntax: [SYNTAX.md](SYNTAX.md). Contributor map: [CLAUDE.md](CLAUDE.md).
 - **First generation:** the Rust/LLVM compiler is archived. Its last version is the git tag `rust-stage0-final`; its docs are in [docs/legacy-rust](docs/legacy-rust/README.md). What it had and the self-hosted compiler does not: [docs/explanation/stage0.md](docs/explanation/stage0.md).
 
 ## Build
 
-x86-64 Linux and a C compiler (`cc`) are all that is needed. A committed seed object builds the compiler:
+x86-64 Linux is all that is needed: no C compiler either. A committed seed (a static executable of the compiler) builds it:
 
 ```bash
 coffee/driver/tools/build-from-seed.sh /tmp/coffee-seed     # → coffee2 and tea in /tmp/coffee-seed
@@ -28,6 +28,6 @@ Run the whole suite with `coffee/compat` (1023 cases ported from the Rust tests)
 
 ## Not done
 
-- x86-64 Linux only (aarch64 backend, own linker without `cc`, other platforms are future work).
+- x86-64 Linux only (aarch64 backend, other platforms are future work).
 - No package manager, no `.h` → `.cfc` generator, no static linking flags (see the stage0 note above).
 - No vtable / dynamic dispatch; anonymous `fn` does not capture; no `try`/`catch`.

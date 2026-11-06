@@ -2,17 +2,17 @@
 
 目标:得到可执行文件 `coffee2`,并确认它能编译自己。
 
-前提:x86-64 Linux 和系统的 C 编译器 `cc`。不需要 Rust 和 LLVM。
+前提:x86-64 Linux。不需要 C 编译器、Rust 和 LLVM。
 
 ## 不用 Rust 和 LLVM:从种子构建
 
-x86-64 Linux 上,只要有系统的 C 编译器(默认 `cc`,可用 `CC` 指定):
+x86-64 Linux 上:
 
 ```bash
 coffee/driver/tools/build-from-seed.sh /tmp/coffee-seed
 ```
 
-得到 `/tmp/coffee-seed/coffee2`,约半分钟。脚本把仓库里的种子目标文件 `coffee/driver/seed/coffee2-x86_64.o.gz` 链接成编译器,用它编译源码,再用结果编译一遍,要求两次的目标文件逐字节相同。种子比源码旧时,加 `--refresh` 更新它:
+得到 `/tmp/coffee-seed/coffee2` 和 `tea`,约半分钟。种子 `coffee/driver/seed/coffee2-x86_64.gz` 是编译器的静态可执行文件;脚本用它编译源码得到 `gen1`,`gen1` 再编译一遍得到 `gen2`,要求两者逐字节相同。种子比源码旧时,加 `--refresh` 更新它:
 
 ```bash
 coffee/driver/tools/build-from-seed.sh /tmp/coffee-seed --refresh
@@ -20,7 +20,7 @@ coffee/driver/tools/build-from-seed.sh /tmp/coffee-seed --refresh
 
 ## 验证它能复现自己
 
-脚本已经做了:种子编出 `gen1.o`,`gen1` 再编出 `gen2.o`,两者逐字节相同才算通过。目标文件格式变了的那一次,种子的输出是旧格式,脚本会多编一轮(`gen3.o`),要求 `gen2.o` 和 `gen3.o` 相同。
+脚本已经做了:`gen1` 和 `gen2` 逐字节相同才算通过。种子比源码旧、输出不同的那一次,脚本会多编一轮(`gen3`),要求 `gen2` 和 `gen3` 相同。
 
 ## 第一代(Rust)
 

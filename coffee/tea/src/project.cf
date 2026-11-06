@@ -12,7 +12,6 @@
 /#/
 /#/ Without a `[build]` or `[test]` list, the `[test] include` of the older `tea.toml` is used and
 /#/ `tea` says so.
-use printf in libc of c
 
 class Project:
     name: Txt
@@ -68,7 +67,7 @@ fn load_project(warn: bool) => Project:
                 add_inc_line(&p.test_inc, &toml_items(&ti))
                 p.legacy = true
                 if warn:
-                    printf("tea: reading the include list of tea.toml; move it to [build] include in coffee.toml\n")
+                    say("tea: reading the include list of tea.toml; move it to [build] include in coffee.toml\n")
     if p.name.n == 0:
         p.name = txt_of("a.out")
     return p

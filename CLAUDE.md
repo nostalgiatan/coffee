@@ -4,14 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Coffee is a statically-typed language with Python-like indentation syntax. The compiler is written in Coffee (`coffee/`, self-hosted), emits x86-64 machine code and an ELF object itself, and links with the system `cc`. The language uses `.cf` source files and `coffee.toml` for project config. Its headline feature is **bidirectional C interop** via `.cfc` (C function declaration) files. The first-generation Rust/LLVM compiler is archived in the git tag `rust-stage0-final`; do not look for it in the tree.
+Coffee is a statically-typed language with Python-like indentation syntax. The compiler is written in Coffee (`coffee/`, self-hosted), emits x86-64 machine code and an ELF object itself, and links with its own linker (`cc` only for programs that call C functions the built-in C library lacks). The language uses `.cf` source files and `coffee.toml` for project config. Its headline feature is **bidirectional C interop** via `.cfc` (C function declaration) files. The first-generation Rust/LLVM compiler is archived in the git tag `rust-stage0-final`; do not look for it in the tree.
 
 For syntax see `SYNTAX.md` (written for the first generation; the self-hosted compiler takes a subset plus some additions, noted in it). For the compiler's design see `docs/` (`docs/reference/pipeline.md`, `docs/explanation/`). Old Rust-era architecture prose is in `docs/legacy-rust/`. This file captures what is not obvious from those.
 
 ## Build & test
 
 ```bash
-coffee/driver/tools/build-from-seed.sh /tmp/w          # needs only `cc`; leaves /tmp/w/coffee2 and /tmp/w/tea
+coffee/driver/tools/build-from-seed.sh /tmp/w          # needs no C compiler; leaves /tmp/w/coffee2 and /tmp/w/tea
 coffee/driver/tools/build-from-seed.sh /tmp/w --refresh # also rewrite the committed seed (do this when a compiler change should be in the seed)
 cd coffee/compat && PATH=/tmp/w:$PATH tea test --compiler /tmp/w/coffee2 -j 16   # 1023 ported cases
 ```
