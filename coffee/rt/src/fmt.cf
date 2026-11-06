@@ -67,12 +67,12 @@ fn __cf_fmt_int(v: int) => str:
 
 /#/ ---- a bignum: 48 limbs of 28 bits, least significant first ------------------
 
-fn __cf_bn_zero(a: &buf<int>) => void:
-    for i in 0..48:
+fn __cf_bn_zero(a: &buf<int>, nl: int) => void:
+    for i in 0..nl:
         a[i] = 0
 
-fn __cf_bn_set(a: &buf<int>, v: int) => void:
-    __cf_bn_zero(a)
+fn __cf_bn_set(a: &buf<int>, v: int, nl: int) => void:
+    __cf_bn_zero(a, nl)
     let w = v
     let i = 0
     while w > 0:
@@ -80,20 +80,20 @@ fn __cf_bn_set(a: &buf<int>, v: int) => void:
         w = w // 268435456
         i += 1
 
-fn __cf_bn_copy(d: &buf<int>, s: &buf<int>) => void:
-    for i in 0..48:
+fn __cf_bn_copy(d: &buf<int>, s: &buf<int>, nl: int) => void:
+    for i in 0..nl:
         d[i] = s[i]
 
 /#/ a = a * m, for 0 <= m <= 2^28
-fn __cf_bn_mul(a: &buf<int>, m: int) => void:
+fn __cf_bn_mul(a: &buf<int>, m: int, nl: int) => void:
     let carry = 0
-    for i in 0..48:
+    for i in 0..nl:
         let t = a[i] * m + carry
         a[i] = t % 268435456
         carry = t // 268435456
 
 /#/ a = a * 2^bits
-fn __cf_bn_shl(a: &buf<int>, bits: int) => void:
+fn __cf_bn_shl(a: &buf<int>, bits: int, nl: int) => void:
     let left = bits
     while left > 0:
         let step = left
@@ -102,12 +102,12 @@ fn __cf_bn_shl(a: &buf<int>, bits: int) => void:
         let p = 1
         for z in 0..step:
             p = p * 2
-        __cf_bn_mul(a, p)
+        __cf_bn_mul(a, p, nl)
         left -= step
 
 /#/ -1, 0 or 1 as a is below, equal to or above b
-fn __cf_bn_cmp(a: &buf<int>, b: &buf<int>) => int:
-    let i = 47
+fn __cf_bn_cmp(a: &buf<int>, b: &buf<int>, nl: int) => int:
+    let i = nl - 1
     while i >= 0:
         if a[i] < b[i]:
             return -1
@@ -116,17 +116,17 @@ fn __cf_bn_cmp(a: &buf<int>, b: &buf<int>) => int:
         i -= 1
     return 0
 
-fn __cf_bn_add(a: &buf<int>, b: &buf<int>) => void:
+fn __cf_bn_add(a: &buf<int>, b: &buf<int>, nl: int) => void:
     let carry = 0
-    for i in 0..48:
+    for i in 0..nl:
         let t = a[i] + b[i] + carry
         a[i] = t % 268435456
         carry = t // 268435456
 
 /#/ a = a - b, for a >= b
-fn __cf_bn_sub(a: &buf<int>, b: &buf<int>) => void:
+fn __cf_bn_sub(a: &buf<int>, b: &buf<int>, nl: int) => void:
     let borrow = 0
-    for i in 0..48:
+    for i in 0..nl:
         let t = a[i] - b[i] - borrow
         borrow = 0
         if t < 0:
@@ -135,12 +135,12 @@ fn __cf_bn_sub(a: &buf<int>, b: &buf<int>) => void:
         a[i] = t
 
 /#/ Is (r + mp) * times >= s (> s when `even` is false)? `t` is scratch.
-fn __cf_bn_high(r: &buf<int>, mp: &buf<int>, s: &buf<int>, t: &buf<int>, even: bool, times: int) => bool:
-    __cf_bn_copy(t, r)
-    __cf_bn_add(t, mp)
+fn __cf_bn_high(r: &buf<int>, mp: &buf<int>, s: &buf<int>, t: &buf<int>, even: bool, times: int, nl: int) => bool:
+    __cf_bn_copy(t, r, nl)
+    __cf_bn_add(t, mp, nl)
     if times != 1:
-        __cf_bn_mul(t, times)
-    let c = __cf_bn_cmp(t, s)
+        __cf_bn_mul(t, times, nl)
+    let c = __cf_bn_cmp(t, s, nl)
     if even:
         return c >= 0
     return c > 0
@@ -151,64 +151,70 @@ fn __cf_bn_high(r: &buf<int>, mp: &buf<int>, s: &buf<int>, t: &buf<int>, even: b
 /#/ go to `dg`, and the result is the decimal exponent k, the value being 0.d1d2... * 10^k. The
 /#/ number of digits is in dg[40].
 fn __cf_digits(f: int, e: int, dg: &buf<int>) => int:
+    let ae = e
+    if ae < 0:
+        ae = 0 - ae
+    let nl = (117 + ae) // 28 + 2
+    if nl > 48:
+        nl = 48
     let even = f % 2 == 0
     let r: buf<int> = new_buf(int, 48)
     let s: buf<int> = new_buf(int, 48)
     let mp: buf<int> = new_buf(int, 48)
     let mm: buf<int> = new_buf(int, 48)
     let t: buf<int> = new_buf(int, 48)
-    __cf_bn_set(&r, f)
+    __cf_bn_set(&r, f, nl)
     if e >= 0:
         if f != 4503599627370496:
-            __cf_bn_shl(&r, e + 1)
-            __cf_bn_set(&s, 2)
-            __cf_bn_set(&mp, 1)
-            __cf_bn_shl(&mp, e)
-            __cf_bn_copy(&mm, &mp)
+            __cf_bn_shl(&r, e + 1, nl)
+            __cf_bn_set(&s, 2, nl)
+            __cf_bn_set(&mp, 1, nl)
+            __cf_bn_shl(&mp, e, nl)
+            __cf_bn_copy(&mm, &mp, nl)
         else:
-            __cf_bn_shl(&r, e + 2)
-            __cf_bn_set(&s, 4)
-            __cf_bn_set(&mp, 1)
-            __cf_bn_shl(&mp, e + 1)
-            __cf_bn_set(&mm, 1)
-            __cf_bn_shl(&mm, e)
+            __cf_bn_shl(&r, e + 2, nl)
+            __cf_bn_set(&s, 4, nl)
+            __cf_bn_set(&mp, 1, nl)
+            __cf_bn_shl(&mp, e + 1, nl)
+            __cf_bn_set(&mm, 1, nl)
+            __cf_bn_shl(&mm, e, nl)
     elif e == 0 - 1074 || f != 4503599627370496:
-        __cf_bn_mul(&r, 2)
-        __cf_bn_set(&s, 2)
-        __cf_bn_shl(&s, 0 - e)
-        __cf_bn_set(&mp, 1)
-        __cf_bn_set(&mm, 1)
+        __cf_bn_mul(&r, 2, nl)
+        __cf_bn_set(&s, 2, nl)
+        __cf_bn_shl(&s, 0 - e, nl)
+        __cf_bn_set(&mp, 1, nl)
+        __cf_bn_set(&mm, 1, nl)
     else:
-        __cf_bn_mul(&r, 4)
-        __cf_bn_set(&s, 2)
-        __cf_bn_shl(&s, 1 - e)
-        __cf_bn_set(&mp, 2)
-        __cf_bn_set(&mm, 1)
+        __cf_bn_mul(&r, 4, nl)
+        __cf_bn_set(&s, 2, nl)
+        __cf_bn_shl(&s, 1 - e, nl)
+        __cf_bn_set(&mp, 2, nl)
+        __cf_bn_set(&mm, 1, nl)
     /#/ scale so that (r + mp) < s and (r + mp) * 10 >= s; k counts the powers of ten
     let k = 0
-    while __cf_bn_high(&r, &mp, &s, &t, even, 1):
-        __cf_bn_mul(&s, 10)
+    while __cf_bn_high(&r, &mp, &s, &t, even, 1, nl):
+        __cf_bn_mul(&s, 10, nl)
         k += 1
-    while !__cf_bn_high(&r, &mp, &s, &t, even, 10):
-        __cf_bn_mul(&r, 10)
-        __cf_bn_mul(&mp, 10)
-        __cf_bn_mul(&mm, 10)
+    while !__cf_bn_high(&r, &mp, &s, &t, even, 10, nl):
+        __cf_bn_mul(&r, 10, nl)
+        __cf_bn_mul(&mp, 10, nl)
+        __cf_bn_mul(&mm, 10, nl)
         k -= 1
     let n = 0
     let more = true
     while more:
-        __cf_bn_mul(&r, 10)
-        __cf_bn_mul(&mp, 10)
-        __cf_bn_mul(&mm, 10)
+        __cf_bn_mul(&r, 10, nl)
+        __cf_bn_mul(&mp, 10, nl)
+        __cf_bn_mul(&mm, 10, nl)
         let d = 0
-        while __cf_bn_cmp(&r, &s) >= 0:
-            __cf_bn_sub(&r, &s)
+        while __cf_bn_cmp(&r, &s, nl) >= 0:
+            __cf_bn_sub(&r, &s, nl)
             d += 1
-        let c1 = __cf_bn_cmp(&r, &mm)
+        let c1 = __cf_bn_cmp(&r, &mm, nl)
         let low = c1 < 0
         if even:
             low = c1 <= 0
-        let high = __cf_bn_high(&r, &mp, &s, &t, even, 1)
+        let high = __cf_bn_high(&r, &mp, &s, &t, even, 1, nl)
         if !low && !high:
             dg[n] = d
             n += 1
@@ -216,8 +222,8 @@ fn __cf_digits(f: int, e: int, dg: &buf<int>) => int:
             more = false
             if low && high:
                 /#/ both ends are possible: the nearer one, the upper on a tie
-                __cf_bn_mul(&r, 2)
-                if __cf_bn_cmp(&r, &s) >= 0:
+                __cf_bn_mul(&r, 2, nl)
+                if __cf_bn_cmp(&r, &s, nl) >= 0:
                     d += 1
             elif high:
                 d += 1
@@ -470,11 +476,11 @@ fn __cf_fmt_fixed(x: float, prec: int) => str:
             f = f // 2
             e += 1
         /#/ n = x * 10^prec, rounded to an integer
-        __cf_bn_set(&n, f)
+        __cf_bn_set(&n, f, 48)
         for i in 0..prec:
-            __cf_bn_mul(&n, 10)
+            __cf_bn_mul(&n, 10, 48)
         if e >= 0:
-            __cf_bn_shl(&n, e)
+            __cf_bn_shl(&n, e, 48)
         else:
             let left = 0 - e
             let sticky = false
@@ -500,8 +506,8 @@ fn __cf_fmt_fixed(x: float, prec: int) => str:
                 up = sticky || n[0] % 2 == 1
             if up:
                 let one: buf<int> = new_buf(int, 48)
-                __cf_bn_set(&one, 1)
-                __cf_bn_add(&n, &one)
+                __cf_bn_set(&one, 1, 48)
+                __cf_bn_add(&n, &one, 48)
     let digits: buf<int> = new_buf(int, 400)
     let cnt = 0
     while !__cf_bn_is_zero(&n):
