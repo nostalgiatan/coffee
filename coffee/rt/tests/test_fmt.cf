@@ -43,8 +43,42 @@ fn make(f: int, e: int) => float:
         i -= 1
     return x
 
+/#/ The fast path (Grisu3) gives the same digits as the bignum whenever it answers.
+fn grisu_matches(n: int) => int:
+    let seed: int(8)- = 1234567890123456789
+    let bad = 0
+    for it in 0..n:
+        seed = seed ^ (seed << 13)
+        seed = seed ^ (seed >> 7)
+        seed = seed ^ (seed << 17)
+        let f = int(seed >> 11) | 4503599627370496
+        let e = int((seed >> 3) % 2000) - 1074
+        if it % 3 == 1:
+            e = it % 120 - 80
+        if it % 3 == 2:
+            f = (it % 50000) * 37 + 4503599627370496
+            e = 0 - 52
+        if e < 0 - 1074:
+            e = 0 - 1074
+        if e > 971:
+            e = 971
+        let a: buf<int> = new_buf(int, 48)
+        let b: buf<int> = new_buf(int, 48)
+        let ka = __cf_grisu(f, e, &a)
+        if ka != 1000000:
+            let kb = __cf_digits(f, e, &b)
+            let same = ka == kb && a[40] == b[40]
+            if same:
+                for i in 0..a[40]:
+                    if a[i] != b[i]:
+                        same = false
+            if !same:
+                bad += 1
+    return bad
+
 fn main() => int:
     let m = 0
+    m = m + grisu_matches(30000)
     m = m + expect(1, __cf_fmt_int(0), "0")
     m = m + expect(2, __cf_fmt_int(-42), "-42")
     m = m + expect(3, __cf_fmt_int(9000000000), "9000000000")

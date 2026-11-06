@@ -232,54 +232,218 @@ fn __cf_digits(f: int, e: int, dg: &buf<int>) => int:
     dg[40] = n
     return k
 
-/#/ The text of the digits dg[0..n) with the decimal exponent k (value 0.d1d2... * 10^k).
-fn __cf_layout(dg: &buf<int>, k: int) => str:
+/#/ The text of the digits dg[0..n) with the decimal exponent k (value 0.d1d2... * 10^k), after a
+/#/ minus sign when `neg` is 1; written straight into the result.
+fn __cf_layout(dg: &buf<int>, k: int, neg: int) => str:
     let n = dg[40]
-    let out = ""
     if k > 0 && k <= 16:
+        let frac = n - k
+        if frac < 1:
+            frac = 1
+        let s = str_alloc(neg + k + 1 + frac)
+        let p = 0
+        if neg == 1:
+            str_put(s, 0, 45)
+            p = 1
         for i in 0..k:
             if i < n:
-                out = out + __cf_ch(48 + dg[i])
+                str_put(s, p, 48 + dg[i])
             else:
-                out = out + "0"
-        out = out + "."
+                str_put(s, p, 48)
+            p += 1
+        str_put(s, p, 46)
+        p += 1
         if n > k:
             for i in k..n:
-                out = out + __cf_ch(48 + dg[i])
+                str_put(s, p, 48 + dg[i])
+                p += 1
         else:
-            out = out + "0"
-        return out
+            str_put(s, p, 48)
+        return s
     if k <= 0 && k > 0 - 4:
-        out = "0."
+        let s = str_alloc(neg + 2 - k + n)
+        let p = 0
+        if neg == 1:
+            str_put(s, 0, 45)
+            p = 1
+        str_put(s, p, 48)
+        str_put(s, p + 1, 46)
+        p += 2
         for i in 0..0 - k:
-            out = out + "0"
+            str_put(s, p, 48)
+            p += 1
         for i in 0..n:
-            out = out + __cf_ch(48 + dg[i])
-        return out
-    out = __cf_ch(48 + dg[0])
-    if n > 1:
-        out = out + "."
-        for i in 1..n:
-            out = out + __cf_ch(48 + dg[i])
+            str_put(s, p, 48 + dg[i])
+            p += 1
+        return s
     let x = k - 1
-    out = out + "e"
+    let ax = x
     if x < 0:
-        out = out + "-"
-        x = 0 - x
+        ax = 0 - x
+    let xd = 2
+    if ax >= 100:
+        xd = 3
+    let len = neg + 1 + 2 + xd
+    if n > 1:
+        len += n
+    let s = str_alloc(len)
+    let p = 0
+    if neg == 1:
+        str_put(s, 0, 45)
+        p = 1
+    str_put(s, p, 48 + dg[0])
+    p += 1
+    if n > 1:
+        str_put(s, p, 46)
+        p += 1
+        for i in 1..n:
+            str_put(s, p, 48 + dg[i])
+            p += 1
+    str_put(s, p, 101)
+    if x < 0:
+        str_put(s, p + 1, 45)
     else:
-        out = out + "+"
-    if x < 10:
-        out = out + "0"
-    return out + __cf_fmt_int(x)
+        str_put(s, p + 1, 43)
+    p += 2
+    if xd == 3:
+        str_put(s, p, 48 + ax // 100)
+        p += 1
+    str_put(s, p, 48 + ax // 10 % 10)
+    str_put(s, p + 1, 48 + ax % 10)
+    return s
+
+/#/ ---- the fast path: Grisu3 (Loitsch, "Printing Floating-Point Numbers Quickly and Accurately with
+/#/ Integers") on 64-bit significands. When it cannot be sure of the shortest digits it gives up and
+/#/ the bignum above decides, so the text is the same either way.
+
+/#/ The 64-bit significand of 10^(-348 + 8 * i), normalized (kept as hex text).
+fn __cf_g_cached(i: int) => int(8)-:
+    let s = "fa8fd5a0081c0288baaee17fa23ebf768b16fb203055ac76cf42894a5dce35ea9a6bb0aa55653b2de61acf033d1a45dfab70fe17c79ac6caff77b1fcbebcdc4fbe5691ef416bd60c8dd01fad907ffc3cd3515c2831559a839d71ac8fada6c9b5ea9c227723ee8bcbaecc49914078536d823c12795db6ce57c21094364dfb56379096ea6f3848984fd77485cb25823ac7a086cfcd97bf97f4ef340a98172aace5b23867fb2a35b28e84c8d4dfd2c63f3bc5dd44271ad3cdba936b9fcebb25c996dbac6c247d62a584a3ab66580d5fdaf6f3e2f893dec3f126b5b5ada8aaff80b887625f056c7c4a8bc9bcff6034c13053964e858c91ba2655dff9772470297ebda6dfbd9fb8e5b88ff8a95fcf88747d94b94470938fa89bcf8a08f0f8bf0f156bcdb02555653131b6993fe2c6d07b7face45c10c42a2b3b06aa242499697392d3fd87b5f28300ca0ebce5086492111aeb8cbccc096f5088ccd1b71758e219652c9c40000000000000e8d4a51000000000ad78ebc5ac620000813f3978f8940984c097ce7bc90715b38f7e32ce7bea5c70d5d238a4abe980689f4f2726179a2245ed63a231d4c4fb27b0de65388cc8ada883c7088e1aab65dbc45d1df942711d9a924d692ca61be758da01ee641a708deaa26da3999aef774af209787bb47d6b85b454e4a179dd1877865b86925b9bc5c2c83553c5c8965d3d952ab45cfa97a0b3de469fbd99a05fe3a59bc234db398c25f6c69a72a3989f5cb7dcbf5354e9bece88fcf317f22241e2cc20ce9bd35c78a598165af37b2153dfe2a0b5dc971f303aa8d9d1535ce3b396fb9b7cd9a4a7443cbb764c4ca7a444108bab8eefb6409c1ad01fef10a657842c9b10a4e5e9913129e7109bfba19c0c9dac2820d9623bf42980444b5e7aa7cf85bf21e44003acdd2d8e679c2f5e44ff8fd433179d9c8cb8419e19db92b4e31ba9eb96bf6ebadf77d9af87023b9bf0ee6b"
+    let v: int(8)- = 0
+    for j in 0..16:
+        let c = s[i * 16 + j] as int
+        let d = c - 48
+        if c >= 97:
+            d = c - 87
+        v = (v << 4) | (d as int(8)-)
+    return v
+
+/#/ The high 64 bits of a * b, rounded.
+fn __cf_g_mul(a: int(8)-, b: int(8)-) => int(8)-:
+    let m32: int(8)- = 4294967295
+    let a0 = a & m32
+    let a1 = a >> 32
+    let b0 = b & m32
+    let b1 = b >> 32
+    let ac = a1 * b1
+    let bc = a0 * b1
+    let ad = a1 * b0
+    let bd = a0 * b0
+    let tmp = (bd >> 32) + (ad & m32) + (bc & m32) + 2147483648
+    return ac + (ad >> 32) + (bc >> 32) + (tmp >> 32)
+
+/#/ Moves the last digit down while that gets closer to w; false if the digits are not certain.
+fn __cf_g_weed(dg: &buf<int>, n: int, dist: int(8)-, unsafe: int(8)-, rest0: int(8)-, tenk: int(8)-, unit: int(8)-) => bool:
+    let rest = rest0
+    let small = dist - unit
+    let big = dist + unit
+    while rest < small && unsafe - rest >= tenk && (rest + tenk < small || small - rest >= rest + tenk - small):
+        if dg[n - 1] == 0:
+            return false
+        dg[n - 1] = dg[n - 1] - 1
+        rest = rest + tenk
+    if rest < big && unsafe - rest >= tenk && (rest + tenk < big || big - rest > rest + tenk - big):
+        return false
+    return unit * 2 <= rest && rest <= unsafe - unit * 4
+
+/#/ The digits of f * 2^e (see __cf_digits) by Grisu3: the decimal exponent, or 1000000 when it is
+/#/ not sure.
+fn __cf_grisu(f: int, e: int, dg: &buf<int>) => int:
+    let fail = 1000000
+    let wf = f as int(8)-
+    let we = e
+    while (wf >> 63) == 0:
+        wf = wf << 1
+        we -= 1
+    let pf = (f as int(8)-) * 2 + 1
+    let pe = e - 1
+    while (pf >> 63) == 0:
+        pf = pf << 1
+        pe -= 1
+    let mf = (f as int(8)-) * 2 - 1
+    let me = e - 1
+    if f == 4503599627370496 && e != 0 - 1074:
+        mf = (f as int(8)-) * 4 - 1
+        me = e - 2
+    mf = mf << (me - pe)
+    let t = float(0 - 60 - (we + 64) + 63) * 0.30102999566398114
+    let kk = int(t)
+    if float(kk) < t:
+        kk += 1
+    let idx = (348 + kk - 1) // 8 + 1
+    let mk = 0 - 348 + 8 * idx
+    let t2 = float(mk) * 3.321928094887362
+    let ce = int(t2)
+    if float(ce) > t2:
+        ce -= 1
+    ce -= 63
+    let cf = __cf_g_cached(idx)
+    let sw = __cf_g_mul(wf, cf)
+    let slo = __cf_g_mul(mf, cf)
+    let shi = __cf_g_mul(pf, cf)
+    let te = we + ce + 64
+    if te < 0 - 60 || te > 0 - 32:
+        return fail
+    let sh = 0 - te
+    let unit: int(8)- = 1
+    let thf = shi + 1
+    let unsafe = thf - (slo - 1)
+    let onef = (1 as int(8)-) << sh
+    let integrals = (thf >> sh) as int
+    let fractionals = thf & (onef - 1)
+    let divisor = 1
+    let kappa = 1
+    while divisor * 10 <= integrals:
+        divisor = divisor * 10
+        kappa += 1
+    let n = 0
+    while kappa > 0:
+        dg[n] = integrals // divisor
+        n += 1
+        integrals = integrals % divisor
+        kappa -= 1
+        let rest = ((integrals as int(8)-) << sh) + fractionals
+        if rest < unsafe:
+            if !__cf_g_weed(dg, n, thf - sw, unsafe, rest, (divisor as int(8)-) << sh, unit):
+                return fail
+            dg[40] = n
+            return n - mk + kappa
+        divisor = divisor // 10
+    while n < 30:
+        fractionals = fractionals * 10
+        unit = unit * 10
+        unsafe = unsafe * 10
+        dg[n] = (fractionals >> sh) as int
+        n += 1
+        fractionals = fractionals & (onef - 1)
+        kappa -= 1
+        if fractionals < unsafe:
+            if !__cf_g_weed(dg, n, (thf - sw) * unit, unsafe, fractionals, onef, unit):
+                return fail
+            dg[40] = n
+            return n - mk + kappa
+    return fail
 
 /#/ The shortest decimal text of `x` that reads back as `x`.
 fn __cf_fmt_float(x: float) => str:
     if !(x == x):
         return "nan"
     let sign = ""
+    let neg = 0
     let m = x
     if x < 0.0:
         sign = "-"
+        neg = 1
         m = 0.0 - x
     if !((m - m) == (m - m)):
         return sign + "inf"
@@ -302,8 +466,10 @@ fn __cf_fmt_float(x: float) => str:
         f = f // 2
         e += 1
     let dg: buf<int> = new_buf(int, 48)
-    let k = __cf_digits(f, e, &dg)
-    return sign + __cf_layout(&dg, k)
+    let k = __cf_grisu(f, e, &dg)
+    if k == 1000000:
+        k = __cf_digits(f, e, &dg)
+    return __cf_layout(&dg, k, neg)
 
 /#/ ---- format specs: `{x:>8}`, `{n:08x}`, `{x:.3}` -------------------------------
 
