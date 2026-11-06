@@ -142,6 +142,7 @@ c fn symlink(target: string, linkpath: string) => int(4)+:
 c fn readlink(pathname: string, buf: object, bufsiz: int) => int(4)+:
 c fn unlinkat(dirfd: int, pathname: string, flags: int) => int(4)+:
 c fn usleep(usec: int) => int(4)+:
+c fn clock_gettime(clk: int, ts: object) => int(4)+:
 c fn sleep(seconds: int) => int(4)+:
 c fn dlopen(filename: string, flags: int) => object:
 c fn dlclose(handle: object) => int(4)+:
