@@ -747,6 +747,8 @@ use fn_a, fn_b in module_name
 use * in module_name
 ```
 
+`use f as g in m` 在本文件里把函数 `f` 叫作 `g`：`g` 作为名字出现的地方（不含 `x.g` 的字段或方法名、字符串和注释）都换成 `f`，一行里每个名字可以各带一个 `as`。模块被展开进同一个文本，`f` 和 `g` 在同一个命名空间里，所以别名只是改名，不会隔开本文件自己也声明的 `f`。`use m as a`（模块别名）可以解析，目前没有语义。自举编译器支持；Rust 版（stage0）只解析。
+
 逗号列表把多个**函数**拉进当前文件（等价于多行 `use a in m`）。`use * in m` 导入该模块全部导出函数，仍**不含**类；类要用整模块 `use mem`。`use *` 不能和其它名字写在同一行。C 的多符号仍写 `use a, b in libc of c`。
 
 `object` / `buf` 可以写 `p + n`（按字节偏移，LLVM GEP），给 `memcpy` 这类 C 调用用；不要把指针先转成 `int` 再加（Android 上会打坏指针标签）。

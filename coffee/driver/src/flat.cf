@@ -113,8 +113,16 @@ class Flat:
                 s = i + 1
         return src
 
-    /#/ Adds `src`, whose file is in `dir`, to the output with its imports in front.
+    /#/ Adds `src`, whose file is in `dir`, to the output with its imports in front; the aliases
+    /#/ of its `use f as g in m` lines are applied first.
     fn flatten(self, src: &Txt, dir: &Txt) => void:
+        let renamed = renamed_aliases(src)
+        if renamed.n > 0:
+            self.flatten_text(&renamed, dir)
+        else:
+            self.flatten_text(src, dir)
+
+    fn flatten_text(self, src: &Txt, dir: &Txt) => void:
         let start = 0
         for i in 0..src.n + 1:
             if i == src.n || src.b[i] == 10:

@@ -3,6 +3,7 @@ use * in cstr
 use * in files
 use * in flat
 use * in nested
+use * in alias
 use printf, fflush in libc of c
 
 fn expect(what: int, got: int, want: int) => int:
@@ -75,4 +76,14 @@ fn main() => int:
     m = m + expect(20, run_src(txt_str(&fixed), false), 0)
     let one = txt_of("fn a() => int:\n    class P:\n        x: int\n    return 1\n\nfn main() => int:\n    return a() - 1\n")
     m = m + expect(21, renamed_classes(&one).n, 0)
+    /#/ `use f as g in m`: g becomes f in that file only where it is a name
+    let al = txt_of("use add as plus in util\nfn main() => int:\n    let s = \"plus\"\n    return plus(1, 2) + c.plus\n")
+    let fixed_al = renamed_aliases(&al)
+    let want_al = txt_of("use add as plus in util\nfn main() => int:\n    let s = \"plus\"\n    return add(1, 2) + c.plus\n")
+    m = m + expect(22, b2i(fixed_al.same(&want_al)), 1)
+    m = m + expect(23, renamed_aliases(&txt_of("use add in util\nfn f() => int:\n    return add(1, 2)\n")).n, 0)
+    /#/ two aliases in one line, and a module alias that is not a function's
+    let two = renamed_aliases(&txt_of("use a as x, b as y in util\nfn f() => int:\n    return x() + y()\n"))
+    m = m + expect(24, b2i(two.same(&txt_of("use a as x, b as y in util\nfn f() => int:\n    return a() + b()\n"))), 1)
+    m = m + expect(25, renamed_aliases(&txt_of("use util as u\nfn f() => int:\n    return u()\n")).n, 0)
     return m

@@ -1,0 +1,76 @@
+/#/ `use f as g in m` names function `f` of module `m` as `g` in the file that says so. Modules are
+/#/ flattened into one text, so the alias is applied there: in that file's own text every `g` (not a
+/#/ field or method name after a `.`, not inside a string or comment) becomes `f`. The names `f`
+/#/ and `g` share the one flat namespace, so an alias to a name the file also declares is not told apart.
+
+/#/ Do the identifier tokens `x` and `y` of `t` spell the same name?
+fn same_ident(t: &Txt, tk: &Tokens, x: int, y: int) => bool:
+    let n = tk.end[x] - tk.start[x]
+    if n != tk.end[y] - tk.start[y]:
+        return false
+    for k in 0..n:
+        if t.b[tk.start[x] + k] != t.b[tk.start[y] + k]:
+            return false
+    return true
+
+/#/ `src` with the aliases of its `use` lines applied; empty when it has none.
+fn renamed_aliases(src: &Txt) => Txt:
+    let tk = lex(&txt_str(src))
+    /#/ to[q] = the token whose text replaces identifier token q, -1 for none
+    let to = new_buf(int, tk.count + 1)
+    for q in 0..tk.count + 1:
+        to[q] = -1
+    let from_tok = new_buf(int, 8)
+    let to_tok = new_buf(int, 8)
+    let pairs = 0
+    let in_use = false
+    let w = 0
+    while w < tk.count:
+        let k = tk.kind[w]
+        if k == int(Tk.KwUse):
+            in_use = true
+        elif k == int(Tk.Newline):
+            in_use = false
+        elif in_use && k == int(Tk.KwAs) && w > 0 && w + 1 < tk.count && tk.kind[w - 1] == int(Tk.Ident) && tk.kind[w + 1] == int(Tk.Ident):
+            /#/ `f as g` before `in`; `m as g` with no `in` after it names a module, not a function
+            let before_in = false
+            let z = w
+            while z < tk.count && tk.kind[z] != int(Tk.Newline):
+                if tk.kind[z] == int(Tk.KwIn):
+                    before_in = true
+                z = z + 1
+            if before_in:
+                if pairs >= len(from_tok):
+                    from_tok = buf_resize(from_tok, pairs * 2)
+                    to_tok = buf_resize(to_tok, pairs * 2)
+                from_tok[pairs] = w + 1
+                to_tok[pairs] = w - 1
+                pairs = pairs + 1
+        w = w + 1
+    if pairs == 0:
+        return new_txt()
+    in_use = false
+    for q in 0..tk.count:
+        let k = tk.kind[q]
+        if k == int(Tk.KwUse):
+            in_use = true
+        elif k == int(Tk.Newline):
+            in_use = false
+        elif k == int(Tk.Ident) && !in_use && !(q > 0 && tk.kind[q - 1] == int(Tk.Dot)):
+            for p in 0..pairs:
+                if same_ident(src, &tk, q, from_tok[p]):
+                    to[q] = to_tok[p]
+    let out = new_txt()
+    let pos = 0
+    for q in 0..tk.count:
+        if to[q] >= 0:
+            while pos < tk.start[q]:
+                out.put_byte(src.b[pos])
+                pos = pos + 1
+            for z in tk.start[to[q]]..tk.end[to[q]]:
+                out.put_byte(src.b[z])
+            pos = tk.end[q]
+    while pos < src.n:
+        out.put_byte(src.b[pos])
+        pos = pos + 1
+    return out
