@@ -54,7 +54,9 @@ fn bin_prec(kind: int) => int:
     return 0
 
 class Ast:
-    src: str
+    /#/ the source bytes and their count (a `str` index walks to the NUL for its bounds check)
+    bytes: buf<int>
+    size: int
     toks: Tokens
     kind: buf<int>
     tok: buf<int>
@@ -145,7 +147,9 @@ class Ast:
         return false
 
     fn byte_at(self, i: int) => int:
-        return byte(&self.src, i)
+        if i < 0 || i >= self.size:
+            return 0
+        return self.bytes[i]
 
     /#/ The identifier token at `tok` spells `word`.
     fn is_word(self, tok: int, word: &str) => bool:
@@ -522,7 +526,7 @@ class Ast:
                     break
                 let part = self.add(int(Nk.FPart), tk)
                 let from = self.toks.count
-                lex_into(&self.src, i + 1, j, &self.toks, false, self.toks.line[tk], self.toks.start[tk] - self.toks.col[tk] + 1)
+                lex_into(&self.bytes, self.size, i + 1, j, &self.toks, false, self.toks.line[tk], self.toks.start[tk] - self.toks.col[tk] + 1)
                 self.pos = from
                 self.pa[part] = self.parse_expr()
                 if !self.at(int(Tk.Newline)) && !self.at(int(Tk.Eof)):
@@ -1132,8 +1136,8 @@ class Ast:
         self.child[n] = first
         self.root = self.fin(n)
 
-fn new_ast(src: str, toks: Tokens) => Ast:
-    return Ast { src: src, toks: toks, kind: new_buf(int, 64), tok: new_buf(int, 64), end: new_buf(int, 64), pa: new_buf(int, 64), pb: new_buf(int, 64), pc: new_buf(int, 64), pd: new_buf(int, 64), child: new_buf(int, 64), next: new_buf(int, 64), count: 0, root: -1, pos: 0, half: 0, depth: 0, err_tok: new_buf(int, 8), err_code: new_buf(int, 8), err_count: 0 }
+fn new_ast(bytes: buf<int>, size: int, toks: Tokens) => Ast:
+    return Ast { bytes: bytes, size: size, toks: toks, kind: new_buf(int, 64), tok: new_buf(int, 64), end: new_buf(int, 64), pa: new_buf(int, 64), pb: new_buf(int, 64), pc: new_buf(int, 64), pd: new_buf(int, 64), child: new_buf(int, 64), next: new_buf(int, 64), count: 0, root: -1, pos: 0, half: 0, depth: 0, err_tok: new_buf(int, 8), err_code: new_buf(int, 8), err_count: 0 }
 
 /#/ Lexes and parses `src`; the result owns the source and the tokens.
 /#/ Moves the classes declared inside function bodies to the end of the program's items: a class
@@ -1165,9 +1169,19 @@ fn hoist_classes(a: &Ast) => void:
 
 /#/ Like `parse`, but the classes declared in bodies stay where they are.
 fn parse_flat(src: str) => Ast:
-    let toks = lex(&src)
-    let ast = new_ast(src, toks)
+    return parse_bytes_flat(bytes_of_str(&src), len(src))
+
+/#/ `parse_flat` of the `size` bytes in `bytes`.
+fn parse_bytes_flat(bytes: buf<int>, size: int) => Ast:
+    let toks = lex_bytes(&bytes, size)
+    let ast = new_ast(bytes, size, toks)
     ast.parse_program()
+    return ast
+
+/#/ `parse` of the `size` bytes in `bytes`.
+fn parse_bytes(bytes: buf<int>, size: int) => Ast:
+    let ast = parse_bytes_flat(bytes, size)
+    hoist_classes(&ast)
     return ast
 
 fn parse(src: str) => Ast:

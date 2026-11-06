@@ -105,9 +105,11 @@ fn miss_shape(t: &Tokens, shape: &str) => int:
 /#/ of violated ones: Eof is last and only once; ranges are ordered and inside
 /#/ the source; positions never go backwards; Indent and Dedent balance; the
 /#/ text between tokens is whitespace or a comment, never code.
-fn invariants(src: &str, t: &Tokens) => int:
+fn invariants(text: &str, t: &Tokens) => int:
     let bad = 0
-    let n = len(src)
+    let n = len(text)
+    let src = bytes_of_str(text)
+    lexed_len = n
     if t.count == 0 || t.kind[t.count - 1] != int(Tk.Eof):
         return 1
     let depth = 0
@@ -130,13 +132,13 @@ fn invariants(src: &str, t: &Tokens) => int:
         /#/ the gap before this token holds only blanks and comments
         let j = prev_end
         while j < t.start[i]:
-            let c = byte(src, j)
+            let c = sbyte(&src, j)
             if c == ' ' || c == '\t' || c == '\r' || c == '\n':
                 j = j + 1
-            elif starts_line_comment(src, j):
-                j = skip_line_comment(src, j)
-            elif starts_block_comment(src, j):
-                let e = skip_block_comment(src, j)
+            elif starts_line_comment(&src, j):
+                j = skip_line_comment(&src, j)
+            elif starts_block_comment(&src, j):
+                let e = skip_block_comment(&src, j)
                 if e < 0:
                     e = 0 - e
                 j = e

@@ -52,6 +52,16 @@ fn byte(src: &str, i: int) => int:
         return 0
     return int(src[i])
 
+/#/ The length of the source being lexed. Indexing a `str` costs a walk to its NUL (the bounds
+/#/ check), so `lex_into` copies the source into a `buf<int>` of bytes and the scanners read that.
+let lexed_len = 0
+
+/#/ Byte `i` of the source being lexed; 0 outside it.
+fn sbyte(src: &buf<int>, i: int) => int:
+    if i < 0 || i >= lexed_len:
+        return 0
+    return src[i]
+
 fn is_digit(c: int) => bool:
     return c >= '0' && c <= '9'
 
@@ -66,7 +76,7 @@ fn is_ident(c: int) => bool:
 
 /#/ ---- keywords ----------------------------------------------------------
 
-fn keyword_scan(src: &str, s: int, e: int, table: &str) => int:
+fn keyword_scan(src: &buf<int>, s: int, e: int, table: &str) => int:
     let n = e - s
     let tn = len(table)
     let idx = 0
@@ -78,7 +88,7 @@ fn keyword_scan(src: &str, s: int, e: int, table: &str) => int:
         if q - p == n:
             let same = true
             for k in 0..n:
-                if byte(src, s + k) != byte(table, p + k):
+                if sbyte(src, s + k) != byte(table, p + k):
                     same = false
             if same:
                 return idx
@@ -87,7 +97,7 @@ fn keyword_scan(src: &str, s: int, e: int, table: &str) => int:
     return -1
 
 /#/ Token kind of the word at [s, e): a keyword kind or Ident.
-fn word_kind(src: &str, s: int, e: int) => int:
+fn word_kind(src: &buf<int>, s: int, e: int) => int:
     let idx = keyword_scan(src, s, e, "fn c class type packed enum of if elif else while for in match let mv clone copy rm clean raise return break continue use as true false int float bool string str void")
     if idx < 0:
         return int(Tk.Ident)
@@ -224,10 +234,10 @@ fn ends_in_type_args(t: &Tokens) => bool:
 
 /#/ End (exclusive) of the digits/underscores run starting at i that satisfy
 /#/ the radix: 2, 8, 10 or 16.
-fn scan_digits(src: &str, i: int, radix: int) => int:
+fn scan_digits(src: &buf<int>, i: int, radix: int) => int:
     let j = i
     while true:
-        let c = byte(src, j)
+        let c = sbyte(src, j)
         let ok = c == '_'
         if radix == 16:
             ok = ok || is_hex(c)
@@ -242,17 +252,17 @@ fn scan_digits(src: &str, i: int, radix: int) => int:
         j = j + 1
     return j
 
-fn skip_ident(src: &str, i: int) => int:
+fn skip_ident(src: &buf<int>, i: int) => int:
     let j = i
-    while is_ident(byte(src, j)):
+    while is_ident(sbyte(src, j)):
         j = j + 1
     return j
 
 /#/ Scans a number starting at i. Returns the end, negated when malformed.
 /#/ Whether it is a float is a separate question: `number_is_float`.
-fn scan_number(src: &str, i: int) => int:
-    let c0 = byte(src, i)
-    let c1 = byte(src, i + 1)
+fn scan_number(src: &buf<int>, i: int) => int:
+    let c0 = sbyte(src, i)
+    let c1 = sbyte(src, i + 1)
     let j = i
     if c0 == '0' && (c1 == 'x' || c1 == 'X' || c1 == 'b' || c1 == 'B' || c1 == 'o' || c1 == 'O'):
         let radix = 16
@@ -261,52 +271,52 @@ fn scan_number(src: &str, i: int) => int:
         elif c1 == 'o' || c1 == 'O':
             radix = 8
         j = scan_digits(src, i + 2, radix)
-        if j == i + 2 || is_ident(byte(src, j)):
+        if j == i + 2 || is_ident(sbyte(src, j)):
             return 0 - (skip_ident(src, j) + 1)
         return j
     j = scan_digits(src, i, 10)
-    if byte(src, j) == '.' && is_digit(byte(src, j + 1)):
+    if sbyte(src, j) == '.' && is_digit(sbyte(src, j + 1)):
         j = scan_digits(src, j + 1, 10)
-    let e = byte(src, j)
+    let e = sbyte(src, j)
     if e == 'e' || e == 'E':
         let k = j + 1
-        let sg = byte(src, k)
+        let sg = sbyte(src, k)
         if sg == '+' || sg == '-':
             k = k + 1
-        if is_digit(byte(src, k)):
+        if is_digit(sbyte(src, k)):
             j = scan_digits(src, k, 10)
-    if is_ident(byte(src, j)):
+    if is_ident(sbyte(src, j)):
         return 0 - (skip_ident(src, j) + 1)
     return j
 
-fn number_is_float(src: &str, s: int, e: int) => bool:
-    if byte(src, s) == '0':
-        let c1 = byte(src, s + 1)
+fn number_is_float(src: &buf<int>, s: int, e: int) => bool:
+    if sbyte(src, s) == '0':
+        let c1 = sbyte(src, s + 1)
         if c1 == 'x' || c1 == 'X' || c1 == 'b' || c1 == 'B' || c1 == 'o' || c1 == 'O':
             return false
     for k in s..e:
-        let c = byte(src, k)
+        let c = sbyte(src, k)
         if c == '.' || c == 'e' || c == 'E':
             return true
     return false
 
 /#/ Validates the escape whose backslash is at i; returns its length or 0.
-fn escape_len(src: &str, i: int) => int:
-    let c = byte(src, i + 1)
+fn escape_len(src: &buf<int>, i: int) => int:
+    let c = sbyte(src, i + 1)
     if c == 'n' || c == 't' || c == 'r' || c == '\\' || c == '"' || c == '\'' || c == '0':
         return 2
-    if c == 'x' && is_hex(byte(src, i + 2)) && is_hex(byte(src, i + 3)):
+    if c == 'x' && is_hex(sbyte(src, i + 2)) && is_hex(sbyte(src, i + 3)):
         return 4
     return 0
 
 /#/ Scans a string whose opening quote is at i. Returns the end past the
 /#/ closing quote, negated when the string is unterminated or has a bad escape.
-fn scan_string(src: &str, i: int) => int:
-    let n = len(src)
+fn scan_string(src: &buf<int>, i: int) => int:
+    let n = lexed_len
     let j = i + 1
     let bad = false
     while j < n:
-        let c = byte(src, j)
+        let c = sbyte(src, j)
         if c == '"':
             if bad:
                 return 0 - (j + 1)
@@ -325,72 +335,86 @@ fn scan_string(src: &str, i: int) => int:
     return 0 - n
 
 /#/ Scans a char literal whose opening quote is at i; negated when malformed.
-fn scan_char(src: &str, i: int) => int:
-    let c = byte(src, i + 1)
+fn scan_char(src: &buf<int>, i: int) => int:
+    let c = sbyte(src, i + 1)
     if c == '\\':
         let l = escape_len(src, i + 1)
-        if l != 0 && byte(src, i + 1 + l) == '\'':
+        if l != 0 && sbyte(src, i + 1 + l) == '\'':
             return i + l + 2
-    elif c != 0 && c != '\'' && c != '\n' && byte(src, i + 2) == '\'':
+    elif c != 0 && c != '\'' && c != '\n' && sbyte(src, i + 2) == '\'':
         return i + 3
     let j = i + 1
-    while j < len(src) && byte(src, j) != '\'' && byte(src, j) != '\n':
+    while j < lexed_len && sbyte(src, j) != '\'' && sbyte(src, j) != '\n':
         j = j + 1
-    if byte(src, j) == '\'':
+    if sbyte(src, j) == '\'':
         j = j + 1
     return 0 - j
 
 /#/ ---- comments ----------------------------------------------------------
 
 /#/ End of the `/#/ ...` line comment at i (the newline is not consumed).
-fn skip_line_comment(src: &str, i: int) => int:
+fn skip_line_comment(src: &buf<int>, i: int) => int:
     let j = i
-    while j < len(src) && byte(src, j) != '\n':
+    while j < lexed_len && sbyte(src, j) != '\n':
         j = j + 1
     return j
 
 /#/ End of the `/#* ... *#/` comment at i; negated when it never closes.
-fn skip_block_comment(src: &str, i: int) => int:
-    let n = len(src)
+fn skip_block_comment(src: &buf<int>, i: int) => int:
+    let n = lexed_len
     let j = i + 3
     while j < n:
-        if byte(src, j) == '*' && byte(src, j + 1) == '#' && byte(src, j + 2) == '/':
+        if sbyte(src, j) == '*' && sbyte(src, j + 1) == '#' && sbyte(src, j + 2) == '/':
             return j + 3
         j = j + 1
     return 0 - n
 
-fn starts_line_comment(src: &str, i: int) => bool:
-    return byte(src, i) == '/' && byte(src, i + 1) == '#' && byte(src, i + 2) == '/'
+fn starts_line_comment(src: &buf<int>, i: int) => bool:
+    return sbyte(src, i) == '/' && sbyte(src, i + 1) == '#' && sbyte(src, i + 2) == '/'
 
-fn starts_block_comment(src: &str, i: int) => bool:
-    return byte(src, i) == '/' && byte(src, i + 1) == '#' && byte(src, i + 2) == '*'
+fn starts_block_comment(src: &buf<int>, i: int) => bool:
+    return sbyte(src, i) == '/' && sbyte(src, i + 1) == '#' && sbyte(src, i + 2) == '*'
 
-fn count_newlines(src: &str, a: int, b: int) => int:
+fn count_newlines(src: &buf<int>, a: int, b: int) => int:
     let k = 0
     for i in a..b:
-        if byte(src, i) == '\n':
+        if sbyte(src, i) == '\n':
             k = k + 1
     return k
 
 /#/ Offset just past the last newline in [a, b), or -1 if there is none.
-fn after_last_newline(src: &str, a: int, b: int) => int:
+fn after_last_newline(src: &buf<int>, a: int, b: int) => int:
     let r = -1
     for i in a..b:
-        if byte(src, i) == '\n':
+        if sbyte(src, i) == '\n':
             r = i + 1
     return r
 
 /#/ ---- the lexer ---------------------------------------------------------
 
+/#/ The bytes of `s` as a buffer (one extra zero slot at the end).
+fn bytes_of_str(s: &str) => buf<int>:
+    let size = len(s)
+    let b: buf<int> = new_buf(int, size + 1)
+    for q in 0..size:
+        b[q] = int(s[q])
+    return b
+
 fn lex(src: &str) => Tokens:
+    let b = bytes_of_str(src)
+    return lex_bytes(&b, len(src))
+
+/#/ The tokens of the `size` bytes in `src`.
+fn lex_bytes(src: &buf<int>, size: int) => Tokens:
     let t = new_tokens()
-    lex_into(src, 0, len(src), &t, true, 1, 0)
+    lex_into(src, size, 0, size, &t, true, 1, 0)
     return t
 
 /#/ Appends the tokens of `src[from, n)` to `t`, ending with an Eof. `at_bol` says the range
 /#/ starts a line (indentation counts); `line` and `line_start` place it in the file. An
 /#/ f-string's `{expression}` is lexed this way, after the main stream.
-fn lex_into(src: &str, from: int, n: int, t: &Tokens, at_bol0: bool, line0: int, line_start0: int) => void:
+fn lex_into(src: &buf<int>, size: int, from: int, n: int, t: &Tokens, at_bol0: bool, line0: int, line_start0: int) => void:
+    lexed_len = size
     let stack = new_buf(int, 128)
     let sp = 1
     let depth = 0
@@ -403,21 +427,21 @@ fn lex_into(src: &str, from: int, n: int, t: &Tokens, at_bol0: bool, line0: int,
             /#/ Measure indentation; blank and comment-only lines are ignored.
             let ind = 0
             let j = i
-            while byte(src, j) == ' ' || byte(src, j) == '\t':
-                if byte(src, j) == '\t':
+            while sbyte(src, j) == ' ' || sbyte(src, j) == '\t':
+                if sbyte(src, j) == '\t':
                     t.push(int(Tk.Error), j, j + 1, line, j - line_start + 1)
                     ind = ind + 4
                 else:
                     ind = ind + 1
                 j = j + 1
-            let c = byte(src, j)
+            let c = sbyte(src, j)
             if j >= n:
                 i = j
             elif c == '\n' || c == '\r':
                 if c == '\r':
                     j = j + 1
                 i = j
-                if byte(src, i) == '\n':
+                if sbyte(src, i) == '\n':
                     i = i + 1
                     line = line + 1
                     line_start = i
@@ -441,7 +465,7 @@ fn lex_into(src: &str, from: int, n: int, t: &Tokens, at_bol0: bool, line0: int,
                     if ind != stack[sp - 1]:
                         t.push(int(Tk.Error), j, j, line, j - line_start + 1)
         else:
-            let c = byte(src, i)
+            let c = sbyte(src, i)
             let col = i - line_start + 1
             if c == ' ' || c == '\t' || c == '\r':
                 i = i + 1
@@ -477,7 +501,7 @@ fn lex_into(src: &str, from: int, n: int, t: &Tokens, at_bol0: bool, line0: int,
                 else:
                     t.push(int(Tk.Int), i, e, line, col)
                 i = e
-            elif c == 'f' && byte(src, i + 1) == '"':
+            elif c == 'f' && sbyte(src, i + 1) == '"':
                 let e = scan_string(src, i + 1)
                 if e < 0:
                     e = 0 - e
@@ -487,7 +511,7 @@ fn lex_into(src: &str, from: int, n: int, t: &Tokens, at_bol0: bool, line0: int,
                 i = e
             elif is_alpha(c):
                 let e = i + 1
-                while is_ident(byte(src, e)):
+                while is_ident(sbyte(src, e)):
                     e = e + 1
                 t.push(word_kind(src, i, e), i, e, line, col)
                 i = e
@@ -509,7 +533,7 @@ fn lex_into(src: &str, from: int, n: int, t: &Tokens, at_bol0: bool, line0: int,
                 i = e
             elif c == '#':
                 let e = i + 1
-                while is_ident(byte(src, e)):
+                while is_ident(sbyte(src, e)):
                     e = e + 1
                 if e == i + 1:
                     t.push(int(Tk.Error), i, e, line, col)
@@ -517,8 +541,8 @@ fn lex_into(src: &str, from: int, n: int, t: &Tokens, at_bol0: bool, line0: int,
                     t.push(int(Tk.Listener), i, e, line, col)
                 i = e
             else:
-                let k2 = op2_kind(c, byte(src, i + 1))
-                if k2 == int(Tk.SlashSlash) && byte(src, i + 2) == '=':
+                let k2 = op2_kind(c, sbyte(src, i + 1))
+                if k2 == int(Tk.SlashSlash) && sbyte(src, i + 2) == '=':
                     t.push(int(Tk.SlashSlashEq), i, i + 3, line, col)
                     i = i + 3
                 elif k2 >= 0:
@@ -529,7 +553,7 @@ fn lex_into(src: &str, from: int, n: int, t: &Tokens, at_bol0: bool, line0: int,
                     if k1 < 0:
                         /#/ one Error per stray character, not per UTF-8 byte
                         let e = i + 1
-                        while byte(src, e) >= 128 && byte(src, e) < 192:
+                        while sbyte(src, e) >= 128 && sbyte(src, e) < 192:
                             e = e + 1
                         t.push(int(Tk.Error), i, e, line, col)
                         i = e - 1

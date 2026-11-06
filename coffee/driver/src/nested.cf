@@ -16,7 +16,7 @@ fn nested_collides(a: &Ast, f: int, c: int) => bool:
 
 /#/ `src` with the colliding nested class names made unique; empty when nothing collides.
 fn renamed_classes(src: &Txt) => Txt:
-    let a = parse_flat(txt_str(src))
+    let a = parse_bytes_flat(copy_bytes(&src.b, src.n), src.n)
     if a.err_count > 0:
         return new_txt()
     let rn = new_buf(int, a.toks.count + 1)

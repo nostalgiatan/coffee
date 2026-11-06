@@ -22,14 +22,38 @@ fn build_src(src: str, opt: int) => Txt:
 
 /#/ Like `build_src`, with the text of the program's own `.cfc` files (empty for none).
 fn build_obj(src: str, opt: int, cfc: str) => Txt:
-    if prints_numbers(&src, &cfc):
-        return build_text(src + "\n" + fmt_rt_text(), opt, cfc)
-    return build_text(src, opt, cfc)
+    return build_bytes(bytes_of_str(&src), len(src), opt, cfc)
 
-fn build_text(src: str, opt: int, cfc: str) => Txt:
+/#/ Like `build_obj`, for the program text in `text`.
+fn build_txt(text: &Txt, opt: int, cfc: str) => Txt:
+    return build_bytes(copy_bytes(&text.b, text.n), text.n, opt, cfc)
+
+/#/ The first `size` bytes of `b`, in a buffer of their own.
+fn copy_bytes(b: &buf<int>, size: int) => buf<int>:
+    let r: buf<int> = new_buf(int, size + 1)
+    for q in 0..size:
+        r[q] = b[q]
+    return r
+
+/#/ Like `build_obj`, for the `size` bytes in `bytes`.
+fn build_bytes(bytes: buf<int>, size: int, opt: int, cfc: str) => Txt:
+    if prints_numbers(copy_bytes(&bytes, size), size, &cfc):
+        let text = fmt_rt_text()
+        let rt = bytes_of_str(&text)
+        let rn = len(text)
+        let both: buf<int> = new_buf(int, size + rn + 2)
+        for q in 0..size:
+            both[q] = bytes[q]
+        both[size] = 10
+        for q in 0..rn:
+            both[size + 1 + q] = rt[q]
+        return build_text(both, size + rn + 1, opt, cfc)
+    return build_text(bytes, size, opt, cfc)
+
+fn build_text(bytes: buf<int>, size: int, opt: int, cfc: str) => Txt:
     let t = new_tys()
     let g = new_globals()
-    let lw = module_of(src, opt, cfc, &t, &g)
+    let lw = module_of(bytes, size, opt, cfc, &t, &g)
     if lw.bad > 0:
         return new_txt()
     lw.generate()
@@ -46,8 +70,8 @@ fn build_text(src: str, opt: int, cfc: str) => Txt:
 
 /#/ Does an f-string of `src` print an int or a float? Then the program needs the runtime that
 /#/ makes their text (`fmt_rt_text`). A program the front end refuses needs nothing: it is not built.
-fn prints_numbers(src: &str, cfc: &str) => bool:
-    let a = parse(src + "")
+fn prints_numbers(bytes: buf<int>, size: int, cfc: &str) => bool:
+    let a = parse_bytes(bytes, size)
     if a.err_count > 0:
         return false
     let any = false
@@ -116,12 +140,12 @@ fn first_error(src: str) => int:
 
 /#/ The module of `src` lowered and optimized, not yet generated; `bad` is set when the front
 /#/ end or the lowering refused it.
-fn module_of(src: str, opt: int, cfc: str, t: &Tys, g: &Syms) => Lower:
+fn module_of(bytes: buf<int>, size: int, opt: int, cfc: str, t: &Tys, g: &Syms) => Lower:
     let lw = new_lower()
     lw.opt = opt
     if len(cfc) > 0:
         declare_user_cfc(t, g, cfc, "user.cfc")
-    let a = parse(src)
+    let a = parse_bytes(bytes, size)
     let m = declare_module(g, &a, "t")
     let sc = check(&a, g, m)
     declare_types(t, g, &a, m)
@@ -184,7 +208,7 @@ fn run_src(src: str, leaks: bool) => int:
 fn lowered_lines(src: str, opt: int, name: str) => int:
     let t = new_tys()
     let g = new_globals()
-    let lw = module_of(src, opt, "", &t, &g)
+    let lw = module_of(bytes_of_str(&src), len(src), opt, "", &t, &g)
     let w = new_txt()
     w.put(&name)
     let k = lw.lib.find(lw.names.find(&w))
@@ -204,7 +228,7 @@ fn lowered_lines(src: str, opt: int, name: str) => int:
 fn calls_of(src: str, opt: int, name: str) => int:
     let t = new_tys()
     let g = new_globals()
-    let lw = module_of(src, opt, "", &t, &g)
+    let lw = module_of(bytes_of_str(&src), len(src), opt, "", &t, &g)
     let w = new_txt()
     w.put(&name)
     let id = lw.names.find(&w)
@@ -224,7 +248,7 @@ fn calls_of(src: str, opt: int, name: str) => int:
 fn effects_of(src: str, opt: int, name: str) => int:
     let t = new_tys()
     let g = new_globals()
-    let lw = module_of(src, opt, "", &t, &g)
+    let lw = module_of(bytes_of_str(&src), len(src), opt, "", &t, &g)
     let w = new_txt()
     w.put(&name)
     let k = lw.lib.find(lw.names.find(&w))

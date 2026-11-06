@@ -157,7 +157,7 @@ fn main() => int:
     let opt = 0
     if cli.level > 0:
         opt = 1
-    let obj = build_obj(fl.out_str(), opt, fl.cfc_str())
+    let obj = build_txt(&fl.out, opt, fl.cfc_str())
     if obj.n == 0:
         return 1
     let out = cli.out_path()
