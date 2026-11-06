@@ -725,6 +725,9 @@ class Lower:
     fn text_global(self, body: &Txt) => int:
         let id = self.nstr
         self.nstr = id + 1
+        /#/ the length of the text comes first, as in every string
+        for i in 0..8:
+            self.sbytes.put_byte((body.n >> (8 * i)) & 255)
         self.mc.add_str(self.sbytes.n)
         self.sbytes.put_all(body)
         self.sbytes.put_byte(0)
@@ -816,15 +819,45 @@ class Lower:
             return self.f.undef(int(Rp.Ptr))
         return self.str_cat(x, y)
 
+    /#/ The length of the string `p`: the word before its text.
+    fn str_len_of(self, p: int) => int:
+        return self.f.load(int(Rp.I64), -1, self.f.index(p, self.f.cint(int(Rp.I64), -8), 1))
+
+    /#/ A new string of `n` bytes of text: the length is set, the text is for the caller to fill
+    /#/ (and to end with a zero byte).
+    fn str_new(self, n: int) => int:
+        self.f.arg(self.f.bin(int(Op.Add), n, self.f.cint(int(Rp.I64), 9)))
+        let b = self.f.ccall(int(Rp.Ptr), 1, self.rt_malloc, 0)
+        self.f.store(b, n)
+        return self.f.index(b, self.f.cint(int(Rp.I64), 8), 1)
+
+    /#/ A new string with the text of `x`.
+    fn str_dup(self, x: int) => int:
+        return self.str_copy(x, self.str_len_of(x))
+
+    /#/ A new string with the text of a C string, which has no length of its own.
+    fn str_from_c(self, x: int) => int:
+        self.f.arg(x)
+        return self.str_copy(x, self.f.ccall(int(Rp.I64), 1, self.rt_strlen, 0))
+
+    fn str_copy(self, x: int, n: int) => int:
+        let p = self.str_new(n)
+        self.f.arg(p)
+        self.f.arg(x)
+        self.f.arg(self.f.bin(int(Op.Add), n, self.f.cint(int(Rp.I64), 1)))
+        self.f.ccall(int(Rp.Ptr), 3, self.rt_memcpy, 0)
+        return p
+
+    /#/ Releases the string `x`; a null string (an element of a new buffer) is left alone.
+    fn str_free(self, x: int) => void:
+        let live = self.f.conv(int(Op.ZExt), int(Rp.I64), self.f.cmp(int(Pr.Ne), self.f.conv(int(Op.PtrToInt), int(Rp.I64), x), self.f.cint(int(Rp.I64), 0)))
+        self.f.free(self.f.index(x, self.f.bin(int(Op.Mul), live, self.f.cint(int(Rp.I64), -8)), 1))
+
     /#/ A new string: the text of `x` and then the text of `y`.
     fn str_cat(self, x: int, y: int) => int:
-        self.f.arg(x)
-        let lx = self.f.ccall(int(Rp.I64), 1, self.rt_strlen, 0)
-        self.f.arg(y)
-        let ly = self.f.ccall(int(Rp.I64), 1, self.rt_strlen, 0)
-        let total = self.f.bin(int(Op.Add), self.f.bin(int(Op.Add), lx, ly), self.f.cint(int(Rp.I64), 1))
-        self.f.arg(total)
-        let p = self.f.ccall(int(Rp.Ptr), 1, self.rt_malloc, 0)
+        let lx = self.str_len_of(x)
+        let ly = self.str_len_of(y)
+        let p = self.str_new(self.f.bin(int(Op.Add), lx, ly))
         self.f.arg(p)
         self.f.arg(x)
         self.f.arg(lx)
@@ -850,7 +883,7 @@ class Lower:
                 let body = self.str_range_f(a, from, a.pb[p], true)
                 let nx = self.str_cat(acc, self.f.strlit(self.text_global(&body)))
                 if owned:
-                    self.f.free(acc)
+                    self.str_free(acc)
                 acc = nx
                 owned = true
             let x = a.pa[p]
@@ -861,13 +894,16 @@ class Lower:
             if t.kind[xt] == int(Ty.Str):
                 v = self.exb(t, g, ty, a, x)
             elif t.kind[xt] == int(Ty.Bool):
-                let names = new_txt()
-                names.put("false")
-                names.put_byte(0)
-                names.put("true")
-                let base = self.f.strlit(self.text_global(&names))
+                /#/ two strings, each with its own length word: the address is picked by arithmetic
+                let no = new_txt()
+                no.put("false")
+                let yes = new_txt()
+                yes.put("true")
+                let na = self.f.conv(int(Op.PtrToInt), int(Rp.I64), self.f.strlit(self.text_global(&no)))
+                let ya = self.f.conv(int(Op.PtrToInt), int(Rp.I64), self.f.strlit(self.text_global(&yes)))
                 let flag = self.f.conv(int(Op.ZExt), int(Rp.I64), self.ex(t, g, ty, a, x))
-                v = self.f.index(base, self.f.bin(int(Op.Mul), flag, self.f.cint(int(Rp.I64), 6)), 1)
+                let sum = self.f.bin(int(Op.Add), na, self.f.bin(int(Op.Mul), flag, self.f.bin(int(Op.Sub), ya, na)))
+                v = self.f.conv(int(Op.IntToPtr), int(Rp.Ptr), sum)
             elif t.kind[xt] == int(Ty.Int) || t.kind[xt] == int(Ty.Float):
                 /#/ the text comes from the runtime in rt/src/fmt.cf, which the driver adds to the program
                 let num = self.ex(t, g, ty, a, x)
@@ -931,23 +967,23 @@ class Lower:
                 self.uses_rt = true
                 let padded = self.f.call(int(Rp.Ptr), -1, self.names.intern(&rt))
                 if fresh >= 0:
-                    self.f.free(fresh)
+                    self.str_free(fresh)
                 fresh = padded
                 v = padded
             let nx = self.str_cat(acc, v)
             if owned:
-                self.f.free(acc)
+                self.str_free(acc)
             acc = nx
             owned = true
             if fresh >= 0:
-                self.f.free(fresh)
+                self.str_free(fresh)
             from = a.pc[p] + 1
             p = a.next[p]
         if e > from:
             let body = self.str_range_f(a, from, e, true)
             let nx = self.str_cat(acc, self.f.strlit(self.text_global(&body)))
             if owned:
-                self.f.free(acc)
+                self.str_free(acc)
             acc = nx
             owned = true
         if !owned:
@@ -1404,8 +1440,7 @@ class Lower:
         if k == int(Nk.Str):
             let lit = self.f.strlit(self.str_lit(a, a.tok[n]))
             if t.kind[x] == int(Ty.Str):
-                self.f.arg(lit)
-                return self.f.ccall(int(Rp.Ptr), 1, self.rt_strdup, 0)
+                return self.str_dup(lit)
             return lit
         if k == int(Nk.Fn) && a.pa[n] < 0:
             return self.anon_fn(a, n)
@@ -1430,6 +1465,9 @@ class Lower:
             if self.rep(t, g, self.nd(t, ty, a.pa[n])) < 0 || r < 0:
                 self.unsupported(n)
                 return v
+            if t.kind[x] == int(Ty.Str) && t.kind[self.strip_refs(t, self.nd(t, ty, a.pa[n]))] == int(Ty.Object):
+                /#/ a C string has no length word: the cast makes a string of its own
+                return self.str_from_c(v)
             return self.coerce(t, g, v, self.nd(t, ty, a.pa[n]), x)
         if k == int(Nk.Member):
             return self.member(t, g, ty, a, n)
@@ -1944,8 +1982,7 @@ class Lower:
                     if t.kind[nt] == int(Ty.Str):
                         note = self.consume(t, g, a, second, v, nt)
                     else:
-                        self.f.arg(v)
-                        note = self.f.ccall(int(Rp.Ptr), 1, self.rt_strdup, 0)
+                        note = self.str_dup(v)
                 self.f.store(self.f.field(ep, 0), code)
                 self.f.store(self.f.field(ep, 8), note)
                 self.f.store(self.f.field(ep, 16), self.f.cint(int(Rp.Ptr), 0))
@@ -2575,8 +2612,7 @@ class Lower:
             return self.f.undef(int(Rp.I8))
         let base = self.exb(t, g, ty, a, a.pa[n])
         let i = self.coerce(t, g, self.ex(t, g, ty, a, a.pb[n]), it, t.int_ty(8, true))
-        self.f.arg(base)
-        let count = self.f.ccall(int(Rp.I64), 1, self.rt_strlen, 0)
+        let count = self.str_len_of(base)
         let good = self.new_block()
         let bad = self.new_block()
         self.branch(self.f.cmp(int(Pr.ULt), i, count), good, bad)
@@ -2748,8 +2784,7 @@ class Lower:
         if (k == int(Ty.Buf) && t.a[ot] >= 0) || k == int(Ty.Slice):
             return self.f.extract(int(Rp.I64), self.agg_of(t, g, ty, a, o), 1)
         if k == int(Ty.Str):
-            self.f.arg(self.exb(t, g, ty, a, o))
-            return self.f.ccall(int(Rp.I64), 1, self.rt_strlen, 0)
+            return self.str_len_of(self.exb(t, g, ty, a, o))
         self.unsupported(n)
         return self.f.cint(int(Rp.I64), 0)
 
@@ -2954,7 +2989,7 @@ class Lower:
     fn drop_value(self, t: &Tys, g: &Syms, v: int, x: int) => void:
         let k = t.kind[x]
         if k == int(Ty.Str):
-            self.f.free(v)
+            self.str_free(v)
         elif k == int(Ty.Buf):
             self.f.free(self.f.extract(int(Rp.Ptr), v, 0))
         elif k == int(Ty.Array) && !needs_drop(t, g, t.a[x]):
@@ -2974,8 +3009,7 @@ class Lower:
     fn clone_value(self, t: &Tys, g: &Syms, v: int, x: int) => int:
         let k = t.kind[x]
         if k == int(Ty.Str):
-            self.f.arg(v)
-            return self.f.ccall(int(Rp.Ptr), 1, self.rt_strdup, 0)
+            return self.str_dup(v)
         if k == int(Ty.Array) && !needs_drop(t, g, t.a[x]):
             let bytes = st_size(t, g, t.a[x]) * t.b[x]
             let p = self.f.alloc(bytes)

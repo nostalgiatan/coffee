@@ -342,7 +342,7 @@ object.method(args)
 ```coffee
 array[index]
 array[expression]
-s[i]          /#/ str 的字节访问，类型是 int(1)-；越界会终止程序（每次访问做一次 strlen，O(n)）
+s[i]          /#/ str 的字节访问，类型是 int(1)-；越界会终止程序（长度存在字符串前 8 字节，O(1)）
 ```
 
 ### 内建函数
