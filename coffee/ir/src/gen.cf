@@ -165,6 +165,18 @@ class Gen:
     fn so(self, id: int) => int:
         return self.soff[id]
 
+    /#/ The register that holds `v`: its own when it has one, else `scratch`, loaded with it.
+    fn src(self, f: &Fun, v: int, scratch: int) => int:
+        let h = self.home[self.res(f, v)]
+        if h >= 0:
+            return h
+        self.ld(scratch, f, v)
+        return scratch
+
+    /#/ The register of `v` when it has one, else -1.
+    fn home_of(self, f: &Fun, v: int) => int:
+        return self.home[self.res(f, v)]
+
     /#/ reg = the value extended from its width
     fn ld_ext(self, reg: int, f: &Fun, v: int, signed: bool) => void:
         self.ld(reg, f, v)
@@ -729,6 +741,15 @@ class Gen:
     /#/ Sets the flags for the integer compare `i`.
     fn cmp_flags(self, f: &Fun, i: int) => void:
         let signed = self.is_signed_pred(f.aux[i])
+        let wr = f.rep[self.res(f, f.a[i])]
+        if wr == int(Rp.I64) || wr == int(Rp.Ptr):
+            /#/ a whole register: compare it where it lives
+            let la = self.src(f, f.a[i], 0)
+            if self.small_imm(f, f.b[i]):
+                self.a.cmp_ri(la, f.aux[self.res(f, f.b[i])])
+            else:
+                self.a.cmp_rr(la, self.src(f, f.b[i], 1))
+            return
         self.ld_ext(0, f, f.a[i], signed)
         if self.small_imm(f, f.b[i]):
             self.a.cmp_ri(0, f.aux[self.res(f, f.b[i])])
@@ -736,12 +757,114 @@ class Gen:
         self.ld_ext(1, f, f.b[i], signed)
         self.a.cmp_rr(0, 1)
 
+    /#/ Division or remainder of the 64-bit value `i`'s first operand by the constant `d` >= 2,
+    /#/ without a divide instruction; false if `op` and `d` have no such form here.
+    fn div_const(self, f: &Fun, i: int, op: int, d: int) => bool:
+        let signed = op == int(Op.SDiv) || op == int(Op.SRem)
+        let rem = op == int(Op.SRem) || op == int(Op.URem)
+        let pow2 = (d & (d - 1)) == 0
+        let k = 0
+        while (1 << k) < d:
+            k = k + 1
+        if !signed:
+            if !pow2:
+                return false
+            self.ld(0, f, f.a[i])
+            if rem:
+                self.a.and_ri(0, d - 1)
+            else:
+                self.a.shift_i(5, 0, k)
+            self.st(i, 0)
+            return true
+        self.ld(1, f, f.a[i])
+        if pow2:
+            /#/ x + (d - 1 when x is negative), then shifted
+            self.a.mov_rr(0, 1)
+            self.a.shift_i(7, 0, 63)
+            self.a.shift_i(5, 0, 64 - k)
+            self.a.add_rr(0, 1)
+            if rem:
+                self.a.shift_i(7, 0, k)
+                self.a.shift_i(4, 0, k)
+                self.a.sub_rr(1, 0)
+                self.st(i, 1)
+            else:
+                self.a.shift_i(7, 0, k)
+                self.st(i, 0)
+            return true
+        /#/ q = (mulh(m, x) + x >> (l - 1)) - (x >> 63), with m = 1 + floor(2^(63 + l) / d)
+        self.a.mov_ri(0, magic_mult(d, k))
+        self.a.grp3(5, 1)
+        self.a.add_rr(2, 1)
+        self.a.shift_i(7, 2, k - 1)
+        self.a.mov_rr(0, 1)
+        self.a.shift_i(7, 0, 63)
+        self.a.sub_rr(2, 0)
+        if rem:
+            self.a.imul_rri(2, 2, d)
+            self.a.sub_rr(1, 2)
+            self.st(i, 1)
+        else:
+            self.st(i, 2)
+        return true
+
     fn gen_inst(self, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => void:
         let op = f.op[i]
         let r = f.rep[i]
         if op == int(Op.Param) || op == int(Op.Slot) || op == int(Op.OwnMove) || op == int(Op.Const) || op == int(Op.StrLit) || op == int(Op.Undef):
             return
         if op == int(Op.Add) || op == int(Op.Sub) || op == int(Op.Mul) || op == int(Op.And) || op == int(Op.Or) || op == int(Op.Xor):
+            let d = self.home[i]
+            if d >= 0:
+                /#/ the result has a register: work in it, with the operands where they live
+                let a = f.a[i]
+                let b = f.b[i]
+                if self.home_of(f, b) == d && op != int(Op.Sub):
+                    a = f.b[i]
+                    b = f.a[i]
+                if self.home_of(f, b) != d:
+                    if self.small_imm(f, b):
+                        let v = f.aux[self.res(f, b)]
+                        if op == int(Op.Mul):
+                            if v > 0 && (v & (v - 1)) == 0:
+                                self.ld(d, f, a)
+                                let sh = 0
+                                while (1 << sh) < v:
+                                    sh = sh + 1
+                                self.a.shift_i(4, d, sh)
+                            else:
+                                self.a.imul_rri(d, self.src(f, a, 0), v)
+                            return
+                        if op == int(Op.Add) && self.home_of(f, a) >= 0:
+                            self.a.lea(d, self.home_of(f, a), v)
+                            return
+                        self.ld(d, f, a)
+                        if op == int(Op.Add):
+                            self.a.add_ri(d, v)
+                        elif op == int(Op.Sub):
+                            self.a.sub_ri(d, v)
+                        elif op == int(Op.And):
+                            self.a.and_ri(d, v)
+                        elif op == int(Op.Or):
+                            self.a.or_ri(d, v)
+                        else:
+                            self.a.xor_ri(d, v)
+                        return
+                    self.ld(d, f, a)
+                    let rb = self.src(f, b, 1)
+                    if op == int(Op.Add):
+                        self.a.add_rr(d, rb)
+                    elif op == int(Op.Sub):
+                        self.a.sub_rr(d, rb)
+                    elif op == int(Op.Mul):
+                        self.a.imul_rr(d, rb)
+                    elif op == int(Op.And):
+                        self.a.and_rr(d, rb)
+                    elif op == int(Op.Or):
+                        self.a.or_rr(d, rb)
+                    else:
+                        self.a.xor_rr(d, rb)
+                    return
             self.ld(0, f, f.a[i])
             if (op == int(Op.Add) || op == int(Op.Sub)) && self.small_imm(f, f.b[i]):
                 if op == int(Op.Add):
@@ -767,6 +890,9 @@ class Gen:
             return
         if op == int(Op.SDiv) || op == int(Op.SRem) || op == int(Op.UDiv) || op == int(Op.URem):
             let signed = op == int(Op.SDiv) || op == int(Op.SRem)
+            if r == int(Rp.I64) && self.small_imm(f, f.b[i]) && f.aux[self.res(f, f.b[i])] >= 2:
+                if self.div_const(f, i, op, f.aux[self.res(f, f.b[i])]):
+                    return
             self.ld_ext(0, f, f.a[i], signed)
             self.ld_ext(1, f, f.b[i], signed)
             if signed:
@@ -949,18 +1075,29 @@ class Gen:
             self.st(i, 0)
             return
         if op == int(Op.Field):
-            self.ld(0, f, f.a[i])
-            self.a.mov_ri(1, f.aux[i])
-            self.a.add_rr(0, 1)
-            self.st(i, 0)
+            let d = self.home[i]
+            if d < 0:
+                d = 0
+            let rb = self.src(f, f.a[i], 0)
+            if f.aux[i] == 0 && rb == d:
+                self.st(i, d)
+                return
+            self.a.lea(d, rb, f.aux[i])
+            self.st(i, d)
             return
         if op == int(Op.Index):
-            self.ld(0, f, f.a[i])
-            self.ld(1, f, f.b[i])
-            self.a.mov_ri(2, f.aux[i])
-            self.a.imul_rr(1, 2)
-            self.a.add_rr(0, 1)
-            self.st(i, 0)
+            let d = self.home[i]
+            if d < 0:
+                d = 0
+            let ra = self.src(f, f.a[i], 0)
+            let rb = self.src(f, f.b[i], 1)
+            let sz = f.aux[i]
+            if sz == 1 || sz == 2 || sz == 4 || sz == 8:
+                self.a.lea_idx(d, ra, rb, sz)
+            else:
+                self.a.imul_rri(1, rb, sz)
+                self.a.lea_idx(d, ra, 1, 1)
+            self.st(i, d)
             return
         if op == int(Op.Extract):
             let ar = f.rep[self.res(f, f.a[i])]
@@ -986,12 +1123,15 @@ class Gen:
                 self.a.store(5, 0 - self.voff[i] + eo, 0, rsize(rs, er))
             return
         if op == int(Op.Load):
-            self.ld(6, f, f.a[i])
             if r >= rp_first_agg():
+                self.ld(6, f, f.a[i])
                 self.copy_mem(5, 0 - self.voff[i], 6, 0, rsize(rs, r))
             else:
-                self.a.load(0, 6, 0, rsize(rs, r))
-                self.st(i, 0)
+                let d = self.home[i]
+                if d < 0:
+                    d = 0
+                self.a.load(d, self.src(f, f.a[i], 6), 0, rsize(rs, r))
+                self.st(i, d)
             return
         if op == int(Op.Store):
             let vr = f.rep[self.res(f, f.b[i])]
@@ -1000,9 +1140,8 @@ class Gen:
                 let sb = self.ab_reg(f, f.b[i])
                 self.copy_mem(7, 0, sb, self.ab_disp(f, f.b[i]), rsize(rs, vr))
             else:
-                self.ld(0, f, f.b[i])
-                self.ld(1, f, f.a[i])
-                self.a.store(1, 0, 0, rsize(rs, vr))
+                let rv = self.src(f, f.b[i], 0)
+                self.a.store(self.src(f, f.a[i], 1), 0, rv, rsize(rs, vr))
             return
         if op == int(Op.Alloc):
             self.a.mov_ri(7, f.ty[i])
@@ -1180,6 +1319,23 @@ class Gen:
 
 fn new_gen() => Gen:
     return Gen { a: new_asm(), o: new_obj(), voff: new_buf(int, 64), tmp: 0, frame: 0, err: 0, av: new_buf(int, 16), nav: 0, sbase: 256, soff: new_buf(int, 16), nstr: 0, home: new_buf(int, 64), did: new_buf(int, 64), nsaved: 0, saved: new_buf(int, 8), ed: new_buf(int, 16), ned: 0, ra_lo: new_buf(int, 1), ra_hi: new_buf(int, 1), ra_wt: new_buf(int, 1), ra_use: new_buf(int, 1), ra_def: new_buf(int, 1), ra_words: 0 }
+
+/#/ The multiplier that divides by `d` (not a power of two; `l` is the log2 of `d` rounded up):
+/#/ 1 + floor(2^(63 + l) / d), taken as a 64-bit pattern, by long division one bit at a time.
+fn magic_mult(d: int, l: int) => int:
+    let q = 0
+    let r = 0
+    let bit = 63 + l
+    while bit >= 0:
+        r = r * 2
+        if bit == 63 + l:
+            r = r + 1
+        if r >= d:
+            r = r - d
+            if bit < 64:
+                q = q | (1 << bit)
+        bit = bit - 1
+    return q + 1
 
 fn rsize_scalar(r: int) => int:
     if r == int(Rp.I8):

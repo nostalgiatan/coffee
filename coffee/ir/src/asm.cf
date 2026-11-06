@@ -237,12 +237,51 @@ class Asm:
             self.byte(opc2)
         if disp == 0 && (base & 7) != 5:
             self.byte(((reg & 7) << 3) | (base & 7))
+            self.sib(base)
         elif disp >= 0 - 128 && disp < 128:
             self.byte(64 | ((reg & 7) << 3) | (base & 7))
+            self.sib(base)
             self.byte(disp)
         else:
             self.byte(128 | ((reg & 7) << 3) | (base & 7))
+            self.sib(base)
             self.le32(disp)
+
+    /#/ rsp and r12 as a base need the byte that says "no index".
+    fn sib(self, base: int) => void:
+        if (base & 7) == 4:
+            self.byte(36)
+
+    /#/ dst = base + idx * scale (scale 1, 2, 4 or 8); idx is not rsp.
+    fn lea_idx(self, dst: int, base: int, idx: int, scale: int) => void:
+        let ss = 0
+        if scale == 2:
+            ss = 1
+        elif scale == 4:
+            ss = 2
+        elif scale == 8:
+            ss = 3
+        self.byte(72 | ((dst >> 3) << 2) | ((idx >> 3) << 1) | (base >> 3))
+        self.byte(141)
+        if (base & 7) == 5:
+            self.byte(68 | ((dst & 7) << 3))
+            self.byte((ss << 6) | ((idx & 7) << 3) | (base & 7))
+            self.byte(0)
+        else:
+            self.byte(4 | ((dst & 7) << 3))
+            self.byte((ss << 6) | ((idx & 7) << 3) | (base & 7))
+
+    /#/ dst = src * v
+    fn imul_rri(self, dst: int, src: int, v: int) => void:
+        self.rex(1, dst, src, false)
+        if v >= 0 - 128 && v < 128:
+            self.byte(107)
+            self.byte(192 | ((dst & 7) << 3) | (src & 7))
+            self.byte(v)
+        else:
+            self.byte(105)
+            self.byte(192 | ((dst & 7) << 3) | (src & 7))
+            self.le32(v)
 
     /#/ ---- moves -------------------------------------------------------------
 
@@ -362,6 +401,15 @@ class Asm:
 
     fn sub_ri(self, r: int, v: int) => void:
         self.alu_ri(5, r, v)
+
+    fn and_ri(self, r: int, v: int) => void:
+        self.alu_ri(4, r, v)
+
+    fn or_ri(self, r: int, v: int) => void:
+        self.alu_ri(1, r, v)
+
+    fn xor_ri(self, r: int, v: int) => void:
+        self.alu_ri(6, r, v)
 
     fn cmp_ri(self, r: int, v: int) => void:
         if v == 0:

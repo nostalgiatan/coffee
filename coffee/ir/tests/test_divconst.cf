@@ -1,0 +1,77 @@
+/#/ Division and remainder by a constant (shifts and a multiply) against the divide instruction.
+use * in say
+
+fn pick(v: &buf<int>, k: int) => int:
+    return v[k]
+
+fn same(what: int, got: int, want: int, x: int) => int:
+    if got != want:
+        say(f"MISS #{what} x={x}: got {got}, want {want}\n")
+        return 1
+    return 0
+
+fn main() => int:
+    let ds: buf<int> = new_buf(int, 16)
+    ds[0] = 2
+    ds[1] = 3
+    ds[2] = 5
+    ds[3] = 7
+    ds[4] = 10
+    ds[5] = 12
+    ds[6] = 100
+    ds[7] = 255
+    ds[8] = 256
+    ds[9] = 1000
+    ds[10] = 641
+    ds[11] = 2147483647
+    ds[12] = 65536
+    ds[13] = 9
+    ds[14] = 6
+    ds[15] = 1073741824
+    let xs: buf<int> = new_buf(int, 24)
+    let seed = 88172645463325252
+    for i in 0..24:
+        seed = seed * 6364136223846793005 + 1442695040888963407
+        xs[i] = seed
+    xs[0] = 0
+    xs[1] = 1
+    xs[2] = 0 - 1
+    xs[3] = 9223372036854775807
+    xs[4] = 0 - 9223372036854775807 - 1
+    xs[5] = 100
+    xs[6] = 0 - 100
+    xs[7] = 2147483648
+    let m = 0
+    for j in 0..24:
+        let x = xs[j]
+        m += same(1, x // 2, x // pick(&ds, 0), x)
+        m += same(2, x % 2, x % pick(&ds, 0), x)
+        m += same(3, x // 3, x // pick(&ds, 1), x)
+        m += same(4, x % 3, x % pick(&ds, 1), x)
+        m += same(5, x // 5, x // pick(&ds, 2), x)
+        m += same(6, x % 5, x % pick(&ds, 2), x)
+        m += same(7, x // 7, x // pick(&ds, 3), x)
+        m += same(8, x % 7, x % pick(&ds, 3), x)
+        m += same(9, x // 10, x // pick(&ds, 4), x)
+        m += same(10, x % 10, x % pick(&ds, 4), x)
+        m += same(11, x // 12, x // pick(&ds, 5), x)
+        m += same(12, x % 12, x % pick(&ds, 5), x)
+        m += same(13, x // 100, x // pick(&ds, 6), x)
+        m += same(14, x % 100, x % pick(&ds, 6), x)
+        m += same(15, x // 255, x // pick(&ds, 7), x)
+        m += same(16, x % 255, x % pick(&ds, 7), x)
+        m += same(17, x // 256, x // pick(&ds, 8), x)
+        m += same(18, x % 256, x % pick(&ds, 8), x)
+        m += same(19, x // 1000, x // pick(&ds, 9), x)
+        m += same(20, x % 1000, x % pick(&ds, 9), x)
+        m += same(21, x // 641, x // pick(&ds, 10), x)
+        m += same(22, x % 641, x % pick(&ds, 10), x)
+        m += same(23, x // 2147483647, x // pick(&ds, 11), x)
+        m += same(24, x % 2147483647, x % pick(&ds, 11), x)
+        m += same(25, x // 65536, x // pick(&ds, 12), x)
+        m += same(26, x % 65536, x % pick(&ds, 12), x)
+        m += same(27, x // 9, x // pick(&ds, 13), x)
+        m += same(28, x % 6, x % pick(&ds, 14), x)
+        m += same(29, x // 1073741824, x // pick(&ds, 15), x)
+        m += same(30, x % 1073741824, x % pick(&ds, 15), x)
+    return m
