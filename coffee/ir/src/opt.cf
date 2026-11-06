@@ -1104,6 +1104,49 @@ fn split_loads(f: &Fun, rs: &Reps) => bool:
             i = nxt
     return true
 
+/#/ A `store` of an aggregate built by `insert`s of every element becomes a `store` of each element.
+fn split_stores(f: &Fun, rs: &Reps) => bool:
+    let any = false
+    let vals: buf<int> = new_buf(int, 16)
+    for b in 0..f.nb:
+        let i = f.bfirst[b]
+        while i >= 0:
+            let nxt = f.nx[i]
+            if f.op[i] == int(Op.Store) && f.fwd[i] < 0:
+                let v = f.follow(f.b[i])
+                let r = f.rep[v]
+                if r >= rp_first_agg() && f.op[v] == int(Op.Insert):
+                    let n = rs.elems(r)
+                    if n > len(vals):
+                        vals = buf_resize(vals, n * 2)
+                    for k in 0..n:
+                        vals[k] = -1
+                    let g = v
+                    while f.op[g] == int(Op.Insert):
+                        let k = f.aux[g]
+                        if k >= 0 && k < n && vals[k] < 0:
+                            vals[k] = f.follow(f.b[g])
+                        g = f.follow(f.a[g])
+                    let ok = n > 0
+                    for k in 0..n:
+                        if vals[k] < 0 || rs.elem(r, k) >= rp_first_agg() || rs.elem(r, k) == int(Rp.Void) || f.rep[vals[k]] != rs.elem(r, k):
+                            ok = false
+                    if ok:
+                        f.cur = b
+                        let p = f.follow(f.a[i])
+                        for k in 0..n:
+                            let a = p
+                            let off = elem_off(rs, r, k)
+                            if off != 0:
+                                a = f.raw(int(Op.Field), int(Rp.Ptr), -1, p, -1, -1, off)
+                                link_before(f, a, i)
+                            let st = f.raw(int(Op.Store), int(Rp.Void), -1, a, vals[k], -1, 0)
+                            link_before(f, st, i)
+                        delete_inst(f, i)
+                        any = true
+            i = nxt
+    return any
+
 fn optimize(f: &Fun) => void:
     let rs = new_reps()
     optimize_rs(f, &rs, false)
@@ -1118,6 +1161,8 @@ fn optimize_rs(f: &Fun, rs: &Reps, split: bool) => void:
         if fold_extracts(f):
             changed = true
         if split && split_loads(f, rs):
+            changed = true
+        if split && split_stores(f, rs):
             changed = true
         if cse_branches(f):
             changed = true
