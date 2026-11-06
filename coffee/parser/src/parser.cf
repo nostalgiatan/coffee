@@ -635,6 +635,7 @@ class Ast:
                 if colon >= 0:
                     upto = colon
                 lex_into(&self.bytes, self.size, i + 1, upto, &self.toks, false, self.toks.line[tk], self.toks.start[tk] - self.toks.col[tk] + 1)
+                self.demote_c_from(from)
                 self.pos = from
                 self.pa[part] = self.parse_expr()
                 if !self.at(int(Tk.Newline)) && !self.at(int(Tk.Eof)):
@@ -1216,7 +1217,10 @@ class Ast:
     /#/ `c` is a keyword only in `c fn` and after `of` (`use f in lib of c`); elsewhere
     /#/ it is an ordinary name.
     fn demote_c(self) => void:
-        for i in 0..self.toks.count:
+        self.demote_c_from(0)
+
+    fn demote_c_from(self, first: int) => void:
+        for i in first..self.toks.count:
             if self.toks.kind[i] == int(Tk.KwC):
                 let after_of = i > 0 && self.toks.kind[i - 1] == int(Tk.KwOf)
                 let before_fn = i + 1 < self.toks.count && self.toks.kind[i + 1] == int(Tk.KwFn)

@@ -19,6 +19,8 @@ fn main() => int:
     m = m + miss_parse("let c = 1\n", "P(L(i))")
     m = m + miss_parse("c + c\n", "P(;([+](ww)))")
     m = m + miss_parse("c fn f(x: int) => int:\n    return x\n", "P(F(p(t)tB(R(w))))")
+    /#/ `c` is a name inside an f-string expression too
+    m = m + miss_parse("let s = f\"{c}\"\n", "P(L(Q(q)))")
     /#/ nested type arguments split `>>`
     m = m + miss_parse("let v: List<List<List<int>>> = w\n", "P(L(tw))")
     /#/ nesting within the limit parses, beyond it is one TooDeep error, not a crash
