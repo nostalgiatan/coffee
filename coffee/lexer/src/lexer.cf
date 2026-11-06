@@ -76,19 +76,22 @@ fn is_ident(c: int) => bool:
 
 /#/ ---- keywords ----------------------------------------------------------
 
-fn keyword_scan(src: &buf<int>, s: int, e: int, table: &str) => int:
+/#/ The keywords, separated by spaces, in the order of the `Kw` token kinds from `KwFn` on.
+fn keyword_table() => str:
+    return "fn c class type packed enum of if elif else while for in match let mv clone copy rm clean raise return break continue use as true false int float bool string str void"
+
+fn keyword_scan(src: &buf<int>, s: int, e: int, table: &buf<int>, tn: int) => int:
     let n = e - s
-    let tn = len(table)
     let idx = 0
     let p = 0
     while p < tn:
         let q = p
-        while q < tn && byte(table, q) != ' ':
+        while q < tn && table[q] != ' ':
             q = q + 1
         if q - p == n:
             let same = true
             for k in 0..n:
-                if sbyte(src, s + k) != byte(table, p + k):
+                if sbyte(src, s + k) != table[p + k]:
                     same = false
             if same:
                 return idx
@@ -97,8 +100,8 @@ fn keyword_scan(src: &buf<int>, s: int, e: int, table: &str) => int:
     return -1
 
 /#/ Token kind of the word at [s, e): a keyword kind or Ident.
-fn word_kind(src: &buf<int>, s: int, e: int) => int:
-    let idx = keyword_scan(src, s, e, "fn c class type packed enum of if elif else while for in match let mv clone copy rm clean raise return break continue use as true false int float bool string str void")
+fn word_kind(src: &buf<int>, s: int, e: int, table: &buf<int>, tn: int) => int:
+    let idx = keyword_scan(src, s, e, table, tn)
     if idx < 0:
         return int(Tk.Ident)
     return int(Tk.KwFn) + idx
@@ -415,6 +418,9 @@ fn lex_bytes(src: &buf<int>, size: int) => Tokens:
 /#/ f-string's `{expression}` is lexed this way, after the main stream.
 fn lex_into(src: &buf<int>, size: int, from: int, n: int, t: &Tokens, at_bol0: bool, line0: int, line_start0: int) => void:
     lexed_len = size
+    let kt = keyword_table()
+    let kn = len(kt)
+    let kws = bytes_of_str(&kt)
     let stack = new_buf(int, 128)
     let sp = 1
     let depth = 0
@@ -513,7 +519,7 @@ fn lex_into(src: &buf<int>, size: int, from: int, n: int, t: &Tokens, at_bol0: b
                 let e = i + 1
                 while is_ident(sbyte(src, e)):
                     e = e + 1
-                t.push(word_kind(src, i, e), i, e, line, col)
+                t.push(word_kind(src, i, e, &kws, kn), i, e, line, col)
                 i = e
             elif c == '"':
                 let e = scan_string(src, i)
