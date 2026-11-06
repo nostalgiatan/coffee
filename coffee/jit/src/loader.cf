@@ -1,0 +1,36 @@
+/#/ The loader: puts a flat image into memory the code can run from and calls into it. There is no
+/#/ linker and no dynamic loader in between; the image was made position independent when it was
+/#/ generated, so loading is a copy.
+use * in image
+use * in files
+
+/#/ `mmap` flags: private and anonymous; protections: read, write, execute
+fn load_flags() => int:
+    return 34
+
+fn load_prot() => int:
+    return 7
+
+fn page_round(n: int) => int:
+    return (n + 4095) // 4096 * 4096
+
+/#/ Is `r` is an address the kernel gave
+fn mapped(r: int) => bool:
+    return r > 0 || r < -4095
+
+/#/ The image in memory: its address, or 0 when the system refused.
+fn load_image(im: &Image) => int:
+    let base = syscall(9, 0, page_round(im.b.n + 1), load_prot(), load_flags(), 0 - 1, 0)
+    if !mapped(base):
+        return 0
+    let k = 0
+    while k + 8 <= im.b.n:
+        let w = 0
+        for q in 0..8:
+            w = w | (im.b.b[k + q] << (8 * q))
+        poke64(base + k, w)
+        k = k + 8
+    while k < im.b.n:
+        poke8(base + k, im.b.b[k])
+        k = k + 1
+    return base

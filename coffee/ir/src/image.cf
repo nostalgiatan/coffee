@@ -45,6 +45,13 @@ class Image:
                 return k
         return -1
 
+/#/ Does the name that starts at `at` in `names` spell `w`?
+fn name_is(names: &Txt, at: int, w: &str) => bool:
+    for q in 0..len(w):
+        if names.b[at + q] != ch(w, q):
+            return false
+    return names.b[at + len(w)] == 0
+
 fn image_round(v: int, a: int) => int:
     return (v + a - 1) // a * a
 
@@ -57,9 +64,13 @@ fn make_image(o: &Obj, a: &Asm) => Image:
     im.stub_at = image_round(im.data_at + o.data.n, 16)
     /#/ the stub (jmp [rip+2], two bytes of padding) and its slot, 16 bytes together, per external
     let stub_of: buf<int> = new_buf(int, o.ns + 1)
+    /#/ `cf_syscall` is code of the image itself (the loader has no such function to offer)
+    let sys_sym = -1
     for k in 0..o.ns:
         stub_of[k] = -1
-        if o.s_def[k] < 0:
+        if o.s_def[k] < 0 && name_is(&o.names, o.s_name[k], "cf_syscall"):
+            sys_sym = k
+        elif o.s_def[k] < 0:
             stub_of[k] = im.stub_at + 16 * im.nimp
             im.imp_name[im.nimp] = o.s_name[k]
             im.imp_slot[im.nimp] = stub_of[k] + 8
@@ -88,6 +99,14 @@ fn make_image(o: &Obj, a: &Asm) => Image:
         im.b.put_byte(0)
         im.b.put_byte(0)
         w64(&im.b, 0)
+    if sys_sym >= 0:
+        while im.b.n % 16 != 0:
+            im.b.put_byte(0)
+        stub_of[sys_sym] = im.b.n
+        /#/ mov rax,rdi; mov rdi,rsi; mov rsi,rdx; mov rdx,rcx; mov r10,r8; mov r8,r9; mov r9,[rsp+8]; syscall; ret
+        let code = [72, 137, 248, 72, 137, 247, 72, 137, 214, 72, 137, 202, 77, 137, 194, 77, 137, 200, 76, 139, 76, 36, 8, 15, 5, 195]
+        for q in 0..26:
+            im.b.put_byte(code[q])
     for r in 0..a.nrl:
         let at = a.rl_at[r]
         let sym = a.rl_sym[r]

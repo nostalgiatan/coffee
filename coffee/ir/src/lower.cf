@@ -1321,6 +1321,20 @@ class Lower:
                 let ch = self.coerce(t, g, self.ex(t, g, ty, a, cv), self.nd(t, ty, cv), t.int_ty(8, true))
                 self.f.store(self.f.index(sp, ix, 1), self.f.conv(int(Op.Trunc), int(Rp.I8), ch))
                 return self.f.undef(int(Rp.I64))
+            if tok_is(a, a.tok[callee], "call_addr"):
+                /#/ `call_addr(addr, args..)` calls the code at `addr` the way one of our functions is called
+                let ca = a.child[n]
+                let target = self.coerce(t, g, self.ex(t, g, ty, a, ca), self.nd(t, ty, ca), t.int_ty(8, true))
+                let cvals: buf<int> = new_buf(int, 8)
+                let cn = 0
+                ca = a.next[ca]
+                while ca >= 0 && cn < 6:
+                    cvals[cn] = self.coerce(t, g, self.ex(t, g, ty, a, ca), self.nd(t, ty, ca), t.int_ty(8, true))
+                    cn = cn + 1
+                    ca = a.next[ca]
+                for j in 0..cn:
+                    self.f.arg(cvals[j])
+                return self.f.calli(int(Rp.I64), -1, target)
             if tok_is(a, a.tok[callee], "syscall"):
                 /#/ `cf_syscall(n, a, b, c, d, e, f)` is supplied by the linker
                 let sc = a.child[n]

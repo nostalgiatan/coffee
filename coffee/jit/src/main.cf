@@ -1,0 +1,55 @@
+/#/ cfjit: runs a `.cir` module. It reads the file, generates the machine code in memory and calls
+/#/ `main`. It needs no front end, no linker and no C library: `cfjit prog.cir`.
+use * in cir
+use * in image
+use * in loader
+use * in cstr
+use * in files
+
+/#/ The second word of the command line.
+fn path_arg() => Txt:
+    let raw = read_file(&txt_of("/proc/self/cmdline"))
+    let p = new_txt()
+    let words = 0
+    for i in 0..raw.n:
+        if raw.b[i] == 0:
+            words = words + 1
+        elif words == 1:
+            p.put_byte(raw.b[i])
+    return p
+
+fn main() => int:
+    let path = path_arg()
+    if path.n == 0:
+        say("usage: cfjit program.cir\n")
+        return 2
+    let cir = read_file(&path)
+    if cir.n < 0:
+        say("cfjit: cannot read the file\n")
+        return 2
+    let lw = new_lower()
+    let e = read_cir(&cir, &lw)
+    if e != 0:
+        say(f"cfjit: not a usable .cir (code {e})\n")
+        return 2
+    lw.generate()
+    if lw.mc_err > 0:
+        say(f"cfjit: {lw.mc_err} functions could not be translated\n")
+        return 2
+    let im = image_of(&lw)
+    if im.err != 0:
+        say("cfjit: a relocation could not be applied\n")
+        return 2
+    if im.nimp > 0:
+        say("cfjit: the module calls functions the loader does not offer\n")
+        return 2
+    let want = txt_of("main")
+    let at = im.find(&want)
+    if at < 0:
+        say("cfjit: the module has no main\n")
+        return 2
+    let base = load_image(&im)
+    if base == 0:
+        say("cfjit: out of memory\n")
+        return 2
+    return call_addr(base + at)

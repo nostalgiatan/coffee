@@ -69,9 +69,9 @@
 - **阶段 1** `.cir` 读写,往返逐字节相同(`ir/src/cir.cf`)。
 - **阶段 2** `image()`:代码、`.rodata`、`.data` 和外部函数的跳板连成一块,重定位全部应用(`ir/src/image.cf`)。测试把镜像包成静态可执行文件运行,验证调用、全局变量、字符串字面量和外部函数跳板。
 
-接下来,每步独立提交:
+- **阶段 3** 加载器和 `cfjit`:`coffee2 --emit-cir` 把程序和 `min.cf` 运行时一起降成一个模块,`cfjit prog.cir` 读入、生成、`mmap`、跳到 `main`。新增内建 `call_addr(addr, args..)` 作跳入口。静态二进制 172 KB。`jit/tests/compare.sh` 对照原生:compat、lexer、parser、sema、types、own 共 90 个测试文件的退出码和输出全部一致。
 
-3. **加载器**:`coffee/jit/`,`mmap` 区域,拷入镜像,`mprotect`,填跳板槽,跳到入口。`cfjit file.cir` 命令。测试对照 compat 用例。
+接下来,每步独立提交:
 4. **tea**:`tea jit file.cf`,缓存 `.cir`,调度前端和 `cfjit`。
 5. **沙盒 S1**:`Asm` 的 `gs` 前缀模式,`StrLit`/全局/`Slot` 改造,陷阱处理器。
 6. **沙盒 S2**:`CAPS` 节,导入跳板,`sbx.cf`。
@@ -79,4 +79,4 @@
 8. **分层**:静态热度、采样、`make_osr`、热替换。
 9. **预处理**:预执行纯函数、镜像缓存、初始化快照。
 
-先做 3 到 4,得到一个能跑的 JIT;5 到 7 是沙盒;8 到 9 是性能。
+先做 4,得到可用的 JIT;5 到 7 是沙盒;8 到 9 是性能。

@@ -3,6 +3,7 @@
 /#/ The standard C library gives a program no arguments, so they are read from /proc/self/cmdline.
 /#/ The modules are listed here, each once: an import reached by two paths is a conflict.
 use * in drive
+use * in cirgen
 use * in minrt
 use * in cstr
 use * in files
@@ -28,6 +29,7 @@ class Cli:
     static_link: bool
     dynamic: bool
     auto_static: bool
+    emit_cir: bool
 
     fn set_input(self, w: &Txt) => void:
         self.input.put_all(w)
@@ -63,6 +65,9 @@ class Cli:
             if self.flat_only:
                 out.put_all(&self.input)
                 out.put(".flat")
+            elif self.emit_cir:
+                out.put_all(&self.input)
+                out.put(".cir")
             elif self.emit_only:
                 out.put_all(&self.input)
                 out.put(".o")
@@ -76,7 +81,7 @@ fn cmdline() => Txt:
     return read_file(&p)
 
 fn parse_cli(fl: &Flat) => Cli:
-    let cli = Cli { input: new_txt(), output: new_txt(), emit_only: false, flat_only: false, level: 1, bad: 0, cache: new_txt(), jobs: 0, static_link: false, dynamic: false, auto_static: false }
+    let cli = Cli { input: new_txt(), output: new_txt(), emit_only: false, flat_only: false, level: 1, bad: 0, cache: new_txt(), jobs: 0, static_link: false, dynamic: false, auto_static: false, emit_cir: false }
     let raw = cmdline()
     let words = new_txt()
     /#/ one word per line
@@ -144,6 +149,8 @@ fn parse_cli(fl: &Flat) => Cli:
                 time_start()
             elif w.is("--emit-obj"):
                 cli.set_emit_only()
+            elif w.is("--emit-cir"):
+                cli.emit_cir = true
             elif w.is("--emit-flat"):
                 cli.set_flat_only()
             elif w.is("-O0"):
@@ -177,7 +184,7 @@ fn dir_of(path: &Txt) => Txt:
     return slice(path, 0, cut)
 
 fn usage() => int:
-    say("usage: coffee2 input.cf [-o output] [-I dir] [-O0|-O1|-O2|-O3] [--emit-obj] [--emit-flat] [--incremental dir] [--static|--dynamic] [-g] [--align] [--emit-ir] [--time] [-j n]\n")
+    say("usage: coffee2 input.cf [-o output] [-I dir] [-O0|-O1|-O2|-O3] [--emit-obj] [--emit-cir] [--emit-flat] [--incremental dir] [--static|--dynamic] [-g] [--align] [--emit-ir] [--time] [-j n]\n")
     fflush(0)
     return 2
 
@@ -204,6 +211,13 @@ fn main() => int:
     if cli.flat_only:
         let flat_path = cli.out_path()
         fl.write_to(&flat_path)
+        return 0
+    if cli.emit_cir:
+        let cir = build_cir(copy_bytes(&fl.out.b, fl.out.n), fl.out.n, 1, fl.cfc_str())
+        if cir.n == 0:
+            return 1
+        let cir_path = cli.out_path()
+        write_file(&cir_path, &cir)
         return 0
     if !cli.emit_only && !cli.dynamic && can_link_static(&fl.out):
         /#/ nothing the built-in C library lacks is imported: no `cc` needed

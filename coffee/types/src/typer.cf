@@ -941,7 +941,7 @@ class Typer:
             self.args_untyped(t, g, a, n)
             return t.simple(int(Ty.Object))
         /#/ raw memory and system calls, for the runtime that has no C library under it
-        if tok_is(a, tok, "peek8") || tok_is(a, tok, "peek64") || tok_is(a, tok, "syscall"):
+        if tok_is(a, tok, "peek8") || tok_is(a, tok, "peek64") || tok_is(a, tok, "syscall") || tok_is(a, tok, "call_addr"):
             self.args_untyped(t, g, a, n)
             return t.int_ty(8, true)
         /#/ a new string of n bytes of text (zero bytes, ended), and byte i of a string set

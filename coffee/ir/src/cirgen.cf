@@ -1,0 +1,26 @@
+/#/ The `.cir` of a program: the program, the number-formatting runtime when it prints numbers, and
+/#/ the runtime of `rt/src/min.cf` lowered together as one module, so the image needs nothing from
+/#/ outside but system calls.
+use * in cir
+use * in drive
+use * in minrt
+use * in fmtrt
+
+/#/ The `.cir` file of the `size` bytes in `bytes`; empty when the front end refused them.
+fn build_cir(bytes: buf<int>, size: int, opt: int, cfc: str) => Txt:
+    let all = new_txt()
+    for q in 0..size:
+        all.put_byte(bytes[q])
+    all.put_byte(10)
+    if prints_numbers(&bytes, size):
+        let ft = fmt_rt_text()
+        all.put(&ft)
+        all.put_byte(10)
+    let mt = min_rt_text()
+    all.put(&mt)
+    let t = new_tys()
+    let g = new_globals()
+    let lw = module_of(copy_bytes(&all.b, all.n), all.n, opt, cfc, &t, &g)
+    if lw.bad > 0:
+        return new_txt()
+    return write_cir(&lw, opt)
