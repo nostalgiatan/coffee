@@ -7,7 +7,6 @@ fn part0() => int:
     bad = bad + rejected("type_check::test_int_cast_from_bool_is_error", "\nfn main() => int:\n    let x: int = int(true)\n    rm x\n    return 0\n\n", 0)
     bad = bad + rejected("type_check::test_tuple_pattern_on_int_is_error", "\nfn main() => int:\n    let n: int = 1\n    match n:\n        (x, y) => x\n        _ => 0\n    rm n\n    return 0\n\n", 0)
     bad = bad + rejected("type_check::test_type_name_is_not_a_value", "\nclass Box:\n    n: int\n\nfn main() => int:\n    let x: Box = Box\n    rm x\n    return 0\n\n", 0)
-    bad = bad + compiles("type_check::test_function_match_catchall_ok", "\nc fn go() => void:\n\nfn main() => int:\n    match go():\n        _ => 0\n    return 0\n\n")
     bad = bad + rejected("type_check::test_error_listener_same_name_is_error", "\nfn f(err: Error) #f => int:\n    rm err\n    return 0\n\nfn main() => int:\n    return 0\n\n", 0)
     bad = bad + rejected("type_check::test_error_listener_wrong_signature_is_error", "\nfn on_err(x: int) => int:\n    return x\n\nfn f() #on_err => int:\n    return 0\n\nfn main() => int:\n    return 0\n\n", 0)
     bad = bad + compiles("type_check::test_named_instance_field_assign_compiles", "\nclass Box:\n    n: int\n\nfn main() => int:\n    let b: Box = Box { n: 0 }\n    b.assign(\"n\", 1)\n    rm b\n    return 0\n\n")

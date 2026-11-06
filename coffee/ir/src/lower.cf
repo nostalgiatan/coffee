@@ -1535,33 +1535,101 @@ class Lower:
                 c = a.next[c]
         return p
 
-    /#/ A test that the scrutinee `tag` (the variant number, or the value) matches pattern `p`.
-    fn pattern_test(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, p: int, tag: int, en: int) => int:
+    /#/ The number a literal pattern `p` stands for, with a leading minus; `ok` is 0 when it is not one.
+    fn pattern_int(self, a: &Ast, p: int) => int:
         let k = a.kind[p]
-        let yes = self.f.cint(int(Rp.I8), 1)
+        if k == int(Nk.Int):
+            return lit_digits(a, a.tok[p])
+        if k == int(Nk.Char):
+            return char_value(a, a.tok[p])
+        if k == int(Nk.Bool):
+            if a.byte_at(a.toks.start[a.tok[p]]) == 't':
+                return 1
+            return 0
+        if k == int(Nk.Unary) && a.pc[p] == int(Tk.Minus) && a.pa[p] >= 0 && a.kind[a.pa[p]] == int(Nk.Int):
+            return 0 - lit_digits(a, a.tok[a.pa[p]])
+        return 0
+
+    fn is_int_pattern(self, a: &Ast, p: int) => bool:
+        let k = a.kind[p]
+        if k == int(Nk.Int) || k == int(Nk.Char) || k == int(Nk.Bool):
+            return true
+        return k == int(Nk.Unary) && a.pc[p] == int(Tk.Minus) && a.pa[p] >= 0 && a.kind[a.pa[p]] == int(Nk.Int)
+
+    /#/ The payload patterns of variant `vr` in call pattern `p`, tested against the fields of `v`.
+    fn pat_payload(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, p: int, v: int, x: int, vr: int, fail: int) => void:
+        self.payload_layout(t, g, x, vr)
+        let offs: buf<int> = new_buf(int, self.lay_n + 1)
+        let tys: buf<int> = new_buf(int, self.lay_n + 1)
+        let cnt = self.lay_n
+        for i in 0..cnt:
+            offs[i] = self.lay_off[i]
+            tys[i] = self.lay_ty[i]
+        let c = a.child[p]
+        let i = 0
+        while c >= 0 && i < cnt:
+            let r = self.rep(t, g, tys[i])
+            if r < 0:
+                self.unsupported(c)
+            else:
+                self.pat_test(t, g, ty, a, c, self.f.load(r, -1, self.f.field(v, offs[i])), tys[i], fail)
+            i = i + 1
+            c = a.next[c]
+
+    /#/ Goes on in a new block when value `v` of type `x` matches pattern `p`, else branches to
+    /#/ `fail`. A name matches anything; a variant, a literal or a tuple of patterns is tested
+    /#/ part by part, so a payload is read only after its tag matched.
+    fn pat_test(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, p: int, v: int, x: int, fail: int) => void:
+        let k = a.kind[p]
         if k == int(Nk.Name):
-            return yes
-        if k == int(Nk.Member) && en >= 0:
-            let v = member_of(g, a, en, a.tok[p], int(Sk.Variant))
-            if v >= 0:
-                return self.f.cmp(int(Pr.Eq), tag, self.f.cint(int(Rp.I64), self.variant_index(g, v)))
-        if k == int(Nk.Call) && en >= 0 && a.pa[p] >= 0 && a.kind[a.pa[p]] == int(Nk.Member):
-            let v = member_of(g, a, en, a.tok[a.pa[p]], int(Sk.Variant))
-            if v >= 0:
-                return self.f.cmp(int(Pr.Eq), tag, self.f.cint(int(Rp.I64), self.variant_index(g, v)))
-        if (k == int(Nk.Int) || k == int(Nk.Char) || k == int(Nk.Bool)) && en < 0:
-            let r = self.f.rep[tag]
-            if rp_is_int(r):
-                let lit = 0
-                if k == int(Nk.Int):
-                    lit = lit_digits(a, a.tok[p])
-                elif k == int(Nk.Char):
-                    lit = char_value(a, a.tok[p])
-                elif a.byte_at(a.toks.start[a.tok[p]]) == 't':
-                    lit = 1
-                return self.f.cmp(int(Pr.Eq), tag, self.f.cint(r, lit))
-        self.unsupported(p)
-        return yes
+            return
+        let en = -1
+        if t.kind[x] == int(Ty.Named) && g.kind[t.a[x]] == int(Sk.Enum):
+            en = t.a[x]
+        let vr = -1
+        if en >= 0 && k == int(Nk.Member):
+            vr = member_of(g, a, en, a.tok[p], int(Sk.Variant))
+        elif en >= 0 && k == int(Nk.Call) && a.pa[p] >= 0 && a.kind[a.pa[p]] == int(Nk.Member):
+            vr = member_of(g, a, en, a.tok[a.pa[p]], int(Sk.Variant))
+        if vr >= 0:
+            let tag = v
+            if has_payload(t, g, en):
+                tag = self.f.load(int(Rp.I64), -1, self.f.field(v, 0))
+            let cont = self.new_block()
+            self.branch(self.f.cmp(int(Pr.Eq), tag, self.f.cint(int(Rp.I64), self.variant_index(g, vr))), cont, fail)
+            self.seal(cont)
+            self.f.set_block(cont)
+            if k == int(Nk.Call):
+                self.pat_payload(t, g, ty, a, p, v, x, vr, fail)
+            return
+        let r = self.rep(t, g, x)
+        let cond = -1
+        if en < 0 && r >= 0 && rp_is_int(r) && self.is_int_pattern(a, p):
+            cond = self.f.cmp(int(Pr.Eq), v, self.f.cint(r, self.pattern_int(a, p)))
+        elif k == int(Nk.Float) && (r == int(Rp.F64) || r == int(Rp.F32)):
+            let bits = float_bits(a, a.tok[p], r == int(Rp.F32))
+            if bits >= 0:
+                cond = self.f.fcmp(int(Pr.OEq), v, self.f.cfloat(r, bits))
+        elif k == int(Nk.Str) && t.kind[x] == int(Ty.Str):
+            self.f.arg(v)
+            self.f.arg(self.f.strlit(self.str_lit(a, a.tok[p])))
+            cond = self.f.cmp(int(Pr.Eq), self.f.ccall(int(Rp.I32), 2, self.rt_strcmp, 0), self.f.cint(int(Rp.I32), 0))
+        elif k == int(Nk.Tuple) && t.kind[x] == int(Ty.Tuple):
+            let c = a.child[p]
+            let i = 0
+            while c >= 0 && i < t.count_of(x):
+                let et = t.arg(x, i)
+                self.pat_test(t, g, ty, a, c, self.f.extract(self.rep(t, g, et), v, i), et, fail)
+                i = i + 1
+                c = a.next[c]
+            return
+        if cond < 0:
+            self.unsupported(p)
+            return
+        let cont = self.new_block()
+        self.branch(cond, cont, fail)
+        self.seal(cont)
+        self.f.set_block(cont)
 
     /#/ Is `p` a name that binds the matched value (not `_`, not a constant)?
     fn is_binder(self, ty: &Typer, a: &Ast, p: int) => bool:
@@ -1569,8 +1637,9 @@ class Lower:
             return false
         return self.lookup(a, a.tok[p]) >= 0 || ty.lookup(a, a.tok[p]) < 0
 
-    /#/ Binds the names of pattern `p` in the arm. `v` is the scrutinee value, `x` its type.
-    fn pattern_bind(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, p: int, v: int, x: int, en: int) => void:
+    /#/ Binds the names of pattern `p` in the arm. `v` is the matched value, `x` its type. A bound
+    /#/ resource is a copy owned by the arm.
+    fn pattern_bind(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, p: int, v: int, x: int) => void:
         let k = a.kind[p]
         if k == int(Nk.Name):
             if self.is_binder(ty, a, p):
@@ -1578,8 +1647,16 @@ class Lower:
                 if needs_drop(t, g, x):
                     val = self.clone_value(t, g, v, x)
                 self.bind_var(t, g, a, a.tok[p], x, val)
-        elif k == int(Nk.Call) && en >= 0:
-            self.bind_variant(t, g, ty, a, p, v, x, en)
+        elif k == int(Nk.Call) && t.kind[x] == int(Ty.Named) && g.kind[t.a[x]] == int(Sk.Enum):
+            self.bind_variant(t, g, ty, a, p, v, x, t.a[x])
+        elif k == int(Nk.Tuple) && t.kind[x] == int(Ty.Tuple):
+            let c = a.child[p]
+            let i = 0
+            while c >= 0 && i < t.count_of(x):
+                let et = t.arg(x, i)
+                self.pattern_bind(t, g, ty, a, c, self.f.extract(self.rep(t, g, et), v, i), et)
+                i = i + 1
+                c = a.next[c]
 
     /#/ Binds the payload names of the variant pattern `p`.
     fn bind_variant(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, p: int, v: int, x: int, en: int) => void:
@@ -1596,15 +1673,11 @@ class Lower:
         let c = a.child[p]
         let i = 0
         while c >= 0 && i < cnt:
-            if a.kind[c] != int(Nk.Name):
+            let r = self.rep(t, g, tys[i])
+            if r < 0:
                 self.unsupported(c)
-            elif self.is_binder(ty, a, c):
-                let r = self.rep(t, g, tys[i])
-                if r < 0:
-                    self.unsupported(c)
-                else:
-                    let fv = self.f.load(r, -1, self.f.field(v, offs[i]))
-                    self.pattern_bind(t, g, ty, a, c, fv, tys[i], -1)
+            else:
+                self.pattern_bind(t, g, ty, a, c, self.f.load(r, -1, self.f.field(v, offs[i])), tys[i])
             i = i + 1
             c = a.next[c]
 
@@ -1613,34 +1686,21 @@ class Lower:
     fn match_stmt(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => void:
         let s = a.pa[n]
         let st = self.strip_refs(t, self.nd(t, ty, s))
-        let en = -1
-        let tag = -1
         let sv = self.exb(t, g, ty, a, s)
         if t.kind[self.nd(t, ty, s)] == int(Ty.Ref) && !is_handle(t, g, st) && self.rep(t, g, st) >= 0:
             sv = self.f.load(self.rep(t, g, st), -1, sv)
-        if t.kind[st] == int(Ty.Named) && g.kind[t.a[st]] == int(Sk.Enum):
-            en = t.a[st]
-            if has_payload(t, g, en):
-                tag = self.f.load(int(Rp.I64), -1, self.f.field(sv, 0))
-            else:
-                tag = sv
-        elif t.kind[st] == int(Ty.Int) || t.kind[st] == int(Ty.Bool):
-            tag = sv
-        else:
+        if self.rep(t, g, st) < 0:
             self.unsupported(n)
             return
         let join = self.new_block()
         let arm = a.child[n]
         while arm >= 0:
             let p = a.pa[arm]
-            let body = self.new_block()
             let next = self.new_block()
-            self.branch(self.pattern_test(t, g, ty, a, p, tag, en), body, next)
-            self.seal(body)
-            self.f.set_block(body)
+            self.pat_test(t, g, ty, a, p, sv, st, next)
             let own_mark = self.own_n
             let mark = self.sc.n
-            self.pattern_bind(t, g, ty, a, p, sv, st, en)
+            self.pattern_bind(t, g, ty, a, p, sv, st)
             if a.pc[arm] >= 0:
                 let ok = self.new_block()
                 let gf = self.new_block()

@@ -8,8 +8,8 @@ self-hosted compiler with `tea test`. A case is a program and one expectation:
   (`assert_compile_error`; messages are not compared, only `E100`-style numbers);
 - `exits(name, src, n)`: the program runs and exits with `n` (`assert_exit_code`).
 
-`tests/` holds the 544 cases that pass; each file is named after the Rust file it came from.
-`pending/` holds the 83 that do not yet. They are not run: move a case back to `tests/` when it passes.
+`tests/` holds the 558 cases that pass; each file is named after the Rust file it came from.
+`pending/` holds the 69 that do not yet. They are not run: move a case back to `tests/` when it passes.
 
 ## What the pending cases are
 
@@ -17,7 +17,6 @@ Counted from the first run:
 
 | gap | cases |
 |---|---|
-| lowering: `match` forms not supported | 13 |
 | lowering: nested `fn` | 6 |
 | lowering: some `for` forms | 4 |
 | lowering: `&` expressions | 4 |
