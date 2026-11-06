@@ -73,4 +73,7 @@ fn main() => int:
     /#/ a buf read through a reference: pointer and length read apart, and after a write to the buf
     m = m + expect_mc("fn fill(b: &buf<int>) => int:\n    let s = 0\n    for i in 0..len(b):\n        b[i] = i * 2\n        s = s + b[i]\n    return s + len(b)\n\nfn main() => int:\n    let a: buf<int> = new_buf(int, 10)\n    return fill(&a)\n", 100)
     m = m + expect_mc("fn two(b: &buf<int>, c: &buf<int>) => int:\n    b[0] = len(c)\n    c[0] = b[0] + 1\n    return b[0] * 10 + c[0] + len(b)\n\nfn main() => int:\n    let a: buf<int> = new_buf(int, 6)\n    let d: buf<int> = new_buf(int, 4)\n    return two(&a, &d)\n", 51)
+    /#/ an index checked by the loop bound needs no check of its own; a larger bound still traps
+    m = m + expect_mc("fn main() => int:\n    let b: buf<int> = new_buf(int, 8)\n    let s = 0\n    for i in 0..8:\n        b[i] = i + 1\n    for i in 0..8:\n        s = s + b[i]\n    return s\n", 36)
+    m = m + expect_mc_early("fn main() => int:\n    let b: buf<int> = new_buf(int, 3)\n    let s = 0\n    for i in 0..5:\n        s = s + b[i]\n    return s\n", 1)
     return m

@@ -654,6 +654,50 @@ fn replace_inst(f: &Fun, i: int, v: int) => void:
     unuse(f, i)
     unlink(f, i)
 
+/#/ Is the integer `v` never negative? A constant, or a loop counter: a block parameter that starts at a
+/#/ small constant and only grows by small constants (it would take more than 2^50 steps to wrap).
+fn nonneg(f: &Fun, v0: int) => bool:
+    let v = f.follow(v0)
+    if f.is_const(v):
+        return f.cval(v) >= 0
+    if f.op[v] != int(Op.Param) || f.blk[v] == 0 || f.rep[v] != int(Rp.I64):
+        return false
+    let b = f.blk[v]
+    let k = 0
+    let q = f.pfirst[b]
+    while q >= 0 && q != v:
+        q = f.nx[q]
+        k = k + 1
+    let seen = 0
+    for e in 0..f.ne:
+        if f.eto[e] == b:
+            seen = seen + 1
+            if k >= f.eargn[e]:
+                return false
+            let a = f.follow(f.pool[f.eargs[e] + k])
+            if f.is_const(a):
+                if f.cval(a) < 0 || f.cval(a) > 4294967296:
+                    return false
+            elif f.op[a] == int(Op.Add) && f.follow(f.a[a]) == v && f.is_const(f.follow(f.b[a])) && f.cval(f.follow(f.b[a])) >= 0 && f.cval(f.follow(f.b[a])) <= 256:
+                seen = seen
+            else:
+                return false
+    return seen > 0
+
+/#/ Does the taken edge of `slt x, K'` settle `ult x, K`? Then x < K' <= K, and x is not negative.
+fn implies_ult(f: &Fun, c2: int, c: int) => bool:
+    if f.op[c] != int(Op.Cmp) || f.op[c2] != int(Op.Cmp):
+        return false
+    if f.aux[c] != int(Pr.ULt) || f.aux[c2] != int(Pr.SLt):
+        return false
+    let x = f.follow(f.a[c])
+    let k = f.follow(f.b[c])
+    let x2 = f.follow(f.a[c2])
+    let k2 = f.follow(f.b[c2])
+    if x != x2 || !f.is_const(k) || !f.is_const(k2) || f.rep[x] != int(Rp.I64):
+        return false
+    return f.cval(k2) <= f.cval(k) && nonneg(f, x)
+
 /#/ A pure instruction that an instruction with the same operation and operands in a dominating
 /#/ block already computed is that one. Then a branch on a condition that a dominating branch has
 /#/ decided (the block is entered by one edge of it) goes one way only: the second bounds check
@@ -754,6 +798,9 @@ fn cse_branches(f: &Fun) => bool:
                                     known = 1
                                 elif ef == x && et != x:
                                     known = 0
+                            elif pt >= 0 && f.op[pt] == int(Op.CondBr) && implies_ult(f, f.follow(f.a[pt]), c):
+                                if f.eto[f.b[pt]] == x && f.eto[f.c[pt]] != x:
+                                    known = 1
                         if known < 0:
                             if x == 0 || idom[x] == x || idom[x] < 0:
                                 break

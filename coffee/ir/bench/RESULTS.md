@@ -66,3 +66,5 @@ mandel 2305、objects 5440、sort 3440、matmul 4229、collatz 2732、strings 72
 
 聚合值:使用计数在 dead_code 前重数(之前有残留计数,没人用的 `insert` 删不掉);只被 `extract` 拆开的聚合 `load`(`&buf` 的指针和长度)改为逐元素 `load`。
 callgrind(百万):sort 3440 → 2633、matmul 4229 → 3966、strings 7226 → 6935;总指令数(flaws.py)6185 → 6081。
+
+边界检查:循环计数器(从小常数起、每次加小常数)在 `i < K'` 的分支里,对 `ult i, K`(K' ≤ K)的检查不再生成。sieve 784 → 744、strings 6935 → 6887(百万指令)。下标是算出来的(`i * n + k`)时仍保留检查。
