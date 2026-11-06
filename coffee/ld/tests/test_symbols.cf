@@ -1,0 +1,117 @@
+/#/ The rules for names: a strong definition beats a weak one in either order, two strong ones
+/#/ are an error, an undefined name is an error, a local name is not seen by other objects, common
+/#/ symbols are merged, and an absolute symbol out of 32 bits is caught.
+use * in kit
+
+fn weak_fn(name: &str, v: int) => Txt:
+    let m = new_mk()
+    let c = new_txt()
+    hex(&c, "B8")
+    put32(&c, v)
+    hex(&c, "C3")
+    let t = m.text(&c)
+    let f = m.sym(name, 2, 2, t, 0, 0)
+    return m.bytes()
+
+fn local_fn(name: &str, v: int, pub: &str) => Txt:
+    let m = new_mk()
+    let c = new_txt()
+    hex(&c, "B8")
+    put32(&c, v)
+    hex(&c, "C3")
+    let t = m.text(&c)
+    let a = m.sym(name, 0, 2, t, 0, 0)
+    let b = m.func(pub, t, 0)
+    return m.bytes()
+
+/#/ main stores 5 in common `buf` and reads it back
+fn common_user(size: int) => Txt:
+    let m = new_mk()
+    let c = new_txt()
+    hex(&c, "C705")
+    let at = c.n
+    hex(&c, "00000000 05000000 8B05")
+    let at2 = c.n
+    hex(&c, "00000000 C3")
+    let t = m.text(&c)
+    let y = m.sym("buf", 1, 1, 65522, 8, size)
+    let f = m.func("main", t, 0)
+    m.rel(t, at, 2, y, 0 - 8)
+    m.rel(t, at2, 2, y, 0 - 4)
+    return m.bytes()
+
+fn main() => int:
+    let bad = 0
+    /#/ weak first, strong second, and the other way
+    let l = new_linker()
+    add_obj(&l, &caller_obj("val"), "main.o")
+    add_obj(&l, &weak_fn("val", 1), "weak.o")
+    add_obj(&l, &const_fn_obj("val", 9), "strong.o")
+    if !write_linked(&l, "./p1") || run_code("./p1") != 9:
+        bad = bad + 1
+    let l2 = new_linker()
+    add_obj(&l2, &caller_obj("val"), "main.o")
+    add_obj(&l2, &const_fn_obj("val", 9), "strong.o")
+    add_obj(&l2, &weak_fn("val", 1), "weak.o")
+    if !write_linked(&l2, "./p2") || run_code("./p2") != 9:
+        bad = bad + 2
+    /#/ only a weak definition is still a definition
+    let l3 = new_linker()
+    add_obj(&l3, &caller_obj("val"), "main.o")
+    add_obj(&l3, &weak_fn("val", 4), "weak.o")
+    if !write_linked(&l3, "./p3") || run_code("./p3") != 4:
+        bad = bad + 4
+    /#/ two strong definitions
+    let l4 = new_linker()
+    add_obj(&l4, &caller_obj("val"), "main.o")
+    add_obj(&l4, &const_fn_obj("val", 1), "a.o")
+    add_obj(&l4, &const_fn_obj("val", 2), "b.o")
+    if write_linked(&l4, "./p4") || l4.errs != 1:
+        bad = bad + 8
+    /#/ an undefined name
+    let l5 = new_linker()
+    add_obj(&l5, &caller_obj("nowhere"), "main.o")
+    if write_linked(&l5, "./p5") || l5.errs != 1:
+        bad = bad + 16
+    /#/ the same local name in two objects is fine; a local is not found from another object
+    let l6 = new_linker()
+    add_obj(&l6, &caller_obj("pub1 pub2"), "main.o")
+    add_obj(&l6, &local_fn("f", 20, "pub1"), "a.o")
+    add_obj(&l6, &local_fn("f", 22, "pub2"), "b.o")
+    if !write_linked(&l6, "./p6") || run_code("./p6") != 42:
+        bad = bad + 32
+    let l7 = new_linker()
+    add_obj(&l7, &caller_obj("f"), "main.o")
+    add_obj(&l7, &local_fn("f", 20, "pub1"), "a.o")
+    if write_linked(&l7, "./p7"):
+        bad = bad + 64
+    /#/ commons of two sizes become one object
+    let l8 = new_linker()
+    add_obj(&l8, &common_user(4), "a.o")
+    let other = new_mk()
+    let oy = other.sym("buf", 1, 1, 65522, 8, 64)
+    add_obj(&l8, &other.bytes(), "b.o")
+    if !write_linked(&l8, "./p8") || run_code("./p8") != 5:
+        bad = bad + 128
+    /#/ a value that does not fit 32 bits
+    let big = new_mk()
+    let c = new_txt()
+    hex(&c, "B8")
+    let at = c.n
+    hex(&c, "00000000 C3")
+    let t = big.text(&c)
+    let y = big.sym("far", 1, 0, 65521, 5000000000, 0)
+    let f = big.func("main", t, 0)
+    big.rel(t, at, 10, y, 0)
+    let l9 = new_linker()
+    add_obj(&l9, &big.bytes(), "big.o")
+    if write_linked(&l9, "./p9"):
+        bad = bad + 256
+    /#/ files that are not objects
+    let l10 = new_linker()
+    add_obj(&l10, &const_fn_obj("main", 1), "ok.o")
+    let junk = txt_of("not an object file at all, just text, long enough to be read as a header....")
+    add_obj(&l10, &junk, "junk.o")
+    if write_linked(&l10, "./p10"):
+        bad = bad + 512
+    return bad

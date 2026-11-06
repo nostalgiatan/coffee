@@ -1,0 +1,93 @@
+/#/ One function that uses each kind of relocation (call, PC32 to data, bss, rodata and a section
+/#/ symbol, GOTPCREL, a 64-bit pointer in .data, 32 and 32S against an absolute symbol) and sums what
+/#/ it reads; the sum is the exit code.
+use * in kit
+
+/#/ A relocation to add once the text section exists: at the end of `code` plus `skip` bytes.
+class Todo:
+    off: Col
+    ty: Col
+    sym: Col
+    add: Col
+
+    fn at(self, code: &Txt, skip: int, ty: int, sym: int, add: int) => void:
+        self.off.push(code.n + skip)
+        self.ty.push(ty)
+        self.sym.push(sym)
+        self.add.push(add)
+
+fn main() => int:
+    let m = new_mk()
+    let todo = Todo { off: new_col(), ty: new_col(), sym: new_col(), add: new_col() }
+    /#/ .rodata: dwords 11 and 9
+    let ro = new_txt()
+    hex(&ro, "0B000000 09000000")
+    let s_ro = m.rodata(&ro)
+    /#/ .data: one pointer slot, filled by a relocation
+    let dt = new_txt()
+    put_zeros(&dt, 8)
+    let s_dt = m.data(&dt)
+    let s_bss = m.bss(16)
+    /#/ the section symbol of .rodata (local, so first), then the globals
+    let y_sec = m.sym("", 0, 3, s_ro, 0, 0)
+    let y_ro = m.sym("ro", 1, 1, s_ro, 0, 8)
+    let y_slot = m.sym("slot", 1, 1, s_dt, 0, 8)
+    let y_cnt = m.sym("counter", 1, 1, s_bss, 4, 4)
+    let y_help = m.undef("helper")
+    let y_abs = m.sym("seven", 1, 0, 65521, 7, 0)
+    let c = new_txt()
+    /#/ call helper
+    hex(&c, "E8")
+    todo.at(&c, 0, 4, y_help, 0 - 4)
+    hex(&c, "00000000")
+    /#/ mov r8d, eax
+    hex(&c, "4189C0")
+    /#/ mov rcx, [helper@GOTPCREL]; call rcx; add r8d, eax
+    hex(&c, "488B0D")
+    todo.at(&c, 0, 9, y_help, 0 - 4)
+    hex(&c, "00000000 FFD1 4101C0")
+    /#/ lea rcx, [slot]; call [rcx]; add r8d, eax
+    hex(&c, "488D0D")
+    todo.at(&c, 0, 2, y_slot, 0 - 4)
+    hex(&c, "00000000 FF11 4101C0")
+    /#/ mov eax, [counter] (zero); add
+    hex(&c, "8B05")
+    todo.at(&c, 0, 2, y_cnt, 0 - 4)
+    hex(&c, "00000000 4101C0")
+    /#/ mov dword [counter], 3 (the immediate follows the field: addend -8); mov eax, [counter]; add
+    hex(&c, "C705")
+    todo.at(&c, 0, 2, y_cnt, 0 - 8)
+    hex(&c, "00000000 03000000")
+    hex(&c, "8B05")
+    todo.at(&c, 0, 2, y_cnt, 0 - 4)
+    hex(&c, "00000000 4101C0")
+    /#/ mov eax, [ro] (11); add
+    hex(&c, "8B05")
+    todo.at(&c, 0, 2, y_ro, 0 - 4)
+    hex(&c, "00000000 4101C0")
+    /#/ mov eax, [.rodata + 4] through the section symbol (9); add
+    hex(&c, "8B05")
+    todo.at(&c, 0, 2, y_sec, 0)
+    hex(&c, "00000000 4101C0")
+    /#/ mov eax, seven (R_X86_64_32); add;  mov rax, seven (R_X86_64_32S); add
+    hex(&c, "B8")
+    todo.at(&c, 0, 10, y_abs, 0)
+    hex(&c, "00000000 4101C0")
+    hex(&c, "48C7C0")
+    todo.at(&c, 0, 11, y_abs, 0)
+    hex(&c, "00000000 4101C0")
+    /#/ mov eax, r8d; ret
+    hex(&c, "4489C0 C3")
+    let s_text = m.text(&c)
+    let y_main = m.func("main", s_text, 0)
+    for k in 0..todo.off.n:
+        m.rel(s_text, todo.off.b[k], todo.ty.b[k], todo.sym.b[k], todo.add.b[k])
+    /#/ the slot in .data points at helper
+    m.rel(s_dt, 0, 1, y_help, 0)
+    let l = new_linker()
+    add_obj(&l, &m.bytes(), "main.o")
+    add_obj(&l, &const_fn_obj("helper", 5), "helper.o")
+    if !write_linked(&l, "./prog"):
+        return 1
+    /#/ 5+5+5+0+3+11+9+7+7
+    return run_code("./prog") - 52

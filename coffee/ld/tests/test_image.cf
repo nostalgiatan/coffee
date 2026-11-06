@@ -1,0 +1,52 @@
+/#/ The relocation step on its own, for a loader that keeps the image in memory: the same image
+/#/ relocated for two load addresses differs exactly where an absolute address is stored.
+use * in kit
+
+fn main() => int:
+    let bad = 0
+    let m = new_mk()
+    let dt = new_txt()
+    put_zeros(&dt, 16)
+    let s_dt = m.data(&dt)
+    let c = new_txt()
+    hex(&c, "E8 00000000 C3")
+    let s_text = m.text(&c)
+    let y_main = m.func("main", s_text, 0)
+    let y_help = m.undef("helper")
+    let y_weak = m.sym("maybe", 2, 0, 0, 0, 0)
+    m.rel(s_text, 1, 4, y_help, 0 - 4)
+    m.rel(s_dt, 0, 1, y_help, 0)
+    m.rel(s_dt, 8, 1, y_weak, 0)
+    let l = new_linker()
+    add_obj(&l, &m.bytes(), "main.o")
+    add_obj(&l, &const_fn_obj("helper", 5), "helper.o")
+    l.check_undefined()
+    l.layout()
+    if l.errs > 0:
+        return 1
+    let a = l.build_image()
+    let b = l.build_image()
+    if l.apply_relocs(&a, 65536) != 0 || l.apply_relocs(&b, 131072) != 0:
+        return 2
+    let main_at = l.sym_addr(l.find_def("main"), 0)
+    let help_at = l.sym_addr(l.find_def("helper"), 0)
+    /#/ the call is relative: the same at both addresses, and lands on helper
+    let rel = rd32(&a, main_at + 1)
+    if rel != rd32(&b, main_at + 1):
+        bad = bad + 1
+    if main_at + 5 + rel != help_at:
+        bad = bad + 2
+    /#/ the pointer in .data is absolute: it moves with the load address; the weak one is 0
+    let data_at = l.sc_rva.b[1]
+    let pa = 0
+    let pb = 0
+    for s in 0..l.sc_type.n:
+        if l.sc_grp.b[s] == g_data():
+            data_at = l.sc_rva.b[s]
+    pa = rd64(&a, data_at)
+    pb = rd64(&b, data_at)
+    if pa != 65536 + help_at || pb != 131072 + help_at:
+        bad = bad + 4
+    if rd64(&a, data_at + 8) != 0:
+        bad = bad + 8
+    return bad

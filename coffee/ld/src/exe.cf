@@ -1,0 +1,84 @@
+/#/ The executable: the linked image cut into the pieces of an ELF64 file, plus the headers.
+/#/
+/#/ `link_exe` is the whole link once the inputs are added; the result is the bytes of the file,
+/#/ or an empty text after an error was reported.
+use * in link
+
+/#/ where an executable is loaded
+fn exe_base() => int:
+    return 4194304
+
+fn put16(t: &Txt, v: int) => void:
+    for k in 0..2:
+        t.put_byte((v >> (8 * k)) & 255)
+
+fn put32(t: &Txt, v: int) => void:
+    for k in 0..4:
+        t.put_byte((v >> (8 * k)) & 255)
+
+fn put64(t: &Txt, v: int) => void:
+    for k in 0..8:
+        t.put_byte((v >> (8 * k)) & 255)
+
+fn phdr(t: &Txt, ty: int, flags: int, off: int, addr: int, fsz: int, msz: int, align: int) => void:
+    put32(t, ty)
+    put32(t, flags)
+    put64(t, off)
+    put64(t, addr)
+    put64(t, addr)
+    put64(t, fsz)
+    put64(t, msz)
+    put64(t, align)
+
+fn link_exe(l: &Linker) => Txt:
+    let none = new_txt()
+    l.add_start()
+    l.check_undefined()
+    if l.errs > 0:
+        return none
+    let entry = l.find_def("_start")
+    if entry < 0:
+        l.msg("no entry point: define _start or main")
+        return none
+    l.layout()
+    if l.errs > 0:
+        return none
+    let base = exe_base()
+    let mem = l.build_image()
+    if l.apply_relocs(&mem, base) > 0:
+        return none
+    let nseg = l.sg_off.n
+    let out = new_txt()
+    for k in 0..nseg:
+        let at = l.sg_off.b[k]
+        put_zeros(&out, at + l.sg_fsz.b[k] - out.n)
+        for q in 0..l.sg_fsz.b[k]:
+            out.b[at + q] = mem.b[l.sg_rva.b[k] + q]
+    /#/ the headers, over the start of the first piece
+    let h = new_txt()
+    h.put_byte(127)
+    h.put("ELF")
+    h.put_byte(2)
+    h.put_byte(1)
+    h.put_byte(1)
+    put_zeros(&h, 9)
+    put16(&h, 2)
+    put16(&h, 62)
+    put32(&h, 1)
+    put64(&h, l.sym_addr(entry, base))
+    put64(&h, 64)
+    put64(&h, 0)
+    put32(&h, 0)
+    put16(&h, 64)
+    put16(&h, 56)
+    put16(&h, nseg + 1)
+    put16(&h, 64)
+    put16(&h, 0)
+    put16(&h, 0)
+    for k in 0..nseg:
+        phdr(&h, 1, l.sg_flags.b[k], l.sg_off.b[k], base + l.sg_rva.b[k], l.sg_fsz.b[k], l.sg_msz.b[k], 4096)
+    /#/ PT_GNU_STACK: the stack is not executable
+    phdr(&h, 1685382481, 6, 0, 0, 0, 0, 16)
+    for k in 0..h.n:
+        out.b[k] = h.b[k]
+    return out

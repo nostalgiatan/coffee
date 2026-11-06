@@ -1,0 +1,382 @@
+/#/ Helpers for the tests: a small writer of x86-64 relocatable objects with any sections,
+/#/ symbols and relocations (the compiler's own `elf.cf` writes only what it needs), a writer
+/#/ of `ar` archives, and running a linked program.
+use * in exe
+use system, chmod in libc of c
+
+class Mk:
+    sh: Txt
+    st: Txt
+    /#/ sections 1..: name offset in `sh`, type, flags, align, size and bytes
+    s_name: Col
+    s_type: Col
+    s_flags: Col
+    s_align: Col
+    s_size: Col
+    s_data: Txt
+    s_at: Col
+    /#/ symbols 1..: name offset in `st`, info, shndx, value, size
+    y_name: Col
+    y_info: Col
+    y_shndx: Col
+    y_val: Col
+    y_size: Col
+    /#/ relocations: section, offset, type, symbol, addend
+    r_sec: Col
+    r_off: Col
+    r_type: Col
+    r_sym: Col
+    r_add: Col
+
+    /#/ A section; its number (from 1). `NOBITS` sections (type 8) take `size`, others `bytes`.
+    fn sec(self, name: &str, ty: int, flags: int, align: int, bytes: &Txt, size: int) => int:
+        self.s_name.push(self.sh.n)
+        self.sh.put(name)
+        self.sh.put_byte(0)
+        self.s_type.push(ty)
+        self.s_flags.push(flags)
+        self.s_align.push(align)
+        self.s_at.push(self.s_data.n)
+        if ty == 8:
+            self.s_size.push(size)
+        else:
+            self.s_size.push(bytes.n)
+            self.s_data.put_all(bytes)
+            while self.s_data.n % 8 != 0:
+                self.s_data.put_byte(0)
+        return self.s_name.n
+
+    fn text(self, bytes: &Txt) => int:
+        return self.sec(".text", 1, 6, 16, bytes, 0)
+
+    fn rodata(self, bytes: &Txt) => int:
+        return self.sec(".rodata", 1, 2, 8, bytes, 0)
+
+    fn data(self, bytes: &Txt) => int:
+        return self.sec(".data", 1, 3, 8, bytes, 0)
+
+    fn bss(self, size: int) => int:
+        return self.sec(".bss", 8, 3, 8, &self.sh, size)
+
+    /#/ A symbol; its number (from 1). Local symbols must be added before the others.
+    fn sym(self, name: &str, bind: int, ty: int, shndx: int, val: int, size: int) => int:
+        if len(name) == 0:
+            self.y_name.push(0)
+        else:
+            self.y_name.push(self.st.n + 1)
+            self.st.put(name)
+            self.st.put_byte(0)
+        self.y_info.push(bind * 16 + ty)
+        self.y_shndx.push(shndx)
+        self.y_val.push(val)
+        self.y_size.push(size)
+        return self.y_name.n
+
+    /#/ A global function in section `shndx` at `val`.
+    fn func(self, name: &str, shndx: int, val: int) => int:
+        return self.sym(name, 1, 2, shndx, val, 0)
+
+    /#/ A reference to a symbol defined elsewhere.
+    fn undef(self, name: &str) => int:
+        return self.sym(name, 1, 0, 0, 0, 0)
+
+    fn rel(self, sec: int, off: int, ty: int, sym: int, addend: int) => void:
+        self.r_sec.push(sec)
+        self.r_off.push(off)
+        self.r_type.push(ty)
+        self.r_sym.push(sym)
+        self.r_add.push(addend)
+
+    fn shdr(self, t: &Txt, name: int, ty: int, flags: int, off: int, size: int, link: int, info: int, align: int, ent: int) => void:
+        put32(t, name)
+        put32(t, ty)
+        put64(t, flags)
+        put64(t, 0)
+        put64(t, off)
+        put64(t, size)
+        put32(t, link)
+        put32(t, info)
+        put64(t, align)
+        put64(t, ent)
+
+    fn bytes(self) => Txt:
+        let ns = self.s_name.n
+        let nl = 0
+        for k in 0..self.y_info.n:
+            if self.y_info.b[k] >> 4 == 0:
+                nl = nl + 1
+        /#/ the symbol table: the null symbol, then ours
+        let syms = new_txt()
+        put_zeros(&syms, 24)
+        for k in 0..self.y_info.n:
+            put32(&syms, self.y_name.b[k])
+            syms.put_byte(self.y_info.b[k])
+            syms.put_byte(0)
+            put16(&syms, self.y_shndx.b[k])
+            put64(&syms, self.y_val.b[k])
+            put64(&syms, self.y_size.b[k])
+        let strs = new_txt()
+        strs.put_byte(0)
+        strs.put_all(&self.st)
+        /#/ one .rela section for each section that has relocations
+        let rela = new_txt()
+        let rs = new_col()
+        let ro = new_col()
+        let rz = new_col()
+        let rt = new_col()
+        for s in 1..ns + 1:
+            let start = rela.n
+            for k in 0..self.r_sec.n:
+                if self.r_sec.b[k] == s:
+                    put64(&rela, self.r_off.b[k])
+                    put64(&rela, (self.r_sym.b[k] << 32) | self.r_type.b[k])
+                    put64(&rela, self.r_add.b[k])
+            if rela.n > start:
+                rs.push(s)
+                ro.push(start)
+                rz.push(rela.n - start)
+        let names = new_txt()
+        names.put_all(&self.sh)
+        let n_rela = names.n
+        names.put(".rela")
+        names.put_byte(0)
+        let n_sym = names.n
+        names.put(".symtab")
+        names.put_byte(0)
+        let n_str = names.n
+        names.put(".strtab")
+        names.put_byte(0)
+        let n_shs = names.n
+        names.put(".shstrtab")
+        names.put_byte(0)
+        let out = new_txt()
+        put_zeros(&out, 64)
+        let off_data = out.n
+        out.put_all(&self.s_data)
+        let off_rela = out.n
+        out.put_all(&rela)
+        let off_sym = out.n
+        out.put_all(&syms)
+        let off_str = out.n
+        out.put_all(&strs)
+        let off_shs = out.n
+        out.put_all(&names)
+        while out.n % 8 != 0:
+            out.put_byte(0)
+        let off_sh = out.n
+        let nsh = 1 + ns + rs.n + 3
+        let symtab_ix = 1 + ns + rs.n
+        self.shdr(&out, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+        for s in 0..ns:
+            self.shdr(&out, self.s_name.b[s], self.s_type.b[s], self.s_flags.b[s], off_data + self.s_at.b[s], self.s_size.b[s], 0, 0, self.s_align.b[s], 0)
+        for k in 0..rs.n:
+            self.shdr(&out, n_rela, 4, 64, off_rela + ro.b[k], rz.b[k], symtab_ix, rs.b[k], 8, 24)
+        self.shdr(&out, n_sym, 2, 0, off_sym, syms.n, symtab_ix + 1, nl + 1, 8, 24)
+        self.shdr(&out, n_str, 3, 0, off_str, strs.n, 0, 0, 1, 0)
+        self.shdr(&out, n_shs, 3, 0, off_shs, names.n, 0, 0, 1, 0)
+        let h = new_txt()
+        h.put_byte(127)
+        h.put("ELF")
+        h.put_byte(2)
+        h.put_byte(1)
+        h.put_byte(1)
+        put_zeros(&h, 9)
+        put16(&h, 1)
+        put16(&h, 62)
+        put32(&h, 1)
+        put64(&h, 0)
+        put64(&h, 0)
+        put64(&h, off_sh)
+        put32(&h, 0)
+        put16(&h, 64)
+        put16(&h, 0)
+        put16(&h, 0)
+        put16(&h, 64)
+        put16(&h, nsh)
+        put16(&h, nsh - 1)
+        for k in 0..64:
+            out.b[k] = h.b[k]
+        return out
+
+fn new_mk() => Mk:
+    let sh = new_txt()
+    sh.put_byte(0)
+    return Mk { sh: sh, st: new_txt(), s_name: new_col(), s_type: new_col(), s_flags: new_col(), s_align: new_col(), s_size: new_col(), s_data: new_txt(), s_at: new_col(), y_name: new_col(), y_info: new_col(), y_shndx: new_col(), y_val: new_col(), y_size: new_col(), r_sec: new_col(), r_off: new_col(), r_type: new_col(), r_sym: new_col(), r_add: new_col() }
+
+/#/ An object with `.text` that is `mov eax, v; ret` at `name`.
+fn const_fn_obj(name: &str, v: int) => Txt:
+    let m = new_mk()
+    let code = new_txt()
+    code.put_byte(184)
+    put32(&code, v)
+    code.put_byte(195)
+    let t = m.text(&code)
+    let f = m.func(name, t, 0)
+    return m.bytes()
+
+/#/ Pads `t` with spaces to `n` bytes.
+fn field(t: &Txt, n: int) => void:
+    while t.n < n:
+        t.put_byte(32)
+
+/#/ An archive: member objects in order, and the symbol index naming for each member the symbols it
+/#/ defines (`symnames` of `add` is the names separated by spaces).
+class Ar:
+    body: Txt
+    /#/ where the header of each member is in `body`
+    at: Col
+    /#/ the names in the index, each ended by a NUL, and the member each belongs to
+    nm: Txt
+    nm_mem: Col
+
+    fn add(self, name: &str, obj: &Txt, symnames: &str) => void:
+        let k = self.at.n
+        self.at.push(self.body.n)
+        let hd = new_txt()
+        hd.put(name)
+        hd.put("/")
+        field(&hd, 16)
+        hd.put("0")
+        field(&hd, 28)
+        hd.put("0")
+        field(&hd, 34)
+        hd.put("0")
+        field(&hd, 40)
+        hd.put("644")
+        field(&hd, 48)
+        hd.put_int(obj.n)
+        field(&hd, 58)
+        hd.put("`\n")
+        self.body.put_all(&hd)
+        self.body.put_all(obj)
+        if self.body.n % 2 == 1:
+            self.body.put_byte(10)
+        let open = false
+        for q in 0..len(symnames):
+            if ch(symnames, q) == 32:
+                if open:
+                    self.nm.put_byte(0)
+                    open = false
+            else:
+                if !open:
+                    self.nm_mem.push(k)
+                    open = true
+                self.nm.put_byte(ch(symnames, q))
+        if open:
+            self.nm.put_byte(0)
+
+    fn bytes(self) => Txt:
+        let cnt = self.nm_mem.n
+        let nbytes = 4 + 4 * cnt + self.nm.n
+        /#/ the members start after the index (padded to an even size)
+        let first = 8 + 60 + nbytes + nbytes % 2
+        let t = new_txt()
+        t.put("!<arch>\n")
+        let hd = new_txt()
+        hd.put("/")
+        field(&hd, 16)
+        hd.put("0")
+        field(&hd, 28)
+        hd.put("0")
+        field(&hd, 34)
+        hd.put("0")
+        field(&hd, 40)
+        hd.put("0")
+        field(&hd, 48)
+        hd.put_int(nbytes)
+        field(&hd, 58)
+        hd.put("`\n")
+        t.put_all(&hd)
+        for j in 0..4:
+            t.put_byte((cnt >> (24 - 8 * j)) & 255)
+        for q in 0..cnt:
+            let at = first + self.at.b[self.nm_mem.b[q]]
+            for j in 0..4:
+                t.put_byte((at >> (24 - 8 * j)) & 255)
+        t.put_all(&self.nm)
+        if nbytes % 2 == 1:
+            t.put_byte(10)
+        t.put_all(&self.body)
+        return t
+
+fn new_ar() => Ar:
+    return Ar { body: new_txt(), at: new_col(), nm: new_txt(), nm_mem: new_col() }
+
+/#/ Links the added inputs and writes the executable; false if the link failed.
+fn write_linked(l: &Linker, path: &str) => bool:
+    let exe = link_exe(l)
+    if exe.n == 0:
+        return false
+    let p = txt_of(path)
+    write_file(&p, &exe)
+    chmod(path, 493)
+    return true
+
+/#/ Runs `./path`; its exit code (-1 if it did not exit normally).
+fn run_code(path: &str) => int:
+    let st = system(path)
+    if st < 0 || st % 256 != 0:
+        return 0 - 1
+    return st // 256
+
+fn add_obj(l: &Linker, o: &Txt, name: &str) => void:
+    let w = txt_of(name)
+    l.add_file(o, &w)
+
+fn hex_val(c: int) => int:
+    if c >= 48 && c <= 57:
+        return c - 48
+    if c >= 97 && c <= 102:
+        return c - 87
+    if c >= 65 && c <= 70:
+        return c - 55
+    return 0 - 1
+
+/#/ Appends the bytes written as hex digit pairs (`"E8 00 00 00 00"`; spaces are ignored).
+fn hex(t: &Txt, s: &str) => void:
+    let hi = 0 - 1
+    for k in 0..len(s):
+        let v = hex_val(ch(s, k))
+        if v >= 0:
+            if hi < 0:
+                hi = v
+            else:
+                t.put_byte(hi * 16 + v)
+                hi = 0 - 1
+
+/#/ An object whose `main` calls each of `names` (in order) and sums their results (`eax`).
+fn caller_obj(names: &str) => Txt:
+    let m = new_mk()
+    let c = new_txt()
+    hex(&c, "4531C0")
+    let sy = new_col()
+    let at = new_col()
+    let p = 0
+    let word = new_txt()
+    for k in 0..len(names) + 1:
+        if k == len(names) || ch(names, k) == 32:
+            if word.n > 0:
+                at.push(c.n + 1)
+                hex(&c, "E8 00000000 4101C0")
+                let nm = txt_str(&word)
+                sy.push(m.undef(&nm))
+            word.clear()
+        else:
+            word.put_byte(ch(names, k))
+    hex(&c, "4489C0 C3")
+    let t = m.text(&c)
+    let f = m.func("main", t, 0)
+    for k in 0..at.n:
+        m.rel(t, at.b[k], 4, sy.b[k], 0 - 4)
+    return m.bytes()
+
+/#/ An object with `name` returning `v` that also calls each function in `calls`.
+fn fn_calling(name: &str, v: int, calls: &str) => Txt:
+    let m = new_mk()
+    let c = new_txt()
+    hex(&c, "B8")
+    put32(&c, v)
+    hex(&c, "C3")
+    let t = m.text(&c)
+    let f = m.func(name, t, 0)
+    return m.bytes()

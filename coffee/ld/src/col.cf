@@ -1,0 +1,57 @@
+/#/ Small helpers for the linker: a growable column of integers, and little-endian reads and
+/#/ writes on the bytes of a `Txt`.
+use * in txt
+
+class Col:
+    b: buf<int>
+    n: int
+
+    fn push(self, v: int) => void:
+        if self.n >= len(self.b):
+            self.b = buf_resize(self.b, (self.n + 1) * 2)
+        self.b[self.n] = v
+        self.n = self.n + 1
+
+fn new_col() => Col:
+    return Col { b: new_buf(int, 16), n: 0 }
+
+fn align_up(v: int, a: int) => int:
+    if a <= 1:
+        return v
+    return (v + a - 1) // a * a
+
+fn rd16(t: &Txt, at: int) => int:
+    return t.b[at] | (t.b[at + 1] << 8)
+
+fn rd32(t: &Txt, at: int) => int:
+    return t.b[at] | (t.b[at + 1] << 8) | (t.b[at + 2] << 16) | (t.b[at + 3] << 24)
+
+/#/ Eight bytes as a two's complement integer.
+fn rd64(t: &Txt, at: int) => int:
+    return rd32(t, at) | (rd32(t, at + 4) << 32)
+
+/#/ Four bytes, big endian (the numbers inside an `ar` archive).
+fn rd32be(t: &Txt, at: int) => int:
+    return (t.b[at] << 24) | (t.b[at + 1] << 16) | (t.b[at + 2] << 8) | t.b[at + 3]
+
+fn wr32(t: &Txt, at: int, v: int) => void:
+    for k in 0..4:
+        t.b[at + k] = (v >> (8 * k)) & 255
+
+fn wr64(t: &Txt, at: int, v: int) => void:
+    for k in 0..8:
+        t.b[at + k] = (v >> (8 * k)) & 255
+
+/#/ `n` zero bytes at the end of `t`.
+fn put_zeros(t: &Txt, n: int) => void:
+    for k in 0..n:
+        t.put_byte(0)
+
+/#/ The NUL-ended string at `at`.
+fn cstr_at(t: &Txt, at: int) => Txt:
+    let r = new_txt()
+    let k = at
+    while k < t.n && t.b[k] != 0:
+        r.put_byte(t.b[k])
+        k = k + 1
+    return r

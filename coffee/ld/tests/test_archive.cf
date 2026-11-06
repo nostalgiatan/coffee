@@ -1,0 +1,36 @@
+/#/ Archive members are pulled in only for names something needs, and the names they need in
+/#/ turn pull in more: `main` calls `used` (member 1), nothing calls `unused` (member 2, which
+/#/ would not link: it needs `ghost`), and `used` is not what calls `deep` (member 3), `main` does.
+use * in kit
+
+/#/ A member that defines `name` and calls `callee` (a name nothing defines when `callee` is "ghost").
+fn member(name: &str, v: int, callee: &str) => Txt:
+    let m = new_mk()
+    let c = new_txt()
+    hex(&c, "B8")
+    put32(&c, v)
+    hex(&c, "C3")
+    let t = m.text(&c)
+    let f = m.func(name, t, 0)
+    let g = m.undef(callee)
+    return m.bytes()
+
+fn main() => int:
+    let ar = new_ar()
+    ar.add("a.o", &const_fn_obj("used", 3), "used")
+    ar.add("b.o", &member("unused", 1, "ghost"), "unused")
+    ar.add("c.o", &const_fn_obj("deep", 4), "deep")
+    let l = new_linker()
+    add_obj(&l, &caller_obj("used deep"), "main.o")
+    add_obj(&l, &ar.bytes(), "lib.a")
+    if !write_linked(&l, "./prog"):
+        return 1
+    if run_code("./prog") != 7:
+        return 2
+    /#/ an archive that comes first has nothing needed yet: its members are not pulled
+    let l2 = new_linker()
+    add_obj(&l2, &ar.bytes(), "lib.a")
+    add_obj(&l2, &caller_obj("used"), "main.o")
+    if write_linked(&l2, "./prog2"):
+        return 3
+    return 0

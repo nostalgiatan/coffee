@@ -1,0 +1,17 @@
+use * in col
+
+fn main() => int:
+    let t = new_txt()
+    put_zeros(&t, 16)
+    wr64(&t, 0, 0 - 2)
+    wr32(&t, 8, 305419896)
+    let m = 0
+    if rd64(&t, 0) != 0 - 2:
+        m = m + 1
+    if rd32(&t, 8) != 305419896:
+        m = m + 1
+    if rd16(&t, 8) != 22136:
+        m = m + 1
+    if align_up(13, 8) != 16 || align_up(16, 8) != 16:
+        m = m + 1
+    return m

@@ -1,0 +1,97 @@
+/#/ `cfld`: links x86-64 ELF objects and archives into a static executable, without `cc`.
+/#/
+/#/     cfld [-o out] [-L dir]... file.o|file.a|-lname ...
+/#/
+/#/ Inputs are read in the order given (an archive only contributes the members that define
+/#/ something still needed). If no input defines `_start`, one that calls `main` is added.
+use * in exe
+use * in args
+use chmod, printf, fflush in libc of c
+
+fn usage() => int:
+    printf("usage: cfld [-o out] [-L dir]... file.o|file.a|-lname ...\n")
+    fflush(0)
+    return 2
+
+fn starts_with(w: &Txt, head: &str) => bool:
+    if w.n < len(head):
+        return false
+    for i in 0..len(head):
+        if w.b[i] != ch(head, i):
+            return false
+    return true
+
+/#/ The path of `lib<name>.a` in the first directory that has it (an empty text if none).
+fn find_lib(dirs: &Txt, name: &Txt) => Txt:
+    let ds = new_txt()
+    ds.put_all(dirs)
+    ds.put("/usr/lib/x86_64-linux-gnu\n/usr/lib\n/lib\n")
+    let lo = 0
+    for i in 0..ds.n:
+        if ds.b[i] == 10:
+            let p = cut(&ds, lo, i)
+            p.put("/lib")
+            p.put_all(name)
+            p.put(".a")
+            if read_file(&p).n >= 0:
+                return p
+            lo = i + 1
+    return new_txt()
+
+fn main() => int:
+    let a = read_args()
+    let out = txt_of("a.out")
+    let dirs = new_txt()
+    let i = 1
+    while i < a.n:
+        let w = a.get(i)
+        if w.is("-o") && i + 1 < a.n:
+            out = a.get(i + 1)
+            i = i + 1
+        elif w.is("-L") && i + 1 < a.n:
+            let d = a.get(i + 1)
+            dirs.put_all(&d)
+            dirs.put_byte(10)
+            i = i + 1
+        elif starts_with(&w, "-L") && w.n > 2:
+            let d = cut(&w, 2, w.n)
+            dirs.put_all(&d)
+            dirs.put_byte(10)
+        i = i + 1
+    let l = new_linker()
+    let seen = 0
+    i = 1
+    while i < a.n:
+        let w = a.get(i)
+        if w.is("-o") || w.is("-L"):
+            i = i + 1
+        elif starts_with(&w, "-L"):
+            seen = seen
+        elif starts_with(&w, "-l") && w.n > 2:
+            let name = cut(&w, 2, w.n)
+            let p = find_lib(&dirs, &name)
+            if p.n == 0:
+                printf("ld: cannot find -l%s\n", txt_str(&name))
+                return 1
+            let data = read_file(&p)
+            l.add_file(&data, &p)
+            seen = seen + 1
+        elif starts_with(&w, "-"):
+            printf("ld: unknown option '%s'\n", txt_str(&w))
+            return usage()
+        else:
+            let data = read_file(&w)
+            if data.n < 0:
+                printf("ld: cannot read '%s'\n", txt_str(&w))
+                return 1
+            l.add_file(&data, &w)
+            seen = seen + 1
+        i = i + 1
+    if seen == 0:
+        return usage()
+    let exe = link_exe(&l)
+    if exe.n == 0:
+        return 1
+    write_file(&out, &exe)
+    chmod(txt_str(&out), 493)
+    return 0

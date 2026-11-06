@@ -1,0 +1,35 @@
+/#/ The smallest links: `main` alone gets the start-up code from the linker; an object with its own
+/#/ `_start` (the exit system call) is linked as it is.
+use * in kit
+
+fn main() => int:
+    let m = 0
+    let l = new_linker()
+    add_obj(&l, &const_fn_obj("main", 42), "main.o")
+    if !write_linked(&l, "./prog1"):
+        return 1
+    if run_code("./prog1") != 42:
+        m = m + 1
+    /#/ _start: mov edi, 7; mov eax, 60; syscall
+    let mk = new_mk()
+    let code = new_txt()
+    code.put_byte(191)
+    put32(&code, 7)
+    code.put_byte(184)
+    put32(&code, 60)
+    code.put_byte(15)
+    code.put_byte(5)
+    let t = mk.text(&code)
+    let f = mk.func("_start", t, 0)
+    let l2 = new_linker()
+    add_obj(&l2, &mk.bytes(), "start.o")
+    if !write_linked(&l2, "./prog2"):
+        return m + 1
+    if run_code("./prog2") != 7:
+        m = m + 1
+    /#/ no main, no _start
+    let l3 = new_linker()
+    add_obj(&l3, &const_fn_obj("other", 1), "other.o")
+    if write_linked(&l3, "./prog3"):
+        m = m + 1
+    return m

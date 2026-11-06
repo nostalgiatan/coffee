@@ -1,0 +1,33 @@
+/#/ An object written by the compiler's own emitter (`ir/src/elf.cf`) links and runs: `main` calls
+/#/ `helper` (5) and adds the first byte of a string in .rodata (90).
+use * in elf
+use * in kit
+
+fn main() => int:
+    let o = new_obj()
+    let a = new_asm()
+    let s_main = o.sym(&txt_of("main"))
+    let s_help = o.sym(&txt_of("helper"))
+    a.begin_fun()
+    let h_at = a.pos()
+    a.mov_ri(0, 5)
+    a.ret()
+    a.end_fun()
+    o.define(s_help, h_at, a.pos() - h_at)
+    let ro = o.rodata(&txt_of("Z"))
+    a.begin_fun()
+    let m_at = a.pos()
+    a.call_sym(s_help)
+    a.lea_rip(1, 1, ro)
+    a.load(2, 1, 0, 1)
+    a.add_rr(0, 2)
+    a.ret()
+    a.end_fun()
+    o.define(s_main, m_at, a.pos() - m_at)
+    let l = new_linker()
+    add_obj(&l, &write_elf(&o, &a), "ir.o")
+    if !write_linked(&l, "./prog"):
+        return 1
+    if run_code("./prog") != 95:
+        return 2
+    return 0
