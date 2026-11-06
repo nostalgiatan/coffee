@@ -1194,6 +1194,49 @@ fn split_stores(f: &Fun, rs: &Reps) => bool:
             i = nxt
     return any
 
+/#/ ---- trap blocks ------------------------------------------------------------
+
+/#/ Is block `b` only a call that does not return, ended by `unreachable` (a failed check)?
+fn is_trap(f: &Fun, b: int) => bool:
+    if b == 0 || f.npar[b] != 0:
+        return false
+    let c = f.bfirst[b]
+    if c < 0 || f.op[c] != int(Op.CCall):
+        return false
+    let u = f.nx[c]
+    return u >= 0 && f.op[u] == int(Op.Unreachable) && f.nx[u] < 0
+
+fn same_trap(f: &Fun, b: int, c: int) => bool:
+    let x = f.bfirst[b]
+    let y = f.bfirst[c]
+    if f.aux[x] != f.aux[y] || f.nval(x) != f.nval(y) || f.rep[x] != f.rep[y]:
+        return false
+    for k in 0..f.nval(x):
+        if f.follow(f.val_at(x, k)) != f.follow(f.val_at(y, k)):
+            return false
+    return true
+
+/#/ The failed checks of a function that make the same call are one block.
+fn merge_traps(f: &Fun) => bool:
+    let changed = false
+    let canon: buf<int> = new_buf(int, f.nb + 1)
+    let nc = 0
+    for b in 1..f.nb:
+        if is_trap(f, b):
+            let into = -1
+            for q in 0..nc:
+                if into < 0 && same_trap(f, b, canon[q]):
+                    into = canon[q]
+            if into < 0:
+                canon[nc] = b
+                nc = nc + 1
+            else:
+                for e in 0..f.ne:
+                    if f.eto[e] == b:
+                        f.eto[e] = into
+                        changed = true
+    return changed
+
 fn optimize(f: &Fun) => void:
     let rs = new_reps()
     optimize_rs(f, &rs, false)
@@ -1218,6 +1261,8 @@ fn optimize_rs(f: &Fun, rs: &Reps, split: bool) => void:
         if thread_jumps(f):
             changed = true
         if fold_branches(f):
+            changed = true
+        if merge_traps(f):
             changed = true
         if drop_unreachable(f):
             changed = true

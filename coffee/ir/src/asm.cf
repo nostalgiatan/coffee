@@ -82,6 +82,15 @@ class Asm:
     rl_ty: buf<int>
     rl_add: buf<int>
     nrl: int
+    /#/ the last register move and the last 8-byte store, while nothing has been emitted since:
+    /#/ where each ends and what it moved (a store: base, displacement, register)
+    lm_end: int
+    lm_d: int
+    lm_s: int
+    ls_end: int
+    ls_base: int
+    ls_disp: int
+    ls_reg: int
 
     fn dump(self, t: &Txt) => void:
         t.put_all(&self.c)
@@ -119,6 +128,8 @@ class Asm:
 
     fn bind(self, l: int) => void:
         self.lab[l] = self.c.n
+        self.lm_end = 0 - 1
+        self.ls_end = 0 - 1
 
     /#/ A 32-bit offset to label `l`, from the end of the field; `kind` is 0 for a `jmp` (one opcode
     /#/ byte before the field) and 1 for a `jcc` (two).
@@ -336,7 +347,15 @@ class Asm:
     /#/ ---- moves -------------------------------------------------------------
 
     fn mov_rr(self, dst: int, src: int) => void:
+        /#/ a move onto itself, or back what the move right before made, is nothing
+        if dst == src:
+            return
+        if self.lm_end == self.c.n && self.lm_d == src && self.lm_s == dst:
+            return
         self.rr(1, 139, 0 - 1, dst, src, false)
+        self.lm_end = self.c.n
+        self.lm_d = dst
+        self.lm_s = src
 
     fn mov_ri(self, dst: int, v: int) => void:
         if v == 0:
@@ -368,6 +387,10 @@ class Asm:
         elif n == 4:
             self.rmem(0, 139, 0 - 1, dst, base, disp, false)
         else:
+            if self.ls_end == self.c.n && self.ls_base == base && self.ls_disp == disp:
+                /#/ what was just stored is still in its register
+                self.mov_rr(dst, self.ls_reg)
+                return
             self.rmem(1, 139, 0 - 1, dst, base, disp, false)
 
     /#/ The low `n` bytes of src to [base + disp].
@@ -381,6 +404,10 @@ class Asm:
             self.rmem(0, 137, 0 - 1, src, base, disp, false)
         else:
             self.rmem(1, 137, 0 - 1, src, base, disp, false)
+            self.ls_end = self.c.n
+            self.ls_base = base
+            self.ls_disp = disp
+            self.ls_reg = src
 
     fn lea(self, dst: int, base: int, disp: int) => void:
         self.rmem(1, 141, 0 - 1, dst, base, disp, false)
@@ -649,4 +676,4 @@ class Asm:
         self.rr(0, 15, 90, dst, src, false)
 
 fn new_asm() => Asm:
-    return Asm { c: new_txt(), lab: new_buf(int, 64), nlab: 0, fx_at: new_buf(int, 64), fx_lab: new_buf(int, 64), fx_kind: new_buf(int, 64), nfx: 0, fs: 0, rl0: 0, rl_at: new_buf(int, 64), rl_sym: new_buf(int, 64), rl_ty: new_buf(int, 64), rl_add: new_buf(int, 64), nrl: 0 }
+    return Asm { c: new_txt(), lab: new_buf(int, 64), nlab: 0, fx_at: new_buf(int, 64), fx_lab: new_buf(int, 64), fx_kind: new_buf(int, 64), nfx: 0, fs: 0, rl0: 0, rl_at: new_buf(int, 64), rl_sym: new_buf(int, 64), rl_ty: new_buf(int, 64), rl_add: new_buf(int, 64), nrl: 0, lm_end: -1, lm_d: 0, lm_s: 0, ls_end: -1, ls_base: 0, ls_disp: 0, ls_reg: 0 }
