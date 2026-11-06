@@ -230,7 +230,16 @@ fn module_of(bytes: buf<int>, size: int, opt: int, cfc: str, t: &Tys, g: &Syms) 
         lw.bad = 1
         return lw
     let none: buf<int> = new_buf(int, 1)
-    return lower_prepared(&p, t, g, opt, -1, &none, "", &none)
+    let lw = lower_prepared(&p, t, g, opt, -1, &none, "", &none)
+    let has_main = false
+    let it = p.a.child[p.a.root]
+    while it >= 0:
+        if p.a.kind[it] == int(Nk.Fn) && p.a.pa[it] >= 0 && tok_is(&p.a, p.a.pa[it], "main"):
+            has_main = true
+        it = p.a.next[it]
+    if lw.bad == 0 && !has_main:
+        lw.declare_globals(t, g, &p.ty, &p.a)
+    return lw
 
 /#/ Compiles `src` through our front end and IR, with clang as the linker, and runs it: the exit
 /#/ code, or -2 when something did not compile.

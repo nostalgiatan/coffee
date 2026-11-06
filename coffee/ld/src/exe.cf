@@ -33,6 +33,7 @@ fn phdr(t: &Txt, ty: int, flags: int, off: int, addr: int, fsz: int, msz: int, a
 fn link_exe(l: &Linker) => Txt:
     let none = new_txt()
     l.add_start()
+    l.add_syscall()
     l.check_undefined()
     if l.errs > 0:
         return none

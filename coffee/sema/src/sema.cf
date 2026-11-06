@@ -11,7 +11,7 @@ use * in c_names
 
 /#/ Names every module sees: the primitive types, the casts and the intrinsics.
 fn builtin_names() => str:
-    return "int float bool str string void nil buf object len new_buf buf_resize buf_ptr subslice sizeof range wrapping_add wrapping_sub wrapping_mul i8 i16 i32 i64 u8 u16 u32 u64 f32 f64"
+    return "int float bool str string void nil buf object len new_buf buf_resize buf_ptr subslice sizeof range wrapping_add wrapping_sub wrapping_mul peek8 peek64 poke8 poke64 syscall i8 i16 i32 i64 u8 u16 u32 u64 f32 f64"
 
 /#/ Adds each space-separated word of `words` as a module-less row of `kind`.
 fn add_words(g: &Syms, words: &str, kind: int) => void:

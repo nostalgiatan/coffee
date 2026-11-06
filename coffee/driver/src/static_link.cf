@@ -1,0 +1,24 @@
+/#/ `--static`: the objects are linked by `cfld`'s linker, in this process, into an executable that
+/#/ needs no C library. The program gets the runtime of `rt/src/min.cf` (`min_rt_text`).
+use * in exe
+use chmod in libc of c
+
+/#/ Links the object files named in `paths` (one per line) into the executable `out`.
+fn link_static(paths: &Txt, out: &Txt) => int:
+    let l = new_linker()
+    let lo = 0
+    for i in 0..paths.n:
+        if paths.b[i] == 10:
+            let p = slice(paths, lo, i)
+            let data = read_file(&p)
+            if data.n < 0:
+                printf("error: cannot read '%s'\n", txt_str(&p))
+                return 1
+            l.add_file(&data, &p)
+            lo = i + 1
+    let exe = link_exe(&l)
+    if exe.n == 0:
+        return 1
+    write_file(out, &exe)
+    chmod(txt_str(out), 493)
+    return 0

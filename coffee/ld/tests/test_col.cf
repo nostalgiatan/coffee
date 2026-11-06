@@ -12,6 +12,6 @@ fn main() => int:
         m = m + 1
     if rd16(&t, 8) != 22136:
         m = m + 1
-    if align_up(13, 8) != 16 || align_up(16, 8) != 16:
+    if align_to(13, 8) != 16 || align_to(16, 8) != 16:
         m = m + 1
     return m

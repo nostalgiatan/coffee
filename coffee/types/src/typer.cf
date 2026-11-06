@@ -944,6 +944,13 @@ class Typer:
         if tok_is(a, tok, "buf_ptr"):
             self.args_untyped(t, g, a, n)
             return t.simple(int(Ty.Object))
+        /#/ raw memory and system calls, for the runtime that has no C library under it
+        if tok_is(a, tok, "peek8") || tok_is(a, tok, "peek64") || tok_is(a, tok, "syscall"):
+            self.args_untyped(t, g, a, n)
+            return t.int_ty(8, true)
+        if tok_is(a, tok, "poke8") || tok_is(a, tok, "poke64"):
+            self.args_untyped(t, g, a, n)
+            return t.simple(int(Ty.Void))
         if tok_is(a, tok, "subslice"):
             let b = self.strip_refs(t, self.value(t, g, a, first, -1))
             let c = a.next[first]

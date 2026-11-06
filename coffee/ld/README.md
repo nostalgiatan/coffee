@@ -8,7 +8,7 @@ executable without `cc`. No LLVM, no Rust, no libc: it is a Coffee program built
     cfld prog.o -o prog              # a `main` without `_start` gets one that calls it and exits
     cfld [-o out] [-L dir]... file.o file.a -lname ...
 
-The driver still links with `cc`; nothing here changes its default.
+The driver links with `cc` by default; `coffee2 --static` uses this linker in-process instead, with the C library of `rt/src/min.cf`. `cfld` itself supplies `_start` and `cf_syscall` (the `syscall` intrinsic's stub) when an input needs them.
 
 ## Layout
 

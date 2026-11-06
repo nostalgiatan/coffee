@@ -1,7 +1,7 @@
 # 命令行参考:`coffee2`
 
 ```
-coffee2 input.cf [-o output] [-I dir] [-O0|-O1|-O2|-O3] [--emit-obj] [--emit-flat] [--incremental dir] [-j n] [--time]
+coffee2 input.cf [-o output] [-I dir] [-O0|-O1|-O2|-O3] [--emit-obj] [--emit-flat] [--incremental dir] [-j n] [--static] [--time]
 ```
 
 `coffee2` 是自举编译器(`coffee/driver/src/main.cf`)。它只做编译。项目模式(`coffee.toml`)、依赖获取和 `std install` 不在这里,它们留给以后的工具链程序。
@@ -19,6 +19,7 @@ coffee2 input.cf [-o output] [-I dir] [-O0|-O1|-O2|-O3] [--emit-obj] [--emit-fla
 | `--emit-flat` | 写出展开了所有 `use` 的单文件源码后停止。诊断里的行号指的是这份文本。 |
 | `--incremental dir` | 每个源文件一个 `.o`,放在 `dir`,没变的复用;再链接。前端仍检查整个程序。文件的记号(注释和空行不算)、别的文件的接口(函数头、类字段和方法头、枚举、别名、模块级 `let`、泛型整体)、编译器、`.cfc`、优化级别任何一样变了,才重编。这个模式下优化器不跨文件内联。 |
 | `-j n` | 增量构建里同时编译 `n` 个文件(进程,共享前端的结果);默认是在线的处理器数,最多 16。产物和 `-j 1` 逐字节相同。 |
+| `--static` | 不用 `cc` 和 C 库:程序加上 `rt/src/min.cf` 里用 Coffee 写的 C 库(`malloc`、`calloc`、`free`、`memcpy`、`strlen`、`strdup`、`strcmp`、`write`、`exit`,走 Linux 系统调用),由 `ld/` 的链接器在本进程里链成静态可执行文件。程序不能用别的 C 函数(`printf`、`fopen` 等),否则链接报 `undefined symbol`。可以和 `--incremental` 一起用。 |
 | `--time` | 每个阶段花的毫秒数:展开、改名、解析、哈希、前端、逐文件的降低/代码生成/写对象(或并行时合在一起)、链接。 |
 
 ## 默认输出
@@ -48,7 +49,7 @@ libc 和 libm 的签名内置在编译器里。其他 C 库要有 `<库名>.cfc`
 - 只在 Linux 和 Android 上能用:参数从 `/proc/self/cmdline` 读取。
 - 机器码后端只支持 x86-64。
 - 诊断只有错误码和展开后源码的行号,没有文件名。
-- 链接固定调用 `clang`。
+- 链接默认调用 `cc`;`--static` 用自带的链接器。
 
 ## 相关
 

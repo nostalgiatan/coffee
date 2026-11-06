@@ -1,0 +1,101 @@
+/#/ A C library small enough to need no C library: the functions the generated code calls
+/#/ (`malloc`, `calloc`, `free`, `memcpy`, `strlen`, `strdup`, `strcmp`, `write`, `exit`), over Linux
+/#/ system calls. A program linked with `--static` gets this text added. It cannot allocate, so it
+/#/ uses no strings, classes or buffers: addresses are `int`, memory is read with `peek8`/`peek64`
+/#/ and written with `poke8`/`poke64`.
+/#/
+/#/ The heap: blocks are a power of two (at least 32 bytes) with a 16-byte header that holds the
+/#/ size class. Small blocks are cut from 1 MiB chunks; bigger ones are mapped alone. A freed block goes
+/#/ on the list of its class; nothing is returned to the system. The state is one page, mapped on
+/#/ first use: word 0 is the next free byte of the chunk, word 1 its end, words 2.. the list heads.
+
+let cf_state: int = 0
+
+fn cf_mmap(n: int) => int:
+    return syscall(9, 0, n, 3, 34, 0 - 1, 0)
+
+fn cf_heap() => int:
+    if cf_state == 0:
+        cf_state = cf_mmap(4096)
+    return cf_state
+
+c fn malloc(n: int) => object:
+    let st = cf_heap()
+    let sz = 32
+    let k = 0
+    while sz < n + 16:
+        sz = sz * 2
+        k = k + 1
+    let head = st + 16 + k * 8
+    let p = peek64(head as object)
+    if p != 0:
+        poke64(head as object, peek64((p + 8) as object))
+        return (p + 16) as object
+    if sz > 65536:
+        p = cf_mmap(sz)
+    else:
+        let bump = peek64(st as object)
+        if bump == 0 || bump + sz > peek64((st + 8) as object):
+            bump = cf_mmap(1048576)
+            poke64((st + 8) as object, bump + 1048576)
+        p = bump
+        poke64(st as object, bump + sz)
+    poke64(p as object, k)
+    return (p + 16) as object
+
+c fn free(ptr: object) => void:
+    let q = int(ptr)
+    if q == 0:
+        return
+    let st = cf_heap()
+    let p = q - 16
+    let head = st + 16 + peek64(p as object) * 8
+    poke64((p + 8) as object, peek64(head as object))
+    poke64(head as object, p)
+
+c fn memcpy(dst: object, src: object, n: int) => object:
+    let d = int(dst)
+    let s = int(src)
+    let i = 0
+    while i + 8 <= n:
+        poke64((d + i) as object, peek64((s + i) as object))
+        i = i + 8
+    while i < n:
+        poke8((d + i) as object, peek8((s + i) as object))
+        i = i + 1
+    return dst
+
+c fn calloc(n: int, m: int) => object:
+    let total = n * m
+    let p = malloc(total)
+    let d = int(p)
+    for i in 0..total:
+        poke8((d + i) as object, 0)
+    return p
+
+c fn strlen(s: object) => int:
+    let a = int(s)
+    let n = 0
+    while peek8((a + n) as object) != 0:
+        n = n + 1
+    return n
+
+c fn strdup(s: object) => object:
+    let n = strlen(s)
+    let p = malloc(n + 1)
+    memcpy(p, s, n + 1)
+    return p
+
+c fn strcmp(x: object, y: object) => int(4)+:
+    let a = int(x)
+    let b = int(y)
+    let i = 0
+    while peek8((a + i) as object) != 0 && peek8((a + i) as object) == peek8((b + i) as object):
+        i = i + 1
+    return i32(peek8((a + i) as object) - peek8((b + i) as object))
+
+c fn write(fd: int(4)+, p: object, n: int) => int:
+    return syscall(1, int(fd), int(p), n)
+
+c fn exit(code: int(4)+) => void:
+    syscall(231, int(code))

@@ -15,7 +15,7 @@ class Col:
 fn new_col() => Col:
     return Col { b: new_buf(int, 16), n: 0 }
 
-fn align_up(v: int, a: int) => int:
+fn align_to(v: int, a: int) => int:
     if a <= 1:
         return v
     return (v + a - 1) // a * a

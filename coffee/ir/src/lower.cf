@@ -1086,6 +1086,23 @@ class Lower:
                 self.f.store(self.f.fnaddr(id), val)
             it = a.next[it]
 
+    /#/ For a text with no `main` (a runtime linked into other programs): its module-level `let`s
+    /#/ exist, zero, in this object; nothing stores their initial values.
+    fn declare_globals(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast) => void:
+        let it = a.child[a.root]
+        while it >= 0:
+            if a.kind[it] == int(Nk.Let) && a.pa[it] >= 0:
+                let vr = self.rep(t, g, self.nd(t, ty, it))
+                if vr > 0:
+                    if self.gl_n >= len(self.gl_name):
+                        let cap = (self.gl_n + 1) * 2
+                        self.gl_name = buf_resize(self.gl_name, cap)
+                        self.gl_size = buf_resize(self.gl_size, cap)
+                    self.gl_name[self.gl_n] = self.global_sym(a, a.pa[it])
+                    self.gl_size[self.gl_n] = rsize(&self.rs, vr)
+                    self.gl_n = self.gl_n + 1
+            it = a.next[it]
+
     /#/ The address of the anonymous function `n`; it is lowered as `outer__fnN`.
     fn anon_fn(self, a: &Ast, n: int) => int:
         let w = new_txt()
@@ -1199,6 +1216,33 @@ class Lower:
                 elif tok_is(a, a.tok[callee], "wrapping_sub"):
                     op = int(Op.Sub)
                 return self.f.bin(op, wl, wr)
+            if tok_is(a, a.tok[callee], "peek8") || tok_is(a, a.tok[callee], "peek64"):
+                let addr = self.ex(t, g, ty, a, a.child[n])
+                if tok_is(a, a.tok[callee], "peek8"):
+                    return self.f.conv(int(Op.ZExt), int(Rp.I64), self.f.load(int(Rp.I8), -1, addr))
+                return self.f.load(int(Rp.I64), -1, addr)
+            if tok_is(a, a.tok[callee], "poke8") || tok_is(a, a.tok[callee], "poke64"):
+                let addr = self.ex(t, g, ty, a, a.child[n])
+                let val = self.coerce(t, g, self.ex(t, g, ty, a, a.next[a.child[n]]), self.nd(t, ty, a.next[a.child[n]]), t.int_ty(8, true))
+                if tok_is(a, a.tok[callee], "poke8"):
+                    val = self.f.conv(int(Op.Trunc), int(Rp.I8), val)
+                self.f.store(addr, val)
+                return self.f.undef(int(Rp.I64))
+            if tok_is(a, a.tok[callee], "syscall"):
+                /#/ `cf_syscall(n, a, b, c, d, e, f)` is supplied by the linker
+                let sc = a.child[n]
+                let vals: buf<int> = new_buf(int, 8)
+                for j in 0..7:
+                    if sc < 0:
+                        vals[j] = self.f.cint(int(Rp.I64), 0)
+                    else:
+                        vals[j] = self.coerce(t, g, self.ex(t, g, ty, a, sc), self.nd(t, ty, sc), t.int_ty(8, true))
+                        sc = a.next[sc]
+                for j in 0..7:
+                    self.f.arg(vals[j])
+                let w = new_txt()
+                w.put("cf_syscall")
+                return self.f.ccall(int(Rp.I64), 7, self.names.intern(&w), 0)
             if tok_is(a, a.tok[callee], "buf_ptr"):
                 /#/ the buffer is only borrowed: reading it as a value would move it into a temporary
                 /#/ that is freed at the end of the statement
@@ -1261,7 +1305,7 @@ class Lower:
         let name = new_txt()
         for q in a.toks.start[a.tok[callee]]..a.toks.end[a.tok[callee]]:
             name.put_byte(a.byte_at(q))
-        if k != int(Sk.Extern) && inst_env < 0:
+        if k != int(Sk.Extern) && inst_env < 0 && !(fnode >= 0 && a.pd[fnode] == 1):
             keep_off_runtime(&name)
         let id = self.names.intern(&name)
         if inst_env >= 0:
@@ -3213,7 +3257,7 @@ class Lower:
         else:
             for q in a.toks.start[a.pa[fn_node]]..a.toks.end[a.pa[fn_node]]:
                 name.put_byte(a.byte_at(q))
-            if cls < 0 && self.penv < 0:
+            if cls < 0 && self.penv < 0 && a.pd[fn_node] != 1:
                 keep_off_runtime(&name)
             if self.penv >= 0:
                 name.put("__")

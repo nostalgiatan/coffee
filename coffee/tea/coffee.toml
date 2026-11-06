@@ -4,4 +4,4 @@ version = "0.1.0"
 
 [build]
 main = "src/main.cf"
-include = ["src", "../driver/src", "../ir/src", "../own/src", "../types/src", "../sema/src", "../parser/src", "../lexer/src"]
+include = ["src", "../driver/src", "../ir/src", "../ld/src", "../own/src", "../types/src", "../sema/src", "../parser/src", "../lexer/src"]
