@@ -85,3 +85,9 @@ enum Tk:
     LBrace
     RBrace
     Semi
+    PlusEq
+    MinusEq
+    StarEq
+    SlashEq
+    PercentEq
+    SlashSlashEq

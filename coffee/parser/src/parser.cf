@@ -662,11 +662,35 @@ class Ast:
         if !self.eat(int(Tk.Indent)):
             self.record(self.pos, int(Ec.ExpectedIndent))
         else:
+        let ck = self.peek()
+        if ck >= int(Tk.PlusEq) && ck <= int(Tk.SlashSlashEq):
+            return self.parse_compound(start, e, ck)
             while self.peek() != int(Tk.Dedent) && self.peek() != int(Tk.Eof):
                 let before = self.pos
                 let arm = self.parse_arm()
                 if first < 0:
                     first = arm
+    /#/ `t op= v` is `t = t op v`: the target is parsed a second time so the tree has no shared node.
+    fn parse_compound(self, start: int, target: int, ck: int) => int:
+        let op_tok = self.pos
+        let n = self.add(int(Nk.Assign), start)
+        self.pos = start
+        let again = self.parse_expr()
+        self.pos = op_tok
+        self.bump()
+        let b = self.add(int(Nk.Binary), start)
+        let right = self.parse_expr()
+        self.pa[b] = again
+        self.pb[b] = right
+        /#/ Plus..SlashSlash and PlusEq..SlashSlashEq are in the same order
+        self.pc[b] = int(Tk.Plus) + (ck - int(Tk.PlusEq))
+        self.pd[b] = op_tok
+        self.fin(b)
+        self.pa[n] = target
+        self.pb[n] = b
+        self.end_stmt()
+        return self.fin(n)
+
                 else:
                     self.next[last] = arm
                 last = arm

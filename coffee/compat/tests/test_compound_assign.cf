@@ -1,0 +1,20 @@
+/#/ `t op= v` is `t = t op v`; new for the self-hosted compiler.
+use * in harness
+
+fn part0() => int:
+    let bad = 0
+    bad = bad + exits("compound::add_assign", "fn main() => int:\n    let t = 1\n    t += 2\n    return t\n", 3)
+    bad = bad + exits("compound::sub_assign", "fn main() => int:\n    let t = 9\n    t -= 2\n    return t\n", 7)
+    bad = bad + exits("compound::mul_assign", "fn main() => int:\n    let t = 3\n    t *= 4\n    return t\n", 12)
+    bad = bad + exits("compound::int_div_assign", "fn main() => int:\n    let t = 17\n    t //= 5\n    return t\n", 3)
+    bad = bad + exits("compound::rem_assign", "fn main() => int:\n    let t = 17\n    t %= 5\n    return t\n", 2)
+    bad = bad + exits("compound::float_div_assign", "fn main() => int:\n    let x = 9.0\n    x /= 2.0\n    return int(x * 2.0)\n", 9)
+    bad = bad + exits("compound::array_element", "fn main() => int:\n    let a: [int; 2] = [5, 6]\n    a[1] += 4\n    return a[1]\n", 10)
+    bad = bad + exits("compound::field", "class C:\n    n: int\n\nfn main() => int:\n    let c = C { n: 3 }\n    c.n += 4\n    return c.n\n", 7)
+    bad = bad + exits("compound::right_side_is_whole_expression", "fn main() => int:\n    let t = 10\n    t -= 2 + 3\n    return t\n", 5)
+    bad = bad + exits("compound::continues_line", "fn main() => int:\n    let t = 1\n    t +=\n        2\n    return t\n", 3)
+    bad = bad + rejected("compound::int_slash_assign", "fn main() => int:\n    let t = 4\n    t /= 2\n    return t\n", 104)
+    return bad
+
+fn main() => int:
+    return part0()

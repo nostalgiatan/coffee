@@ -99,6 +99,17 @@ fn word_kind(src: &str, s: int, e: int) => int:
 fn op2_kind(a: int, b: int) => int:
     if a == '/' && b == '/':
         return int(Tk.SlashSlash)
+    if b == '=':
+        if a == '+':
+            return int(Tk.PlusEq)
+        if a == '-':
+            return int(Tk.MinusEq)
+        if a == '*':
+            return int(Tk.StarEq)
+        if a == '/':
+            return int(Tk.SlashEq)
+        if a == '%':
+            return int(Tk.PercentEq)
     if a == '<' && b == '<':
         return int(Tk.Shl)
     if a == '>' && b == '>':
@@ -175,7 +186,7 @@ fn op1_kind(c: int) => int:
 
 /#/ A statement continues on the next line after these (Plus..Ge and `=`).
 fn continues_line(kind: int) => bool:
-    return (kind >= int(Tk.Plus) && kind <= int(Tk.Ge)) || kind == int(Tk.Assign)
+    return (kind >= int(Tk.Plus) && kind <= int(Tk.Ge)) || kind == int(Tk.Assign) || (kind >= int(Tk.PlusEq) && kind <= int(Tk.SlashSlashEq))
 
 /#/ True when the stream ends in the type suffix `int(4)+` / `float(8)-`,
 /#/ whose trailing sign is part of the type and does not continue the line.
@@ -501,7 +512,10 @@ fn lex(src: &str) => Tokens:
                 i = e
             else:
                 let k2 = op2_kind(c, byte(src, i + 1))
-                if k2 >= 0:
+                if k2 == int(Tk.SlashSlash) && byte(src, i + 2) == '=':
+                    t.push(int(Tk.SlashSlashEq), i, i + 3, line, col)
+                    i = i + 3
+                elif k2 >= 0:
                     t.push(k2, i, i + 2, line, col)
                     i = i + 2
                 else:
