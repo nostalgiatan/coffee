@@ -652,10 +652,16 @@ class Lower:
 
     /#/ The bytes `s`..`e` of the source read as the inside of a string literal.
     fn str_range(self, a: &Ast, s: int, e: int) => Txt:
+        return self.str_range_f(a, s, e, false)
+
+    /#/ Like `str_range`; in the text of an f-string (`fstr`) `{{` and `}}` are one brace.
+    fn str_range_f(self, a: &Ast, s: int, e: int, fstr: bool) => Txt:
         let body = new_txt()
         let k = s
         while k < e:
             let c = a.byte_at(k)
+            if fstr && (c == '{' || c == '}') && k + 1 < e && a.byte_at(k + 1) == c:
+                k = k + 1
             if c == '\\' && k + 1 < e:
                 k = k + 1
                 let d = a.byte_at(k)
@@ -806,7 +812,7 @@ class Lower:
         let p = a.child[n]
         while p >= 0:
             if a.pb[p] > from:
-                let body = self.str_range(a, from, a.pb[p])
+                let body = self.str_range_f(a, from, a.pb[p], true)
                 let nx = self.str_cat(acc, self.f.strlit(self.text_global(&body)))
                 if owned:
                     self.f.free(acc)
@@ -814,6 +820,7 @@ class Lower:
                 owned = true
             let x = a.pa[p]
             let xt = self.strip_refs(t, self.nd(t, ty, x))
+            let sp = fspec_of(a, p)
             let fresh = -1
             let v = -1
             if t.kind[xt] == int(Ty.Str):
@@ -831,17 +838,65 @@ class Lower:
                 let num = self.ex(t, g, ty, a, x)
                 let rt = new_txt()
                 if t.kind[xt] == int(Ty.Int):
-                    rt.put("__cf_fmt_int")
                     num = self.coerce(t, g, num, self.nd(t, ty, x), t.int_ty(8, true))
+                    if sp.kind == 'x' || sp.kind == 'X' || sp.kind == 'b' || sp.kind == 'o':
+                        rt.put("__cf_fmt_radix")
+                        let radix = 16
+                        if sp.kind == 'b':
+                            radix = 2
+                        if sp.kind == 'o':
+                            radix = 8
+                        let upper = 0
+                        if sp.kind == 'X':
+                            upper = 1
+                        self.f.arg(num)
+                        self.f.arg(self.f.cint(int(Rp.I64), radix))
+                        self.f.arg(self.f.cint(int(Rp.I64), upper))
+                    else:
+                        rt.put("__cf_fmt_int")
+                        self.f.arg(num)
                 else:
-                    rt.put("__cf_fmt_float")
                     num = self.coerce(t, g, num, self.nd(t, ty, x), t.float_ty(8))
-                self.f.arg(num)
+                    if sp.prec >= 0 || sp.kind == 'f':
+                        rt.put("__cf_fmt_fixed")
+                        let digits = sp.prec
+                        if digits < 0:
+                            digits = 6
+                        self.f.arg(num)
+                        self.f.arg(self.f.cint(int(Rp.I64), digits))
+                    else:
+                        rt.put("__cf_fmt_float")
+                        self.f.arg(num)
                 fresh = self.f.call(int(Rp.Ptr), -1, self.names.intern(&rt))
                 v = fresh
             else:
                 self.unsupported(n)
                 return acc
+            if sp.width > 0:
+                let numeric = t.kind[xt] == int(Ty.Int) || t.kind[xt] == int(Ty.Float)
+                let rt = new_txt()
+                self.f.arg(v)
+                if sp.zero && sp.align == 0 && numeric:
+                    rt.put("__cf_pad_zero")
+                    self.f.arg(self.f.cint(int(Rp.I64), sp.width))
+                else:
+                    rt.put("__cf_pad")
+                    self.f.arg(self.f.cint(int(Rp.I64), sp.width))
+                    let al = sp.align
+                    if al == 0:
+                        al = 1
+                        if numeric:
+                            al = 2
+                    self.f.arg(self.f.cint(int(Rp.I64), al))
+                    let fl = sp.fill
+                    if sp.zero && sp.align != 0:
+                        fl = 48
+                    self.f.arg(self.f.cint(int(Rp.I64), fl))
+                let padded = self.f.call(int(Rp.Ptr), -1, self.names.intern(&rt))
+                if fresh >= 0:
+                    self.f.free(fresh)
+                fresh = padded
+                v = padded
             let nx = self.str_cat(acc, v)
             if owned:
                 self.f.free(acc)
@@ -852,7 +907,7 @@ class Lower:
             from = a.pc[p] + 1
             p = a.next[p]
         if e > from:
-            let body = self.str_range(a, from, e)
+            let body = self.str_range_f(a, from, e, true)
             let nx = self.str_cat(acc, self.f.strlit(self.text_global(&body)))
             if owned:
                 self.f.free(acc)

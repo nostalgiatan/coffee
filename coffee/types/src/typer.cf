@@ -298,6 +298,17 @@ class Typer:
                 let bk = t.kind[base]
                 if bk != int(Ty.Str) && bk != int(Ty.Int) && bk != int(Ty.Float) && bk != int(Ty.Bool) && bk != int(Ty.Error):
                     self.err(a.tok[a.pa[p]], int(Te.InvalidOperation), -1, pt)
+                let sp = fspec_of(a, p)
+                if sp.present:
+                    let bad = !sp.ok
+                    if bk == int(Ty.Str) || bk == int(Ty.Bool):
+                        bad = bad || sp.kind != 0 || sp.prec >= 0 || sp.zero
+                    elif bk == int(Ty.Int):
+                        bad = bad || sp.prec >= 0 || sp.kind == 'f'
+                    elif bk == int(Ty.Float):
+                        bad = bad || (sp.kind != 0 && sp.kind != 'f')
+                    if bad:
+                        self.err(a.tok[a.pa[p]], int(Te.InvalidOperation), -1, pt)
                 p = a.next[p]
             return self.set(n, t.simple(int(Ty.Str)))
         if k == int(Nk.Bool):

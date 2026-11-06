@@ -98,7 +98,7 @@ fn prints_numbers(bytes: buf<int>, size: int, cfc: &str) => bool:
             let x = ty.node[a.pa[n]]
             while t.kind[x] == int(Ty.Ref):
                 x = t.a[x]
-            if t.kind[x] == int(Ty.Int) || t.kind[x] == int(Ty.Float):
+            if t.kind[x] == int(Ty.Int) || t.kind[x] == int(Ty.Float) || a.pd[n] >= 0:
                 return true
     return false
 

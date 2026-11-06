@@ -296,3 +296,223 @@ fn __cf_fmt_float(x: float) => str:
     let dg: buf<int> = new_buf(int, 48)
     let k = __cf_digits(f, e, &dg)
     return sign + __cf_layout(&dg, k)
+
+/#/ ---- format specs: `{x:>8}`, `{n:08x}`, `{x:.3}` -------------------------------
+
+/#/ The one-character string of a fill byte (the fills the parser accepts).
+fn __cf_fillc(c: int) => str:
+    if c == 48:
+        return "0"
+    if c == 45:
+        return "-"
+    if c == 42:
+        return "*"
+    if c == 95:
+        return "_"
+    if c == 46:
+        return "."
+    if c == 35:
+        return "#"
+    if c == 61:
+        return "="
+    if c == 43:
+        return "+"
+    if c == 124:
+        return "|"
+    if c == 126:
+        return "~"
+    if c == 120:
+        return "x"
+    return " "
+
+/#/ `s` with `fill` added to reach `width` bytes: align 1 puts it after, 2 before, 3 on both sides
+/#/ (the extra byte goes to the right). The result is always a new string.
+fn __cf_pad(s: &str, width: int, align: int, fill: int) => str:
+    let n = len(s)
+    let total = width - n
+    if total < 0:
+        total = 0
+    let left = 0
+    if align == 2:
+        left = total
+    elif align == 3:
+        left = total // 2
+    let f = __cf_fillc(fill)
+    let out = ""
+    for i in 0..left:
+        out = out + f
+    out = out + s
+    for i in 0..total - left:
+        out = out + f
+    return out
+
+/#/ `s` with zeros between its sign and its digits to reach `width` bytes.
+fn __cf_pad_zero(s: &str, width: int) => str:
+    let n = len(s)
+    let out = ""
+    let start = 0
+    if n > 0 && (s[0] == 45 || s[0] == 43):
+        out = __cf_ch(s[0])
+        start = 1
+    for i in 0..width - n:
+        out = out + "0"
+    for i in start..n:
+        out = out + __cf_ch(s[i])
+    return out
+
+/#/ The digit `d` (0 to 15) in lower or upper case.
+fn __cf_dig(d: int, upper: bool) => str:
+    if d < 10:
+        return __cf_ch(48 + d)
+    if d == 10:
+        if upper:
+            return "A"
+        return "a"
+    if d == 11:
+        if upper:
+            return "B"
+        return "b"
+    if d == 12:
+        if upper:
+            return "C"
+        return "c"
+    if d == 13:
+        if upper:
+            return "D"
+        return "d"
+    if d == 14:
+        if upper:
+            return "E"
+        return "e"
+    if upper:
+        return "F"
+    return "f"
+
+/#/ `v` in base 2, 8 or 16 (sign and magnitude: -255 is `-ff`).
+fn __cf_fmt_radix(v: int, radix: int, upper: int) => str:
+    if v == 0:
+        return "0"
+    let out = ""
+    if v < 0 - 9223372036854775807:
+        /#/ 2^63 does not negate: its digits are a one and zeros
+        out = "-"
+        let zeros = 63
+        if radix == 8:
+            zeros = 21
+        if radix == 16:
+            out = "-8"
+            zeros = 15
+        else:
+            out = out + "1"
+        for i in 0..zeros:
+            out = out + "0"
+        return out
+    let digits: buf<int> = new_buf(int, 72)
+    let n = 0
+    let w = v
+    if w < 0:
+        w = 0 - w
+        out = "-"
+    while w > 0:
+        digits[n] = w % radix
+        w = w // radix
+        n += 1
+    let i = n - 1
+    while i >= 0:
+        out = out + __cf_dig(digits[i], upper != 0)
+        i -= 1
+    return out
+
+/#/ a = a / d, for 0 < d <= 2^28; the result is the remainder
+fn __cf_bn_divsmall(a: &buf<int>, d: int) => int:
+    let rem = 0
+    let i = 47
+    while i >= 0:
+        let t = rem * 268435456 + a[i]
+        a[i] = t // d
+        rem = t % d
+        i -= 1
+    return rem
+
+fn __cf_bn_is_zero(a: &buf<int>) => bool:
+    for i in 0..48:
+        if a[i] != 0:
+            return false
+    return true
+
+/#/ `x` with exactly `prec` digits after the point, correctly rounded (ties to even): `2.50`, `0.125`.
+fn __cf_fmt_fixed(x: float, prec: int) => str:
+    if !(x == x):
+        return "nan"
+    let sign = ""
+    let m = x
+    if x < 0.0:
+        sign = "-"
+        m = 0.0 - x
+    if !((m - m) == (m - m)):
+        return sign + "inf"
+    let n: buf<int> = new_buf(int, 48)
+    if m != 0.0:
+        let e = 0
+        while m >= 9007199254740992.0:
+            m = m / 2.0
+            e += 1
+        while m < 1048576.0:
+            m = m * 4294967296.0
+            e -= 32
+        while m < 4503599627370496.0:
+            m = m * 2.0
+            e -= 1
+        let f = int(m)
+        while e < 0 - 1074:
+            f = f // 2
+            e += 1
+        /#/ n = x * 10^prec, rounded to an integer
+        __cf_bn_set(&n, f)
+        for i in 0..prec:
+            __cf_bn_mul(&n, 10)
+        if e >= 0:
+            __cf_bn_shl(&n, e)
+        else:
+            let left = 0 - e
+            let sticky = false
+            let last = 0
+            let half = 0
+            while left > 0:
+                let step = left
+                if step > 28:
+                    step = 28
+                let p = 1
+                for z in 0..step:
+                    p = p * 2
+                if last > 0:
+                    sticky = true
+                last = __cf_bn_divsmall(&n, p)
+                half = p // 2
+                left -= step
+            /#/ `last` holds the top discarded bits, `sticky` says whether any lower ones were set
+            let up = false
+            if last > half:
+                up = true
+            elif last == half:
+                up = sticky || n[0] % 2 == 1
+            if up:
+                let one: buf<int> = new_buf(int, 48)
+                __cf_bn_set(&one, 1)
+                __cf_bn_add(&n, &one)
+    let digits: buf<int> = new_buf(int, 400)
+    let cnt = 0
+    while !__cf_bn_is_zero(&n):
+        digits[cnt] = __cf_bn_divsmall(&n, 10)
+        cnt += 1
+    while cnt < prec + 1:
+        digits[cnt] = 0
+        cnt += 1
+    let out = sign
+    let i = cnt - 1
+    while i >= 0:
+        out = out + __cf_ch(48 + digits[i])
+        if i == prec && prec > 0:
+            out = out + "."
+        i -= 1
+    return out

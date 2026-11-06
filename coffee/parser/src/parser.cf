@@ -4,9 +4,102 @@
 use * in lexer
 use * in ast
 
-/#/ Can `b` begin the expression of an f-string `{...}`?
-fn fpart_starts(b: int) => bool:
-    return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || b == '_' || (b >= '0' && b <= '9') || b == '(' || b == '-' || b == '!' || b == '['
+/#/ The format spec of an f-string part, `{x:spec}`: `[[fill]align][0][width][.precision][type]`.
+/#/ `fill` is a space or one of `0 - * _ . # = + | ~ x`; `align` is `<`, `>` or `^`; `type` is
+/#/ `x X b o` for an int or `f` for a float. `ok` is false when the text is none of that.
+class FSpec:
+    ok: bool
+    present: bool
+    fill: int
+    /#/ 0 none given, 1 `<`, 2 `>`, 3 `^`
+    align: int
+    zero: bool
+    width: int
+    /#/ -1 when there is none
+    prec: int
+    /#/ the type letter, 0 when there is none
+    kind: int
+
+fn fspec_align(c: int) => int:
+    if c == '<':
+        return 1
+    if c == '>':
+        return 2
+    if c == '^':
+        return 3
+    return 0
+
+fn fspec_fill(c: int) => bool:
+    return c == ' ' || c == '0' || c == '-' || c == '*' || c == '_' || c == '.' || c == '#' || c == '=' || c == '+' || c == '|' || c == '~' || c == 'x'
+
+/#/ The spec of f-string part `part`.
+fn fspec_of(a: &Ast, part: int) => FSpec:
+    let sp = FSpec { ok: true, present: false, fill: 32, align: 0, zero: false, width: 0, prec: -1, kind: 0 }
+    if a.pd[part] < 0:
+        return sp
+    sp.present = true
+    let i = a.pd[part] + 1
+    let hi = a.pc[part]
+    if i + 1 < hi && fspec_align(a.byte_at(i + 1)) != 0:
+        if !fspec_fill(a.byte_at(i)):
+            sp.ok = false
+            return sp
+        sp.fill = a.byte_at(i)
+        sp.align = fspec_align(a.byte_at(i + 1))
+        i = i + 2
+    elif i < hi && fspec_align(a.byte_at(i)) != 0:
+        sp.align = fspec_align(a.byte_at(i))
+        i = i + 1
+    if i < hi && a.byte_at(i) == '0':
+        sp.zero = true
+        i = i + 1
+    while i < hi && a.byte_at(i) >= '0' && a.byte_at(i) <= '9':
+        sp.width = sp.width * 10 + a.byte_at(i) - '0'
+        if sp.width > 1000:
+            sp.ok = false
+            return sp
+        i = i + 1
+    if i < hi && a.byte_at(i) == '.':
+        i = i + 1
+        sp.prec = 0
+        let any = false
+        while i < hi && a.byte_at(i) >= '0' && a.byte_at(i) <= '9':
+            sp.prec = sp.prec * 10 + a.byte_at(i) - '0'
+            any = true
+            i = i + 1
+        if !any || sp.prec > 30:
+            sp.ok = false
+            return sp
+    if i < hi:
+        sp.kind = a.byte_at(i)
+        i = i + 1
+    if i != hi:
+        sp.ok = false
+    if sp.kind != 0 && sp.kind != 'x' && sp.kind != 'X' && sp.kind != 'b' && sp.kind != 'o' && sp.kind != 'f':
+        sp.ok = false
+    return sp
+
+/#/ The `:` of the part whose expression starts at byte `from` and whose `}` is at `close`: the first
+/#/ one outside brackets and strings; -1 when the part has no spec.
+fn fpart_colon(a: &Ast, from: int, close: int) => int:
+    let depth = 0
+    let i = from
+    while i < close:
+        let c = a.byte_at(i)
+        if c == '"':
+            i = i + 1
+            while i < close && a.byte_at(i) != '"':
+                if a.byte_at(i) == '\\':
+                    i = i + 1
+                i = i + 1
+        elif c == '(' || c == '[' || c == '{':
+            depth = depth + 1
+        elif c == ')' || c == ']' || c == '}':
+            depth = depth - 1
+        elif c == ':' && depth == 0:
+            return i
+        i = i + 1
+    return -1
 
 /#/ The `}` that closes the `{` before `from`, balancing brackets; -1 when there is none before `e`.
 fn fpart_close(a: &Ast, from: int, e: int) => int:
@@ -14,7 +107,14 @@ fn fpart_close(a: &Ast, from: int, e: int) => int:
     let i = from
     while i < e:
         let c = a.byte_at(i)
-        if c == '{' || c == '(' || c == '[':
+        if c == '"':
+            /#/ a string inside the expression
+            i = i + 1
+            while i < e && a.byte_at(i) != '"':
+                if a.byte_at(i) == '\\':
+                    i = i + 1
+                i = i + 1
+        elif c == '{' || c == '(' || c == '[':
             depth = depth + 1
         elif c == '}' || c == ')' || c == ']':
             if depth == 0:
@@ -519,6 +619,8 @@ class Ast:
             let c = self.byte_at(i)
             if c == '\\':
                 i = i + 2
+            elif c == '{' && i + 1 < e && self.byte_at(i + 1) == '{':
+                i = i + 2
             elif c == '{' && i + 1 < e && fpart_starts(self.byte_at(i + 1)):
                 let j = fpart_close(&self, i + 1, e)
                 if j < 0:
@@ -526,7 +628,11 @@ class Ast:
                     break
                 let part = self.add(int(Nk.FPart), tk)
                 let from = self.toks.count
-                lex_into(&self.bytes, self.size, i + 1, j, &self.toks, false, self.toks.line[tk], self.toks.start[tk] - self.toks.col[tk] + 1)
+                let colon = fpart_colon(&self, i + 1, j)
+                let upto = j
+                if colon >= 0:
+                    upto = colon
+                lex_into(&self.bytes, self.size, i + 1, upto, &self.toks, false, self.toks.line[tk], self.toks.start[tk] - self.toks.col[tk] + 1)
                 self.pos = from
                 self.pa[part] = self.parse_expr()
                 if !self.at(int(Tk.Newline)) && !self.at(int(Tk.Eof)):
@@ -534,6 +640,7 @@ class Ast:
                 self.pos = resume
                 self.pb[part] = i
                 self.pc[part] = j
+                self.pd[part] = colon
                 self.fin(part)
                 if first < 0:
                     first = part

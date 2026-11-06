@@ -24,7 +24,8 @@
 /#/   Mv        a=source Name  b=destination token  c=1 for `clone a b` (`mv a b`)
 /#/   Break, Continue
 /#/   FStr     tok=literal  child=FPart, one per `{expr}` in order
-/#/   FPart    a=expr  b=byte of `{`  c=byte of `}`   (the expression's tokens follow the main stream)
+/#/   FPart    a=expr  b=byte of `{`  c=byte of `}`  d=byte of the `:` that starts a format spec, or -1
+/#/            (the expression's tokens follow the main stream; see `fspec_of` for the spec)
 /#/   Int, Float, Str, Char   tok=literal      Bool  tok=true/false      Name  tok=identifier
 /#/   Binary    a=left  b=right  c=operator token kind  d=operator token
 /#/   Unary     a=operand  c=operator token kind  d=1 for `&mut`

@@ -337,6 +337,53 @@ fn scan_string(src: &buf<int>, i: int) => int:
             j = j + 1
     return 0 - n
 
+/#/ Can `b` begin the expression of an f-string `{...}`?
+fn fpart_starts(b: int) => bool:
+    return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || b == '_' || (b >= '0' && b <= '9') || b == '(' || b == '-' || b == '!' || b == '[' || b == '"'
+
+/#/ Scans an f-string whose opening quote is at i: like `scan_string`, but a string inside `{...}`
+/#/ is part of the expression, and `{{` is a brace of the text.
+fn scan_fstring(src: &buf<int>, i: int) => int:
+    let n = lexed_len
+    let j = i + 1
+    let bad = false
+    let depth = 0
+    while j < n:
+        let c = sbyte(src, j)
+        if c == '"' && depth == 0:
+            if bad:
+                return 0 - (j + 1)
+            return j + 1
+        if c == '"':
+            let e = scan_string(src, j)
+            if e < 0:
+                return e
+            j = e
+            continue
+        if c == '\n':
+            return 0 - j
+        if c == '\\':
+            let l = escape_len(src, j)
+            if l == 0:
+                bad = true
+                j = j + 1
+            else:
+                j = j + l
+        elif c == '{':
+            if depth == 0 && sbyte(src, j + 1) == '{':
+                j = j + 2
+            else:
+                if depth > 0 || fpart_starts(sbyte(src, j + 1)):
+                    depth = depth + 1
+                j = j + 1
+        elif c == '}':
+            if depth > 0:
+                depth = depth - 1
+            j = j + 1
+        else:
+            j = j + 1
+    return 0 - n
+
 /#/ Scans a char literal whose opening quote is at i; negated when malformed.
 fn scan_char(src: &buf<int>, i: int) => int:
     let c = sbyte(src, i + 1)
@@ -508,7 +555,7 @@ fn lex_into(src: &buf<int>, size: int, from: int, n: int, t: &Tokens, at_bol0: b
                     t.push(int(Tk.Int), i, e, line, col)
                 i = e
             elif c == 'f' && sbyte(src, i + 1) == '"':
-                let e = scan_string(src, i + 1)
+                let e = scan_fstring(src, i + 1)
                 if e < 0:
                     e = 0 - e
                     t.push(int(Tk.Error), i, e, line, col)
