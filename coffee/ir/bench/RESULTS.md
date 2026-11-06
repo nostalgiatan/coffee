@@ -60,3 +60,6 @@ collatz 与 hash 略差:块参数的复制(`lea 1(%r9),%r13; mov %r13,%r9`)还�
 
 块参数合并之后(循环里算出的值和它要传给的参数共用寄存器),callgrind 指令数(百万):
 mandel 2305、objects 5440、sort 3440、matmul 4229、collatz 2732、strings 7226、hash 8401、其余不变。
+
+`bench/flaws.py <coffee2>` 数每个基准里可避免的指令模式(连环 mov、lea 后接 mov、test 紧跟置标志的运算、mov $0 等)和总指令数。
+常数下标进寻址模式、`x % 2^k == 0` 改为掩码测试、两个活寄存器相加用一条 lea 之后:指令总数 6448 → 6185(含库代码),collatz 0.19 → 0.15 秒。

@@ -598,6 +598,12 @@ class Fun:
             x = y
             y = t
             p = mirror_pred(p)
+        /#/ `x % 2^k` is zero exactly when the low k bits are (for either sign of x)
+        if (p == int(Pr.Eq) || p == int(Pr.Ne)) && self.is_const(y) && self.cval(y) == 0 && (self.op[x] == int(Op.SRem) || self.op[x] == int(Op.URem)):
+            let m = self.follow(self.b[x])
+            if self.is_const(m) && self.cval(m) > 0 && (self.cval(m) & (self.cval(m) - 1)) == 0:
+                let lo = self.bin(int(Op.And), self.a[x], self.cint(rep, self.cval(m) - 1))
+                return self.share(int(Op.Cmp), i8, -1, lo, y, -1, p)
         return self.share(int(Op.Cmp), i8, -1, x, y, -1, p)
 
     /#/ A comparison of floats; never folded.

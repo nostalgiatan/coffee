@@ -410,7 +410,11 @@ class Gen:
     /#/ in a register of its own is loaded into `s1` (the base) and `s2` (the index).
     fn addr_of(self, f: &Fun, x: int, s1: int, s2: int) => void:
         self.am_base = self.src(f, f.a[x], s1)
-        if f.op[x] == int(Op.Index):
+        if f.op[x] == int(Op.Index) && self.near_const(f, f.b[x]):
+            self.am_idx = -1
+            self.am_scale = 1
+            self.am_disp = f.aux[self.res(f, f.b[x])] * f.aux[x]
+        elif f.op[x] == int(Op.Index):
             self.am_idx = self.src(f, f.b[x], s2)
             self.am_scale = f.aux[x]
             self.am_disp = 0
@@ -1078,6 +1082,16 @@ class Gen:
             return false
         return self.res(f, f.a[n]) == i
 
+    /#/ Is `v` a constant small enough that, times an element size of at most 8, it is a displacement?
+    fn near_const(self, f: &Fun, v: int) => bool:
+        let x = self.res(f, v)
+        if f.op[x] != int(Op.Const):
+            return false
+        let r = f.rep[x]
+        if r != int(Rp.I64) && r != int(Rp.Ptr):
+            return false
+        return f.aux[x] >= 0 - 100000000 && f.aux[x] <= 100000000
+
     /#/ Is `v` a 64-bit constant that fits the sign-extended 32-bit immediate of an instruction?
     fn small_imm(self, f: &Fun, v: int) => bool:
         let x = self.res(f, v)
@@ -1199,6 +1213,10 @@ class Gen:
                             self.a.or_ri(d, v)
                         else:
                             self.a.xor_ri(d, v)
+                        return
+                    if op == int(Op.Add) && self.home_of(f, a) >= 0 && self.home_of(f, a) != d && self.home_of(f, b) >= 0:
+                        /#/ both operands live on: one lea instead of a copy and an add
+                        self.a.lea_idx(d, self.home_of(f, a), self.home_of(f, b), 1)
                         return
                     self.ld(d, f, a)
                     let rb = self.src(f, b, 1)
@@ -1460,9 +1478,15 @@ class Gen:
             if d < 0:
                 d = 0
             let ra = self.src(f, f.a[i], 0)
-            let rb = self.src(f, f.b[i], 1)
             let sz = f.aux[i]
-            if sz == 1 || sz == 2 || sz == 4 || sz == 8:
+            let rb = 1
+            if !((sz == 1 || sz == 2 || sz == 4 || sz == 8) && self.near_const(f, f.b[i])):
+                rb = self.src(f, f.b[i], 1)
+            if (sz == 1 || sz == 2 || sz == 4 || sz == 8) && self.near_const(f, f.b[i]):
+                let dp = f.aux[self.res(f, f.b[i])] * sz
+                if !(dp == 0 && ra == d):
+                    self.a.lea(d, ra, dp)
+            elif sz == 1 || sz == 2 || sz == 4 || sz == 8:
                 self.a.lea_idx(d, ra, rb, sz)
             else:
                 self.a.imul_rri(1, rb, sz)

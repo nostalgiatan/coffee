@@ -66,4 +66,8 @@ fn main() => int:
     /#/ a loop-carried value that takes its parameter's register, and one that must not (read after the update)
     m = m + expect_mc("fn main() => int:\n    let a = 1\n    let b = 2\n    let n = 0\n    while n < 10:\n        let t = a + b\n        a = b\n        b = t\n        n = n + 1\n    return b % 256\n", 233)
     m = m + expect_mc("fn main() => int:\n    let s = 0\n    let last = 0\n    for i in 0..20:\n        let nl = last + i\n        s = s + last\n        last = nl\n    return (s + last) % 256\n", 50)
+    /#/ x % 2^k == 0 as a mask test, for both signs; constant string offsets; a sum of two live registers
+    m = m + expect_mc("fn main() => int:\n    let c = 0\n    for i in 0..40:\n        let x = i - 20\n        if x % 4 == 0:\n            c = c + 1\n        if x % 2 != 0:\n            c = c + 10\n    return c\n", 210)
+    m = m + expect_mc("fn main() => int:\n    let s = \"hello\" + \" world\"\n    let b = s[6] as int\n    return b - 100 + len(s)\n", 30)
+    m = m + expect_mc("fn main() => int:\n    let a = 3\n    let s = 0\n    for i in 0..10:\n        let t = a + i\n        s = s + t * i\n    return s % 256\n", 164)
     return m
