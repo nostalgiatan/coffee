@@ -47,11 +47,18 @@ class Flat:
 
     /#/ The file the 1-based line `line` of `out` came from.
     fn unit_of_line(self, line: int) => int:
-        let u = 0
-        for k in 0..self.nseg:
-            if self.seg_line[k] <= line - 1:
-                u = self.seg_unit[k]
-        return u
+        /#/ the segments start at ascending lines: the last one that starts at or before `line`
+        let lo = 0
+        let hi = self.nseg
+        while lo < hi:
+            let mid = (lo + hi) // 2
+            if self.seg_line[mid] <= line - 1:
+                lo = mid + 1
+            else:
+                hi = mid
+        if lo == 0:
+            return 0
+        return self.seg_unit[lo - 1]
 
     /#/ The name of file `u`.
     fn unit_name(self, u: int) => Txt:

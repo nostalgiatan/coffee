@@ -1,0 +1,42 @@
+/#/ `--time`: how long each phase of a build took, in milliseconds on the wall clock.
+use clock_gettime, printf, fflush in libc of c
+
+let t_on = false
+let t_last = 0
+let t_lower = 0
+let t_gen = 0
+let t_obj = 0
+
+fn now_ms() => int:
+    let b: buf<int> = new_buf(int, 2)
+    clock_gettime(1, buf_ptr(b))
+    return b[0] * 1000 + b[1] // 1000000
+
+fn time_start() => void:
+    t_on = true
+    t_last = now_ms()
+
+/#/ Prints the time since the last phase ended, and starts the next one.
+fn phase(what: &str) => void:
+    if !t_on:
+        return
+    let n = now_ms()
+    printf("  %-12s %6d ms\n", what, n - t_last)
+    fflush(0)
+    t_last = n
+
+/#/ Adds the per-unit times of lowering, code generation and object writing.
+fn unit_times(lower: int, gen: int, obj: int) => void:
+    t_lower = t_lower + lower
+    t_gen = t_gen + gen
+    t_obj = t_obj + obj
+
+/#/ Prints the per-unit sums and leaves their time out of the next phase.
+fn unit_phases() => void:
+    if !t_on:
+        return
+    printf("  %-12s %6d ms\n", "lower", t_lower)
+    printf("  %-12s %6d ms\n", "codegen", t_gen)
+    printf("  %-12s %6d ms\n", "object", t_obj)
+    fflush(0)
+    t_last = now_ms()

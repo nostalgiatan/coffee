@@ -11,7 +11,7 @@
 /#/ Names the compiler makes (glue, generic instances) carry a per-file suffix, so objects built at
 /#/ different times never define the same symbol. The optimizer works inside one file only, so a
 /#/ call into another file is never inlined.
-use printf, system, fflush in libc of c
+use printf, system, fflush, fork, waitpid, _exit in libc of c
 
 /#/ Two 64-bit FNV lanes.
 class Hash:
@@ -140,33 +140,61 @@ fn key_current(dir: &Txt, name: &Txt, want: &Txt) => bool:
     let o = read_file(&op)
     return o.n > 0
 
-/#/ The hash of the interface of file `u`.
-fn unit_interface(fl: &Flat, a: &Ast, u: int, n: int) => Txt:
-    let h = new_hash()
+/#/ The hash of the interface of each file, one line of 32 hex digits each.
+fn unit_interfaces(fl: &Flat, a: &Ast, n: int) => Txt:
+    let ha: buf<int> = new_buf(int, n + 1)
+    let hb: buf<int> = new_buf(int, n + 1)
+    for u in 0..n:
+        let h = new_hash()
+        ha[u] = h.a
+        hb[u] = h.b
     let it = a.child[a.root]
     while it >= 0:
-        if node_unit(fl, a, it, n) == u:
+        let u = node_unit(fl, a, it, n)
+        if u < n:
+            let h = Hash { a: ha[u], b: hb[u] }
             hash_interface(&h, a, it)
+            ha[u] = h.a
+            hb[u] = h.b
         it = a.next[it]
-    return h.hex()
+    let out = new_txt()
+    for u in 0..n:
+        let h = Hash { a: ha[u], b: hb[u] }
+        out.put_all(&h.hex())
+        out.put_byte(10)
+    return out
 
-/#/ The hash of the tokens of file `u`.
-fn unit_body(fl: &Flat, a: &Ast, u: int) => Txt:
-    let h = new_hash()
+/#/ The hash of the tokens of each file, one line of 32 hex digits each.
+fn unit_bodies(fl: &Flat, a: &Ast, n: int) => Txt:
+    let ha: buf<int> = new_buf(int, n + 1)
+    let hb: buf<int> = new_buf(int, n + 1)
+    for u in 0..n:
+        let h = new_hash()
+        ha[u] = h.a
+        hb[u] = h.b
     for q in 0..a.toks.count:
         let line = a.toks.line[q]
-        if line - 1 < fl.lines && fl.unit_of_line(line) == u:
+        if line - 1 < fl.lines:
+            let u = fl.unit_of_line(line)
+            let h = Hash { a: ha[u], b: hb[u] }
             hash_tokens(&h, a, q, q + 1)
-    return h.hex()
+            ha[u] = h.a
+            hb[u] = h.b
+    let out = new_txt()
+    for u in 0..n:
+        let h = Hash { a: ha[u], b: hb[u] }
+        out.put_all(&h.hex())
+        out.put_byte(10)
+    return out
 
 /#/ The key of file `u`: the compiler, the level, the `.cfc` text, its own tokens and the interfaces
 /#/ (`ifcs`, one line per file) of all the others.
-fn unit_key(fl: &Flat, a: &Ast, u: int, n: int, ch: &Txt, opt: int, cfc: &str, ifcs: &Txt) => Txt:
+fn unit_key(u: int, ch: &Txt, opt: int, cfc: &str, bodies: &Txt, ifcs: &Txt) => Txt:
     let k = new_hash()
     k.add_txt(ch)
     k.add(opt)
     k.add_txt(&txt_of(cfc))
-    k.add_txt(&unit_body(fl, a, u))
+    k.add_txt(&slice(bodies, u * 33, u * 33 + 32))
     let s = 0
     let v = 0
     for i in 0..ifcs.n:
@@ -177,29 +205,80 @@ fn unit_key(fl: &Flat, a: &Ast, u: int, n: int, ch: &Txt, opt: int, cfc: &str, i
             v = v + 1
     return k.hex()
 
+/#/ Builds the object of unit `u` into `dir`, with the key `kt`. False when the unit has findings.
+fn compile_unit(prep: &Prep, t: &Tys, g: &Syms, opt: int, u: int, unit: &buf<int>, name: &Txt, kt: &Txt, dir: &Txt) => bool:
+    let tag = txt_of("_u")
+    tag.put_int(u)
+    let ts = txt_str(&tag)
+    let t0 = now_ms()
+    let lw = lower_prepared(prep, t, g, opt, u, unit, &ts)
+    if lw.bad > 0:
+        return false
+    let t1 = now_ms()
+    lw.generate()
+    lw.emit_glue(t, g)
+    let t2 = now_ms()
+    if lw.ver_err > 0 || lw.mc_err > 0:
+        printf("incremental: %d functions with findings in %s\n", lw.ver_err + lw.mc_err, txt_str(name))
+        return false
+    let obj = lw.object()
+    write_file(&cache_path(dir, name, ".o"), &obj)
+    write_file(&cache_path(dir, name, ".key"), kt)
+    unit_times(t1 - t0, t2 - t1, now_ms() - t2)
+    return true
+
+/#/ The number of processors that are on, from /sys; 1 when unknown.
+fn online_cpus() => int:
+    let t = read_file(&txt_of("/sys/devices/system/cpu/online"))
+    if t.n <= 0:
+        return 1
+    let total = 0
+    let lo = 0 - 1
+    let cur = 0
+    for i in 0..t.n + 1:
+        let c = 44
+        if i < t.n:
+            c = t.b[i]
+        if c >= 48 && c <= 57:
+            cur = cur * 10 + c - 48
+        elif c == 45:
+            lo = cur
+            cur = 0
+        elif c == 44 || c == 10:
+            if lo >= 0:
+                total = total + cur - lo + 1
+            elif i > 0 && t.b[i - 1] != 44:
+                total = total + 1
+            lo = 0 - 1
+            cur = 0
+    if total < 1:
+        return 1
+    return total
+
 /#/ Builds the program in `fl` into `dir`, linking `out`. Returns 0 when it worked.
-fn build_incremental(fl: &Flat, dir: &Txt, out: &Txt, opt: int) => int:
+fn build_incremental(fl: &Flat, dir: &Txt, out: &Txt, opt: int, jobs: int) => int:
     system(txt_str(&mkdir_cmd(dir)))
     let size = fl.out.n
     let a0 = parse_bytes(copy_bytes(&fl.out.b, size), size)
     if a0.err_count > 0:
         printf("front end: %d parse errors\n", a0.err_count)
         return 1
+    phase("parse")
     let ch = compiler_hash()
     let cfc = fl.cfc_str()
     let n = fl.nunit
     /#/ the interface of each file, one line each, then the key of each file
-    let ifcs = new_txt()
-    for u in 0..n:
-        ifcs.put_all(&unit_interface(fl, &a0, u, n))
-        ifcs.put_byte(10)
+    let ifcs = unit_interfaces(fl, &a0, n)
+    let bodies = unit_bodies(fl, &a0, n)
+    phase("hashes")
     let keys = new_txt()
     let all = new_hash()
     for u in 0..n:
-        let k = unit_key(fl, &a0, u, n, &ch, opt, &cfc, &ifcs)
+        let k = unit_key(u, &ch, opt, &cfc, &bodies, &ifcs)
         keys.put_all(&k)
         keys.put_byte(10)
         all.add_txt(&k)
+    phase("keys")
     let want_state = all.hex()
     let state_path = cache_path(dir, &txt_of("state"), "")
     let state = read_file(&state_path)
@@ -243,6 +322,7 @@ fn build_incremental(fl: &Flat, dir: &Txt, out: &Txt, opt: int) => int:
         let prep = prepare(bytes, total, cfc, &t, &g)
         if !prep.ok:
             return 1
+        phase("front end")
         let unit: buf<int> = new_buf(int, prep.a.count + 1)
         let top = prep.a.child[prep.a.root]
         while top >= 0:
@@ -251,6 +331,12 @@ fn build_incremental(fl: &Flat, dir: &Txt, out: &Txt, opt: int) => int:
         let total_units = n
         if with_runtime:
             total_units = n + 1
+        /#/ the file, key and object of each unit; the stale ones are built below
+        let names = new_txt()
+        let name_at: buf<int> = new_buf(int, total_units + 1)
+        let kts = new_txt()
+        let todo: buf<int> = new_buf(int, total_units + 1)
+        let ntodo = 0
         for u in 0..total_units:
             let name = txt_of("runtime")
             let kt = new_txt()
@@ -264,28 +350,56 @@ fn build_incremental(fl: &Flat, dir: &Txt, out: &Txt, opt: int) => int:
                 let rts = fmt_rt_text()
                 rk.add_txt(&txt_of(&rts))
                 kt = rk.hex()
-            let op = cache_path(dir, &name, ".o")
             if !key_current(dir, &name, &kt):
-                let tag = txt_of("_u")
-                tag.put_int(u)
-                let ts = txt_str(&tag)
-                let lw = lower_prepared(&prep, &t, &g, opt, u, &unit, &ts)
-                if lw.bad > 0:
-                    return 1
-                lw.generate()
-                lw.emit_glue(&t, &g)
-                if lw.ver_err > 0 || lw.mc_err > 0:
-                    printf("incremental: %d functions with findings in %s\n", lw.ver_err + lw.mc_err, txt_str(&name))
-                    return 1
-                let obj = lw.object()
-                write_file(&op, &obj)
-                write_file(&cache_path(dir, &name, ".key"), &kt)
-                compiled = compiled + 1
+                todo[ntodo] = u
+                ntodo = ntodo + 1
             else:
                 reused = reused + 1
             objs.put(" '")
-            objs.put_all(&op)
+            objs.put_all(&cache_path(dir, &name, ".o"))
             objs.put("'")
+            name_at[u] = names.n
+            names.put_all(&name)
+            names.put_byte(10)
+            kts.put_all(&kt)
+            kts.put_byte(10)
+        name_at[total_units] = names.n
+        compiled = ntodo
+        let workers = jobs
+        if workers > ntodo:
+            workers = ntodo
+        if workers <= 1:
+            for i in 0..ntodo:
+                if !compile_unit(&prep, &t, &g, opt, todo[i], &unit, &slice(&names, name_at[todo[i]], name_at[todo[i] + 1] - 1), &slice(&kts, todo[i] * 33, todo[i] * 33 + 32), dir):
+                    return 1
+            unit_phases()
+        else:
+            /#/ each worker is a copy of this process (the front end's result is shared, not redone)
+            /#/ that builds every `workers`-th stale unit
+            fflush(0)
+            let pids: buf<int> = new_buf(int, workers)
+            for w in 0..workers:
+                let pid = fork()
+                if pid == 0:
+                    let ok = true
+                    let i = w
+                    while i < ntodo && ok:
+                        ok = compile_unit(&prep, &t, &g, opt, todo[i], &unit, &slice(&names, name_at[todo[i]], name_at[todo[i] + 1] - 1), &slice(&kts, todo[i] * 33, todo[i] * 33 + 32), dir)
+                        i = i + workers
+                    fflush(0)
+                    if ok:
+                        _exit(0)
+                    _exit(1)
+                pids[w] = pid
+            let failed = false
+            for w in 0..workers:
+                let sb: buf<int> = new_buf(int, 2)
+                sb[0] = 0
+                if pids[w] < 0 || waitpid(pids[w], buf_ptr(sb), 0) < 0 || sb[0] != 0:
+                    failed = true
+            if failed:
+                return 1
+            phase("units")
         let st = copy_txt(&want_state)
         if with_runtime:
             st.put("r")
@@ -302,6 +416,7 @@ fn build_incremental(fl: &Flat, dir: &Txt, out: &Txt, opt: int) => int:
     cmd.put(" -lm")
     if system(txt_str(&cmd)) != 0:
         return 1
+    phase("link")
     return 0
 
 fn mkdir_cmd(dir: &Txt) => Txt:

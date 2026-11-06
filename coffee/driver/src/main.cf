@@ -9,6 +9,7 @@ use * in flat
 use * in nested
 use * in alias
 use * in incr
+use * in timing
 use printf, fflush, system, exit in libc of c
 
 class Cli:
@@ -20,6 +21,8 @@ class Cli:
     bad: int
     /#/ the directory of the object cache when the build is incremental
     cache: Txt
+    /#/ the processes that build units at once; 0 means one per processor
+    jobs: int
 
     fn set_input(self, w: &Txt) => void:
         self.input.put_all(w)
@@ -68,7 +71,7 @@ fn cmdline() => Txt:
     return read_file(&p)
 
 fn parse_cli(fl: &Flat) => Cli:
-    let cli = Cli { input: new_txt(), output: new_txt(), emit_only: false, flat_only: false, level: 1, bad: 0, cache: new_txt() }
+    let cli = Cli { input: new_txt(), output: new_txt(), emit_only: false, flat_only: false, level: 1, bad: 0, cache: new_txt(), jobs: 0 }
     let raw = cmdline()
     let words = new_txt()
     /#/ one word per line
@@ -82,6 +85,7 @@ fn parse_cli(fl: &Flat) => Cli:
     let want_out = false
     let want_inc = false
     let want_cache = false
+    let want_jobs = false
     for i in 0..words.n:
         if words.b[i] == 10:
             let w = slice(&words, s, i)
@@ -95,6 +99,18 @@ fn parse_cli(fl: &Flat) => Cli:
             elif want_inc:
                 fl.add_dir(&w)
                 want_inc = false
+            elif want_jobs:
+                want_jobs = false
+                let v = 0
+                for k in 0..w.n:
+                    if w.b[k] < 48 || w.b[k] > 57:
+                        printf("error: -j wants a number\n")
+                        cli.set_bad()
+                        v = 0 - 1
+                        break
+                    v = v * 10 + w.b[k] - 48
+                if v >= 0:
+                    cli.jobs = v
             elif want_cache:
                 cli.cache.put_all(&w)
                 want_cache = false
@@ -104,6 +120,10 @@ fn parse_cli(fl: &Flat) => Cli:
                 want_inc = true
             elif w.is("--incremental"):
                 want_cache = true
+            elif w.is("-j"):
+                want_jobs = true
+            elif w.is("--time"):
+                time_start()
             elif w.is("--emit-obj"):
                 cli.set_emit_only()
             elif w.is("--emit-flat"):
@@ -139,7 +159,7 @@ fn dir_of(path: &Txt) => Txt:
     return slice(path, 0, cut)
 
 fn usage() => int:
-    printf("usage: coffee2 input.cf [-o output] [-I dir] [-O0|-O1|-O2|-O3] [--emit-obj] [--emit-flat] [--incremental dir]\n")
+    printf("usage: coffee2 input.cf [-o output] [-I dir] [-O0|-O1|-O2|-O3] [--emit-obj] [--emit-flat] [--incremental dir] [--time] [-j n]\n")
     fflush(0)
     return 2
 
@@ -156,9 +176,11 @@ fn main() => int:
     fl.flatten(&src, &dir, &cli.input)
     if fl.errs > 0:
         return 1
+    phase("flatten")
     let fixed = renamed_classes(&fl.out)
     if fixed.n > 0:
         fl.out = fixed
+    phase("rename")
     if cli.flat_only:
         let flat_path = cli.out_path()
         fl.write_to(&flat_path)
@@ -168,7 +190,12 @@ fn main() => int:
         opt = 1
     if cli.cache.n > 0 && !cli.emit_only:
         let target = cli.out_path()
-        return build_incremental(&fl, &cli.cache, &target, opt)
+        let jobs = cli.jobs
+        if jobs == 0:
+            jobs = online_cpus()
+        if jobs > 16:
+            jobs = 16
+        return build_incremental(&fl, &cli.cache, &target, opt, jobs)
     let obj = build_txt(&fl.out, opt, fl.cfc_str())
     if obj.n == 0:
         return 1
