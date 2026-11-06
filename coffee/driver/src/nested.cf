@@ -1,0 +1,49 @@
+/#/ Classes declared in a function body are hoisted to module level by the parser, so two functions
+/#/ that each declare `class P` would collide. The flattened text is rewritten before the front end
+/#/ sees it: inside the owning function every `P` becomes `P__n<function node>`.
+
+/#/ Is the nested class `c` declared by `f` named like a nested class of another function?
+fn nested_collides(a: &Ast, f: int, c: int) => bool:
+    for g in 0..a.count:
+        if g == f || a.kind[g] != int(Nk.Fn) || a.pc[g] < 0:
+            continue
+        let o = a.child[a.pc[g]]
+        while o >= 0:
+            if a.kind[o] == int(Nk.Class) && a.pa[o] >= 0 && same_tok(a, a.pa[o], a.pa[c]):
+                return true
+            o = a.next[o]
+    return false
+
+/#/ `src` with the colliding nested class names made unique; empty when nothing collides.
+fn renamed_classes(src: &Txt) => Txt:
+    let a = parse_flat(txt_str(src))
+    if a.err_count > 0:
+        return new_txt()
+    let rn = new_buf(int, a.toks.count + 1)
+    let any = false
+    for f in 0..a.count:
+        if a.kind[f] != int(Nk.Fn) || a.pc[f] < 0:
+            continue
+        let c = a.child[a.pc[f]]
+        while c >= 0:
+            if a.kind[c] == int(Nk.Class) && a.pa[c] >= 0 && nested_collides(&a, f, c):
+                any = true
+                for q in a.tok[f]..a.end[f]:
+                    if a.toks.kind[q] == int(Tk.Ident) && same_tok(&a, q, a.pa[c]) && !(q > 0 && a.toks.kind[q - 1] == int(Tk.Dot)):
+                        rn[q] = f + 1
+            c = a.next[c]
+    if !any:
+        return new_txt()
+    let out = new_txt()
+    let pos = 0
+    for q in 0..a.toks.count:
+        if rn[q] > 0:
+            while pos < a.toks.end[q]:
+                out.put_byte(src.b[pos])
+                pos = pos + 1
+            out.put("__n")
+            out.put_int(rn[q] - 1)
+    while pos < src.n:
+        out.put_byte(src.b[pos])
+        pos = pos + 1
+    return out

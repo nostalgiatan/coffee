@@ -2,6 +2,7 @@ use * in drive
 use * in cstr
 use * in files
 use * in flat
+use * in nested
 use printf, fflush in libc of c
 
 fn expect(what: int, got: int, want: int) => int:
@@ -66,4 +67,12 @@ fn main() => int:
     m = m + expect(15, lib_len("use add_two, scale in mylib of c"), 5)
     m = m + expect(16, lib_len("use * in lower"), 0)
     m = m + expect(17, lib_len("use printf in libc of c"), 4)
+    /#/ classes declared in two bodies under one name
+    let dup = txt_of("fn a() => int:\n    class P:\n        x: int\n    let p: P = P { x: 1 }\n    return p.x\n\nfn b() => int:\n    class P:\n        x: int\n    let p: P = P { x: 2 }\n    return p.x\n\nfn main() => int:\n    return a() + b() - 3\n")
+    let fixed = renamed_classes(&dup)
+    m = m + expect(18, b2i(fixed.n > dup.n), 1)
+    m = m + expect(19, first_error(txt_str(&fixed)), 0 - 1)
+    m = m + expect(20, run_src(txt_str(&fixed), false), 0)
+    let one = txt_of("fn a() => int:\n    class P:\n        x: int\n    return 1\n\nfn main() => int:\n    return a() - 1\n")
+    m = m + expect(21, renamed_classes(&one).n, 0)
     return m

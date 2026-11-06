@@ -6,6 +6,7 @@ use * in drive
 use * in cstr
 use * in files
 use * in flat
+use * in nested
 use printf, fflush, system, exit in libc of c
 
 class Cli:
@@ -145,6 +146,9 @@ fn main() => int:
     fl.flatten(&src, &dir)
     if fl.errs > 0:
         return 1
+    let fixed = renamed_classes(&fl.out)
+    if fixed.n > 0:
+        fl.out = fixed
     if cli.flat_only:
         let flat_path = cli.out_path()
         fl.write_to(&flat_path)

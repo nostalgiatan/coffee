@@ -1076,9 +1076,14 @@ fn hoist_classes(a: &Ast) => void:
                 prev = c
             c = nx
 
-fn parse(src: str) => Ast:
+/#/ Like `parse`, but the classes declared in bodies stay where they are.
+fn parse_flat(src: str) => Ast:
     let toks = lex(&src)
     let ast = new_ast(src, toks)
     ast.parse_program()
     hoist_classes(&ast)
     return ast
+    return ast
+
+fn parse(src: str) => Ast:
+    let ast = parse_flat(src)
