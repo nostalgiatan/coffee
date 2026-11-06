@@ -1,18 +1,18 @@
 /#/ Test support: source text through our front end, IR and machine code, linked by clang, and run.
 use * in lower
 use * in fmtrt
-use fopen, fputc, fclose, system, putchar, printf, fflush, access in libc of c
+use system, fflush, access in libc of c
 
 /#/ Says which node the lowering could not handle: its kind, line, and the text of its token.
 fn report_unsupported(a: &Ast, n: int) => void:
     let tk = a.tok[n]
-    printf("unsupported: node kind %d at line %d, near '", a.kind[n], a.toks.line[tk])
+    say(f"unsupported: node kind {a.kind[n]} at line {a.toks.line[tk]}, near '")
     let k = 0
     for i in a.toks.start[tk]..a.toks.end[tk]:
         if k < 40:
-            putchar(a.byte_at(i))
+            say_byte(a.byte_at(i))
         k = k + 1
-    printf("'\n")
+    say("'\n")
     fflush(0)
 
 /#/ The machine-code object of `src` through our front end and IR, the optimizer on or off;
@@ -59,11 +59,11 @@ fn build_text(bytes: buf<int>, size: int, opt: int, cfc: str) => Txt:
     lw.generate()
     lw.emit_glue(&t, &g)
     if lw.ver_err > 0:
-        printf("verifier: %d functions with findings\n", lw.ver_err)
+        say(f"verifier: {lw.ver_err} functions with findings\n")
         fflush(0)
         return new_txt()
     if lw.mc_err > 0:
-        printf("machine code: %d functions could not be translated\n", lw.mc_err)
+        say(f"machine code: {lw.mc_err} functions could not be translated\n")
         fflush(0)
         return new_txt()
     return lw.object()
@@ -161,19 +161,19 @@ fn prepare_ast(a: Ast, cfc: str, t: &Tys, g: &Syms) => Prep:
     let fl = check_own(t, g, &a, &ty)
     let ok = true
     if sc.diags.errors() > 0 || ty.diags.n > 0 || a.err_count > 0 || fl.diags.n > 0:
-        printf("front end: %d scope errors, %d type findings, %d ownership findings, %d parse errors\n", sc.diags.errors(), ty.diags.n, fl.diags.n, a.err_count)
+        say(f"front end: {sc.diags.errors()} scope errors, {ty.diags.n} type findings, {fl.diags.n} ownership findings, {a.err_count} parse errors\n")
         for k in 0..a.err_count:
             if k < 20:
-                printf("  parse error %d at line %d\n", a.err_code[k], a.toks.line[a.err_tok[k]])
+                say(f"  parse error {a.err_code[k]} at line {a.toks.line[a.err_tok[k]]}\n")
         for k in 0..sc.diags.n:
             if k < 20 && !sc_is_warning(sc.diags.code[k]):
-                printf("  scope error E%d at line %d\n", sc_number(sc.diags.code[k]), a.toks.line[sc.diags.tok[k]])
+                say(f"  scope error E{sc_number(sc.diags.code[k])} at line {a.toks.line[sc.diags.tok[k]]}\n")
         for k in 0..ty.diags.n:
             if k < 20:
-                printf("  type finding E%d at line %d\n", te_number(ty.diags.code[k]), a.toks.line[ty.diags.tok[k]])
+                say(f"  type finding E{te_number(ty.diags.code[k])} at line {a.toks.line[ty.diags.tok[k]]}\n")
         for k in 0..fl.diags.n:
             if k < 20:
-                printf("  ownership finding E%d at line %d\n", oe_number(fl.diags.code[k]), a.toks.line[fl.diags.tok[k]])
+                say(f"  ownership finding E{oe_number(fl.diags.code[k])} at line {a.toks.line[fl.diags.tok[k]]}\n")
         fflush(0)
         ok = false
     return Prep { a: a, ty: ty, ok: ok }
@@ -303,10 +303,7 @@ fn effects_of(src: str, opt: int, name: str) => int:
 
 /#/ An object file, linked by clang with the address sanitizer, run.
 fn run_object(o: &Txt, leaks: bool) => int:
-    let fp = fopen("ir_lower_test.o", "w")
-    for k in 0..o.n:
-        fputc(o.b[k], fp)
-    fclose(fp)
+    save_bytes("ir_lower_test.o", o)
     if system("clang -w -fsanitize=address -o ./ir_lower_test ir_lower_test.o -lm") != 0:
         return -1
     let cmd = "ASAN_OPTIONS=exitcode=99:detect_leaks=1 ./ir_lower_test 2>ir_lower_err"
@@ -327,7 +324,7 @@ fn expect_with(src: str, want: int, leaks: bool) => int:
     let dup = clone src
     let r = run_src(src, leaks)
     if r != want:
-        printf("FAIL: got %d, want %d\n%s\n", r, want, dup)
+        say(f"FAIL: got {r}, want {want}\n{dup}\n")
         fflush(0)
         return 1
     return 0
@@ -337,12 +334,12 @@ fn expect_mc(src: str, want: int) => int:
     let dup = clone src
     let o = build_src(src, 1)
     if o.n == 0:
-        printf("FAIL: no object for\n%s\n", dup)
+        say(f"FAIL: no object for\n{dup}\n")
         fflush(0)
         return 1
     let r = run_object(&o, true)
     if r != want:
-        printf("FAIL (machine code): got %d, want %d\n%s\n", r, want, dup)
+        say(f"FAIL (machine code): got {r}, want {want}\n{dup}\n")
         fflush(0)
         return 1
     return 0

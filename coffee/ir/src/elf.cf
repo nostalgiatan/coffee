@@ -169,7 +169,7 @@ fn write_elf(o: &Obj, a: &Asm) => Txt:
     for j in 0..nf:
         fn_of[fn_sym[j]] = j
     if 9 + 2 * nf > 65000:
-        printf("elf: %d functions in one object are too many\n", nf)
+        say(f"elf: {nf} functions in one object are too many\n")
         return new_txt()
     let fn_tn: buf<int> = new_buf(int, nf + 1)
     let fn_rn: buf<int> = new_buf(int, nf + 1)
@@ -199,7 +199,7 @@ fn write_elf(o: &Obj, a: &Asm) => Txt:
         while cur < nf && at >= o.s_def[fn_sym[cur]] + o.s_size[fn_sym[cur]]:
             cur = cur + 1
         if cur >= nf || at < o.s_def[fn_sym[cur]]:
-            printf("elf: a relocation at %d is in no function\n", at)
+            say(f"elf: a relocation at {at} is in no function\n")
             return new_txt()
         if fn_rz[cur] == 0:
             fn_ra[cur] = rela.n

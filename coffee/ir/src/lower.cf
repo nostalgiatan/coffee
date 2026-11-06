@@ -64,8 +64,19 @@ fn txt_spells(w: &Txt, s: str) => bool:
 /#/ A function of the program named like one the generated code calls in the C library would take
 /#/ its place; its symbol gets a suffix.
 fn keep_off_runtime(w: &Txt) => void:
-    if txt_spells(w, "malloc") || txt_spells(w, "free") || txt_spells(w, "calloc") || txt_spells(w, "strlen") || txt_spells(w, "strdup") || txt_spells(w, "memcpy") || txt_spells(w, "strcmp") || txt_spells(w, "write") || txt_spells(w, "exit"):
-        w.put("__cf")
+    let names = "malloc free calloc strlen strdup memcpy strcmp write exit open read close remove access chmod clock_gettime fork waitpid _exit execve fflush system"
+    let lo = 0
+    for i in 0..len(names) + 1:
+        if i == len(names) || names[i] == ' ':
+            if w.n == i - lo:
+                let same = true
+                for k in 0..w.n:
+                    if w.b[k] != names[lo + k]:
+                        same = false
+                if same:
+                    w.put("__cf")
+                    return
+            lo = i + 1
 
 /#/ Is `x` an integer type that is signed?
 fn is_signed(t: &Tys, x: int) => bool:

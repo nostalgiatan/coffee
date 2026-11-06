@@ -429,7 +429,7 @@ fn compile_unit(prep: &Prep, t: &Tys, g: &Syms, opt: int, u: int, unit: &buf<int
     lw.emit_glue(t, g)
     let t2 = now_ms()
     if lw.ver_err > 0 || lw.mc_err > 0:
-        printf("incremental: %d functions with findings in %s\n", lw.ver_err + lw.mc_err, txt_str(name))
+        say(f"incremental: {lw.ver_err + lw.mc_err} functions with findings in {txt_str(name)}\n")
         return false
     let obj = lw.object()
     write_file(&cache_path(dir, name, ".o"), &obj)
@@ -473,7 +473,7 @@ fn online_cpus() => int:
 fn build_incremental(fl: &Flat, a0: Ast, dir: &Txt, out: &Txt, opt: int, jobs: int, static_link: bool) => int:
     system(txt_str(&mkdir_cmd(dir)))
     if a0.err_count > 0:
-        printf("front end: %d parse errors\n", a0.err_count)
+        say(f"front end: {a0.err_count} parse errors\n")
         return 1
     phase("parse")
     let defines = defines_runtime(&a0)
@@ -657,7 +657,7 @@ fn build_incremental(fl: &Flat, a0: Ast, dir: &Txt, out: &Txt, opt: int, jobs: i
             reused = reused + 1
         plain.put_all(&cache_path(dir, &mn, ".o"))
         plain.put_byte(10)
-    printf("incremental: %d compiled, %d reused\n", compiled, reused)
+    say(f"incremental: {compiled} compiled, {reused} reused\n")
     fflush(0)
     if static_link:
         let rc = link_static(&plain, out)

@@ -1,5 +1,5 @@
 /#/ Reading and writing whole files by a path held in a `Txt`.
-use fopen, fclose, fgetc, fputc, remove, access in libc of c
+use open, read, write, close, remove, access in libc of c
 
 /#/ The bytes of the file; `n` is -1 when it cannot be opened.
 fn read_file(path: &Txt) => Txt:
@@ -8,20 +8,34 @@ fn read_file(path: &Txt) => Txt:
     if access(p, 4) != 0:
         t.n = 0 - 1
         return t
-    let fp = fopen(p, "r")
-    let c = fgetc(fp)
-    while c >= 0:
-        t.put_byte(c)
-        c = fgetc(fp)
-    fclose(fp)
+    let fd = open(p, 0, 0 as object)
+    if fd < 0:
+        t.n = 0 - 1
+        return t
+    let chunk: buf<i8> = new_buf(i8, 65536)
+    let got = read(fd, buf_ptr(chunk), 65536)
+    while got > 0:
+        for k in 0..got:
+            t.put_byte(int(chunk[k]) & 255)
+        got = read(fd, buf_ptr(chunk), 65536)
+    close(fd)
     return t
 
 /#/ Writes `t` to the file.
 fn write_file(path: &Txt, t: &Txt) => void:
-    let fp = fopen(txt_str(path), "w")
+    let fd = open(txt_str(path), 577, 420 as object)
+    if fd < 0:
+        return
+    let chunk: buf<i8> = new_buf(i8, t.n + 1)
     for k in 0..t.n:
-        fputc(t.b[k], fp)
-    fclose(fp)
+        chunk[k] = i8(t.b[k])
+    let done = 0
+    while done < t.n:
+        let w = write(fd, (int(buf_ptr(chunk)) + done) as object, t.n - done)
+        if w <= 0:
+            break
+        done = done + w
+    close(fd)
 
 fn remove_file(path: &Txt) => void:
     remove(txt_str(path))

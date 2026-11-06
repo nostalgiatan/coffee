@@ -106,12 +106,12 @@ class Linker:
 
     fn err(self, what: &str, who: &Txt) => void:
         self.errs = self.errs + 1
-        printf("ld: %s %s\n", what, txt_str(who))
+        say(f"ld: {what} {txt_str(who)}\n")
         fflush(0)
 
     fn msg(self, what: &str) => void:
         self.errs = self.errs + 1
-        printf("ld: %s\n", what)
+        say(f"ld: {what}\n")
         fflush(0)
 
     /#/ ---- names ----------------------------------------------------------------------------
@@ -688,7 +688,7 @@ class Linker:
 
     fn reloc_err(self, what: &str, r: int) => int:
         self.errs = self.errs + 1
-        printf("ld: %s (type %d)\n", what, self.r_type.b[r])
+        say(f"ld: {what} (type {self.r_type.b[r]})\n")
         fflush(0)
         return 1
 

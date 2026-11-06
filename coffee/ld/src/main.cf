@@ -9,7 +9,7 @@ use * in args
 use chmod, printf, fflush in libc of c
 
 fn usage() => int:
-    printf("usage: cfld [-o out] [-L dir]... file.o|file.a|-lname ...\n")
+    say("usage: cfld [-o out] [-L dir]... file.o|file.a|-lname ...\n")
     fflush(0)
     return 2
 
@@ -71,18 +71,18 @@ fn main() => int:
             let name = cut(&w, 2, w.n)
             let p = find_lib(&dirs, &name)
             if p.n == 0:
-                printf("ld: cannot find -l%s\n", txt_str(&name))
+                say(f"ld: cannot find -l{txt_str(&name)}\n")
                 return 1
             let data = read_file(&p)
             l.add_file(&data, &p)
             seen = seen + 1
         elif starts_with(&w, "-"):
-            printf("ld: unknown option '%s'\n", txt_str(&w))
+            say(f"ld: unknown option '{txt_str(&w)}'\n")
             return usage()
         else:
             let data = read_file(&w)
             if data.n < 0:
-                printf("ld: cannot read '%s'\n", txt_str(&w))
+                say(f"ld: cannot read '{txt_str(&w)}'\n")
                 return 1
             l.add_file(&data, &w)
             seen = seen + 1

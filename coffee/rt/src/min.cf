@@ -69,8 +69,13 @@ c fn calloc(n: int, m: int) => object:
     let total = n * m
     let p = malloc(total)
     let d = int(p)
-    for i in 0..total:
+    let i = 0
+    while i + 8 <= total:
+        poke64((d + i) as object, 0)
+        i = i + 8
+    while i < total:
         poke8((d + i) as object, 0)
+        i = i + 1
     return p
 
 c fn strlen(s: object) => int:
@@ -99,3 +104,82 @@ c fn write(fd: int(4)+, p: object, n: int) => int:
 
 c fn exit(code: int(4)+) => void:
     syscall(231, int(code))
+
+c fn open(path: object, flags: int, mode: int) => int(4)+:
+    return i32(syscall(2, int(path), flags, mode))
+
+c fn read(fd: int, p: object, n: int) => int(4)+:
+    return i32(syscall(0, fd, int(p), n))
+
+c fn close(fd: int) => int(4)+:
+    return i32(syscall(3, fd))
+
+c fn remove(path: object) => int(4)+:
+    return i32(syscall(87, int(path)))
+
+c fn access(path: object, mode: int) => int(4)+:
+    return i32(syscall(21, int(path), mode))
+
+c fn chmod(path: object, mode: int) => int(4)+:
+    return i32(syscall(90, int(path), mode))
+
+c fn clock_gettime(clk: int, ts: object) => int(4)+:
+    return i32(syscall(228, clk, int(ts)))
+
+c fn fork() => int(4)+:
+    return i32(syscall(57))
+
+c fn waitpid(pid: int, status: object, opts: int) => int(4)+:
+    return i32(syscall(61, pid, int(status), opts, 0))
+
+c fn _exit(code: int) => void:
+    syscall(231, code)
+
+c fn execve(path: object, argv: int, envp: int) => int(4)+:
+    return i32(syscall(59, int(path), argv, envp))
+
+c fn fflush(f: object) => int(4)+:
+    return 0
+
+/#/ The environment of this process as the array `execve` wants, read from /proc/self/environ.
+fn cf_environ() => int:
+    let buf = cf_mmap(262144)
+    let fd = int(open("/proc/self/environ" as object, 0, 0))
+    let n = 0
+    if fd >= 0:
+        n = int(read(fd, buf as object, 262000))
+        close(fd)
+    if n < 0:
+        n = 0
+    let count = 0
+    for i in 0..n:
+        if peek8((buf + i) as object) == 0:
+            count = count + 1
+    let envp = int(malloc((count + 1) * 8))
+    let k = 0
+    let start = 0
+    for i in 0..n:
+        if peek8((buf + i) as object) == 0:
+            poke64((envp + k * 8) as object, buf + start)
+            k = k + 1
+            start = i + 1
+    poke64((envp + k * 8) as object, 0)
+    return envp
+
+/#/ `sh -c command`, waited for; the wait status, as C's `system`.
+c fn system(command: object) => int(4)+:
+    let pid = syscall(57)
+    if pid < 0:
+        return i32(0 - 1)
+    if pid == 0:
+        let argv = int(malloc(32))
+        poke64(argv as object, int("sh" as object))
+        poke64((argv + 8) as object, int("-c" as object))
+        poke64((argv + 16) as object, int(command))
+        poke64((argv + 24) as object, 0)
+        execve("/bin/sh" as object, argv, cf_environ())
+        syscall(231, 127)
+    let st = int(malloc(16))
+    poke64(st as object, 0)
+    syscall(61, pid, st, 0, 0)
+    return i32(peek64(st as object) & 4294967295)

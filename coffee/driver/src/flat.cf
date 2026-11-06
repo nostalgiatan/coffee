@@ -117,7 +117,7 @@ class Flat:
         let text = self.find_file(dir, &lib, ".cfc", &found)
         if text.n < 0:
             self.count_error()
-            printf("error: no %s.cfc next to the program, in lib/ or in an -I directory\n", txt_str(&lib))
+            say(f"error: no {txt_str(&lib)}.cfc next to the program, in lib/ or in an -I directory\n")
             return
         self.cfc.put_all(&text)
         self.cfc.put_byte(10)
@@ -201,7 +201,7 @@ class Flat:
                     let text = self.find_module(dir, &module, &found)
                     if text.n < 0:
                         self.count_error()
-                        printf("error: module '%s' not found\n", txt_str(&module))
+                        say(f"error: module '{txt_str(&module)}' not found\n")
                     else:
                         let path = copy_txt(&found)
                         path.put_byte(47)

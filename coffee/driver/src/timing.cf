@@ -21,7 +21,7 @@ fn phase(what: &str) => void:
     if !t_on:
         return
     let n = now_ms()
-    printf("  %-12s %6d ms\n", what, n - t_last)
+    say(f"  {what:<12} {n - t_last:6} ms\n")
     fflush(0)
     t_last = n
 
@@ -35,8 +35,8 @@ fn unit_times(lower: int, gen: int, obj: int) => void:
 fn unit_phases() => void:
     if !t_on:
         return
-    printf("  %-12s %6d ms\n", "lower", t_lower)
-    printf("  %-12s %6d ms\n", "codegen", t_gen)
-    printf("  %-12s %6d ms\n", "object", t_obj)
+    say(f"  {"lower":<12} {t_lower:6} ms\n")
+    say(f"  {"codegen":<12} {t_gen:6} ms\n")
+    say(f"  {"object":<12} {t_obj:6} ms\n")
     fflush(0)
     t_last = now_ms()

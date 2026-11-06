@@ -12,7 +12,7 @@ fn link_static(paths: &Txt, out: &Txt) => int:
             let p = slice(paths, lo, i)
             let data = read_file(&p)
             if data.n < 0:
-                printf("error: cannot read '%s'\n", txt_str(&p))
+                say(f"error: cannot read '{txt_str(&p)}'\n")
                 return 1
             l.add_file(&data, &p)
             lo = i + 1
