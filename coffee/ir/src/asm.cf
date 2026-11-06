@@ -339,7 +339,13 @@ class Asm:
         self.rr(1, 139, 0 - 1, dst, src, false)
 
     fn mov_ri(self, dst: int, v: int) => void:
-        if v >= 0 && v < 4294967296:
+        if v == 0:
+            /#/ xor changes the flags: no code loads a constant between a compare and its branch
+            if dst >= 8:
+                self.byte(69)
+            self.byte(49)
+            self.byte(192 | ((dst & 7) << 3) | (dst & 7))
+        elif v >= 0 && v < 4294967296:
             self.rex(0, 0, dst, false)
             self.byte(184 + (dst & 7))
             self.le32(v)
