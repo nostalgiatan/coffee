@@ -1,6 +1,6 @@
 # JIT 后端的设计
 
-状态:设计稿,尚未实现。格式细节见 [IR 对象格式参考](../reference/ir-object.md)。
+状态:设计稿,尚未实现。格式细节见 [IR 对象格式参考](../reference/ir-object.md),沙盒见 [沙盒的设计](sandbox-design.md)。没有解释器,JIT 是唯一的沙盒执行器。
 
 ## 目标和边界
 

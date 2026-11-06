@@ -1,5 +1,7 @@
 # 内存分配系统与字节码（2026-11-04）
 
+> 2026-11-06:字节码部分作废。线性内存、带大小释放、陷阱保留,见 [沙盒的设计](../../explanation/sandbox-design.md)。
+
 状态：**设计提案，未实现。** 依赖 [embedded-vm-direction](2026-11-04-embedded-vm-direction.md)（D1 解释器优先、D4 三层指针、D6 能力清单、D7 验证器）和 [aggregate-storage](2026-11-04-aggregate-storage.md)（聚合值是堆上的拥有指针）。
 
 ## 目标
