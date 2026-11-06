@@ -1,0 +1,64 @@
+/#/ Values alive across calls and values that are not, in more places than there are registers.
+use * in say
+
+/#/ Recursive, so it is never inlined: a real call.
+fn spin(n: int) => int:
+    if n <= 0:
+        return 1
+    return spin(n - 1) + 1
+
+fn mix(a: int, b: int) => int:
+    let x1 = a + 1
+    let x2 = a + 2
+    let x3 = a + 3
+    let x4 = a + 4
+    let x5 = a + 5
+    let x6 = a + 6
+    let x7 = a + 7
+    let x8 = a + 8
+    let x9 = a + 9
+    let x10 = a + 10
+    let x11 = b + 11
+    let x12 = b + 12
+    let s = spin(a % 3)
+    let y1 = x1 * 1 + x2 * 2 + x3 * 3 + x4 * 4
+    let t = spin(b % 4)
+    return y1 + x5 * 5 + x6 * 6 + x7 * 7 + x8 * 8 + x9 * 9 + x10 * 10 + x11 * 11 + x12 * 12 + s + t * 100
+
+fn want(a: int, b: int) => int:
+    let sum = 0
+    for k in 1..11:
+        sum += k * (a + k)
+    sum += 11 * (b + 11) + 12 * (b + 12)
+    return sum + (a % 3 + 1) + (b % 4 + 1) * 100
+
+/#/ Many values at once and no call between them.
+fn flat(v: &buf<int>) => int:
+    let a = v[0]
+    let b = v[1]
+    let c = v[2]
+    let d = v[3]
+    let e = v[4]
+    let f = v[5]
+    let g = v[6]
+    let h = v[7]
+    let i = v[8]
+    return a * b + c * d + e * f + g * h + i + a + b + c + d + e + f + g + h
+
+fn main() => int:
+    let m = 0
+    let v: buf<int> = new_buf(int, 9)
+    for i in 0..9:
+        v[i] = i * 3 + 1
+    for a in 0..20:
+        for b in 0..9:
+            if mix(a, b) != want(a, b):
+                say(f"MISS mix {a} {b}\n")
+                m += 1
+    let w = 0
+    for i in 0..9:
+        w += v[i]
+    if flat(&v) != 1 * 4 + 7 * 10 + 13 * 16 + 19 * 22 + 25 + w - 25:
+        say("MISS flat\n")
+        m += 1
+    return m

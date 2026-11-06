@@ -105,6 +105,9 @@ class Gen:
     ra_use: buf<int>
     ra_def: buf<int>
     ra_words: int
+    /#/ the positions of the instructions that call something, in order
+    ra_cp: buf<int>
+    ra_ncp: int
 
     fn add_str(self, off: int) => void:
         if self.nstr >= len(self.soff):
@@ -253,6 +256,35 @@ class Gen:
         let op = f.op[v]
         return !(op == int(Op.Slot) || op == int(Op.Const) || op == int(Op.StrLit) || op == int(Op.Undef) || op == int(Op.OwnMove))
 
+    /#/ Does instruction `i` make a call (so that the registers a callee may write are lost)?
+    fn is_clobber(self, f: &Fun, i: int) => bool:
+        let op = f.op[i]
+        return op == int(Op.Call) || op == int(Op.CCall) || op == int(Op.CallI) || op == int(Op.Drop) || op == int(Op.Clone) || op == int(Op.Alloc) || op == int(Op.Free) || op == int(Op.FRem)
+
+    /#/ Is there a call strictly between positions `lo` and `hi`?
+    fn crosses(self, lo: int, hi: int) => bool:
+        let a = 0
+        let b = self.ra_ncp
+        while a < b:
+            let mid = (a + b) // 2
+            if self.ra_cp[mid] > lo:
+                b = mid
+            else:
+                a = mid + 1
+        return a < self.ra_ncp && self.ra_cp[a] < hi
+
+    /#/ Does a call stand at position `p`?
+    fn at_call(self, p: int) => bool:
+        let a = 0
+        let b = self.ra_ncp
+        while a < b:
+            let mid = (a + b) // 2
+            if self.ra_cp[mid] >= p:
+                b = mid
+            else:
+                a = mid + 1
+        return a < self.ra_ncp && self.ra_cp[a] == p
+
     /#/ The edges leaving block `b`, in `ed`.
     fn term_edges(self, f: &Fun, b: int) => void:
         self.ned = 0
@@ -287,6 +319,7 @@ class Gen:
             self.home[v] = -1
             self.did[v] = -1
         self.nsaved = 0
+        self.ra_ncp = 0
         /#/ dense numbers, positions: uses at even numbers, definitions after them
         let nd = 0
         for b in 0..f.nb:
@@ -349,6 +382,11 @@ class Gen:
             be[b] = bs[b]
             while i >= 0:
                 be[b] = pos
+                if self.is_clobber(f, i):
+                    if self.ra_ncp >= len(self.ra_cp):
+                        self.ra_cp = buf_resize(self.ra_cp, (self.ra_ncp + 1) * 2)
+                    self.ra_cp[self.ra_ncp] = pos
+                    self.ra_ncp = self.ra_ncp + 1
                 let d = self.did[i]
                 if d >= 0:
                     dv[d] = i
@@ -433,27 +471,46 @@ class Gen:
             link[sd] = first[self.ra_lo[sd]]
             first[self.ra_lo[sd]] = sd
             sd = sd - 1
-        let regs: buf<int> = new_buf(int, 5)
-        regs[0] = 3
-        regs[1] = 12
-        regs[2] = 13
-        regs[3] = 14
-        regs[4] = 15
-        let occ: buf<int> = new_buf(int, 5)
-        for r in 0..5:
+        /#/ the caller-saved registers first (r10, then r8 and r9, the registers of the fifth and sixth
+        /#/ argument), then the saved ones
+        let regs: buf<int> = new_buf(int, 8)
+        regs[0] = 10
+        regs[1] = 8
+        regs[2] = 9
+        regs[3] = 3
+        regs[4] = 12
+        regs[5] = 13
+        regs[6] = 14
+        regs[7] = 15
+        let ent: buf<int> = new_buf(int, nd + 1)
+        let ep = f.pfirst[0]
+        while ep >= 0:
+            if self.did[ep] >= 0:
+                ent[self.did[ep]] = 1
+            ep = f.nx[ep]
+        let occ: buf<int> = new_buf(int, 8)
+        for r in 0..8:
             occ[r] = -1
-        let used: buf<int> = new_buf(int, 5)
+        let used: buf<int> = new_buf(int, 8)
         for q in 0..top + 1:
             let cd = first[q]
             while cd >= 0:
                 let d = cd
                 let nxt = link[d]
-                for r in 0..5:
+                /#/ how many of the caller-saved registers `d` may take: none when it is alive across
+                /#/ a call; only r10 when it is an argument of the call it ends at or a parameter of
+                /#/ the function (loading the arguments or the parameters would overwrite it)
+                let nt = 3
+                if self.crosses(self.ra_lo[d], self.ra_hi[d]):
+                    nt = 0
+                elif ent[d] == 1 || self.at_call(self.ra_hi[d]):
+                    nt = 1
+                for r in 0..8:
                     if occ[r] >= 0 && self.ra_hi[occ[r]] < self.ra_lo[d]:
                         occ[r] = -1
                 let fr = -1
-                for r in 0..5:
-                    if occ[r] < 0 && fr < 0:
+                for r in 0..8:
+                    if occ[r] < 0 && fr < 0 && (r >= 3 || r < nt):
                         fr = r
                 if fr >= 0:
                     occ[fr] = d
@@ -462,18 +519,28 @@ class Gen:
                 else:
                     /#/ the least wanted of the live ones and this one goes to the frame
                     let worst = -1
-                    for r in 0..5:
-                        if worst < 0 || self.ra_wt[occ[r]] < self.ra_wt[occ[worst]]:
-                            worst = r
+                    for r in 0..8:
+                        if r >= 3 || r < nt:
+                            if worst < 0 || self.ra_wt[occ[r]] < self.ra_wt[occ[worst]]:
+                                worst = r
                     if self.ra_wt[occ[worst]] < self.ra_wt[d]:
                         self.home[dv[occ[worst]]] = -1
                         self.home[dv[d]] = regs[worst]
                         occ[worst] = d
                 cd = nxt
-        if len(self.saved) < 5:
+        /#/ the check: nothing in a caller-saved register is alive across a call, and r8 and r9
+        /#/ hold neither a parameter nor an argument of the call that ends the value
+        for d in 0..nd:
+            let h = self.home[dv[d]]
+            if h == 8 || h == 9 || h == 10:
+                if self.crosses(self.ra_lo[d], self.ra_hi[d]):
+                    self.err = 1
+                if h != 10 && (ent[d] == 1 || self.at_call(self.ra_hi[d])):
+                    self.err = 1
+        if len(self.saved) < 6:
             self.saved = new_buf(int, 8)
-        for r in 0..5:
-            if used[r] == 1:
+        for r in 0..8:
+            if used[r] == 1 && r >= 3:
                 self.saved[self.nsaved] = regs[r]
                 self.nsaved = self.nsaved + 1
 
@@ -1318,7 +1385,7 @@ class Gen:
         return ok && self.err == 0
 
 fn new_gen() => Gen:
-    return Gen { a: new_asm(), o: new_obj(), voff: new_buf(int, 64), tmp: 0, frame: 0, err: 0, av: new_buf(int, 16), nav: 0, sbase: 256, soff: new_buf(int, 16), nstr: 0, home: new_buf(int, 64), did: new_buf(int, 64), nsaved: 0, saved: new_buf(int, 8), ed: new_buf(int, 16), ned: 0, ra_lo: new_buf(int, 1), ra_hi: new_buf(int, 1), ra_wt: new_buf(int, 1), ra_use: new_buf(int, 1), ra_def: new_buf(int, 1), ra_words: 0 }
+    return Gen { a: new_asm(), o: new_obj(), voff: new_buf(int, 64), tmp: 0, frame: 0, err: 0, av: new_buf(int, 16), nav: 0, sbase: 256, soff: new_buf(int, 16), nstr: 0, home: new_buf(int, 64), did: new_buf(int, 64), nsaved: 0, saved: new_buf(int, 8), ed: new_buf(int, 16), ned: 0, ra_lo: new_buf(int, 1), ra_hi: new_buf(int, 1), ra_wt: new_buf(int, 1), ra_use: new_buf(int, 1), ra_def: new_buf(int, 1), ra_words: 0, ra_cp: new_buf(int, 16), ra_ncp: 0 }
 
 /#/ The multiplier that divides by `d` (not a power of two; `l` is the log2 of `d` rounded up):
 /#/ 1 + floor(2^(63 + l) / d), taken as a 64-bit pattern, by long division one bit at a time.
