@@ -1,0 +1,10 @@
+/#/ Jumps to jumps: branches whose arms are empty, `continue` and `break`, values carried across them.
+use * in drive
+
+fn main() => int:
+    let m = 0
+    m = m + expect_exit("fn main() => int:\n    let n = 0\n    for i in 0..20:\n        if i % 2 == 0:\n            continue\n        if i > 15:\n            break\n        n = n + i\n    return n\n", 64)
+    m = m + expect_exit("fn pick(a: int, b: int) => int:\n    let r = 0\n    if a > b:\n        if a > 10:\n            r = 1\n        else:\n            r = 2\n    else:\n        if b > 10:\n            r = 3\n    return r\n\nfn main() => int:\n    return pick(11, 3) * 1000 + pick(5, 3) * 100 + pick(1, 12) * 10 + pick(1, 2)\n", 1230 % 256)
+    m = m + expect_exit("fn main() => int:\n    let i = 0\n    let s = 0\n    while i < 30:\n        i = i + 1\n        if i % 3 == 0:\n            if i % 5 == 0:\n                s = s + 100\n            continue\n        elif i % 7 == 0:\n            break\n        s = s + 1\n    return s\n", 4)
+    m = m + expect_exit("fn main() => int:\n    let a = 5\n    let b = 0\n    if a > 3:\n        if a > 4:\n            b = a\n    return b + a\n", 10)
+    return m

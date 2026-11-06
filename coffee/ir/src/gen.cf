@@ -1350,12 +1350,19 @@ class Gen:
                     self.a.jcc(cc, f.eto[e1])
                     self.a.jmp(f.eto[e2])
                 return
-            if f.eargn[e2] == 0 && f.eto[e2] == next:
-                /#/ the false edge falls through: test the other way round
-                let te = e1
-                e1 = e2
-                e2 = te
-                cc = cc ^ 1
+            if f.eargn[e1] == 0:
+                /#/ the true edge needs no moves: jump straight to its block
+                self.a.jcc(cc, f.eto[e1])
+                self.edge_copy(f, rs, e2)
+                if f.eto[e2] != next:
+                    self.a.jmp(f.eto[e2])
+                return
+            if f.eargn[e2] == 0:
+                self.a.jcc(cc ^ 1, f.eto[e2])
+                self.edge_copy(f, rs, e1)
+                if f.eto[e1] != next:
+                    self.a.jmp(f.eto[e1])
+                return
             let yes = self.a.new_label()
             self.a.jcc(cc, yes)
             self.edge_copy(f, rs, e2)

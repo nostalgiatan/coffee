@@ -83,6 +83,35 @@ fn fold_branches(f: &Fun) => bool:
                 changed = true
     return changed
 
+/#/ ---- jumps to jumps ----------------------------------------------------
+
+/#/ An edge into a block that only jumps on goes to where that block goes, with what that jump passes.
+/#/ The forwarding block loses its predecessors and is dropped as unreachable.
+fn thread_jumps(f: &Fun) => bool:
+    let changed = false
+    for e in 0..f.ne:
+        let guard = 0
+        while f.eto[e] > 0 && f.eargn[e] == 0 && guard < 8:
+            guard = guard + 1
+            let b = f.eto[e]
+            let t = f.blast[b]
+            if f.npar[b] != 0 || t < 0 || f.bfirst[b] != t || f.op[t] != int(Op.Br):
+                break
+            let e2 = f.aux[t]
+            let to = f.eto[e2]
+            if to < 0 || to == b || e2 == e:
+                break
+            let at = f.np
+            for k in 0..f.eargn[e2]:
+                let v = f.pool[f.eargs[e2] + k]
+                f.pool_put(v)
+                f.uses[f.follow(v)] = f.uses[f.follow(v)] + 1
+            f.eargs[e] = at
+            f.eargn[e] = f.eargn[e2]
+            f.eto[e] = to
+            changed = true
+    return changed
+
 /#/ ---- unreachable blocks --------------------------------------------------
 
 /#/ Removes the blocks no path from the entry reaches, and renumbers the rest.
@@ -496,6 +525,8 @@ fn optimize(f: &Fun) => void:
     let changed = true
     while changed && round < 8:
         changed = false
+        if thread_jumps(f):
+            changed = true
         if fold_branches(f):
             changed = true
         if drop_unreachable(f):
