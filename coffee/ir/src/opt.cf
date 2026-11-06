@@ -1233,3 +1233,4 @@ fn optimize_rs(f: &Fun, rs: &Reps, split: bool) => void:
         if dead_params(f):
             changed = true
         round = round + 1
+    recount_uses(f)

@@ -237,6 +237,8 @@ class Gen:
         if r >= rp_first_agg():
             let sb = self.ab_reg(f, x)
             self.copy_mem(db, dd, sb, self.ab_disp(f, x), rsize(rs, r))
+        elif self.home[x] >= 0:
+            self.a.store(db, dd, self.home[x], 8)
         else:
             self.ld(0, f, x)
             self.a.store(db, dd, 0, 8)
@@ -990,7 +992,7 @@ class Gen:
             pop = pop + 1
         if pop > 0:
             self.a.add_ri(4, pop * 8)
-        if ret == int(Rp.Void) || sret:
+        if ret == int(Rp.Void) || sret || f.uses[i] == 0:
             return
         if self.is_int_class(ret):
             self.st(i, 0)
@@ -1431,8 +1433,14 @@ class Gen:
             let d = self.home[i]
             if d < 0:
                 d = 0
-            let ra = self.src(f, f.a[i], 0)
             let sz = f.aux[i]
+            let ba = self.res(f, f.a[i])
+            if f.op[ba] == int(Op.StrLit) && (sz == 1 || sz == 2 || sz == 4 || sz == 8) && self.near_const(f, f.b[i]):
+                /#/ a place in the text of a literal: one rip-relative lea
+                self.a.lea_rip(d, 1, self.sbase + self.so(f.aux[ba]) + f.aux[self.res(f, f.b[i])] * sz)
+                self.st(i, d)
+                return
+            let ra = self.src(f, f.a[i], 0)
             let rb = 1
             if !((sz == 1 || sz == 2 || sz == 4 || sz == 8) && self.near_const(f, f.b[i])):
                 rb = self.src(f, f.b[i], 1)
