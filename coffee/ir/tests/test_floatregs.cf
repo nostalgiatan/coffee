@@ -1,0 +1,119 @@
+/#/ Floats kept in xmm registers: many at once, across calls, around loops, as arguments and results.
+use * in say
+
+/#/ Recursive, so it is never inlined: a real call.
+fn spin(n: int) => int:
+    if n <= 0:
+        return 1
+    return spin(n - 1) + 1
+
+fn fspin(x: float, n: int) => float:
+    if n <= 0:
+        return x
+    return fspin(x * 0.5 + 1.0, n - 1)
+
+fn many(a: float, b: float) => float:
+    let x1 = a + 1.0
+    let x2 = a * 2.0
+    let x3 = b - 3.0
+    let x4 = b / 4.0
+    let x5 = x1 * x2
+    let x6 = x3 + x4
+    let x7 = x5 - x6
+    let x8 = x1 / x4 + x2 * x3
+    let x9 = -x7
+    let x10 = x8 * 0.5
+    return x1 + x2 + x3 + x4 + x5 + x6 + x7 + x8 + x9 + x10
+
+/#/ alive across a call: stays out of the xmm registers
+fn across(a: float, n: int) => float:
+    let x = a * 3.0
+    let y = a + 7.0
+    let s = spin(n)
+    return x - y + float(s)
+
+fn loop_sum(n: int) => float:
+    let s = 0.0
+    let t = 1.0
+    for i in 0..n:
+        s += t
+        t = t * 1.5 - s * 0.25
+    return s
+
+fn single_mix(a: float(4), b: float(4)) => float(4):
+    let c = a * b + a
+    let d = c - b / a
+    return d
+
+fn conv(n: int) => float:
+    let f = float(n) * 0.5
+    let g: float(4) = f as float(4)
+    let h: float = g as float
+    let k = int(h * 3.0)
+    return float(k) + h
+
+fn cmp(a: float, b: float) => int:
+    let r = 0
+    if a < b:
+        r += 1
+    if a <= b:
+        r += 2
+    if a > b:
+        r += 4
+    if a >= b:
+        r += 8
+    if a == b:
+        r += 16
+    if a != b:
+        r += 32
+    return r
+
+fn arr(v: &buf<float>, n: int) => float:
+    let s = 0.0
+    for i in 0..n:
+        v[i] = float(i) * 0.25
+    for i in 0..n:
+        s += v[i] * v[i]
+    return s
+
+fn rem(a: float, b: float) => float:
+    let x = a * 2.0
+    let y = a % b
+    return y + x
+
+fn main() => int:
+    let m = 0
+    if many(2.0, 8.0) != 3.0 + 4.0 + 5.0 + 2.0 + 12.0 + 7.0 + (12.0 - 7.0) + (3.0 / 2.0 + 4.0 * 5.0) + (0.0 - 5.0) + (3.0 / 2.0 + 4.0 * 5.0) * 0.5:
+        say("MISS many\n")
+        m += 1
+    if across(2.0, 3) != 6.0 - 9.0 + 4.0:
+        say("MISS across\n")
+        m += 1
+    if fspin(0.0, 3) != 1.75:
+        say("MISS fspin\n")
+        m += 1
+    let s = 0.0
+    let t = 1.0
+    for i in 0..10:
+        s += t
+        t = t * 1.5 - s * 0.25
+    if loop_sum(10) != s:
+        say("MISS loop\n")
+        m += 1
+    if single_mix(2.0 as float(4), 4.0 as float(4)) != (2.0 as float(4)) * 4.0 + 2.0 - 2.0:
+        say("MISS single\n")
+        m += 1
+    if conv(5) != 7.0 + 2.5:
+        say("MISS conv\n")
+        m += 1
+    if cmp(1.0, 2.0) != 1 + 2 + 32 || cmp(2.0, 1.0) != 4 + 8 + 32 || cmp(3.0, 3.0) != 2 + 8 + 16:
+        say("MISS cmp\n")
+        m += 1
+    let v: buf<float> = new_buf(float, 8)
+    if arr(&v, 8) != 0.0 + 0.0625 + 0.25 + 0.5625 + 1.0 + 1.5625 + 2.25 + 3.0625:
+        say("MISS arr\n")
+        m += 1
+    if rem(7.5, 2.0) != 1.5 + 15.0:
+        say("MISS rem\n")
+        m += 1
+    return m

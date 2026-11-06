@@ -670,7 +670,7 @@ class Lower:
                 return self.f.conv(int(Op.FpToSi), tr, x)
             return self.f.conv(int(Op.FpToUi), tr, x)
         if rp_is_float(fr) && rp_is_float(tr):
-            if rp_bits(tr) > rp_bits(fr):
+            if tr == int(Rp.F64) && fr == int(Rp.F32):
                 return self.f.conv(int(Op.FpExt), tr, x)
             return self.f.conv(int(Op.FpTrunc), tr, x)
         if fr == int(Rp.Ptr) && ti:

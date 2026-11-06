@@ -566,6 +566,44 @@ class Asm:
         else:
             self.rr(1, 15, 126, x, r, false)
 
+    /#/ xmm dst = xmm src (all 128 bits)
+    fn movaps(self, dst: int, src: int) => void:
+        self.rr(0, 15, 40, dst, src, false)
+
+    /#/ xmm dst = dst xor xmm src
+    fn xorps(self, dst: int, src: int) => void:
+        self.rr(0, 15, 87, dst, src, false)
+
+    /#/ xmm = the float or double at [base + disp]
+    fn load_x(self, x: int, base: int, disp: int, single: bool) => void:
+        if single:
+            self.byte(243)
+        else:
+            self.byte(242)
+        self.rmem(0, 15, 16, x, base, disp, false)
+
+    /#/ [base + disp] = the float or double in xmm
+    fn store_x(self, base: int, disp: int, x: int, single: bool) => void:
+        if single:
+            self.byte(243)
+        else:
+            self.byte(242)
+        self.rmem(0, 15, 17, x, base, disp, false)
+
+    fn load_x_idx(self, x: int, base: int, idx: int, scale: int, disp: int, single: bool) => void:
+        if single:
+            self.byte(243)
+        else:
+            self.byte(242)
+        self.rmem_idx(0, 15, 16, x, base, idx, scale, disp, false)
+
+    fn store_x_idx(self, base: int, idx: int, scale: int, disp: int, x: int, single: bool) => void:
+        if single:
+            self.byte(243)
+        else:
+            self.byte(242)
+        self.rmem_idx(0, 15, 17, x, base, idx, scale, disp, false)
+
     /#/ the arithmetic ops: add 88, mul 89, sub 92, div 94 on xmm registers
     fn sse(self, op: int, single: bool, dst: int, src: int) => void:
         if single:

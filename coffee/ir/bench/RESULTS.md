@@ -49,3 +49,5 @@ and the executable is 1.47 MB.
 
 - A number above the largest `int` used to become `-1` silently (`let h = 14695981039346656037`).
   It is now a type error unless the context is an unsigned 8-byte int.
+
+xmm 家之后:mandel 0.44 → 0.26 秒,其余不变。

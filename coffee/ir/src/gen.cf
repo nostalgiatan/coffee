@@ -93,6 +93,8 @@ class Gen:
     nstr: int
     /#/ the register a value lives in, -1 for the frame; the registers used (saved in the prologue)
     home: buf<int>
+    xhome: buf<int>
+    xsg: buf<int>
     did: buf<int>
     nsaved: int
     saved: buf<int>
@@ -169,6 +171,8 @@ class Gen:
         elif self.home[x] >= 0:
             if self.home[x] != reg:
                 self.a.mov_rr(reg, self.home[x])
+        elif self.xhome[x] >= 0:
+            self.a.movq_r(reg, self.xhome[x], self.xsg[x] == 1)
         else:
             self.a.load(reg, 5, 0 - self.voff[x], 8)
 
@@ -200,8 +204,34 @@ class Gen:
         if self.home[i] >= 0:
             if self.home[i] != reg:
                 self.a.mov_rr(self.home[i], reg)
+        elif self.xhome[i] >= 0:
+            self.a.movq_x(self.xhome[i], reg, self.xsg[i] == 1)
         else:
             self.a.store(5, 0 - self.voff[i], reg, 8)
+
+    /#/ The xmm register of float `v`: its own when it has one, else `scratch`, loaded with it.
+    fn xsrc(self, f: &Fun, v: int, scratch: int) => int:
+        let x = self.res(f, v)
+        if self.xhome[x] >= 0:
+            return self.xhome[x]
+        self.ld(0, f, x)
+        self.a.movq_x(scratch, 0, f.rep[x] == int(Rp.F32))
+        return scratch
+
+    /#/ Where instruction `i` (a float) makes its result: its xmm register, else xmm0.
+    fn xdst(self, i: int) => int:
+        if self.xhome[i] >= 0:
+            return self.xhome[i]
+        return 0
+
+    /#/ The result of instruction `i` is in xmm `x`: kept there, or stored.
+    fn xfin(self, f: &Fun, i: int, x: int) => void:
+        if self.xhome[i] >= 0:
+            if self.xhome[i] != x:
+                self.a.movaps(self.xhome[i], x)
+        else:
+            self.a.movq_r(0, x, f.rep[i] == int(Rp.F32))
+            self.st(i, 0)
 
     /#/ For an aggregate value: the base register and displacement of its bytes.
     fn ab_reg(self, f: &Fun, v: int) => int:
@@ -377,9 +407,13 @@ class Gen:
         let n = f.ni
         if len(self.home) < n + 1:
             self.home = new_buf(int, n + 1)
+            self.xhome = new_buf(int, n + 1)
+            self.xsg = new_buf(int, n + 1)
             self.did = new_buf(int, n + 1)
         for v in 0..n:
             self.home[v] = -1
+            self.xhome[v] = -1
+            self.xsg[v] = 0
             self.did[v] = -1
         self.nsaved = 0
         self.ra_ncp = 0
@@ -555,11 +589,35 @@ class Gen:
         for r in 0..8:
             occ[r] = -1
         let used: buf<int> = new_buf(int, 8)
+        /#/ the xmm registers 2 to 15 for floats that are not alive across a call (all are caller-saved);
+        /#/ the arguments are loaded into xmm0 to xmm7, so a parameter or an argument stays in 8 to 15
+        let occx: buf<int> = new_buf(int, 16)
+        for r in 0..16:
+            occx[r] = -1
         for q in 0..top + 1:
             let cd = first[q]
             while cd >= 0:
                 let d = cd
                 let nxt = link[d]
+                let fr_x = -1
+                let rd = f.rep[dv[d]]
+                if (rd == int(Rp.F32) || rd == int(Rp.F64)) && !self.crosses(self.ra_lo[d], self.ra_hi[d]):
+                    let lowx = 2
+                    if ent[d] == 1 || self.at_call(self.ra_hi[d]):
+                        lowx = 8
+                    for r in 2..16:
+                        if occx[r] >= 0 && self.ra_hi[occx[r]] < self.ra_lo[d]:
+                            occx[r] = -1
+                    for r in lowx..16:
+                        if occx[r] < 0 && fr_x < 0:
+                            fr_x = r
+                    if fr_x >= 0:
+                        occx[fr_x] = d
+                        self.xhome[dv[d]] = fr_x
+                        if rd == int(Rp.F32):
+                            self.xsg[dv[d]] = 1
+                        cd = nxt
+                        continue
                 /#/ how many of the caller-saved registers `d` may take: none when it is alive across
                 /#/ a call; only r10 when it is an argument of the call it ends at or a parameter of
                 /#/ the function (loading the arguments or the parameters would overwrite it)
@@ -599,6 +657,13 @@ class Gen:
                 if self.crosses(self.ra_lo[d], self.ra_hi[d]):
                     self.err = 1
                 if h != 10 && (ent[d] == 1 || self.at_call(self.ra_hi[d])):
+                    self.err = 1
+        for d in 0..nd:
+            let xh = self.xhome[dv[d]]
+            if xh >= 0:
+                if self.crosses(self.ra_lo[d], self.ra_hi[d]) || xh < 2:
+                    self.err = 1
+                if xh < 8 && (ent[d] == 1 || self.at_call(self.ra_hi[d])):
                     self.err = 1
         if len(self.saved) < 6:
             self.saved = new_buf(int, 8)
@@ -640,7 +705,7 @@ class Gen:
         for b in 0..f.nb:
             let p = f.pfirst[b]
             while p >= 0:
-                if self.home[p] < 0:
+                if self.home[p] < 0 && self.xhome[p] < 0:
                     cur = cur + self.place_size(rs, f.rep[p])
                     self.voff[p] = cur
                 p = f.nx[p]
@@ -652,7 +717,7 @@ class Gen:
                     if f.ty[i] < 1:
                         cur = cur + 8
                     self.voff[i] = cur
-                elif f.rep[i] != int(Rp.Void) && op != int(Op.OwnMove) && self.home[i] < 0:
+                elif f.rep[i] != int(Rp.Void) && op != int(Op.OwnMove) && self.home[i] < 0 && self.xhome[i] < 0:
                     cur = cur + self.place_size(rs, f.rep[i])
                     self.voff[i] = cur
                 i = f.nx[i]
@@ -683,10 +748,11 @@ class Gen:
             if f.op[x] == int(Op.Param) && f.blk[x] == to:
                 hazard = true
             /#/ a parameter already written must not be what a later argument reads
-            if self.home[x] >= 0:
+            let hx = self.hid(x)
+            if hx >= 0:
                 let q = f.pfirst[to]
                 for j in 0..k:
-                    if self.home[q] == self.home[x]:
+                    if self.hid(q) == hx:
                         hazard = true
                     q = f.nx[q]
         if !hazard:
@@ -694,6 +760,14 @@ class Gen:
             for k in 0..n:
                 if self.home[p] >= 0:
                     self.ld(self.home[p], f, f.pool[f.eargs[e] + k])
+                elif self.xhome[p] >= 0:
+                    let ax = self.res(f, f.pool[f.eargs[e] + k])
+                    if self.xhome[ax] >= 0:
+                        if self.xhome[ax] != self.xhome[p]:
+                            self.a.movaps(self.xhome[p], self.xhome[ax])
+                    else:
+                        self.ld(0, f, ax)
+                        self.st(p, 0)
                 else:
                     self.val_to(f, rs, 5, 0 - self.voff[p], f.pool[f.eargs[e] + k])
                 p = f.nx[p]
@@ -709,10 +783,21 @@ class Gen:
             let sz = self.place_size(rs, f.rep[p])
             if self.home[p] >= 0:
                 self.a.load(self.home[p], 5, 0 - self.tmp + at, 8)
+            elif self.xhome[p] >= 0:
+                self.a.load(0, 5, 0 - self.tmp + at, 8)
+                self.st(p, 0)
             else:
                 self.copy_mem(5, 0 - self.voff[p], 5, 0 - self.tmp + at, sz)
             at = at + sz
             p = f.nx[p]
+
+    /#/ A number for the register of `x`, general ones as they are and xmm ones from 32; -1 in the frame.
+    fn hid(self, x: int) => int:
+        if self.home[x] >= 0:
+            return self.home[x]
+        if self.xhome[x] >= 0:
+            return 32 + self.xhome[x]
+        return -1
 
     /#/ ---- calls -------------------------------------------------------------
 
@@ -797,8 +882,11 @@ class Gen:
                 ci = ci + 1
             else:
                 if cx < 8:
-                    self.ld(0, f, v)
-                    self.a.movq_x(cx, 0, r == int(Rp.F32))
+                    if self.xhome[x] >= 0:
+                        self.a.movaps(cx, self.xhome[x])
+                    else:
+                        self.ld(0, f, v)
+                        self.a.movq_x(cx, 0, r == int(Rp.F32))
                 cx = cx + 1
         if variadic:
             self.a.mov_ri(0, nx)
@@ -816,8 +904,7 @@ class Gen:
         if self.is_int_class(ret):
             self.st(i, 0)
         else:
-            self.a.movq_r(0, 0, ret == int(Rp.F32))
-            self.st(i, 0)
+            self.xfin(f, i, 0)
 
     /#/ The symbol of the function the name number `id` of `sy` stands for.
     fn callee(self, sy: &Names, id: int) => int:
@@ -1060,20 +1147,21 @@ class Gen:
             self.st(i, 0)
             return
         if op == int(Op.FNeg):
-            self.ld(0, f, f.a[i])
-            if r == int(Rp.F32):
+            let single = r == int(Rp.F32)
+            let xa = self.xsrc(f, f.a[i], 0)
+            let xd = self.xdst(i)
+            if single:
                 self.a.mov_ri(1, 2147483648)
             else:
                 self.a.mov_ri(1, 0 - 9223372036854775807 - 1)
-            self.a.xor_rr(0, 1)
-            self.st(i, 0)
+            self.a.movq_x(1, 1, false)
+            if xd != xa:
+                self.a.movaps(xd, xa)
+            self.a.xorps(xd, 1)
+            self.xfin(f, i, xd)
             return
         if op == int(Op.FAdd) || op == int(Op.FSub) || op == int(Op.FMul) || op == int(Op.FDiv):
             let single = r == int(Rp.F32)
-            self.ld(0, f, f.a[i])
-            self.a.movq_x(0, 0, single)
-            self.ld(0, f, f.b[i])
-            self.a.movq_x(1, 0, single)
             let code = 88
             if op == int(Op.FMul):
                 code = 89
@@ -1081,24 +1169,37 @@ class Gen:
                 code = 92
             elif op == int(Op.FDiv):
                 code = 94
-            self.a.sse(code, single, 0, 1)
-            self.a.movq_r(0, 0, single)
-            self.st(i, 0)
+            let xa = self.xsrc(f, f.a[i], 0)
+            let xb = self.xsrc(f, f.b[i], 1)
+            let xd = self.xdst(i)
+            if xd == xa:
+                self.a.sse(code, single, xd, xb)
+            elif xd == xb && (op == int(Op.FAdd) || op == int(Op.FMul)):
+                self.a.sse(code, single, xd, xa)
+            elif xd != xb:
+                self.a.movaps(xd, xa)
+                self.a.sse(code, single, xd, xb)
+            else:
+                self.a.movaps(0, xa)
+                self.a.sse(code, single, 0, xb)
+                self.a.movaps(xd, 0)
+            self.xfin(f, i, xd)
             return
         if op == int(Op.FRem):
             let single = r == int(Rp.F32)
-            self.ld(0, f, f.a[i])
-            self.a.movq_x(0, 0, single)
-            self.ld(0, f, f.b[i])
-            self.a.movq_x(1, 0, single)
+            let xa = self.xsrc(f, f.a[i], 0)
+            if xa != 0:
+                self.a.movaps(0, xa)
+            let xb = self.xsrc(f, f.b[i], 1)
+            if xb != 1:
+                self.a.movaps(1, xb)
             let nm = new_txt()
             if single:
                 nm.put("fmodf")
             else:
                 nm.put("fmod")
             self.a.call_sym(self.o.sym(&nm))
-            self.a.movq_r(0, 0, single)
-            self.st(i, 0)
+            self.xfin(f, i, 0)
             return
         if op == int(Op.Cmp):
             if self.fused(f, i):
@@ -1110,24 +1211,22 @@ class Gen:
         if op == int(Op.FCmp):
             let p = f.aux[i]
             let single = f.rep[self.res(f, f.a[i])] == int(Rp.F32)
-            self.ld(0, f, f.a[i])
-            self.a.movq_x(0, 0, single)
-            self.ld(0, f, f.b[i])
-            self.a.movq_x(1, 0, single)
+            let xa = self.xsrc(f, f.a[i], 0)
+            let xb = self.xsrc(f, f.b[i], 1)
             if p == int(Pr.OLt) || p == int(Pr.OLe):
-                self.a.ucomi(single, 1, 0)
+                self.a.ucomi(single, xb, xa)
                 if p == int(Pr.OLt):
                     self.a.setcc(cc_a(), 0)
                 else:
                     self.a.setcc(cc_ae(), 0)
             elif p == int(Pr.OGt) || p == int(Pr.OGe):
-                self.a.ucomi(single, 0, 1)
+                self.a.ucomi(single, xa, xb)
                 if p == int(Pr.OGt):
                     self.a.setcc(cc_a(), 0)
                 else:
                     self.a.setcc(cc_ae(), 0)
             else:
-                self.a.ucomi(single, 0, 1)
+                self.a.ucomi(single, xa, xb)
                 if p == int(Pr.OEq):
                     self.a.setcc(cc_e(), 0)
                     self.a.setcc(cc_np(), 1)
@@ -1148,9 +1247,10 @@ class Gen:
         if op == int(Op.SiToFp) || op == int(Op.UiToFp):
             let single = r == int(Rp.F32)
             let signed = op == int(Op.SiToFp)
+            let xd = self.xdst(i)
             self.ld_ext(0, f, f.a[i], signed)
             if signed || f.rep[self.res(f, f.a[i])] != int(Rp.I64):
-                self.a.cvt_si2f(0, 0, single)
+                self.a.cvt_si2f(xd, 0, single)
             else:
                 let pos = self.a.new_label()
                 let done = self.a.new_label()
@@ -1161,22 +1261,22 @@ class Gen:
                 self.a.mov_ri(2, 1)
                 self.a.and_rr(1, 2)
                 self.a.or_rr(0, 1)
-                self.a.cvt_si2f(0, 0, single)
-                self.a.sse(88, single, 0, 0)
+                self.a.cvt_si2f(xd, 0, single)
+                self.a.sse(88, single, xd, xd)
                 self.a.jmp(done)
                 self.a.bind(pos)
-                self.a.cvt_si2f(0, 0, single)
+                self.a.cvt_si2f(xd, 0, single)
                 self.a.bind(done)
-            self.a.movq_r(0, 0, single)
-            self.st(i, 0)
+            self.xfin(f, i, xd)
             return
         if op == int(Op.FpToSi) || op == int(Op.FpToUi):
             let single = f.rep[self.res(f, f.a[i])] == int(Rp.F32)
-            self.ld(0, f, f.a[i])
-            self.a.movq_x(0, 0, single)
+            let xa = self.xsrc(f, f.a[i], 0)
             if op == int(Op.FpToUi) && r == int(Rp.I64):
                 let small = self.a.new_label()
                 let done = self.a.new_label()
+                if xa != 0:
+                    self.a.movaps(0, xa)
                 if single:
                     self.a.mov_ri(1, 1593835520)
                 else:
@@ -1193,16 +1293,15 @@ class Gen:
                 self.a.cvt_f2si(0, 0, single)
                 self.a.bind(done)
             else:
-                self.a.cvt_f2si(0, 0, single)
+                self.a.cvt_f2si(0, xa, single)
             self.st(i, 0)
             return
         if op == int(Op.FpExt) || op == int(Op.FpTrunc):
             let to_single = op == int(Op.FpTrunc)
-            self.ld(0, f, f.a[i])
-            self.a.movq_x(0, 0, !to_single)
-            self.a.cvt_ff(0, 0, to_single)
-            self.a.movq_r(0, 0, to_single)
-            self.st(i, 0)
+            let xa = self.xsrc(f, f.a[i], 0)
+            let xd = self.xdst(i)
+            self.a.cvt_ff(xd, xa, to_single)
+            self.xfin(f, i, xd)
             return
         if (op == int(Op.Field) || op == int(Op.Index)) && self.folds(f, i):
             return
@@ -1238,6 +1337,8 @@ class Gen:
             let sd = self.ab_disp(f, f.a[i]) + eo
             if r >= rp_first_agg():
                 self.copy_mem(5, 0 - self.voff[i], sb, sd, rsize(rs, r))
+            elif self.xhome[i] >= 0:
+                self.a.load_x(self.xhome[i], sb, sd, r == int(Rp.F32))
             else:
                 let d = self.home[i]
                 if d < 0:
@@ -1261,6 +1362,18 @@ class Gen:
             if r >= rp_first_agg():
                 self.ld(6, f, f.a[i])
                 self.copy_mem(5, 0 - self.voff[i], 6, 0, rsize(rs, r))
+            elif self.xhome[i] >= 0:
+                let xd = self.xhome[i]
+                let sg = r == int(Rp.F32)
+                let x = self.res(f, f.a[i])
+                if self.folds(f, x):
+                    self.addr_of(f, x, 6, 1)
+                    if self.am_idx >= 0:
+                        self.a.load_x_idx(xd, self.am_base, self.am_idx, self.am_scale, 0, sg)
+                    else:
+                        self.a.load_x(xd, self.am_base, self.am_disp, sg)
+                else:
+                    self.a.load_x(xd, self.src(f, f.a[i], 6), 0, sg)
             else:
                 let d = self.home[i]
                 if d < 0:
@@ -1282,6 +1395,18 @@ class Gen:
                 self.ld(7, f, f.a[i])
                 let sb = self.ab_reg(f, f.b[i])
                 self.copy_mem(7, 0, sb, self.ab_disp(f, f.b[i]), rsize(rs, vr))
+            elif self.xhome[self.res(f, f.b[i])] >= 0:
+                let xv = self.xhome[self.res(f, f.b[i])]
+                let sg = vr == int(Rp.F32)
+                let x = self.res(f, f.a[i])
+                if self.folds(f, x):
+                    self.addr_of(f, x, 1, 6)
+                    if self.am_idx >= 0:
+                        self.a.store_x_idx(self.am_base, self.am_idx, self.am_scale, 0, xv, sg)
+                    else:
+                        self.a.store_x(self.am_base, self.am_disp, xv, sg)
+                else:
+                    self.a.store_x(self.src(f, f.a[i], 1), 0, xv, sg)
             else:
                 let rv = self.src(f, f.b[i], 0)
                 let x = self.res(f, f.a[i])
@@ -1396,8 +1521,12 @@ class Gen:
                 elif self.is_int_class(vr):
                     self.ld(0, f, f.a[i])
                 else:
-                    self.ld(0, f, f.a[i])
-                    self.a.movq_x(0, 0, vr == int(Rp.F32))
+                    let rx = self.res(f, f.a[i])
+                    if self.xhome[rx] >= 0:
+                        self.a.movaps(0, self.xhome[rx])
+                    else:
+                        self.ld(0, f, f.a[i])
+                        self.a.movq_x(0, 0, vr == int(Rp.F32))
             self.restore_saved()
             self.a.leave()
             self.a.ret()
@@ -1451,8 +1580,11 @@ class Gen:
                 ci = ci + 1
             else:
                 if cx < 8:
-                    self.a.movq_r(0, cx, r == int(Rp.F32))
-                    self.st(p, 0)
+                    if self.xhome[p] >= 0:
+                        self.a.movaps(self.xhome[p], cx)
+                    else:
+                        self.a.movq_r(0, cx, r == int(Rp.F32))
+                        self.st(p, 0)
                 else:
                     self.a.load(0, 5, 16 + 8 * cs, 8)
                     self.st(p, 0)
@@ -1477,7 +1609,7 @@ class Gen:
         return ok && self.err == 0
 
 fn new_gen() => Gen:
-    return Gen { a: new_asm(), o: new_obj(), voff: new_buf(int, 64), tmp: 0, frame: 0, err: 0, av: new_buf(int, 16), nav: 0, sbase: 256, soff: new_buf(int, 16), nstr: 0, home: new_buf(int, 64), did: new_buf(int, 64), nsaved: 0, saved: new_buf(int, 8), ed: new_buf(int, 16), ned: 0, ra_lo: new_buf(int, 1), ra_hi: new_buf(int, 1), ra_wt: new_buf(int, 1), ra_use: new_buf(int, 1), ra_def: new_buf(int, 1), ra_words: 0, ra_cp: new_buf(int, 16), ra_ncp: 0, nuse: new_buf(int, 64), am_base: 0, am_idx: -1, am_scale: 1, am_disp: 0 }
+    return Gen { a: new_asm(), o: new_obj(), voff: new_buf(int, 64), tmp: 0, frame: 0, err: 0, av: new_buf(int, 16), nav: 0, sbase: 256, soff: new_buf(int, 16), nstr: 0, home: new_buf(int, 64), xhome: new_buf(int, 64), xsg: new_buf(int, 64), did: new_buf(int, 64), nsaved: 0, saved: new_buf(int, 8), ed: new_buf(int, 16), ned: 0, ra_lo: new_buf(int, 1), ra_hi: new_buf(int, 1), ra_wt: new_buf(int, 1), ra_use: new_buf(int, 1), ra_def: new_buf(int, 1), ra_words: 0, ra_cp: new_buf(int, 16), ra_ncp: 0, nuse: new_buf(int, 64), am_base: 0, am_idx: -1, am_scale: 1, am_disp: 0 }
 
 /#/ The multiplier that divides by `d` (not a power of two; `l` is the log2 of `d` rounded up):
 /#/ 1 + floor(2^(63 + l) / d), taken as a 64-bit pattern, by long division one bit at a time.
