@@ -3442,7 +3442,7 @@ class Lower:
     /#/ Optimizes the functions kept, callees first.
     fn optimize_module(self) => void:
         if self.opt > 0:
-            module_opt(&self.lib, &self.f)
+            module_opt(&self.lib, &self.f, &self.rs)
 
     /#/ Generates machine code for the functions kept.
     fn generate(self) => void:
@@ -3483,7 +3483,7 @@ class Lower:
     /#/ Optimizes the function in `self.f` and generates it.
     fn emit_current(self) => void:
         if self.opt > 0:
-            optimize(&self.f)
+            optimize_rs(&self.f, &self.rs, true)
         self.put_fun()
 
 fn type_param_count(a: &Ast, f: int) => int:

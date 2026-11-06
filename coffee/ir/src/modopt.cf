@@ -337,15 +337,15 @@ fn inline_calls(f: &Fun, lib: &Lib, cur: int) => bool:
     return any
 
 /#/ Optimizes every function of `lib`, callees first. `f` is the working function.
-fn module_opt(lib: &Lib, f: &Fun) => void:
+fn module_opt(lib: &Lib, f: &Fun, rs: &Reps) => void:
     let order = call_order(lib)
     for k in 0..lib.nf:
         let n = order[k]
         lib.restore(n, f)
         inline_calls(f, lib, lib.f_id[n])
-        optimize(f)
+        optimize_rs(f, rs, true)
         if dead_calls(f, lib):
-            optimize(f)
+            optimize_rs(f, rs, true)
         let id = lib.f_id[n]
         lib.save(f, n, id)
         lib.f_fx[n] = summarize(f, lib)

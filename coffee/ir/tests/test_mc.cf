@@ -70,4 +70,7 @@ fn main() => int:
     m = m + expect_mc("fn main() => int:\n    let c = 0\n    for i in 0..40:\n        let x = i - 20\n        if x % 4 == 0:\n            c = c + 1\n        if x % 2 != 0:\n            c = c + 10\n    return c\n", 210)
     m = m + expect_mc("fn main() => int:\n    let s = \"hello\" + \" world\"\n    let b = s[6] as int\n    return b - 100 + len(s)\n", 30)
     m = m + expect_mc("fn main() => int:\n    let a = 3\n    let s = 0\n    for i in 0..10:\n        let t = a + i\n        s = s + t * i\n    return s % 256\n", 164)
+    /#/ a buf read through a reference: pointer and length read apart, and after a write to the buf
+    m = m + expect_mc("fn fill(b: &buf<int>) => int:\n    let s = 0\n    for i in 0..len(b):\n        b[i] = i * 2\n        s = s + b[i]\n    return s + len(b)\n\nfn main() => int:\n    let a: buf<int> = new_buf(int, 10)\n    return fill(&a)\n", 100)
+    m = m + expect_mc("fn two(b: &buf<int>, c: &buf<int>) => int:\n    b[0] = len(c)\n    c[0] = b[0] + 1\n    return b[0] * 10 + c[0] + len(b)\n\nfn main() => int:\n    let a: buf<int> = new_buf(int, 6)\n    let d: buf<int> = new_buf(int, 4)\n    return two(&a, &d)\n", 51)
     return m

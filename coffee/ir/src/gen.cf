@@ -28,52 +28,6 @@ fn int_reg(k: int) => int:
         return 8
     return 9
 
-/#/ Bytes of a value of representation `r` in memory.
-fn rsize(rs: &Reps, r: int) => int:
-    if r == int(Rp.Void):
-        return 0
-    if r == int(Rp.I8):
-        return 1
-    if r == int(Rp.I16):
-        return 2
-    if r == int(Rp.I32) || r == int(Rp.F32):
-        return 4
-    if r < rp_first_agg():
-        return 8
-    let off = 0
-    let al = 1
-    for i in 0..rs.elems(r):
-        let e = rs.elem(r, i)
-        let ea = ralign(rs, e)
-        off = (off + ea - 1) // ea * ea + rsize(rs, e)
-        if ea > al:
-            al = ea
-    return (off + al - 1) // al * al
-
-fn ralign(rs: &Reps, r: int) => int:
-    if r < rp_first_agg():
-        let s = rsize(rs, r)
-        if s == 0:
-            return 1
-        return s
-    let al = 1
-    for i in 0..rs.elems(r):
-        let ea = ralign(rs, rs.elem(r, i))
-        if ea > al:
-            al = ea
-    return al
-
-/#/ Offset of element `idx` of aggregate `r`.
-fn elem_off(rs: &Reps, r: int, idx: int) => int:
-    let off = 0
-    for i in 0..idx + 1:
-        let e = rs.elem(r, i)
-        let ea = ralign(rs, e)
-        off = (off + ea - 1) // ea * ea
-        if i < idx:
-            off = off + rsize(rs, e)
-    return off
-
 fn round8(n: int) => int:
     return (n + 7) // 8 * 8
 

@@ -253,8 +253,28 @@ fn removable(f: &Fun, i: int) => bool:
     return true
 
 /#/ Removes the instructions whose value nobody uses, from the end of each block backwards.
+/#/ The use counts, from the instructions and edges that are there.
+fn recount_uses(f: &Fun) => void:
+    for i in 0..f.ni:
+        f.uses[i] = 0
+    for b in 0..f.nb:
+        let i = f.bfirst[b]
+        while i >= 0:
+            for k in 0..f.nval(i):
+                let v = f.val_at(i, k)
+                if v >= 0:
+                    let x = f.follow(v)
+                    f.uses[x] = f.uses[x] + 1
+            i = f.nx[i]
+    for e in 0..f.ne:
+        if f.eto[e] >= 0:
+            for k in 0..f.eargn[e]:
+                let x = f.follow(f.pool[f.eargs[e] + k])
+                f.uses[x] = f.uses[x] + 1
+
 fn dead_code(f: &Fun) => bool:
     let changed = false
+    recount_uses(f)
     for b in 0..f.nb:
         let i = f.blast[b]
         while i >= 0:
@@ -1002,7 +1022,93 @@ fn fold_extracts(f: &Fun) => bool:
             i = nxt
     return changed
 
+/#/ ---- aggregate loads -------------------------------------------------------
+
+/#/ Puts the just-made `x` (at the end of its block) right before `i`.
+fn link_before(f: &Fun, x: int, i: int) => void:
+    unlink(f, x)
+    let p = f.pv[i]
+    f.blk[x] = f.blk[i]
+    f.pv[x] = p
+    f.nx[x] = i
+    f.pv[i] = x
+    if p >= 0:
+        f.nx[p] = x
+    else:
+        f.bfirst[f.blk[i]] = x
+
+/#/ A `load` of an aggregate that is only ever taken apart by `extract`s becomes a `load` of each
+/#/ element (at the same place, so memory is read when it was); the copy to the frame goes.
+fn split_loads(f: &Fun, rs: &Reps) => bool:
+    let bad: buf<int> = new_buf(int, f.ni + 1)
+    let base: buf<int> = new_buf(int, f.ni + 1)
+    for b in 0..f.nb:
+        let i = f.bfirst[b]
+        while i >= 0:
+            for k in 0..f.nval(i):
+                let v = f.val_at(i, k)
+                if v >= 0:
+                    let x = f.follow(v)
+                    if f.op[x] == int(Op.Load) && f.rep[x] >= rp_first_agg() && !(f.op[i] == int(Op.Extract) && k == 0):
+                        bad[x] = 1
+            i = f.nx[i]
+    for e in 0..f.ne:
+        if f.eto[e] >= 0:
+            for k in 0..f.eargn[e]:
+                bad[f.follow(f.pool[f.eargs[e] + k])] = 1
+    let any = false
+    let el: buf<int> = new_buf(int, 16)
+    let nel = 0
+    for b in 0..f.nb:
+        let i = f.bfirst[b]
+        while i >= 0:
+            let r = f.rep[i]
+            if f.op[i] == int(Op.Load) && f.fwd[i] < 0 && r >= rp_first_agg() && bad[i] == 0:
+                let n = rs.elems(r)
+                let ok = n > 0
+                for k in 0..n:
+                    if rs.elem(r, k) >= rp_first_agg() || rs.elem(r, k) == int(Rp.Void):
+                        ok = false
+                if ok:
+                    if nel + n > len(el):
+                        el = buf_resize(el, (nel + n) * 2)
+                    base[i] = nel + 1
+                    f.cur = b
+                    let p = f.follow(f.a[i])
+                    for k in 0..n:
+                        let a = p
+                        let off = elem_off(rs, r, k)
+                        if off != 0:
+                            a = f.raw(int(Op.Field), int(Rp.Ptr), -1, p, -1, -1, off)
+                            link_before(f, a, i)
+                        let l = f.raw(int(Op.Load), rs.elem(r, k), -1, a, -1, -1, 0)
+                        link_before(f, l, i)
+                        el[nel + k] = l
+                    nel = nel + n
+                    any = true
+            i = f.nx[i]
+    if !any:
+        return false
+    for b in 0..f.nb:
+        let i = f.bfirst[b]
+        while i >= 0:
+            let nxt = f.nx[i]
+            if f.op[i] == int(Op.Extract) && f.fwd[i] < 0:
+                let g = f.follow(f.a[i])
+                if base[g] > 0:
+                    let l = el[base[g] - 1 + f.aux[i]]
+                    f.uses[l] = f.uses[l] + f.uses[i]
+                    f.fwd[i] = l
+                    unuse(f, i)
+                    unlink(f, i)
+            i = nxt
+    return true
+
 fn optimize(f: &Fun) => void:
+    let rs = new_reps()
+    optimize_rs(f, &rs, false)
+
+fn optimize_rs(f: &Fun, rs: &Reps, split: bool) => void:
     fold_extracts(f)
     hoist_extracts(f)
     let round = 0
@@ -1010,6 +1116,8 @@ fn optimize(f: &Fun) => void:
     while changed && round < 8:
         changed = false
         if fold_extracts(f):
+            changed = true
+        if split && split_loads(f, rs):
             changed = true
         if cse_branches(f):
             changed = true

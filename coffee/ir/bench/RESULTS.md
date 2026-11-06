@@ -63,3 +63,6 @@ mandel 2305、objects 5440、sort 3440、matmul 4229、collatz 2732、strings 72
 
 `bench/flaws.py <coffee2>` 数每个基准里可避免的指令模式(连环 mov、lea 后接 mov、test 紧跟置标志的运算、mov $0 等)和总指令数。
 常数下标进寻址模式、`x % 2^k == 0` 改为掩码测试、两个活寄存器相加用一条 lea 之后:指令总数 6448 → 6185(含库代码),collatz 0.19 → 0.15 秒。
+
+聚合值:使用计数在 dead_code 前重数(之前有残留计数,没人用的 `insert` 删不掉);只被 `extract` 拆开的聚合 `load`(`&buf` 的指针和长度)改为逐元素 `load`。
+callgrind(百万):sort 3440 → 2633、matmul 4229 → 3966、strings 7226 → 6935;总指令数(flaws.py)6185 → 6081。
