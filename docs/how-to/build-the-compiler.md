@@ -2,7 +2,7 @@
 
 目标:得到可执行文件 `coffee2`,并确认它能编译自己。
 
-前提:已经有 Rust 版编译器(stage0),`clang` 和 LLVM 21.1 在 `PATH` 上。
+前提:已经有 Rust 版编译器(stage0),`cc` 在 `PATH` 上;构建 stage0 本身需要 LLVM 21.1。
 
 ## 不用 Rust 和 LLVM:从种子构建
 
@@ -18,7 +18,7 @@ coffee/driver/tools/build-from-seed.sh /tmp/coffee-seed
 coffee/driver/tools/build-from-seed.sh /tmp/coffee-seed --refresh
 ```
 
-下面的步骤走 stage0 的路线,只在没有种子或要验证 LLVM 后端时需要。
+下面的步骤走 stage0 的路线,只在没有种子,或要确认 stage0 编出的编译器和种子一致时需要。
 
 ## 构建 stage0
 
@@ -52,11 +52,11 @@ driver/tools/bootstrap.sh ../target/release/coffee /tmp/coffee-boot
 脚本做四件事:
 
 1. stage0 编译出 `gen2`。
-2. `gen2` 把驱动自己的源码编译成 LLVM 文本 `gen2.ll`。
-3. `clang` 把 `gen2.ll` 编成 `gen3`,`gen3` 再编译一遍,得到 `gen3.ll`。
-4. 比较两份文本。
+2. `gen2` 把驱动自己的源码编译成目标文件 `gen2.o`。
+3. `cc` 把 `gen2.o` 链接成 `gen3`,`gen3` 再编译一遍,得到 `gen3.o`。
+4. 比较两个目标文件。
 
-最后一行输出 `fixed point: gen2 and gen3 produce identical LLVM text` 就是通过。两份文本不同,脚本会停在 `cmp` 报错。
+最后一行输出 `fixed point: gen2 and gen3 produce identical objects` 就是通过。两个文件不同,脚本会停在 `cmp` 报错。
 
 ## 验证机器码后端也能复现自己
 

@@ -199,8 +199,8 @@ fn main() => int:
     m = m + expect(18, j.nb, 1)
     m = m + expect(19, count(&j), 3)
     /#/ on lowered programs: never longer, and shorter where there is something to remove
-    let raw = lowered_lines(sample(), 0)
-    let opt = lowered_lines(sample(), 1)
+    let raw = lowered_lines(sample(), 0, "f")
+    let opt = lowered_lines(sample(), 1, "f")
     let shorter = 0
     if raw > opt:
         shorter = 1

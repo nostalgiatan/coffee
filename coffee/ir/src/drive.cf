@@ -1,4 +1,4 @@
-/#/ Test support: source text through our front end, IR and clang, and run.
+/#/ Test support: source text through our front end, IR and machine code, linked by clang, and run.
 use * in lower
 use fopen, fputc, fclose, system, putchar, printf, fflush, access in libc of c
 
@@ -14,28 +14,39 @@ fn report_unsupported(a: &Ast, n: int) => void:
     printf("'\n")
     fflush(0)
 
-/#/ `src` through our front end and IR as LLVM text, the optimizer on or off; empty when it
-/#/ did not lower.
+/#/ The machine-code object of `src` through our front end and IR, the optimizer on or off;
+/#/ empty when it did not lower.
 fn build_src(src: str, opt: int) => Txt:
-    return build_with_cfc(src, opt, "")
+    return build_obj(src, opt, "")
 
 /#/ Like `build_src`, with the text of the program's own `.cfc` files (empty for none).
-fn build_with_cfc(src: str, opt: int, cfc: str) => Txt:
-    return build_gen(src, opt, cfc, 0)
-
-/#/ Like `build_with_cfc`, but the machine-code backend: the bytes of an ELF object file.
 fn build_obj(src: str, opt: int, cfc: str) => Txt:
-    return build_gen(src, opt, cfc, 1)
-
-fn build_gen(src: str, opt: int, cfc: str, backend: int) => Txt:
     let t = new_tys()
     let g = new_globals()
+    let lw = module_of(src, opt, cfc, &t, &g)
+    if lw.bad > 0:
+        return new_txt()
+    lw.generate()
+    lw.emit_glue(&t, &g)
+    if lw.ver_err > 0:
+        printf("verifier: %d functions with findings\n", lw.ver_err)
+        return new_txt()
+    if lw.mc_err > 0:
+        printf("machine code: %d functions could not be translated\n", lw.mc_err)
+        return new_txt()
+    return lw.object()
+
+/#/ The module of `src` lowered and optimized, not yet generated; `bad` is set when the front
+/#/ end or the lowering refused it.
+fn module_of(src: str, opt: int, cfc: str, t: &Tys, g: &Syms) => Lower:
+    let lw = new_lower()
+    lw.opt = opt
     if len(cfc) > 0:
-        declare_user_cfc(&t, &g, cfc, "user.cfc")
+        declare_user_cfc(t, g, cfc, "user.cfc")
     let a = parse(src)
-    let m = declare_module(&g, &a, "t")
-    declare_types(&t, &g, &a, m)
-    let ty = check_types(&t, &g, &a, m)
+    let m = declare_module(g, &a, "t")
+    declare_types(t, g, &a, m)
+    let ty = check_types(t, g, &a, m)
     if ty.diags.n > 0 || a.err_count > 0:
         printf("front end: %d type findings, %d parse errors\n", ty.diags.n, a.err_count)
         for k in 0..a.err_count:
@@ -45,107 +56,103 @@ fn build_gen(src: str, opt: int, cfc: str, backend: int) => Txt:
             if k < 20:
                 printf("  type finding E%d at line %d\n", te_number(ty.diags.code[k]), a.toks.line[ty.diags.tok[k]])
         fflush(0)
-        return new_txt()
-    let lw = new_lower()
-    lw.opt = opt
-    lw.backend = backend
-    let o = new_txt()
-    emit_prelude(&o)
+        lw.bad = 1
+        return lw
     let body = new_txt()
     let it = a.child[a.root]
     while it >= 0:
         if a.kind[it] == int(Nk.Fn) && type_param_count(&a, it) == 0:
-            lw.function(&t, &g, &ty, &a, it, -1)
+            lw.function(t, g, &ty, &a, it, -1)
             if lw.bad > 0:
                 report_unsupported(&a, lw.bad_node)
-                return new_txt()
+                return lw
             lw.keep_current()
         elif a.kind[it] == int(Nk.Class) && type_param_count(&a, it) == 0:
             let row = g.find_in_module(&a, a.pa[it], ty.cur)
             let c = a.child[it]
             while c >= 0:
                 if a.kind[c] == int(Nk.Fn):
-                    lw.function(&t, &g, &ty, &a, c, row)
+                    lw.function(t, g, &ty, &a, c, row)
                     if lw.bad > 0:
                         report_unsupported(&a, lw.bad_node)
-                        return new_txt()
+                        return lw
                     lw.keep_current()
                 c = a.next[c]
         it = a.next[it]
-    lw.run_instances(&t, &g, &ty, &a, &body)
+    lw.run_instances(t, g, &ty, &a, &body)
     if lw.bad > 0:
         report_unsupported(&a, lw.bad_node)
-        return new_txt()
-    lw.finish(&body)
-    if backend == 1:
-        lw.emit_glue(&body, &t, &g)
-        if lw.mc_err > 0:
-            printf("machine code: %d functions could not be translated\n", lw.mc_err)
-            return new_txt()
-        return lw.object()
-    o.put_all(&lw.globals)
-    lw.emit_decls(&o, &t, &g)
-    lw.emit_glue(&body, &t, &g)
-    o.put_all(&body)
-    return o
+        return lw
+    lw.optimize_module()
+    return lw
 
-/#/ Compiles `src` through our front end and IR, with clang, and runs it: the exit code,
-/#/ or -2 when something did not compile.
+/#/ Compiles `src` through our front end and IR, with clang as the linker, and runs it: the exit
+/#/ code, or -2 when something did not compile.
 fn run_src(src: str, leaks: bool) => int:
-    /#/ with the file /tmp/coffee_use_obj present the programs go through the machine-code backend
-    let backend = 0
-    if access("/tmp/coffee_use_obj", 0) == 0:
-        backend = 1
-    let o = build_gen(src, 1, "", backend)
+    let o = build_src(src, 1)
     if o.n == 0:
         return -2
-    if backend == 1:
-        return run_object(&o, leaks)
-    return compile_and_run(&o, leaks)
+    return run_object(&o, leaks)
 
-/#/ The number of lines of the LLVM text of `src`.
-fn lowered_lines(src: str, opt: int) => int:
-    let o = build_src(src, opt)
+/#/ The number of instructions in the function `name` of the module of `src`.
+fn lowered_lines(src: str, opt: int, name: str) => int:
+    let t = new_tys()
+    let g = new_globals()
+    let lw = module_of(src, opt, "", &t, &g)
+    let w = new_txt()
+    w.put(&name)
+    let k = lw.lib.find(lw.names.find(&w))
+    if k < 0:
+        return -1
+    let f = new_fun("", 0)
+    lw.lib.restore(k, &f)
     let n = 0
-    for i in 0..o.n:
-        if o.b[i] == 10:
+    for b in 0..f.nb:
+        let i = f.bfirst[b]
+        while i >= 0:
             n = n + 1
+            i = f.nx[i]
     return n
 
-/#/ Did the verifier mark a function in the text?
-fn has_verifier_mark(m: &Txt) => bool:
-    let w = "; verifier"
-    for i in 0..m.n:
-        let k = 0
-        while k < len(w) && i + k < m.n && m.b[i + k] == int(w[k]):
-            k = k + 1
-        if k == len(w):
-            return true
-    return false
+/#/ The calls to the function `name` in the module of `src`, in all its functions.
+fn calls_of(src: str, opt: int, name: str) => int:
+    let t = new_tys()
+    let g = new_globals()
+    let lw = module_of(src, opt, "", &t, &g)
+    let w = new_txt()
+    w.put(&name)
+    let id = lw.names.find(&w)
+    let f = new_fun("", 0)
+    let n = 0
+    for k in 0..lw.lib.nf:
+        lw.lib.restore(k, &f)
+        for b in 0..f.nb:
+            let i = f.bfirst[b]
+            while i >= 0:
+                if f.op[i] == int(Op.Call) && f.aux[i] == id:
+                    n = n + 1
+                i = f.nx[i]
+    return n
 
-/#/ An object file, linked by clang, run.
+/#/ The effect summary of the function `name` in the module of `src`, -1 when it is not there.
+fn effects_of(src: str, opt: int, name: str) => int:
+    let t = new_tys()
+    let g = new_globals()
+    let lw = module_of(src, opt, "", &t, &g)
+    let w = new_txt()
+    w.put(&name)
+    let k = lw.lib.find(lw.names.find(&w))
+    if k < 0:
+        return -1
+    return lw.lib.f_fx[k]
+
+/#/ An object file, linked by clang with the address sanitizer, run.
 fn run_object(o: &Txt, leaks: bool) => int:
     let fp = fopen("/tmp/ir_lower_test.o", "w")
     for k in 0..o.n:
         fputc(o.b[k], fp)
     fclose(fp)
     if system("clang -w -fsanitize=address -o /tmp/ir_lower_test /tmp/ir_lower_test.o -lm") != 0:
-        return -1
-    let cmd = "ASAN_OPTIONS=exitcode=99:detect_leaks=1 /tmp/ir_lower_test 2>/tmp/ir_lower_err"
-    if !leaks:
-        cmd = "ASAN_OPTIONS=exitcode=99:detect_leaks=0 /tmp/ir_lower_test 2>/tmp/ir_lower_err"
-    let st = system(cmd)
-    return (st >> 8) & 255
-
-fn compile_and_run(m: &Txt, leaks: bool) => int:
-    if has_verifier_mark(m):
-        printf("the verifier found a problem\n")
-        return -4
-    let fp = fopen("/tmp/ir_lower_test.ll", "w")
-    for k in 0..m.n:
-        fputc(m.b[k], fp)
-    fclose(fp)
-    if system("clang -w -fsanitize=address -o /tmp/ir_lower_test /tmp/ir_lower_test.ll") != 0:
         return -1
     let cmd = "ASAN_OPTIONS=exitcode=99:detect_leaks=1 /tmp/ir_lower_test 2>/tmp/ir_lower_err"
     if !leaks:
@@ -170,10 +177,10 @@ fn expect_with(src: str, want: int, leaks: bool) => int:
         return 1
     return 0
 
-/#/ Like `expect_exit`, through the machine-code backend whatever the flag file says.
+/#/ Like `expect_exit`.
 fn expect_mc(src: str, want: int) => int:
     let dup = clone src
-    let o = build_gen(src, 1, "", 1)
+    let o = build_src(src, 1)
     if o.n == 0:
         printf("FAIL: no object for\n%s\n", dup)
         fflush(0)

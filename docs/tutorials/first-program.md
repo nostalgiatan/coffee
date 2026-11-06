@@ -58,22 +58,20 @@ head hello.ll
 
 文件开头是一些 `declare` 行,后面是每个函数的定义。你不需要读懂它,只要知道前面的编译就是先生成这个文本,再交给 `clang`。
 
-## 5. 换成 LLVM 文本
+## 5. 自己链接
 
-还有第二条路:生成 LLVM 文本,再交给 `clang`。
+`--emit-obj` 写出的目标文件可以自己链接:
 
 ```bash
-coffee2 hello.cf --emit-llvm -o hello.ll
-head hello.ll
-clang hello.ll -o hello_llvm -lm
-./hello_llvm
+cc hello.o -o hello_again -lm
+./hello_again
 ```
 
-输出和刚才一样。文件开头是一些 `declare` 行,后面是每个函数的定义。这条路径只用来做对照,不是默认。
+输出和刚才一样。`coffee2` 自己也是这样调用 `cc` 的。
 
 ## 你完成了什么
 
-你写了一个 Coffee 程序,用 `coffee2` 编译并运行了它,看到了 LLVM 文本,也用机器码后端生成过可执行文件。
+你写了一个 Coffee 程序,用 `coffee2` 编译并运行了它,也看过它生成的目标文件和机器指令。
 
 接下来可以:
 

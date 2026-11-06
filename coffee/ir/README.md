@@ -15,12 +15,11 @@ in columns. See `DESIGN.md` for the design and the order of work.
   dropped at once is `x`; every pass keeps the use counts right, and the verifier runs after
 - `src/lib.cf` — `Lib`: the functions of a module kept side by side as columns (`save` / `restore`), so
   one function can be read while another is optimized
-- `src/modopt.cf` — whole-module passes, all on the IR columns (never on LLVM text), callees first:
+- `src/modopt.cf` — whole-module passes, all on the IR columns (never on text), callees first:
   inlining (a small finished callee is copied into the caller, the block split at the call, each
   `ret` a jump with the result as a block parameter), the effect summary of each function
   (reads / writes / allocates / unknown / never returns / may not end), calls whose value nobody uses
-  and that only read and end are dropped, and the attributes the summary proves
-  (`nounwind`, `memory(none|read)`, `willreturn`, `noreturn`) that the emitter prints
+  and that only read and end are dropped, and the summary itself, which the optimizer reads
 - `src/lower.cf` — typed tree to IR, SSA built directly (Braun et al.): scalars, locals, `if`, `while`,
   `for` over a range, `break`/`continue`/`return`, calls of functions and C functions; locals
   whose address is taken live in a slot; classes (literal, fields, methods, parents), `buf<T>`,
@@ -43,7 +42,7 @@ in columns. See `DESIGN.md` for the design and the order of work.
   xmm, aggregates by pointer, sret returns, `al` for variadics), switches as compare chains. One range per value, no splitting; callee-saved registers only, so calls need no saves. `Lower.backend = 1` selects it; `Lower.object()` returns the file. Linked with
   `clang x.o -lm`. `tests/test_mc.cf` checks encodings and runs programs under AddressSanitizer; the
   whole compiler also builds itself this way (see `coffee/driver`).
-- `src/emit.cf` — LLVM text: phis for block parameters, slots in the entry block, `Syms` for callee names
+- `src/names.cf` — `Names`: the table of callee names shared by the lowering and the backend
 
 Steps 1 to 7 are done, the optimizer with effect summaries, inlining and attributes (builder, printer, verifier; emitter; scalars,
 control flow and calls; slots, classes, `buf<T>`, arrays; ownership; enums, `match`, `for`, `raise`, generics). Lowering reads the typed tree of `coffee/types`, so
@@ -57,9 +56,9 @@ Field offsets and sizes come from the storage table of `coffee/types`; `test_lay
 Not lowered yet (a function that uses one is reported as `bad`, not emitted): nested patterns, generic
 methods of their own and static functions of generic classes, `for` over owned elements, slices that own their elements.
 Arrays and tuples of resources are dropped and cloned element by element; an array lent to a `[T]`
-parameter is passed as `{ptr, len}` and stays with its owner (`tests/test_own_agg.cf`). `match` is a chain of tests, not a `switch`; LLVM turns it into one.
+parameter is passed as `{ptr, len}` and stays with its owner (`tests/test_own_agg.cf`). `match` is a chain of tests, not a `switch`.
 Temporaries inside `&&`/`||` that were only borrowed are not released.
 
 Dropping a long chain does not use a stack frame per node: the drop glue of an enum loops on its last field of the enum's own type, and the glue of a class loops through a `next: Option`-style enum that holds the class again (`tests/test_deep.cf`, a million nodes). Other shapes (a tree's left spine, longer cycles of types, `clone` of a long chain) still recurse.
 
-`free` carries the size of the block (`Free.aux` is size + 1, 0 when unknown) so a backend with its own allocator needs no header; the LLVM and x86 backends ignore it. A class whose fields own nothing is released by a bare `free`, with no drop call. `stack_alloc` (in `opt.cf`) turns an `alloc` into a `slot` when it is freed in its own block and only loaded, stored or addressed in between; a pointer that is passed, stored, returned or used in another block stays on the heap.
+`free` carries the size of the block (`Free.aux` is size + 1, 0 when unknown) so a backend with its own allocator needs no header; the x86 backend ignores it. A class whose fields own nothing is released by a bare `free`, with no drop call. `stack_alloc` (in `opt.cf`) turns an `alloc` into a `slot` when it is freed in its own block and only loaded, stored or addressed in between; a pointer that is passed, stored, returned or used in another block stays on the heap.

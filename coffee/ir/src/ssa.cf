@@ -1,6 +1,6 @@
 /#/ Block parameters made after the edges to their block exist: appending an argument to an
 /#/ edge, and the clean-up that removes the parameters that turned out to be one value.
-use * in emit
+use * in names
 
 /#/ Appends `v` to the arguments edge `e` passes. The arguments move to the end of the pool.
 fn edge_push(f: &Fun, e: int, v0: int) => void:

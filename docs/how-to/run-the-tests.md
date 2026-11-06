@@ -28,15 +28,9 @@
 coffee test --test-mode -I ../types/src -I ../sema/src -I ../parser/src -I ../lexer/src -I src tests/test_opt.cf
 ```
 
-## 让 ir 的程序走机器码后端
+## 运行类测试怎么跑
 
-`coffee/ir` 的运行类测试默认经过 LLVM。创建标志文件后,它们改走 x86-64 后端:
-
-```bash
-touch /tmp/coffee_use_obj
-coffee test --test-mode ... tests/test_lower.cf
-rm /tmp/coffee_use_obj
-```
+`coffee/ir` 的运行类测试把程序编成目标文件,用 `clang -fsanitize=address` 链接,再运行并比较退出码。
 
 一次传多个文件路径时,我只看到第一个被运行,所以逐个文件运行。
 

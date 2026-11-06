@@ -97,20 +97,6 @@ fn summarize(f: &Fun, lib: &Lib) => int:
         fx = fx | fx_loops()
     return fx
 
-/#/ The attributes `fx` proves.
-fn attrs_of(fx: int) => int:
-    let at = fa_nounwind()
-    let touches = fx_reads() | fx_writes() | fx_allocs() | fx_unknown()
-    if (fx & touches) == 0:
-        at = at | fa_memory_none()
-    elif (fx & (fx_writes() | fx_allocs() | fx_unknown())) == 0:
-        at = at | fa_memory_read()
-    if (fx & fx_noreturn()) != 0:
-        at = at | fa_noreturn()
-    elif (fx & fx_loops()) == 0:
-        at = at | fa_willreturn()
-    return at
-
 /#/ A call whose value nobody uses, of a function that only reads, always returns and ends,
 /#/ is not made.
 fn dead_calls(f: &Fun, lib: &Lib) => bool:
