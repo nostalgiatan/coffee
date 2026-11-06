@@ -1,0 +1,74 @@
+/#/ What `coffee.toml` says about this directory, for `tea`:
+/#/
+/#/     [package]
+/#/     name = "ir"
+/#/
+/#/     [build]
+/#/     main = "src/main.cf"            # the entry of `tea build` / `tea run`; default src/main.cf
+/#/     include = ["../ir/src", "src"]  # module search path of the build and of the tests
+/#/
+/#/     [test]
+/#/     include = ["kit"]               # more directories for the tests only
+/#/
+/#/ Without a `[build]` or `[test]` list, the `[test] include` of the older `tea.toml` is used and
+/#/ `tea` says so.
+use printf in libc of c
+
+class Project:
+    name: Txt
+    main: Txt
+    /#/ ` -I 'dir'` for each include directory of the build
+    build_inc: Txt
+    /#/ the same for the tests: the build's, then the `[test]` ones
+    test_inc: Txt
+    /#/ true when the lists came from `tea.toml`
+    legacy: bool
+
+fn add_inc_line(inc: &Txt, items: &Txt) => void:
+    let s = 0
+    for i in 0..items.n:
+        if items.b[i] == 10:
+            inc.put(" -I '")
+            for k in s..i:
+                inc.put_byte(items.b[k])
+            inc.put("'")
+            s = i + 1
+
+fn load_project(warn: bool) => Project:
+    let p = Project { name: new_txt(), main: txt_of("src/main.cf"), build_inc: new_txt(), test_inc: new_txt(), legacy: false }
+    let path = txt_of("coffee.toml")
+    let t = read_file(&path)
+    let found = false
+    if t.n > 0:
+        let nm = toml_value(&t, "package", "name")
+        if nm.n >= 0:
+            p.name = toml_items(&nm)
+            if p.name.n > 0:
+                p.name.n = p.name.n - 1
+        let mn = toml_value(&t, "build", "main")
+        if mn.n >= 0:
+            let items = toml_items(&mn)
+            if items.n > 0:
+                p.main = cut(&items, 0, items.n - 1)
+        let bi = toml_value(&t, "build", "include")
+        if bi.n >= 0:
+            add_inc_line(&p.build_inc, &toml_items(&bi))
+            found = true
+        p.test_inc.put_all(&p.build_inc)
+        let ti = toml_value(&t, "test", "include")
+        if ti.n >= 0:
+            add_inc_line(&p.test_inc, &toml_items(&ti))
+            found = true
+    if !found:
+        let old = txt_of("tea.toml")
+        let o = read_file(&old)
+        if o.n > 0:
+            let ti = toml_value(&o, "test", "include")
+            if ti.n >= 0:
+                add_inc_line(&p.test_inc, &toml_items(&ti))
+                p.legacy = true
+                if warn:
+                    printf("tea: reading the include list of tea.toml; move it to [build] include in coffee.toml\n")
+    if p.name.n == 0:
+        p.name = txt_of("a.out")
+    return p

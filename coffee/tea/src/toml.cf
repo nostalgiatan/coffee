@@ -1,0 +1,77 @@
+/#/ The little of TOML that `coffee.toml` uses: `[section]` lines, `key = "string"` and
+/#/ `key = ["a", "b"]` (the list may run over several lines). Comments start with `#`.
+
+/#/ The raw text after `key =` in `[section]`, with the whole list when it runs over lines; `n` is -1
+/#/ when there is no such key.
+fn toml_value(t: &Txt, section: &str, key: &str) => Txt:
+    let cur = new_txt()
+    let s = 0
+    for i in 0..t.n + 1:
+        if i == t.n || t.b[i] == 10:
+            let lo = s
+            while lo < i && (t.b[lo] == ' ' || t.b[lo] == 9):
+                lo = lo + 1
+            if lo < i && t.b[lo] == '[':
+                cur.clear()
+                let k = lo + 1
+                while k < i && t.b[k] != ']':
+                    cur.put_byte(t.b[k])
+                    k = k + 1
+            elif lo < i && t.b[lo] != '#' && cur.is(section) && toml_key_at(t, lo, i, key):
+                let v = lo + len(key)
+                while v < i && t.b[v] != '=':
+                    v = v + 1
+                v = v + 1
+                let out = new_txt()
+                let end = i
+                /#/ a list that is not closed on this line goes on to the next lines
+                let open = false
+                for q in v..i:
+                    if t.b[q] == '[':
+                        open = true
+                    if t.b[q] == ']':
+                        open = false
+                while open && end < t.n:
+                    end = end + 1
+                    while end < t.n && t.b[end] != 10:
+                        end = end + 1
+                    open = true
+                    for q in v..end:
+                        if t.b[q] == ']':
+                            open = false
+                for q in v..end:
+                    out.put_byte(t.b[q])
+                return out
+            s = i + 1
+    let none = new_txt()
+    none.n = 0 - 1
+    return none
+
+/#/ Does the line from `lo` to `hi` start with `key` followed by blanks and `=`?
+fn toml_key_at(t: &Txt, lo: int, hi: int, key: &str) => bool:
+    if lo + len(key) > hi:
+        return false
+    for k in 0..len(key):
+        if t.b[lo + k] != ch(key, k):
+            return false
+    let q = lo + len(key)
+    while q < hi && (t.b[q] == ' ' || t.b[q] == 9):
+        q = q + 1
+    return q < hi && t.b[q] == '='
+
+/#/ The quoted strings in `raw`, one per line.
+fn toml_items(raw: &Txt) => Txt:
+    let out = new_txt()
+    let i = 0
+    while i < raw.n:
+        if raw.b[i] == '#':
+            while i < raw.n && raw.b[i] != 10:
+                i = i + 1
+        elif raw.b[i] == '"':
+            i = i + 1
+            while i < raw.n && raw.b[i] != '"':
+                out.put_byte(raw.b[i])
+                i = i + 1
+            out.put_byte(10)
+        i = i + 1
+    return out

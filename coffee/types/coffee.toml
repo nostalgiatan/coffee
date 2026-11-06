@@ -10,3 +10,6 @@ path = "../parser"
 
 [dependencies.packages.lexer]
 path = "../lexer"
+
+[test]
+include = ["../sema/src", "../parser/src", "../lexer/src", "src"]

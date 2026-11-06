@@ -11,6 +11,8 @@ tea <command> [options]
 | 命令 | 作用 |
 |---|---|
 | `test` | 运行当前目录 `tests/` 里的测试。 |
+| `build` | 编译 `coffee.toml` 的入口,得到 `target/build/<包名>`。 |
+| `run` | 先 `build`,再运行程序;`--` 后面的词交给程序。 |
 
 ## tea test
 
@@ -26,14 +28,34 @@ tea test [-I dir]... [--compiler path] [-j N] [file.cf]...
 | `file.cf` | 只运行这些文件。省略时运行 `tests/*.cf`。 |
 | `--one file.cf` | 内部使用:编译并运行一个测试,结果写进它的目录。 |
 
-## tea.toml
+## tea build 和 tea run
 
-当前目录的 `tea.toml` 可以列出包含目录:
+```
+tea build [-O0..-O3] [-I dir]... [--compiler path]
+tea run   [-O0..-O3] [-I dir]... [--compiler path] [-- 程序参数...]
+```
+
+编译 `[build] main`(默认 `src/main.cf`),模块搜索目录是 `[build] include` 加上 `-I`,输出放在 `target/build/<[package] name>`。`run` 返回程序的退出码;编译失败时 `build` 和 `run` 返回 1。
+
+## coffee.toml
+
+`tea` 读当前目录的 `coffee.toml`:
 
 ```toml
-[test]
+[package]
+name = "ir"
+
+[build]
+main = "src/main.cf"
 include = ["../ir/src", "src"]
+
+[test]
+include = ["kit"]
 ```
+
+`[build] include` 同时用于构建和测试;`[test] include` 只加给测试。列表可以写成一行或分成多行,注释以 `#` 开头。`coffee2` 不读 toml,只认命令行参数,`tea` 拼好 `-I` 再交给它。
+
+两段都没有列表时,`tea` 读旧的 `tea.toml` 里的 `[test] include` 并提示迁移。
 
 ## 输出
 

@@ -7,7 +7,7 @@
 /#/
 /#/     tea test [-I dir]... [--compiler path] [-j N] [file.cf]...
 /#/
-/#/ Include directories also come from `tea.toml`: `include = ["../ir/src", "src"]` under `[test]`.
+/#/ Include directories also come from `coffee.toml`: `[build] include` and `[test] include`.
 use system, printf, fflush in libc of c
 
 class Plan:
@@ -74,31 +74,6 @@ fn parse_plan(a: &Args) => Plan:
             p.bad = 1
         i = i + 1
     return p
-
-/#/ The quoted strings of the `include = [...]` list in `tea.toml`, added as include directories.
-fn read_includes(p: &Plan) => void:
-    let path = txt_of("tea.toml")
-    let t = read_file(&path)
-    if t.n <= 0:
-        return
-    let at = 0 - 1
-    for i in 0..t.n:
-        if at < 0 && i + 7 <= t.n && t.b[i] == 'i' && t.b[i + 1] == 'n' && t.b[i + 2] == 'c' && t.b[i + 3] == 'l' && t.b[i + 4] == 'u' && t.b[i + 5] == 'd' && t.b[i + 6] == 'e':
-            at = i
-    if at < 0:
-        return
-    let i = at
-    while i < t.n && t.b[i] != '[':
-        i = i + 1
-    while i < t.n && t.b[i] != ']':
-        if t.b[i] == '"':
-            let d = new_txt()
-            i = i + 1
-            while i < t.n && t.b[i] != '"':
-                d.put_byte(t.b[i])
-                i = i + 1
-            p.add_inc(&d)
-        i = i + 1
 
 /#/ The name of a test: the file name without the directory and the `.cf`.
 fn stem_of(f: &Txt) => Txt:
@@ -211,7 +186,8 @@ fn run_test(a: &Args) => int:
     let p = parse_plan(a)
     if p.bad > 0:
         return 2
-    read_includes(&p)
+    let pr = load_project(p.one.n == 0)
+    p.inc.put_all(&pr.test_inc)
     if p.one.n > 0:
         return run_one(&p)
     if p.files.n == 0:

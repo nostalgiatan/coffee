@@ -1,15 +1,20 @@
 /#/ tea, the tool around the compiler. Each command is a module of its own; `main` only picks one.
 /#/
 /#/     tea test    run the tests of this directory (src/cmd_test.cf)
+/#/     tea build   compile the entry of coffee.toml (src/cmd_build.cf)
+/#/     tea run     build, then run the program
 use * in txt
 use * in cstr
 use * in files
 use * in args
+use * in toml
+use * in project
 use * in cmd_test
+use * in cmd_build
 use printf, fflush in libc of c
 
 fn usage() => int:
-    printf("usage: tea <command> [options]\n\ncommands:\n  test    run the tests of this directory\n")
+    printf("usage: tea <command> [options]\n\ncommands:\n  test    run the tests of this directory\n  build   compile the entry of coffee.toml\n  run     build, then run the program\n")
     fflush(0)
     return 2
 
@@ -19,5 +24,9 @@ fn main() => int:
         return usage()
     if a.is(1, "test"):
         return run_test(&a)
+    if a.is(1, "build"):
+        return run_build(&a)
+    if a.is(1, "run"):
+        return run_run(&a)
     printf("tea: unknown command\n")
     return usage()

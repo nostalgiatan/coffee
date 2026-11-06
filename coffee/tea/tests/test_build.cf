@@ -1,0 +1,29 @@
+/#/ `tea build` and `tea run` on a small project written to a scratch directory. The test is run by
+/#/ `tea test`, so `tea` itself and `coffee2` are found through PATH.
+use * in txt
+use * in cstr
+use * in files
+use system, printf, fflush in libc of c
+
+fn expect(what: int, got: int, want: int) => int:
+    if got != want:
+        printf("MISS #%d: got %d, want %d\n", what, got, want)
+        fflush(0)
+        return 1
+    return 0
+
+fn main() => int:
+    let m = 0
+    system("rm -rf proj && mkdir -p proj/src proj/lib")
+    write_file(&txt_of("proj/coffee.toml"), &txt_of("[package]\nname = \"hello\"\n\n[build]\nmain = \"src/main.cf\"\ninclude = [\"lib\"]\n"))
+    write_file(&txt_of("proj/lib/two.cf"), &txt_of("fn two() => int:\n    return 2\n"))
+    write_file(&txt_of("proj/src/main.cf"), &txt_of("use * in two\n\nfn main() => int:\n    return two() + 40\n"))
+    let st = system("cd proj && tea build > build.log 2>&1")
+    m = m + expect(1, (st >> 8) & 255, 0)
+    m = m + expect(2, system("test -x proj/target/build/hello"), 0)
+    st = system("cd proj && tea run > run.log 2>&1")
+    m = m + expect(3, (st >> 8) & 255, 42)
+    write_file(&txt_of("proj/src/main.cf"), &txt_of("fn main() => int:\n    return nope()\n"))
+    st = system("cd proj && tea build > bad.log 2>&1")
+    m = m + expect(4, (st >> 8) & 255, 1)
+    return m

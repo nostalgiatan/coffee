@@ -1,2 +1,0 @@
-[test]
-include = ["../parser/src", "../lexer/src", "src"]

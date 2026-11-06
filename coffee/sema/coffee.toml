@@ -7,3 +7,6 @@ path = "../parser"
 
 [dependencies.packages.lexer]
 path = "../lexer"
+
+[test]
+include = ["../parser/src", "../lexer/src", "src"]

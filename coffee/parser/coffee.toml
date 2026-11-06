@@ -4,3 +4,6 @@ version = "0.1.0"
 
 [dependencies.packages.lexer]
 path = "../lexer"
+
+[test]
+include = ["../lexer/src", "src"]

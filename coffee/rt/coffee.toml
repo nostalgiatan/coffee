@@ -1,2 +1,5 @@
 [package]
 name = "rt"
+
+[test]
+include = ["src"]

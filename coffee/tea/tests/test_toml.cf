@@ -1,0 +1,33 @@
+/#/ The `coffee.toml` reader: sections, strings, one-line and multi-line lists, comments.
+use * in txt
+use * in cstr
+use * in files
+use * in args
+use * in toml
+use printf, fflush in libc of c
+
+fn expect(what: int, got: str, want: str) => int:
+    if got != want:
+        printf("MISS #%d: got '%s', want '%s'\n", what, got, want)
+        fflush(0)
+        return 1
+    return 0
+
+fn items_of(doc: &Txt, section: &str, key: &str) => str:
+    let v = toml_value(doc, section, key)
+    if v.n < 0:
+        return "missing"
+    let it = toml_items(&v)
+    return txt_str(&it)
+
+fn main() => int:
+    let m = 0
+    let doc = txt_of("[package]\nname = \"ir\"\n\n# a comment\n[build]\nmain = \"src/m.cf\"\ninclude = [\"a\", \"b\"]  # two\n\n[test]\ninclude = [\n    \"x\",\n    \"y\",\n]\nname = \"other\"\n")
+    m = m + expect(1, items_of(&doc, "package", "name"), "ir\n")
+    m = m + expect(2, items_of(&doc, "build", "main"), "src/m.cf\n")
+    m = m + expect(3, items_of(&doc, "build", "include"), "a\nb\n")
+    m = m + expect(4, items_of(&doc, "test", "include"), "x\ny\n")
+    m = m + expect(5, items_of(&doc, "test", "name"), "other\n")
+    m = m + expect(6, items_of(&doc, "package", "include"), "missing")
+    m = m + expect(7, items_of(&doc, "nope", "name"), "missing")
+    return m

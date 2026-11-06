@@ -19,7 +19,7 @@ cd coffee/ir
 /tmp/coffee-seed/tea test --compiler /tmp/coffee-seed/coffee2
 ```
 
-每个阶段依赖哪些阶段写在它自己的 `tea.toml` 里,不需要再列 `-I`。选项见 [tea 参考](../reference/tea.md)。
+每个阶段依赖哪些阶段写在它自己的 `coffee.toml` 里,不需要再列 `-I`。选项见 [tea 参考](../reference/tea.md)。
 
 只运行一个文件,把路径放在命令末尾:
 
