@@ -377,26 +377,14 @@ class Flow:
             self.ex(t, g, ty, a, a.pa[n], true)
             self.ex(t, g, ty, a, a.pb[n], true)
         elif k == int(Nk.FStr):
-            self.fstr(a, n)
+            self.fstr(t, g, ty, a, n)
 
-    /#/ `{name}` inside an f-string reads the variable.
-    fn fstr(self, a: &Ast, n: int) => void:
-        let tk = a.tok[n]
-        let i = a.toks.start[tk]
-        let e = a.toks.end[tk]
-        while i < e:
-            if a.byte_at(i) == '{':
-                let s = i + 1
-                let j = s
-                while j < e && is_ident_byte(a.byte_at(j)):
-                    j = j + 1
-                if j > s:
-                    let r = self.sc.find_span(a, s, j, 0)
-                    if r >= 0 && self.sc.kind[r] == int(Sk.Local):
-                        self.ev_add(int(Ev.Use), self.sc.info[r], n, 0, 0, 0, 0)
-                i = j
-            else:
-                i = i + 1
+    /#/ The expressions of an f-string are read, not moved.
+    fn fstr(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => void:
+        let p = a.child[n]
+        while p >= 0:
+            self.ex(t, g, ty, a, a.pa[p], false)
+            p = a.next[p]
 
     fn unary(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int, value: bool) => void:
         let k = a.pc[n]

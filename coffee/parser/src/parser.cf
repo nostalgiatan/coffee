@@ -4,6 +4,27 @@
 use * in lexer
 use * in ast
 
+/#/ Can `b` begin the expression of an f-string `{...}`?
+fn fpart_starts(b: int) => bool:
+    return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || b == '_' || (b >= '0' && b <= '9') || b == '(' || b == '-' || b == '!' || b == '['
+
+/#/ The `}` that closes the `{` before `from`, balancing brackets; -1 when there is none before `e`.
+fn fpart_close(a: &Ast, from: int, e: int) => int:
+    let depth = 0
+    let i = from
+    while i < e:
+        let c = a.byte_at(i)
+        if c == '{' || c == '(' || c == '[':
+            depth = depth + 1
+        elif c == '}' || c == ')' || c == ']':
+            if depth == 0:
+                if c == '}':
+                    return i
+                return -1
+            depth = depth - 1
+        i = i + 1
+    return -1
+
 /#/ Nesting beyond this many expressions/blocks is an error, not a stack overflow.
 fn max_depth() => int:
     return 200
@@ -441,7 +462,7 @@ class Ast:
         if k == int(Tk.Str):
             return self.leaf(int(Nk.Str))
         if k == int(Tk.FStr):
-            return self.leaf(int(Nk.FStr))
+            return self.parse_fstr()
         if k == int(Tk.Char):
             return self.leaf(int(Nk.Char))
         if k == int(Tk.KwTrue) || k == int(Tk.KwFalse):
@@ -478,6 +499,48 @@ class Ast:
         if k == int(Tk.KwFn):
             return self.parse_fn(0)
         return self.fail(int(Ec.ExpectedExpr))
+
+    /#/ `f"text {expr} text"`: each `{expr}` is lexed after the main token stream and parsed
+    /#/ from there; a `{` not followed by an expression is part of the text.
+    fn parse_fstr(self) => int:
+        let tk = self.pos
+        let n = self.add(int(Nk.FStr), tk)
+        self.bump()
+        let resume = self.pos
+        let i = self.toks.start[tk] + 2
+        let e = self.toks.end[tk] - 1
+        let first = -1
+        let last = -1
+        while i < e:
+            let c = self.byte_at(i)
+            if c == '\\':
+                i = i + 2
+            elif c == '{' && i + 1 < e && fpart_starts(self.byte_at(i + 1)):
+                let j = fpart_close(&self, i + 1, e)
+                if j < 0:
+                    self.record(tk, int(Ec.ExpectedClose))
+                    break
+                let part = self.add(int(Nk.FPart), tk)
+                let from = self.toks.count
+                lex_into(&self.src, i + 1, j, &self.toks, false, self.toks.line[tk], self.toks.start[tk] - self.toks.col[tk] + 1)
+                self.pos = from
+                self.pa[part] = self.parse_expr()
+                if !self.at(int(Tk.Newline)) && !self.at(int(Tk.Eof)):
+                    self.record(self.pos, int(Ec.UnexpectedToken))
+                self.pos = resume
+                self.pb[part] = i
+                self.pc[part] = j
+                self.fin(part)
+                if first < 0:
+                    first = part
+                else:
+                    self.next[last] = part
+                last = part
+                i = j + 1
+            else:
+                i = i + 1
+        self.child[n] = first
+        return self.fin(n)
 
     fn leaf(self, kind: int) => int:
         let n = self.add(kind, self.pos)
@@ -599,8 +662,32 @@ class Ast:
             self.pb[n] = self.parse_expr()
             self.end_stmt()
             return self.fin(n)
+        let ck = self.peek()
+        if ck >= int(Tk.PlusEq) && ck <= int(Tk.SlashSlashEq):
+            return self.parse_compound(start, e, ck)
         let n = self.add(int(Nk.ExprStmt), start)
         self.pa[n] = e
+        self.end_stmt()
+        return self.fin(n)
+
+    /#/ `t op= v` is `t = t op v`: the target is parsed a second time so the tree has no shared node.
+    fn parse_compound(self, start: int, target: int, ck: int) => int:
+        let op_tok = self.pos
+        let n = self.add(int(Nk.Assign), start)
+        self.pos = start
+        let again = self.parse_expr()
+        self.pos = op_tok
+        self.bump()
+        let b = self.add(int(Nk.Binary), start)
+        let right = self.parse_expr()
+        self.pa[b] = again
+        self.pb[b] = right
+        /#/ Plus..SlashSlash and PlusEq..SlashSlashEq are in the same order
+        self.pc[b] = int(Tk.Plus) + (ck - int(Tk.PlusEq))
+        self.pd[b] = op_tok
+        self.fin(b)
+        self.pa[n] = target
+        self.pb[n] = b
         self.end_stmt()
         return self.fin(n)
 
@@ -662,35 +749,11 @@ class Ast:
         if !self.eat(int(Tk.Indent)):
             self.record(self.pos, int(Ec.ExpectedIndent))
         else:
-        let ck = self.peek()
-        if ck >= int(Tk.PlusEq) && ck <= int(Tk.SlashSlashEq):
-            return self.parse_compound(start, e, ck)
             while self.peek() != int(Tk.Dedent) && self.peek() != int(Tk.Eof):
                 let before = self.pos
                 let arm = self.parse_arm()
                 if first < 0:
                     first = arm
-    /#/ `t op= v` is `t = t op v`: the target is parsed a second time so the tree has no shared node.
-    fn parse_compound(self, start: int, target: int, ck: int) => int:
-        let op_tok = self.pos
-        let n = self.add(int(Nk.Assign), start)
-        self.pos = start
-        let again = self.parse_expr()
-        self.pos = op_tok
-        self.bump()
-        let b = self.add(int(Nk.Binary), start)
-        let right = self.parse_expr()
-        self.pa[b] = again
-        self.pb[b] = right
-        /#/ Plus..SlashSlash and PlusEq..SlashSlashEq are in the same order
-        self.pc[b] = int(Tk.Plus) + (ck - int(Tk.PlusEq))
-        self.pd[b] = op_tok
-        self.fin(b)
-        self.pa[n] = target
-        self.pb[n] = b
-        self.end_stmt()
-        return self.fin(n)
-
                 else:
                     self.next[last] = arm
                 last = arm
@@ -1105,9 +1168,9 @@ fn parse_flat(src: str) => Ast:
     let toks = lex(&src)
     let ast = new_ast(src, toks)
     ast.parse_program()
-    hoist_classes(&ast)
-    return ast
     return ast
 
 fn parse(src: str) => Ast:
     let ast = parse_flat(src)
+    hoist_classes(&ast)
+    return ast

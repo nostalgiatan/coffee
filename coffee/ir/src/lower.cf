@@ -781,49 +781,76 @@ class Lower:
         self.f.ccall(int(Rp.Ptr), 3, self.rt_memcpy, 0)
         return p
 
-    /#/ `f"text {name} text"`: the strings joined; a name is a variable holding a string.
-    fn fstr(self, t: &Tys, g: &Syms, a: &Ast, n: int) => int:
+    /#/ `f"text {expr} text"`: the text pieces and the expressions, each as text, joined. A string
+    /#/ expression is only read; an int or float is printed (`%lld`, `%g`) into a fresh buffer.
+    fn fstr(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => int:
         let tk = a.tok[n]
-        let i = a.toks.start[tk] + 2
+        let from = a.toks.start[tk] + 2
         let e = a.toks.end[tk] - 1
         let empty = new_txt()
         let acc = self.f.strlit(self.text_global(&empty))
         let owned = false
-        let lit_from = i
-        while i <= e:
-            let part = -1
-            let lit_to = i
-            let next = i + 1
-            if i == e:
-                part = -2
-            elif a.byte_at(i) == '{':
-                let j = i + 1
-                while j < e && is_ident_byte(a.byte_at(j)):
-                    j = j + 1
-                if j > i + 1 && j < e && a.byte_at(j) == '}':
-                    let r = self.sc.find_span(a, i + 1, j, 0)
-                    if r >= 0 && self.sc.kind[r] == int(Sk.Local) && t.kind[self.v_ty[self.sc.info[r]]] == int(Ty.Str):
-                        part = self.var_read(self.sc.info[r])
-                        next = j + 1
-                    else:
-                        self.unsupported(n)
-                        return acc
-            if part != -1:
-                if lit_to > lit_from:
-                    let body = self.str_range(a, lit_from, lit_to)
-                    let nx = self.str_cat(acc, self.f.strlit(self.text_global(&body)))
-                    if owned:
-                        self.f.free(acc)
-                    acc = nx
-                    owned = true
-                if part >= 0:
-                    let nx = self.str_cat(acc, part)
-                    if owned:
-                        self.f.free(acc)
-                    acc = nx
-                    owned = true
-                lit_from = next
-            i = next
+        let p = a.child[n]
+        while p >= 0:
+            if a.pb[p] > from:
+                let body = self.str_range(a, from, a.pb[p])
+                let nx = self.str_cat(acc, self.f.strlit(self.text_global(&body)))
+                if owned:
+                    self.f.free(acc)
+                acc = nx
+                owned = true
+            let x = a.pa[p]
+            let xt = self.strip_refs(t, self.nd(t, ty, x))
+            let fresh = -1
+            let v = -1
+            if t.kind[xt] == int(Ty.Str):
+                v = self.exb(t, g, ty, a, x)
+            elif t.kind[xt] == int(Ty.Bool):
+                let names = new_txt()
+                names.put("false")
+                names.put_byte(0)
+                names.put("true")
+                let base = self.f.strlit(self.text_global(&names))
+                let flag = self.f.conv(int(Op.ZExt), int(Rp.I64), self.ex(t, g, ty, a, x))
+                v = self.f.index(base, self.f.bin(int(Op.Mul), flag, self.f.cint(int(Rp.I64), 6)), 1)
+            elif t.kind[xt] == int(Ty.Int) || t.kind[xt] == int(Ty.Float):
+                let fmt = new_txt()
+                let num = self.ex(t, g, ty, a, x)
+                if t.kind[xt] == int(Ty.Int):
+                    fmt.put("%lld")
+                    num = self.coerce(t, g, num, self.nd(t, ty, x), t.int_ty(8, true))
+                else:
+                    fmt.put("%g")
+                    num = self.coerce(t, g, num, self.nd(t, ty, x), t.float_ty(8))
+                self.f.arg(self.f.cint(int(Rp.I64), 40))
+                fresh = self.f.ccall(int(Rp.Ptr), 1, self.rt_malloc, 0)
+                self.f.arg(fresh)
+                self.f.arg(self.f.cint(int(Rp.I64), 40))
+                self.f.arg(self.f.strlit(self.text_global(&fmt)))
+                self.f.arg(num)
+                let sn = new_txt()
+                sn.put("snprintf")
+                self.f.ccall(int(Rp.I32), 3, self.names.intern(&sn), 1)
+                v = fresh
+            else:
+                self.unsupported(n)
+                return acc
+            let nx = self.str_cat(acc, v)
+            if owned:
+                self.f.free(acc)
+            acc = nx
+            owned = true
+            if fresh >= 0:
+                self.f.free(fresh)
+            from = a.pc[p] + 1
+            p = a.next[p]
+        if e > from:
+            let body = self.str_range(a, from, e)
+            let nx = self.str_cat(acc, self.f.strlit(self.text_global(&body)))
+            if owned:
+                self.f.free(acc)
+            acc = nx
+            owned = true
         if !owned:
             acc = self.str_cat(acc, self.f.strlit(self.text_global(&empty)))
         return acc
@@ -1207,7 +1234,7 @@ class Lower:
         if k == int(Nk.Fn) && a.pa[n] < 0:
             return self.anon_fn(a, n)
         if k == int(Nk.FStr):
-            return self.fstr(t, g, a, n)
+            return self.fstr(t, g, ty, a, n)
         if k == int(Nk.Name):
             let v = self.lookup(a, a.tok[n])
             if v < 0:

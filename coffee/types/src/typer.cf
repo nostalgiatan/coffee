@@ -289,6 +289,16 @@ class Typer:
                 return self.set(n, want)
             return self.set(n, t.simple(int(Ty.Str)))
         if k == int(Nk.FStr):
+            let p = a.child[n]
+            while p >= 0:
+                let pt = self.value(t, g, a, a.pa[p], -1)
+                let base = pt
+                if t.kind[base] == int(Ty.Ref):
+                    base = t.a[base]
+                let bk = t.kind[base]
+                if bk != int(Ty.Str) && bk != int(Ty.Int) && bk != int(Ty.Float) && bk != int(Ty.Bool) && bk != int(Ty.Error):
+                    self.err(a.tok[a.pa[p]], int(Te.InvalidOperation), -1, pt)
+                p = a.next[p]
             return self.set(n, t.simple(int(Ty.Str)))
         if k == int(Nk.Bool):
             return self.set(n, t.simple(int(Ty.Bool)))

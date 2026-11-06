@@ -70,6 +70,8 @@ fn node_char(kind: int) => int:
         return 'S'
     if kind == int(Nk.FStr):
         return 'Q'
+    if kind == int(Nk.FPart):
+        return 'q'
     if kind == int(Nk.Char):
         return 'h'
     if kind == int(Nk.Bool):

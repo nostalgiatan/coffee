@@ -1,0 +1,32 @@
+/#/ f-strings: `{expression}` of str, int, float and bool, run under the leak checker.
+use * in drive
+use printf, fflush in libc of c
+
+fn expect(what: int, got: int, want: int) => int:
+    if got != want:
+        printf("MISS #%d: got %d, want %d\n", what, got, want)
+        fflush(0)
+        return 1
+    return 0
+
+/#/ A program whose `main` returns 0 when the f-string `body` (using the prelude's names) equals `want`.
+fn same(prelude: str, body: str, want: str) => str:
+    return "class P:\n    name: str\n    n: int\n\nfn who(s: &str) => str:\n    return f\"<{s}>\"\n\nfn five() => int:\n    return 5\n\nfn main() => int:\n    let n = 5\n    let x = 2.5\n    let b = true\n    let name = \"ab\"\n    let p = P { name: \"pp\", n: 7 }\n" + prelude + "    let s = f\"" + body + "\"\n    if s == \"" + want + "\":\n        return 0\n    return 1\n"
+
+fn main() => int:
+    let m = 0
+    m = m + expect(1, run_src(same("", "n={n}", "n=5"), true), 0)
+    m = m + expect(2, run_src(same("", "{n + 1}|{n * n - 1}", "6|24"), true), 0)
+    m = m + expect(3, run_src(same("", "{x} {x * 2.0} {0.1}", "2.5 5 0.1"), true), 0)
+    m = m + expect(4, run_src(same("", "{b} {!b} {n > 3}", "true false true"), true), 0)
+    m = m + expect(5, run_src(same("", "{name}/{p.name}/{p.n}", "ab/pp/7"), true), 0)
+    m = m + expect(6, run_src(same("", "{who(&name)} {five()} {-n}", "<ab> 5 -5"), true), 0)
+    m = m + expect(7, run_src(same("", "plain", "plain"), true), 0)
+    m = m + expect(8, run_src(same("", "{n}{n}{n}", "555"), true), 0)
+    m = m + expect(9, run_src(same("", "a { b } c", "a { b } c"), true), 0)
+    m = m + expect(10, run_src(same("    let k: int(4)+ = 9\n", "{k}", "9"), true), 0)
+    m = m + expect(11, run_src(same("    let big = 9000000000\n", "{big}", "9000000000"), true), 0)
+    m = m + expect(12, run_src(same("", "{who(&who(&name))}", "<<ab>>"), true), 0)
+    /#/ an expression that is not text, an int, a float or a bool is refused
+    m = m + expect(13, first_error(same("", "{p}", "x")), 100 + 4)
+    return m

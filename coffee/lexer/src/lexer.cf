@@ -383,15 +383,21 @@ fn after_last_newline(src: &str, a: int, b: int) => int:
 /#/ ---- the lexer ---------------------------------------------------------
 
 fn lex(src: &str) => Tokens:
-    let n = len(src)
     let t = new_tokens()
+    lex_into(src, 0, len(src), &t, true, 1, 0)
+    return t
+
+/#/ Appends the tokens of `src[from, n)` to `t`, ending with an Eof. `at_bol` says the range
+/#/ starts a line (indentation counts); `line` and `line_start` place it in the file. An
+/#/ f-string's `{expression}` is lexed this way, after the main stream.
+fn lex_into(src: &str, from: int, n: int, t: &Tokens, at_bol0: bool, line0: int, line_start0: int) => void:
     let stack = new_buf(int, 128)
     let sp = 1
     let depth = 0
-    let line = 1
-    let line_start = 0
-    let at_bol = true
-    let i = 0
+    let line = line0
+    let line_start = line_start0
+    let at_bol = at_bol0
+    let i = from
     while i < n:
         if at_bol:
             /#/ Measure indentation; blank and comment-only lines are ignored.
@@ -442,7 +448,7 @@ fn lex(src: &str) => Tokens:
             elif c == '\n':
                 let last = t.last_kind()
                 let ends = last != int(Tk.Newline) && last != int(Tk.Indent) && last != int(Tk.Dedent) && last >= 0
-                let cont = continues_line(last) && !ends_in_size_suffix(&t) && !ends_in_type_args(&t)
+                let cont = continues_line(last) && !ends_in_size_suffix(t) && !ends_in_type_args(t)
                 if depth == 0 && ends && !cont:
                     t.push(int(Tk.Newline), i, i + 1, line, col)
                 i = i + 1
@@ -547,4 +553,3 @@ fn lex(src: &str) => Tokens:
         sp = sp - 1
         t.push(int(Tk.Dedent), n, n, line, col)
     t.push(int(Tk.Eof), n, n, line, col)
-    return t

@@ -300,7 +300,7 @@ class Checker:
                 self.expr(a, g, c)
                 c = a.next[c]
         elif k == int(Nk.FStr):
-            self.fstr(a, n)
+            self.fstr(a, g, n)
         elif k == int(Nk.Fn):
             self.function(a, g, n, false)
 
@@ -416,23 +416,11 @@ class Checker:
             depth = depth + 1
 
     /#/ `{name}` inside an f-string reads `name`. Only marks it used: the text is not parsed.
-    fn fstr(self, a: &Ast, n: int) => void:
-        let t = a.tok[n]
-        let i = a.toks.start[t]
-        let e = a.toks.end[t]
-        while i < e:
-            if a.byte_at(i) == '{':
-                let s = i + 1
-                let j = s
-                while j < e && is_ident_byte(a.byte_at(j)):
-                    j = j + 1
-                if j > s:
-                    let r = self.loc.find_span(a, s, j, 0)
-                    if r >= 0:
-                        self.loc.used[r] = 1
-                i = j
-            else:
-                i = i + 1
+    fn fstr(self, a: &Ast, g: &Syms, n: int) => void:
+        let p = a.child[n]
+        while p >= 0:
+            self.expr(a, g, a.pa[p])
+            p = a.next[p]
 
     /#/ ---- statements ----------------------------------------------------
 
