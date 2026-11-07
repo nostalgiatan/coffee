@@ -4,6 +4,7 @@ use * in asm
 use * in asm_a64
 use * in target_a64
 use * in gen_x86_regs
+use * in regalloc
 use * in gen_x86_call
 use * in gen_x86_isel
 use * in gen_a64_regs

@@ -1,5 +1,6 @@
 /#/ x86-64: which registers a value may live in, the allocation of them over live ranges, the frame layout and the moves along edges. The machine's facts (the pool, the caller-saved slots, call masks) are in target_x86.cf.
 use * in gen
+use * in regalloc
 use * in asm
 use * in gen_x86_call
 use * in gen_x86_isel
@@ -9,16 +10,6 @@ use * in gen_dbg
 use * in target_x86
 use * in elf
 use * in dbgtype
-
-/#/ Can value `v` live in a register? Scalars made by instructions or block parameters.
-fn g_wants_reg(g: &Gen, f: &Fun, v: int) => bool:
-    if f.fwd[v] >= 0:
-        return false
-    let r = f.rep[v]
-    if r == int(Rp.Void) || r >= rp_first_agg():
-        return false
-    let op = f.op[v]
-    return !(op == int(Op.Slot) || op == int(Op.Const) || op == int(Op.StrLit) || op == int(Op.Undef) || op == int(Op.OwnMove))
 
 /#/ Does instruction `i` make a call (so that the registers a callee may write are lost)?
 fn g_is_clobber(g: &Gen, f: &Fun, i: int) => bool:
@@ -83,78 +74,6 @@ fn g_reg_ok(g: &Gen, r: int, cm: int, restr: bool) => bool:
         return false
     return r == 0 || !restr
 
-/#/ Is there a call strictly between positions `lo` and `hi`?
-fn g_crosses(g: &Gen, lo: int, hi: int) => bool:
-    let a = 0
-    let b = g.ra_ncp
-    while a < b:
-        let mid = (a + b) // 2
-        if g.ra_cp[mid] > lo:
-            b = mid
-        else:
-            a = mid + 1
-    return a < g.ra_ncp && g.ra_cp[a] < hi
-
-/#/ Counts the uses of every value of `f`, through forwarding and `own.move`.
-fn g_count_uses(g: &Gen, f: &Fun) => void:
-    if len(g.nuse) < f.ni + 1:
-        g.nuse = new_buf(int, f.ni + 1)
-    for v in 0..f.ni + 1:
-        g.nuse[v] = 0
-    for b in 0..f.nb:
-        let i = f.bfirst[b]
-        while i >= 0:
-            for k in 0..f.nval(i):
-                let v = f.val_at(i, k)
-                if v >= 0:
-                    let x = g_res(g, f, v)
-                    g.nuse[x] = g.nuse[x] + 1
-            i = f.nx[i]
-    for e in 0..f.ne:
-        if f.eto[e] >= 0:
-            for k in 0..f.eargn[e]:
-                let x = g_res(g, f, f.pool[f.eargs[e] + k])
-                g.nuse[x] = g.nuse[x] + 1
-
-/#/ Is `x`, an `index` or a `field`, only the address of the scalar `load` or `store` right
-/#/ after it? Then the access uses the address mode and `x` makes no code of its own.
-fn g_folds(g: &Gen, f: &Fun, x: int) => bool:
-    let op = f.op[x]
-    if op != int(Op.Index) && op != int(Op.Field):
-        return false
-    if g.nuse[x] != 1 || f.fwd[x] >= 0:
-        return false
-    if op == int(Op.Index):
-        let sz = f.aux[x]
-        if sz != 1 && sz != 2 && sz != 4 && sz != 8:
-            return false
-    let u = f.nx[x]
-    if u < 0:
-        return false
-    if f.op[u] == int(Op.Load):
-        return g_res(g, f, f.a[u]) == x && f.rep[u] < rp_first_agg()
-    if f.op[u] == int(Op.Store):
-        let v = g_res(g, f, f.b[u])
-        return g_res(g, f, f.a[u]) == x && v != x && f.rep[v] < rp_first_agg()
-    return false
-
-/#/ The address of the folded `x` as base, index, scale and displacement in `am_*`; what is not
-/#/ in a register of its own is loaded into `s1` (the base) and `s2` (the index).
-fn g_addr_of(g: &Gen, f: &Fun, x: int, s1: int, s2: int) => void:
-    g.am_base = g_src(g, f, f.a[x], s1)
-    if f.op[x] == int(Op.Index) && g_near_const(g, f, f.b[x]):
-        g.am_idx = -1
-        g.am_scale = 1
-        g.am_disp = f.aux[g_res(g, f, f.b[x])] * f.aux[x]
-    elif f.op[x] == int(Op.Index):
-        g.am_idx = g_src(g, f, f.b[x], s2)
-        g.am_scale = f.aux[x]
-        g.am_disp = 0
-    else:
-        g.am_idx = -1
-        g.am_scale = 1
-        g.am_disp = f.aux[x]
-
 /#/ Does a call stand at position `p`?
 fn g_at_call(g: &Gen, p: int) => bool:
     let a = 0
@@ -166,25 +85,6 @@ fn g_at_call(g: &Gen, p: int) => bool:
         else:
             a = mid + 1
     return a < g.ra_ncp && g.ra_cp[a] == p
-
-/#/ The edges leaving block `b`, in `ed`.
-fn g_term_edges(g: &Gen, f: &Fun, b: int) => void:
-    g.ned = 0
-    let t = f.blast[b]
-    if t < 0:
-        return
-    let op = f.op[t]
-    if op == int(Op.Br):
-        g_add_edge(g, f.aux[t])
-    elif op == int(Op.CondBr):
-        g_add_edge(g, f.b[t])
-        g_add_edge(g, f.c[t])
-
-fn g_add_edge(g: &Gen, e: int) => void:
-    if g.ned >= len(g.ed):
-        g.ed = buf_resize(g.ed, (g.ned + 1) * 2)
-    g.ed[g.ned] = e
-    g.ned = g.ned + 1
 
 /#/ The live range, the loop-weighted use count and the definition of every value that may live in a register (`g.ra_*`,
 /#/ `g.dv`, `g.dn`, `g.coal`): the part of register allocation every target shares. `home` and `xhome` are cleared;
@@ -595,138 +495,9 @@ fn g_alloc_regs(g: &Gen, f: &Fun, rs: &Reps) => void:
             g.saved[g.nsaved] = regs[r]
             g.nsaved = g.nsaved + 1
 
-/#/ For an instruction that computes into its first operand's register (two-address): the
-/#/ register that operand has, else -1.
-fn g_hint_reg(g: &Gen, f: &Fun, v: int) => int:
-    let op = f.op[v]
-    if op == int(Op.Add) || op == int(Op.Sub) || op == int(Op.Mul) || op == int(Op.And) || op == int(Op.Or) || op == int(Op.Xor) || op == int(Op.Shl) || op == int(Op.AShr) || op == int(Op.LShr) || op == int(Op.Neg) || op == int(Op.Not):
-        if f.a[v] >= 0:
-            return g.home[g_res(g, f, f.a[v])]
-        return -1
-    if op == int(Op.Trunc) || op == int(Op.Bitcast) || op == int(Op.PtrToInt) || op == int(Op.IntToPtr) || op == int(Op.SExt) || op == int(Op.ZExt):
-        if f.a[v] >= 0:
-            return g.home[g_res(g, f, f.a[v])]
-    return -1
-
-/#/ Give the float constant `v` a number as a value to keep in a register, once; returns the new count.
-fn g_hoist_const(g: &Gen, f: &Fun, v: int, nd: int) => int:
-    if v < 0:
-        return nd
-    let x = g_res(g, f, v)
-    if f.op[x] != int(Op.Const) || g.did[x] >= 0:
-        return nd
-    if f.rep[x] != int(Rp.F64) && f.rep[x] != int(Rp.F32):
-        return nd
-    if g.nhc >= len(g.hc):
-        g.hc = buf_resize(g.hc, (g.nhc + 1) * 2)
-    g.hc[g.nhc] = x
-    g.nhc = g.nhc + 1
-    g.did[x] = nd
-    return nd + 1
-
-fn g_note_use(g: &Gen, f: &Fun, v: int, b: int, p: int, w: int) => void:
-    if v < 0:
-        return
-    let x = g_res(g, f, v)
-    let d = g.did[x]
-    if d < 0:
-        return
-    g.ra_wt[d] = g.ra_wt[d] + w
-    if p < g.ra_lo[d]:
-        g.ra_lo[d] = p
-    if p > g.ra_hi[d]:
-        g.ra_hi[d] = p
-    if g.ra_dset[d] == 1 && g.ra_dblk[d] == b:
-        return
-    if g.nuq >= len(g.uq_d):
-        g.uq_d = buf_resize(g.uq_d, (g.nuq + 1) * 2)
-        g.uq_b = buf_resize(g.uq_b, (g.nuq + 1) * 2)
-    g.uq_d[g.nuq] = d
-    g.uq_b[g.nuq] = b
-    g.nuq = g.nuq + 1
-
-/#/ Is value `d` live out of block `b`: live into one of its successors?
-fn g_live_out_of(g: &Gen, f: &Fun, b: int, d: int, lvb: &buf<int>, lvs: &buf<int>, lve: &buf<int>) => bool:
-    g_term_edges(g, f, b)
-    for k in 0..g.ned:
-        let t = f.eto[g.ed[k]]
-        if t >= 0:
-            for q in lvs[d]..lve[d]:
-                if lvb[q] == t:
-                    return true
-    return false
-
-/#/ ---- frame -------------------------------------------------------------
-
-fn g_place_size(g: &Gen, rs: &Reps, r: int) => int:
-    let s = round8(rsize(rs, r))
-    if s < 8:
-        return 8
-    return s
-
 /#/ Gives every value its place; the size of the frame.
 fn g_layout(g: &Gen, f: &Fun, rs: &Reps) => void:
-    if len(g.voff) < f.ni + 1:
-        g.voff = new_buf(int, f.ni + 1)
-        g.sh = new_buf(int, f.ni + 1)
-    for v in 0..f.ni:
-        g.sh[v] = 0
-    let sbx = g.a.sbx
-    /#/ sandbox code keeps aggregates and the slots whose address is taken in the shadow frame, in
-    /#/ the linear memory: a pointer to them is an offset like any other, and the host stack holds
-    /#/ only what the code cannot name (return addresses, saved registers, spilled scalars)
-    let scur = 0
-    let cur = g.rbase + 8 * g.nsaved
-    let tmp = 0
-    for b in 0..f.nb:
-        let p = f.pfirst[b]
-        while p >= 0:
-            if g.home[p] < 0 && g.xhome[p] < 0:
-                if sbx && f.rep[p] >= rp_first_agg():
-                    g.voff[p] = 0 - scur
-                    g.sh[p] = 1
-                    scur = scur + g_place_size(g, rs, f.rep[p])
-                else:
-                    cur = cur + g_place_size(g, rs, f.rep[p])
-                    g.voff[p] = cur
-            p = f.nx[p]
-        let i = f.bfirst[b]
-        while i >= 0:
-            let op = f.op[i]
-            if op == int(Op.Slot):
-                let sz = round8(f.ty[i])
-                if f.ty[i] < 1:
-                    sz = sz + 8
-                if sbx:
-                    g.voff[i] = 0 - scur
-                    g.sh[i] = 1
-                    scur = scur + sz
-                else:
-                    cur = cur + sz
-                    g.voff[i] = cur
-            elif f.rep[i] != int(Rp.Void) && op != int(Op.OwnMove) && g.home[i] < 0 && g.xhome[i] < 0:
-                if sbx && f.rep[i] >= rp_first_agg():
-                    g.voff[i] = 0 - scur
-                    g.sh[i] = 1
-                    scur = scur + g_place_size(g, rs, f.rep[i])
-                else:
-                    cur = cur + g_place_size(g, rs, f.rep[i])
-                    g.voff[i] = cur
-            i = f.nx[i]
-    for e in 0..f.ne:
-        if f.eto[e] >= 0:
-            let sum = 0
-            for k in 0..f.eargn[e]:
-                sum = sum + g_place_size(g, rs, f.rep[g_res(g, f, f.pool[f.eargs[e] + k])])
-            if sum > tmp:
-                tmp = sum
-    cur = cur + tmp
-    g.tmp = cur
-    g.frame = (cur + 15) // 16 * 16
-    g.sframe = (scur + 15) // 16 * 16
-    /#/ a frame larger than the guard below the shadow stack could be stepped over
-    if g.sframe > 32768:
-        g.err = 1
+    layout_frame(g, f, rs, 0, true, 0)
 
 /#/ ---- edges -------------------------------------------------------------
 
@@ -876,13 +647,3 @@ fn g_emit_move(g: &Gen, f: &Fun, p: int, ax: int, src: int) => void:
         else:
             g_ld(g, 0, f, ax)
             g_st(g, p, 0)
-
-/#/ A number for the register of `x`, general ones as they are and xmm ones from 32; -1 in the frame.
-fn g_hid(g: &Gen, x: int) => int:
-    if g.home[x] >= 0:
-        return g.home[x]
-    if g.xhome[x] >= 0:
-        return 32 + g.xhome[x]
-    return -1
-
-/#/ ---- calls -------------------------------------------------------------
