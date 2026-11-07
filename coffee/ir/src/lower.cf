@@ -3542,6 +3542,9 @@ class Lower:
             self.f.reset(&name, int(Rp.I64))
         else:
             self.f.reset(&name, rr)
+        if cls < 0 && self.penv < 0 && self.pnm < 0 && a.pd[fn_node] == 1:
+            let ps = self.mc.o.sym(&name)
+            self.mc.o.s_pub[ps - 2] = 1
         self.cur_id = self.names.intern(&name)
         self.nf_n = 0
         if self.pnm >= 0:
@@ -3601,6 +3604,9 @@ class Lower:
         self.main_fn = false
         if cls < 0 && self.pnm < 0 && self.penv < 0 && a.pa[fn_node] >= 0 && tok_is(a, a.pa[fn_node], "main"):
             self.main_fn = true
+            self.init_globals(t, g, ty, a)
+        elif cls < 0 && self.pnm < 0 && self.penv < 0 && a.pa[fn_node] >= 0 && tok_is(a, a.pa[fn_node], "cf_init"):
+            /#/ a text with no `main` (a library) runs its module-level initializers when its host calls `cf_init`
             self.init_globals(t, g, ty, a)
         self.tailb = -1
         if rr != int(Rp.Void):

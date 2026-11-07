@@ -1,0 +1,332 @@
+/#/ The JIT as a library for programs written in other languages: the C functions of
+/#/ `jit/include/cfjit.h`. A context holds the functions the host offers and the modules loaded; a
+/#/ module is a `.cir` (made by `coffee2 --emit-cir`) that is linked in memory against both. The
+/#/ functions of a module that are `c fn` keep their names and the C calling convention, so the host
+/#/ calls them through the address `cfjit_sym` gives and the module calls the host's through the names
+/#/ `cfjit_register` was given. Build: `jit/tools/build-lib.sh`.
+use * in cir
+use * in image
+use * in loader
+use * in cstr
+use * in files
+
+/#/ A context: the table of names, and for each module where it is, the addresses its stubs were
+/#/ given (to find who depends on whom) and the names it defines. Names are kept in `arena`.
+class Ctx:
+    ex: Exports
+    arena: Txt
+    nm: int
+    /#/ per module: 0 unused, 1 loaded, 2 replaced (its exports are gone; free it when nothing runs in it)
+    m_state: buf<int>
+    m_base: buf<int>
+    m_size: buf<int>
+    m_imp0: buf<int>
+    m_nimp: buf<int>
+    m_exp0: buf<int>
+    m_nexp: buf<int>
+    /#/ per import: name (in `arena`), the address of its slot, the address it was bound to
+    ni: int
+    imp_name: buf<int>
+    imp_slot: buf<int>
+    imp_addr: buf<int>
+    /#/ per export: name, address
+    ne: int
+    exp_name: buf<int>
+    exp_addr: buf<int>
+
+fn new_ctx() => Ctx:
+    return Ctx { ex: new_exports(), arena: new_txt(), nm: 0, m_state: new_buf(int, 8), m_base: new_buf(int, 8), m_size: new_buf(int, 8), m_imp0: new_buf(int, 8), m_nimp: new_buf(int, 8), m_exp0: new_buf(int, 8), m_nexp: new_buf(int, 8), ni: 0, imp_name: new_buf(int, 16), imp_slot: new_buf(int, 16), imp_addr: new_buf(int, 16), ne: 0, exp_name: new_buf(int, 16), exp_addr: new_buf(int, 16) }
+
+/#/ The contexts, by handle (1 to 16). A library has no `main` to run the initializers of module-level
+/#/ values; `cf_init` is the function that does (every entry point calls `boot` first).
+let ctxs: buf<Ctx> = new_buf(Ctx, 16)
+let ctx_used: buf<int> = new_buf(int, 16)
+let booted = 0
+
+fn cf_init() => void:
+    return
+
+fn boot() => void:
+    if booted == 0:
+        cf_init()
+        booted = 1
+
+fn ctx_ok(h: int) => bool:
+    boot()
+    return h >= 1 && h <= 16 && ctx_used[h - 1] == 1
+
+/#/ The text of the C string at `p`.
+fn c_txt(p: object) => Txt:
+    let t = new_txt()
+    let a = int(p)
+    if a == 0:
+        return t
+    let i = 0
+    while peek8((a + i) as object) != 0:
+        t.put_byte(peek8((a + i) as object))
+        i = i + 1
+    return t
+
+/#/ Leaves `msg` in the buffer `err` of `n` bytes (when there is one), with a NUL at the end.
+fn put_err(err: object, n: int, msg: &Txt) => void:
+    let a = int(err)
+    if a == 0 || n <= 0:
+        return
+    let k = 0
+    while k < msg.n && k < n - 1:
+        poke8((a + k) as object, msg.b[k])
+        k = k + 1
+    poke8((a + k) as object, 0)
+
+fn put_err_lit(err: object, n: int, msg: &str) => void:
+    let m = new_txt()
+    m.put(msg)
+    put_err(err, n, &m)
+
+fn put_err_name(err: object, n: int, before: &str, name: &Txt, after: &str) => void:
+    let m = new_txt()
+    m.put(before)
+    m.put_all(name)
+    m.put(after)
+    put_err(err, n, &m)
+
+/#/ The name `w` stored in the arena of `c`: where.
+fn keep_name(c: &Ctx, w: &Txt) => int:
+    let at = c.arena.n
+    c.arena.put_all(w)
+    c.arena.put_byte(0)
+    return at
+
+fn ensure_mod(c: &Ctx) => void:
+    if c.nm >= len(c.m_state):
+        let cap = (c.nm + 1) * 2
+        c.m_state = buf_resize(c.m_state, cap)
+        c.m_base = buf_resize(c.m_base, cap)
+        c.m_size = buf_resize(c.m_size, cap)
+        c.m_imp0 = buf_resize(c.m_imp0, cap)
+        c.m_nimp = buf_resize(c.m_nimp, cap)
+        c.m_exp0 = buf_resize(c.m_exp0, cap)
+        c.m_nexp = buf_resize(c.m_nexp, cap)
+
+fn ensure_imp(c: &Ctx) => void:
+    if c.ni >= len(c.imp_name):
+        let cap = (c.ni + 1) * 2
+        c.imp_name = buf_resize(c.imp_name, cap)
+        c.imp_slot = buf_resize(c.imp_slot, cap)
+        c.imp_addr = buf_resize(c.imp_addr, cap)
+
+fn ensure_exp(c: &Ctx) => void:
+    if c.ne >= len(c.exp_name):
+        let cap = (c.ne + 1) * 2
+        c.exp_name = buf_resize(c.exp_name, cap)
+        c.exp_addr = buf_resize(c.exp_addr, cap)
+
+/#/ Reads, generates, links and records the module in `cir`. The number of the module (from 1), or a
+/#/ negative code with the reason in `why`: -1 the file is no usable .cir, -2 the code could not be
+/#/ made, -3 the system has no memory, -4 the module calls a name nothing offers.
+fn ctx_load(c: &Ctx, cir: &Txt, why: &Txt) => int:
+    let lw = new_lower()
+    let e = read_cir(cir, &lw)
+    if e != 0:
+        why.put("not a usable .cir")
+        return 0 - 1
+    prune_unreached(&lw)
+    lw.generate()
+    if lw.ver_err > 0 || lw.mc_err > 0:
+        why.put("the code could not be made")
+        return 0 - 2
+    let im = image_of(&lw)
+    if im.err != 0:
+        why.put("a relocation could not be applied")
+        return 0 - 2
+    let missing = new_txt()
+    let base = link_image(&im, &c.ex, 0, &missing)
+    if base == 0:
+        if missing.n > 0:
+            why.put("the module calls '")
+            why.put_all(&missing)
+            why.put("', which nothing offers")
+            return 0 - 4
+        why.put("out of memory")
+        return 0 - 3
+    ensure_mod(c)
+    let id = c.nm
+    c.nm = c.nm + 1
+    c.m_state[id] = 1
+    c.m_base[id] = base
+    c.m_size[id] = page_round(im.total + 1)
+    c.m_imp0[id] = c.ni
+    c.m_nimp[id] = im.nimp
+    for k in 0..im.nimp:
+        ensure_imp(c)
+        let w = name_txt(&im.names, im.imp_name[k])
+        c.imp_name[c.ni] = keep_name(c, &w)
+        c.imp_slot[c.ni] = base + im.imp_slot[k]
+        c.imp_addr[c.ni] = c.ex.find(&w)
+        c.ni = c.ni + 1
+    c.m_exp0[id] = c.ne
+    let n0 = c.ne
+    for k in 0..im.nsym:
+        let w = name_txt(&im.names, im.sym_name[k])
+        if w.is("main"):
+            continue
+        let a = base + im.sym_at[k]
+        if c.ex.find(&w) == 0:
+            c.ex.add(&w, a)
+            ensure_exp(c)
+            c.exp_name[c.ne] = keep_name(c, &w)
+            c.exp_addr[c.ne] = a
+            c.ne = c.ne + 1
+    c.m_nexp[id] = c.ne - n0
+    return id
+
+/#/ The module `id` of `c` is loaded (not replaced, not freed).
+fn mod_live(c: &Ctx, id: int) => bool:
+    return id >= 0 && id < c.nm && c.m_state[id] == 1
+
+/#/ The bytes at `p`, `n` of them.
+fn bytes_txt(p: object, n: int) => Txt:
+    let t = new_txt()
+    let a = int(p)
+    for i in 0..n:
+        t.put_byte(peek8((a + i) as object))
+    return t
+
+/#/ A new context: its handle (1 to 16), 0 when there are too many.
+c fn cfjit_new() => int:
+    boot()
+    for h in 0..16:
+        if ctx_used[h] == 0:
+            ctxs[h] = new_ctx()
+            ctx_used[h] = 1
+            return h + 1
+    return 0
+
+/#/ Unmaps every module of the context and forgets it.
+c fn cfjit_free(h: int) => void:
+    if !ctx_ok(h):
+        return
+    let c = &ctxs[h - 1]
+    for id in 0..c.nm:
+        if c.m_state[id] != 0:
+            syscall(11, c.m_base[id], c.m_size[id], 0, 0, 0, 0)
+    ctx_used[h - 1] = 0
+
+/#/ Offers the C function at `fn` to the modules under `name`. 0 on success.
+c fn cfjit_register(h: int, name: object, fn_addr: object) => int:
+    if !ctx_ok(h) || int(fn_addr) == 0:
+        return 0 - 1
+    let c = &ctxs[h - 1]
+    let w = c_txt(name)
+    if w.n == 0 || c.ex.find(&w) != 0:
+        return 0 - 1
+    c.ex.add(&w, int(fn_addr))
+    return 0
+
+/#/ Loads the module in the `n` bytes at `data`. Its number (from 1), or a negative code and the reason
+/#/ in the `errn` bytes at `err`.
+c fn cfjit_load(h: int, data: object, n: int, err: object, errn: int) => int:
+    if !ctx_ok(h):
+        put_err_lit(err, errn, "no such context")
+        return 0 - 1
+    let c = &ctxs[h - 1]
+    let cir = bytes_txt(data, n)
+    let why = new_txt()
+    let id = ctx_load(c, &cir, &why)
+    if id < 0:
+        put_err(err, errn, &why)
+        return id
+    return id + 1
+
+/#/ The address of the function or datum called `name` that the context knows (the host's or a
+/#/ module's), 0 when there is none.
+c fn cfjit_sym(h: int, name: object) => object:
+    if !ctx_ok(h):
+        return 0 as object
+    let c = &ctxs[h - 1]
+    let w = c_txt(name)
+    return c.ex.find(&w) as object
+
+/#/ Does a loaded module other than `id` have a stub bound into the module `id`?
+fn depended_on(c: &Ctx, id: int) => bool:
+    let lo = c.m_base[id]
+    let hi = lo + c.m_size[id]
+    for j in 0..c.nm:
+        if j != id && c.m_state[j] == 1:
+            for k in c.m_imp0[j]..c.m_imp0[j] + c.m_nimp[j]:
+                if c.imp_addr[k] >= lo && c.imp_addr[k] < hi:
+                    return true
+    return false
+
+/#/ Takes the module `n` out: its names, its memory. -1 when there is no such module, -2 when another
+/#/ module calls into it.
+c fn cfjit_unload(h: int, n: int) => int:
+    if !ctx_ok(h):
+        return 0 - 1
+    let c = &ctxs[h - 1]
+    let id = n - 1
+    if id < 0 || id >= c.nm || c.m_state[id] == 0:
+        return 0 - 1
+    if c.m_state[id] == 1 && depended_on(c, id):
+        return 0 - 2
+    c.ex.drop_range(c.m_base[id], c.m_base[id] + c.m_size[id])
+    syscall(11, c.m_base[id], c.m_size[id], 0, 0, 0, 0)
+    c.m_state[id] = 0
+    return 0
+
+/#/ Replaces the module `n` by the one in the `len` bytes at `data`: the new one is linked first, then the
+/#/ stubs of the other modules that were bound into the old one are bound to the new one's functions of
+/#/ the same names. The old module stays mapped, so code still running in it finishes; free it with
+/#/ `cfjit_unload` once nothing does. The number of the new module, or a negative code: -1 as in
+/#/ `cfjit_load`, -5 the new module lacks a function the others call (nothing changed).
+c fn cfjit_replace(h: int, n: int, data: object, len_: int, err: object, errn: int) => int:
+    if !ctx_ok(h):
+        put_err_lit(err, errn, "no such context")
+        return 0 - 1
+    let c = &ctxs[h - 1]
+    let old = n - 1
+    if !mod_live(c, old):
+        put_err_lit(err, errn, "no such module")
+        return 0 - 1
+    let lo = c.m_base[old]
+    let hi = lo + c.m_size[old]
+    /#/ the new module must not be linked to the old one's functions
+    c.ex.drop_range(lo, hi)
+    let cir = bytes_txt(data, len_)
+    let why = new_txt()
+    let id = ctx_load(c, &cir, &why)
+    if id < 0:
+        for k in c.m_exp0[old]..c.m_exp0[old] + c.m_nexp[old]:
+            let nm = name_txt(&c.arena, c.exp_name[k])
+            c.ex.add(&nm, c.exp_addr[k])
+        put_err(err, errn, &why)
+        return id
+    /#/ every stub bound into the old module needs a function of the same name in the new one
+    let ok = true
+    for j in 0..c.nm:
+        if j != id && j != old && c.m_state[j] == 1:
+            for k in c.m_imp0[j]..c.m_imp0[j] + c.m_nimp[j]:
+                if c.imp_addr[k] >= lo && c.imp_addr[k] < hi:
+                    let w = name_txt(&c.arena, c.imp_name[k])
+                    let a = c.ex.find(&w)
+                    if a == 0 || (a >= lo && a < hi):
+                        ok = false
+                        put_err_name(err, errn, "the new module lacks '", &w, "', which another module calls")
+    if !ok:
+        c.ex.drop_range(c.m_base[id], c.m_base[id] + c.m_size[id])
+        syscall(11, c.m_base[id], c.m_size[id], 0, 0, 0, 0)
+        c.m_state[id] = 0
+        for k in c.m_exp0[old]..c.m_exp0[old] + c.m_nexp[old]:
+            let nm = name_txt(&c.arena, c.exp_name[k])
+            c.ex.add(&nm, c.exp_addr[k])
+        return 0 - 5
+    for j in 0..c.nm:
+        if j != id && j != old && c.m_state[j] == 1:
+            for k in c.m_imp0[j]..c.m_imp0[j] + c.m_nimp[j]:
+                if c.imp_addr[k] >= lo && c.imp_addr[k] < hi:
+                    let w = name_txt(&c.arena, c.imp_name[k])
+                    let a = c.ex.find(&w)
+                    poke64(c.imp_slot[k], a)
+                    c.imp_addr[k] = a
+    c.m_state[old] = 2
+    return id + 1

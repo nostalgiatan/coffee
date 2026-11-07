@@ -39,6 +39,16 @@ class Exports:
                 return self.addr[k]
         return 0
 
+    /#/ Forgets every symbol whose address is in [lo, hi): the module there is going away.
+    fn drop_range(self, lo: int, hi: int) => void:
+        let j = 0
+        for k in 0..self.n:
+            if self.addr[k] < lo || self.addr[k] >= hi:
+                self.at[j] = self.at[k]
+                self.addr[j] = self.addr[k]
+                j = j + 1
+        self.n = j
+
     /#/ Defines `w` as the address `a` (not when `w` is defined already).
     fn add(self, w: &Txt, a: int) => void:
         if a == 0 || self.find(w) != 0:

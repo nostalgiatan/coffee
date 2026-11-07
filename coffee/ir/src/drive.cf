@@ -220,7 +220,7 @@ fn module_of(bytes: buf<int>, size: int, opt: int, cfc: str, t: &Tys, g: &Syms) 
     let has_main = false
     let it = p.a.child[p.a.root]
     while it >= 0:
-        if p.a.kind[it] == int(Nk.Fn) && p.a.pa[it] >= 0 && tok_is(&p.a, p.a.pa[it], "main"):
+        if p.a.kind[it] == int(Nk.Fn) && p.a.pa[it] >= 0 && (tok_is(&p.a, p.a.pa[it], "main") || tok_is(&p.a, p.a.pa[it], "cf_init")):
             has_main = true
         it = p.a.next[it]
     if lw.bad == 0 && !has_main:

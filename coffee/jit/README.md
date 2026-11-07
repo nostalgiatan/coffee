@@ -28,7 +28,26 @@ The image is laid out in pages with their own rights: the code and the stubs of 
 
 Each module has its own copy of the runtime (its own heap): memory one module allocates can be freed in another, but a pointer into a module's data is that module's business. The sandbox (`--sandbox`) still refuses any call outside the module.
 
-Not yet: data symbols shared between modules, unloading a module, replacing a function in a loaded module, host functions given by an embedding program (the table is there, `Exports.add(name, address)`; the command line has no way to name one), other systems than Linux.
+## As a library, for other languages
+
+`jit/tools/build-lib.sh <coffee2> <dir>` builds `libcfjit.a`, `libcfjit.so` and `cfjit.h` (`jit/include/cfjit.h` is the reference: the functions, the codes they return, the rules). It needs `cc` (for a small C file that gives the library the system call function; the library otherwise uses the host's C library). The API is plain C with `long` and pointers, so any language with a C FFI can use it:
+
+| call | meaning |
+|---|---|
+| `cfjit_new()` / `cfjit_free(ctx)` | a context (up to 16); free unmaps its modules |
+| `cfjit_register(ctx, "name", fn)` | offers a C function of the host to modules loaded later |
+| `cfjit_load(ctx, bytes, n, err, errn)` | loads a `.cir` (from memory, so it can come from a file, a network or a database); a module's number or a negative code and the reason |
+| `cfjit_sym(ctx, "name")` | the address of a `c fn` (callable with the C convention), or of a datum (`coffee_g_<name>` for a module-level `let`), or of a host function |
+| `cfjit_replace(ctx, n, bytes, len, err, errn)` | the new module is linked first; the other modules' calls into the old one are rebound to the same names in the new one; the old one stays mapped |
+| `cfjit_unload(ctx, n)` | unmaps a module; refused (-2) while another module calls into it |
+
+`tests/embed_test.c` (C) and `tests/embed_test.py` (Python, ctypes, the host function a Python callback) are complete examples; both run in `tea test`. A module declares what it takes from the host in a `.cfc` (`c fn host_scale(x: int) => int:`) and imports it with `use host_scale in host of c`; what it gives is a `c fn`. Types that cross are the C ones: `int`, `float`, `bool`, `string` (a C string), `object` (a pointer).
+
+Rules: one thread in the library at a time (the compiler's switches are global); a module's code runs on the caller's thread and stack; `cfjit_replace` leaves the old module mapped, so the host frees it with `cfjit_unload` when nothing runs in it (replacing is per module, not per function: a call inside a module is direct, a call between modules goes through a slot); each module has its own heap, so memory allocated in one can be freed in another but the allocators do not share state; a program without `main` that is built as a library gets its module-level initializers from a function named `cf_init` (`embed.cf` calls it on first use).
+
+Data symbols are visible to the host (`cfjit_sym`), not shared between modules: the language has no way to say a name is data from elsewhere, so modules share through `c fn` accessors. The sandbox still refuses calls outside the module; `docs/explanation/sandbox-design.md` has the design for host calls from it.
+
+Not yet: unloading a module's data separately, other systems than Linux (macOS and Windows need their own loaders; see `docs/explanation/jit-design.md`), a JIT for aarch64 (the aarch64 backend session's step 7).
 
 ## Debugging aids
 
