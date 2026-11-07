@@ -3688,7 +3688,7 @@ class Lower:
             let w = new_txt()
             self.names.put(&w, self.gl_name[k])
             g_add_global(&self.mc, &w, self.gl_size[k])
-        return g_elf(&self.mc)
+        return target_object(&self.mc)
 
 fn type_param_count(a: &Ast, f: int) => int:
     let k = 0

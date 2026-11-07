@@ -1,0 +1,176 @@
+/#/ aarch64: the frame (every value lives in it, at an offset from x29), the loads and stores of
+/#/ operands, memory copies and the copies on the edges between blocks.
+/#/
+/#/ Frame, x29-relative and upwards: [x29] the saved x29, [x29+8] the saved x30, [x29+16] the
+/#/ pointer a function returning an aggregate was given (only then), then one 8-byte-aligned place
+/#/ per value (the memory layout for an aggregate, 8 bytes for a scalar, whose upper bytes are not
+/#/ meaningful), the `slot` areas, and a scratch area for edge copies. A float is kept as its bits in
+/#/ such a place and moved to a float register for each operation. x9 to x11 hold operands, x12 and
+/#/ x13 addresses (see target_a64.cf).
+use * in gen
+use * in asm
+use * in asm_a64
+use * in target_a64
+use * in gen_x86_regs
+use * in gen_x86_call
+use * in gen_x86_isel
+use * in gen_a64_call
+use * in gen_a64_isel
+use * in gen_a64_fun
+
+/#/ The base register of the bytes of value `x`.
+fn ga_vb(g: &Gen, x: int) => int:
+    return ta_fp()
+
+/#/ reg = the value (a scalar, 8 bytes; narrower ones have meaningful low bytes only)
+fn ga_ld(g: &Gen, reg: int, f: &Fun, v: int) => void:
+    let x = g_res(g, f, v)
+    let k = f.op[x]
+    if k == int(Op.Const):
+        if f.rep[x] == int(Rp.F32):
+            a64_mov_ri(&g.a, reg, f.aux[x] & 4294967295)
+        else:
+            a64_mov_ri(&g.a, reg, f.aux[x])
+    elif k == int(Op.Undef):
+        a64_mov_ri(&g.a, reg, 0)
+    elif k == int(Op.StrLit):
+        a64_adr_sym(&g.a, reg, 1, g.sbase + g_so(g, f.aux[x]))
+    elif k == int(Op.Slot):
+        a64_addsub_ri(&g.a, false, reg, ta_fp(), g.voff[x])
+    else:
+        a64_ld(&g.a, reg, ta_fp(), g.voff[x], 8)
+
+/#/ reg = the value extended from its width
+fn ga_ld_ext(g: &Gen, reg: int, f: &Fun, v: int, signed: bool) => void:
+    ga_ld(g, reg, f, v)
+    let x = g_res(g, f, v)
+    let r = f.rep[x]
+    if f.op[x] == int(Op.Cmp):
+        return
+    if r == int(Rp.I8) || r == int(Rp.I16) || r == int(Rp.I32):
+        a64_extend(&g.a, reg, reg, rsize_scalar(r), signed)
+
+/#/ The place of instruction `i` = reg
+fn ga_st(g: &Gen, i: int, reg: int) => void:
+    a64_st(&g.a, ta_fp(), g.voff[i], reg, 8)
+
+/#/ For an aggregate value: the base register and displacement of its bytes (an undefined one
+/#/ reads from the start of the read-only data).
+fn ga_ab_reg(g: &Gen, f: &Fun, v: int) => int:
+    let x = g_res(g, f, v)
+    if f.op[x] == int(Op.Undef):
+        a64_adr_sym(&g.a, ta_ind(), 1, 0)
+        return ta_ind()
+    return ta_fp()
+
+fn ga_ab_disp(g: &Gen, f: &Fun, v: int) => int:
+    let x = g_res(g, f, v)
+    if f.op[x] == int(Op.Undef):
+        return 0
+    return g.voff[x]
+
+/#/ n bytes from [sb + sd] to [db + dd], through x9.
+fn ga_copy_mem(g: &Gen, db: int, dd: int, sb: int, sd: int, n: int) => void:
+    let k = 0
+    while k + 8 <= n:
+        a64_ld(&g.a, 9, sb, sd + k, 8)
+        a64_st(&g.a, db, dd + k, 9, 8)
+        k = k + 8
+    if k + 4 <= n:
+        a64_ld(&g.a, 9, sb, sd + k, 4)
+        a64_st(&g.a, db, dd + k, 9, 4)
+        k = k + 4
+    if k + 2 <= n:
+        a64_ld(&g.a, 9, sb, sd + k, 2)
+        a64_st(&g.a, db, dd + k, 9, 2)
+        k = k + 2
+    if k < n:
+        a64_ld(&g.a, 9, sb, sd + k, 1)
+        a64_st(&g.a, db, dd + k, 9, 1)
+
+/#/ Value `v` to [db + dd], in full: a scalar as 8 bytes, an aggregate as its layout.
+fn ga_val_to(g: &Gen, f: &Fun, rs: &Reps, db: int, dd: int, v: int) => void:
+    let x = g_res(g, f, v)
+    let r = f.rep[x]
+    if r >= rp_first_agg():
+        let sb = ga_ab_reg(g, f, x)
+        ga_copy_mem(g, db, dd, sb, ga_ab_disp(g, f, x), rsize(rs, r))
+    else:
+        ga_ld(g, 9, f, x)
+        a64_st(&g.a, db, dd, 9, 8)
+
+/#/ Gives every value its place; the size of the frame.
+fn ga_layout(g: &Gen, f: &Fun, rs: &Reps) => void:
+    if len(g.voff) < f.ni + 1:
+        g.voff = new_buf(int, f.ni + 1)
+        g.sh = new_buf(int, f.ni + 1)
+    if len(g.home) < f.ni + 1:
+        g.home = new_buf(int, f.ni + 1)
+        g.xhome = new_buf(int, f.ni + 1)
+        g.xsg = new_buf(int, f.ni + 1)
+    for v in 0..f.ni + 1:
+        g.home[v] = 0 - 1
+        g.xhome[v] = 0 - 1
+        g.xsg[v] = 0
+    let cur = 16 + g.rbase
+    let tmp = 0
+    for b in 0..f.nb:
+        let p = f.pfirst[b]
+        while p >= 0:
+            g.voff[p] = cur
+            cur = cur + g_place_size(g, rs, f.rep[p])
+            p = f.nx[p]
+        let i = f.bfirst[b]
+        while i >= 0:
+            let op = f.op[i]
+            if op == int(Op.Slot):
+                let sz = round8(f.ty[i])
+                if f.ty[i] < 1:
+                    sz = sz + 8
+                g.voff[i] = cur
+                cur = cur + sz
+            elif f.rep[i] != int(Rp.Void) && op != int(Op.OwnMove):
+                g.voff[i] = cur
+                cur = cur + g_place_size(g, rs, f.rep[i])
+            i = f.nx[i]
+    for e in 0..f.ne:
+        if f.eto[e] >= 0:
+            let sum = 0
+            for k in 0..f.eargn[e]:
+                sum = sum + g_place_size(g, rs, f.rep[g_res(g, f, f.pool[f.eargs[e] + k])])
+            if sum > tmp:
+                tmp = sum
+    g.tmp = cur
+    cur = cur + tmp
+    g.frame = (cur + 15) // 16 * 16
+
+/#/ Copies what edge `e` passes into the parameters of the block it enters; through a scratch
+/#/ area when an argument is itself a parameter of that block (the copies are simultaneous).
+fn ga_edge_copy(g: &Gen, f: &Fun, rs: &Reps, e: int) => void:
+    let to = f.eto[e]
+    let n = f.eargn[e]
+    if n == 0:
+        return
+    let hazard = false
+    for k in 0..n:
+        let x = g_res(g, f, f.pool[f.eargs[e] + k])
+        if f.op[x] == int(Op.Param) && f.blk[x] == to:
+            hazard = true
+    if !hazard:
+        let p = f.pfirst[to]
+        for k in 0..n:
+            ga_val_to(g, f, rs, ta_fp(), g.voff[p], f.pool[f.eargs[e] + k])
+            p = f.nx[p]
+        return
+    let at = 0
+    for k in 0..n:
+        let v = f.pool[f.eargs[e] + k]
+        ga_val_to(g, f, rs, ta_fp(), g.tmp + at, v)
+        at = at + g_place_size(g, rs, f.rep[g_res(g, f, v)])
+    let p = f.pfirst[to]
+    at = 0
+    for k in 0..n:
+        let sz = g_place_size(g, rs, f.rep[p])
+        ga_copy_mem(g, ta_fp(), g.voff[p], ta_fp(), g.tmp + at, sz)
+        at = at + sz
+        p = f.nx[p]

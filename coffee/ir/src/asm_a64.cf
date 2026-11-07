@@ -1,0 +1,422 @@
+/#/ An aarch64 assembler for the instructions the code generator uses: fixed 4-byte words into the
+/#/ same `Asm` buffer the x86-64 assembler writes to (the labels, the jump fixups and the relocation
+/#/ lists are shared), as free functions `a64_*(a: &Asm, ...)`.
+/#/
+/#/ Registers are numbered as the hardware does: x0 to x30, and 31 for sp or xzr (which one the
+/#/ instruction says); float registers v0 to v31 by their number. A branch to a label is patched
+/#/ when the function ends (`a64_end_fun`), nothing is shortened, so positions stay as written.
+/#/ Instructions that take an immediate which does not fit use x17 to build it; the generator never
+/#/ keeps anything in x16 or x17 across such an instruction.
+use * in asm
+
+/#/ Relocation types of the aarch64 ELF ABI.
+fn r_a64_adr_page() => int:
+    return 275
+
+fn r_a64_add_lo12() => int:
+    return 277
+
+fn r_a64_jump26() => int:
+    return 282
+
+fn r_a64_call26() => int:
+    return 283
+
+/#/ Condition codes.
+fn ac_eq() => int:
+    return 0
+
+fn ac_ne() => int:
+    return 1
+
+fn ac_hs() => int:
+    return 2
+
+fn ac_lo() => int:
+    return 3
+
+fn ac_mi() => int:
+    return 4
+
+fn ac_hi() => int:
+    return 8
+
+fn ac_ls() => int:
+    return 9
+
+fn ac_ge() => int:
+    return 10
+
+fn ac_lt() => int:
+    return 11
+
+fn ac_gt() => int:
+    return 12
+
+fn ac_le() => int:
+    return 13
+
+fn a64_w(a: &Asm, w: int) => void:
+    a.le32(w)
+
+/#/ Overwrites the word at byte `at` of the code.
+fn a64_set(a: &Asm, at: int, w: int) => void:
+    for k in 0..4:
+        a.c.b[at + k] = (w >> (8 * k)) & 255
+
+fn a64_get(a: &Asm, at: int) => int:
+    let w = 0
+    for k in 0..4:
+        w = w | (a.c.b[at + k] << (8 * k))
+    return w
+
+/#/ ---- constants and arithmetic ---------------------------------------------
+
+/#/ rd = the 64-bit constant `v`, by movz/movn and movk.
+fn a64_mov_ri(a: &Asm, rd: int, v: int) => void:
+    let nz = 0
+    let nf = 0
+    for k in 0..4:
+        let h = (v >> (16 * k)) & 65535
+        if h == 0:
+            nz = nz + 1
+        elif h == 65535:
+            nf = nf + 1
+    let first = true
+    if nf > nz:
+        for k in 0..4:
+            let h = (v >> (16 * k)) & 65535
+            if h != 65535:
+                if first:
+                    a64_w(a, 2457862144 | (k << 21) | ((h ^ 65535) << 5) | rd)
+                    first = false
+                else:
+                    a64_w(a, 4068474880 | (k << 21) | (h << 5) | rd)
+        if first:
+            a64_w(a, 2457862144 | rd)
+        return
+    for k in 0..4:
+        let h = (v >> (16 * k)) & 65535
+        if h != 0:
+            if first:
+                a64_w(a, 3531603968 | (k << 21) | (h << 5) | rd)
+                first = false
+            else:
+                a64_w(a, 4068474880 | (k << 21) | (h << 5) | rd)
+    if first:
+        a64_w(a, 3531603968 | rd)
+
+/#/ rd = rn (either may be sp).
+fn a64_mov_rr(a: &Asm, rd: int, rn: int) => void:
+    if rd == 31 || rn == 31:
+        a64_w(a, 2432696320 | (rn << 5) | rd)
+        return
+    a64_w(a, 2852127712 | (rn << 16) | rd)
+
+/#/ rd = rn + v, or rn - v when `sub`; a value that does not fit 12 bits (or 12 bits shifted) goes through x17.
+fn a64_addsub_ri(a: &Asm, sub: bool, rd: int, rn: int, v: int) => void:
+    let s = sub
+    let n = v
+    if n < 0:
+        s = !s
+        n = 0 - n
+    let base = 2432696320
+    if s:
+        base = 3506438144
+    if n < 4096:
+        if n == 0 && rd == rn:
+            return
+        a64_w(a, base | (n << 10) | (rn << 5) | rd)
+        return
+    if n < 16777216 && (n & 4095) == 0:
+        a64_w(a, base | (1 << 22) | ((n >> 12) << 10) | (rn << 5) | rd)
+        return
+    a64_mov_ri(a, 17, n)
+    /#/ the extended-register form, since rd or rn may be sp
+    let rbase = 2334154752
+    if s:
+        rbase = 3407896576
+    a64_w(a, rbase | (17 << 16) | (rn << 5) | rd)
+
+fn a64_add_rr(a: &Asm, rd: int, rn: int, rq: int) => void:
+    a64_w(a, 2332033024 | (rq << 16) | (rn << 5) | rd)
+
+/#/ rd = rn + (rq << sh)
+fn a64_add_rr_lsl(a: &Asm, rd: int, rn: int, rq: int, sh: int) => void:
+    a64_w(a, 2332033024 | (rq << 16) | (sh << 10) | (rn << 5) | rd)
+
+fn a64_sub_rr(a: &Asm, rd: int, rn: int, rq: int) => void:
+    a64_w(a, 3405774848 | (rq << 16) | (rn << 5) | rd)
+
+fn a64_and_rr(a: &Asm, rd: int, rn: int, rq: int) => void:
+    a64_w(a, 2315255808 | (rq << 16) | (rn << 5) | rd)
+
+fn a64_orr_rr(a: &Asm, rd: int, rn: int, rq: int) => void:
+    a64_w(a, 2852126720 | (rq << 16) | (rn << 5) | rd)
+
+fn a64_eor_rr(a: &Asm, rd: int, rn: int, rq: int) => void:
+    a64_w(a, 3388997632 | (rq << 16) | (rn << 5) | rd)
+
+fn a64_mul(a: &Asm, rd: int, rn: int, rq: int) => void:
+    a64_w(a, 2600500224 | (rq << 16) | (rn << 5) | rd)
+
+/#/ rd = ra + rn * rq
+fn a64_madd(a: &Asm, rd: int, rn: int, rq: int, ra: int) => void:
+    a64_w(a, 2600468480 | (rq << 16) | (ra << 10) | (rn << 5) | rd)
+
+/#/ rd = ra - rn * rq
+fn a64_msub(a: &Asm, rd: int, rn: int, rq: int, ra: int) => void:
+    a64_w(a, 2600501248 | (rq << 16) | (ra << 10) | (rn << 5) | rd)
+
+fn a64_sdiv(a: &Asm, rd: int, rn: int, rq: int) => void:
+    a64_w(a, 2596277248 | (rq << 16) | (rn << 5) | rd)
+
+fn a64_udiv(a: &Asm, rd: int, rn: int, rq: int) => void:
+    a64_w(a, 2596276224 | (rq << 16) | (rn << 5) | rd)
+
+/#/ rd = the high 64 bits of the signed product rn * rq
+fn a64_smulh(a: &Asm, rd: int, rn: int, rq: int) => void:
+    a64_w(a, 2604694528 | (rq << 16) | (rn << 5) | rd)
+
+fn a64_lslv(a: &Asm, rd: int, rn: int, rq: int) => void:
+    a64_w(a, 2596282368 | (rq << 16) | (rn << 5) | rd)
+
+fn a64_lsrv(a: &Asm, rd: int, rn: int, rq: int) => void:
+    a64_w(a, 2596283392 | (rq << 16) | (rn << 5) | rd)
+
+fn a64_asrv(a: &Asm, rd: int, rn: int, rq: int) => void:
+    a64_w(a, 2596284416 | (rq << 16) | (rn << 5) | rd)
+
+/#/ rd = rn shifted by the constant `n` (0 to 63): `kind` 0 left, 1 logical right, 2 arithmetic right.
+fn a64_shift_i(a: &Asm, kind: int, rd: int, rn: int, n: int) => void:
+    if kind == 0:
+        a64_w(a, 3544186880 | (((64 - n) & 63) << 16) | ((63 - n) << 10) | (rn << 5) | rd)
+    elif kind == 1:
+        a64_w(a, 3544251392 | (n << 16) | (rn << 5) | rd)
+    else:
+        a64_w(a, 2470509568 | (n << 16) | (rn << 5) | rd)
+
+fn a64_neg(a: &Asm, rd: int, rq: int) => void:
+    a64_w(a, 3405775840 | (rq << 16) | rd)
+
+fn a64_mvn(a: &Asm, rd: int, rq: int) => void:
+    a64_w(a, 2854224864 | (rq << 16) | rd)
+
+/#/ rd = rn extended from its low `n` bytes (1, 2 or 4).
+fn a64_extend(a: &Asm, rd: int, rn: int, n: int, signed: bool) => void:
+    if n == 1:
+        if signed:
+            a64_w(a, 2470452224 | (rn << 5) | rd)
+        else:
+            a64_w(a, 1392516096 | (rn << 5) | rd)
+    elif n == 2:
+        if signed:
+            a64_w(a, 2470460416 | (rn << 5) | rd)
+        else:
+            a64_w(a, 1392524288 | (rn << 5) | rd)
+    elif n == 4:
+        if signed:
+            a64_w(a, 2470476800 | (rn << 5) | rd)
+        else:
+            a64_w(a, 704644064 | (rn << 16) | rd)
+    elif rd != rn:
+        a64_mov_rr(a, rd, rn)
+
+fn a64_cmp_rr(a: &Asm, rn: int, rq: int) => void:
+    a64_w(a, 3942645791 | (rq << 16) | (rn << 5))
+
+fn a64_cmp_ri(a: &Asm, rn: int, v: int) => void:
+    if v >= 0 && v < 4096:
+        a64_w(a, 4043309087 | (v << 10) | (rn << 5))
+    elif v < 0 && v > 0 - 4096:
+        a64_w(a, 2969567263 | ((0 - v) << 10) | (rn << 5))
+    else:
+        a64_mov_ri(a, 17, v)
+        a64_cmp_rr(a, rn, 17)
+
+/#/ rd = 1 if the condition holds, else 0.
+fn a64_cset(a: &Asm, rd: int, cc: int) => void:
+    a64_w(a, 2594113504 | ((cc ^ 1) << 12) | rd)
+
+/#/ ---- memory ---------------------------------------------------------------
+
+fn a64_log2(n: int) => int:
+    if n == 1:
+        return 0
+    if n == 2:
+        return 1
+    if n == 4:
+        return 2
+    return 3
+
+/#/ A load into (or store of) the integer register `rt` of `n` bytes (1, 2, 4, 8) at [base + disp]:
+/#/ the scaled form when `disp` fits, else the unscaled one, else the offset goes through x17.
+fn a64_ldst(a: &Asm, load: bool, rt: int, base: int, disp: int, n: int) => void:
+    let sz = a64_log2(n)
+    let l = 0
+    if load:
+        l = 1
+    if disp >= 0 && disp % n == 0 && disp // n < 4096:
+        a64_w(a, 956301312 | (sz << 30) | (l << 22) | ((disp // n) << 10) | (base << 5) | rt)
+    elif disp >= 0 - 256 && disp < 256:
+        a64_w(a, 939524096 | (sz << 30) | (l << 22) | ((disp & 511) << 12) | (base << 5) | rt)
+    else:
+        a64_mov_ri(a, 17, disp)
+        a64_w(a, 941647872 | (sz << 30) | (l << 22) | (17 << 16) | (base << 5) | rt)
+
+fn a64_ld(a: &Asm, rt: int, base: int, disp: int, n: int) => void:
+    a64_ldst(a, true, rt, base, disp, n)
+
+fn a64_st(a: &Asm, base: int, disp: int, rt: int, n: int) => void:
+    a64_ldst(a, false, rt, base, disp, n)
+
+/#/ [base + idx] or, with `shifted` (idx scaled by the access size `n`), [base + (idx << log2 n)].
+fn a64_ldst_idx(a: &Asm, load: bool, rt: int, base: int, idx: int, shifted: bool, n: int) => void:
+    let sz = a64_log2(n)
+    let l = 0
+    if load:
+        l = 1
+    let s = 0
+    if shifted && n > 1:
+        s = 1 << 12
+    a64_w(a, 941647872 | (sz << 30) | (l << 22) | s | (idx << 16) | (base << 5) | rt)
+
+/#/ rd = the address of the symbol `sym` plus `addend`: adrp and add, with their relocations.
+fn a64_adr_sym(a: &Asm, rd: int, sym: int, addend: int) => void:
+    a.reloc(sym, r_a64_adr_page(), addend)
+    a64_set(a, a.c.n - 4, 2415919104 | rd)
+    a.reloc(sym, r_a64_add_lo12(), addend)
+    a64_set(a, a.c.n - 4, 2432696320 | (rd << 5) | rd)
+
+/#/ ---- control flow -----------------------------------------------------------
+
+fn a64_fix(a: &Asm, l: int, kind: int, w: int) => void:
+    if a.nfx >= len(a.fx_at):
+        a.fx_at = buf_resize(a.fx_at, (a.nfx + 1) * 2)
+        a.fx_lab = buf_resize(a.fx_lab, (a.nfx + 1) * 2)
+        a.fx_kind = buf_resize(a.fx_kind, (a.nfx + 1) * 2)
+    a.fx_at[a.nfx] = a.c.n
+    a.fx_lab[a.nfx] = l
+    a.fx_kind[a.nfx] = kind
+    a.nfx = a.nfx + 1
+    a64_w(a, w)
+
+fn a64_b(a: &Asm, l: int) => void:
+    a64_fix(a, l, 0, 335544320)
+
+fn a64_bcc(a: &Asm, cc: int, l: int) => void:
+    a64_fix(a, l, 1, 1409286144 | cc)
+
+fn a64_cbnz(a: &Asm, rt: int, l: int) => void:
+    a64_fix(a, l, 1, 3036676096 | rt)
+
+fn a64_cbz(a: &Asm, rt: int, l: int) => void:
+    a64_fix(a, l, 1, 3019898880 | rt)
+
+/#/ bl to a symbol, with its relocation.
+fn a64_bl_sym(a: &Asm, sym: int) => void:
+    a.reloc(sym, r_a64_call26(), 0)
+    a64_set(a, a.c.n - 4, 2483027968)
+
+fn a64_blr(a: &Asm, rn: int) => void:
+    a64_w(a, 3594452992 | (rn << 5))
+
+fn a64_ret(a: &Asm) => void:
+    a64_w(a, 3596551104)
+
+fn a64_brk(a: &Asm) => void:
+    a64_w(a, 3558866944)
+
+/#/ stp x29, x30, [sp] and ldp x29, x30, [sp]
+fn a64_save_fp_lr(a: &Asm) => void:
+    a64_w(a, 2835381245)
+
+fn a64_load_fp_lr(a: &Asm) => void:
+    a64_w(a, 2839575549)
+
+/#/ Patches the branches of the function just assembled. False if a label was never bound or a
+/#/ branch is out of reach.
+fn a64_end_fun(a: &Asm) => bool:
+    for k in 0..a.nfx:
+        let to = a.lab[a.fx_lab[k]]
+        if to < 0:
+            return false
+        let at = a.fx_at[k]
+        let d = (to - at) // 4
+        let w = a64_get(a, at)
+        if a.fx_kind[k] == 0:
+            if d < 0 - 33554432 || d >= 33554432:
+                return false
+            a64_set(a, at, w | (d & 67108863))
+        else:
+            if d < 0 - 262144 || d >= 262144:
+                return false
+            a64_set(a, at, w | ((d & 524287) << 5))
+    return true
+
+/#/ ---- floats -----------------------------------------------------------------
+
+/#/ v = the bits of general register r (a double, or a float from the low 32 bits).
+fn a64_fmov_to(a: &Asm, v: int, r: int, single: bool) => void:
+    if single:
+        a64_w(a, 505872384 | (r << 5) | v)
+    else:
+        a64_w(a, 2657550336 | (r << 5) | v)
+
+/#/ r = the bits of float register v.
+fn a64_fmov_from(a: &Asm, r: int, v: int, single: bool) => void:
+    if single:
+        a64_w(a, 505806848 | (v << 5) | r)
+    else:
+        a64_w(a, 2657484800 | (v << 5) | r)
+
+/#/ vd = vn op vm; `op` 0 add, 1 sub, 2 mul, 3 div.
+fn a64_farith(a: &Asm, op: int, single: bool, vd: int, vn: int, vm: int) => void:
+    let code = 10240
+    if op == 1:
+        code = 14336
+    elif op == 2:
+        code = 2048
+    elif op == 3:
+        code = 6144
+    let base = 509607936
+    if single:
+        base = 505413632
+    a64_w(a, base | code | (vm << 16) | (vn << 5) | vd)
+
+fn a64_fneg(a: &Asm, single: bool, vd: int, vn: int) => void:
+    if single:
+        a64_w(a, 505495552 | (vn << 5) | vd)
+    else:
+        a64_w(a, 509689856 | (vn << 5) | vd)
+
+fn a64_fcmp(a: &Asm, single: bool, vn: int, vm: int) => void:
+    if single:
+        a64_w(a, 505421824 | (vm << 16) | (vn << 5))
+    else:
+        a64_w(a, 509616128 | (vm << 16) | (vn << 5))
+
+/#/ vd = the float of the signed (or unsigned) 64-bit integer in r.
+fn a64_cvt_i2f(a: &Asm, vd: int, r: int, single: bool, signed: bool) => void:
+    let base = 2657222656
+    if !signed:
+        base = 2657288192
+    if single:
+        base = base - 4194304
+    a64_w(a, base | (r << 5) | vd)
+
+/#/ r = the float in v truncated to a signed (or unsigned) 64-bit integer.
+fn a64_cvt_f2i(a: &Asm, r: int, v: int, single: bool, signed: bool) => void:
+    let base = 2658664448
+    if !signed:
+        base = 2658729984
+    if single:
+        base = base - 4194304
+    a64_w(a, base | (v << 5) | r)
+
+/#/ vd = vn converted to the other width.
+fn a64_fcvt(a: &Asm, vd: int, vn: int, to_single: bool) => void:
+    if to_single:
+        a64_w(a, 509755392 | (vn << 5) | vd)
+    else:
+        a64_w(a, 505593856 | (vn << 5) | vd)

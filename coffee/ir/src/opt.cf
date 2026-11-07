@@ -1728,13 +1728,19 @@ fn v_emit(c: &VCtx, f: &Fun, inl: &buf<int>, iv: int, v0: int) => void:
     if c.depth > 6:
         c.ok = false
 
+/#/ Set when the target has no code for the vector loops: `vectorize` then does nothing.
+let no_vector = false
+
+fn set_vector_loops(on: bool) => void:
+    no_vector = !on
+
 /#/ Is the loop headed by `h` one that can be done a vector at a time? A loop `for i in a..n` of one store to
 /#/ `buf[i]` whose value is made of loads `buf[i]`, loop invariants and plain arithmetic, entered by a plain
 /#/ jump. Then a vector loop goes in front of it: when `n` is within the length of every buffer checked, it
 /#/ does as many elements as it can, a vector at a time, and the loop goes on with the rest (and fails the
 /#/ check where it would have). Returns whether it changed anything; the loop is looked at once.
 fn vectorize(f: &Fun) => bool:
-    if f.nb < 3:
+    if no_vector || f.nb < 3:
         return false
     let nb = f.nb
     let rpo: buf<int> = new_buf(int, nb + 1)

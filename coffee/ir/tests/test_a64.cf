@@ -1,0 +1,1047 @@
+/#/ The aarch64 assembler: the words each encoder writes, checked against the ones LLVM's assembler
+/#/ (llvm-mc 21, -triple=aarch64) makes for the same instruction. A target without a decoder at hand
+/#/ can still run this; the generated code is run in coffee/ir/tools/a64sim.py instead.
+use * in say
+use * in asm
+use * in asm_a64
+use * in drive
+use * in target
+
+/#/ Does the code of `a` hold exactly the words `w`?
+fn same(what: int, a: &Asm, w: &buf<int>) => int:
+    if a.pos() != 4 * len(w):
+        say(f"MISS #{what}: {a.pos()} bytes, want {4 * len(w)}\n")
+        return 1
+    for k in 0..len(w):
+        let got = a64_get(a, 4 * k)
+        if got != w[k]:
+            say(f"MISS #{what}: word {k} is {got}, want {w[k]}\n")
+            return 1
+    return 0
+
+fn words(n: int) => buf<int>:
+    return new_buf(int, n)
+
+fn part0() => int:
+    let m = 0
+    let a = new_asm()
+    let w = words(1)
+    a = new_asm()
+    a64_mov_ri(&a, 9, 0)
+    w = words(1)
+    w[0] = 3531603977
+    m = m + same(0, &a, &w)
+    a = new_asm()
+    a64_mov_ri(&a, 9, 1)
+    w = words(1)
+    w[0] = 3531604009
+    m = m + same(1, &a, &w)
+    a = new_asm()
+    a64_mov_ri(&a, 9, 65535)
+    w = words(1)
+    w[0] = 3533701097
+    m = m + same(2, &a, &w)
+    a = new_asm()
+    a64_mov_ri(&a, 9, 65536)
+    w = words(1)
+    w[0] = 3533701161
+    m = m + same(3, &a, &w)
+    a = new_asm()
+    a64_mov_ri(&a, 9, 1311768467463790320)
+    w = words(4)
+    w[0] = 3533430281
+    w[1] = 4071839625
+    w[2] = 4073377545
+    w[3] = 4074915465
+    m = m + same(4, &a, &w)
+    a = new_asm()
+    a64_mov_ri(&a, 9, 0 - 1)
+    w = words(1)
+    w[0] = 2457862153
+    m = m + same(5, &a, &w)
+    a = new_asm()
+    a64_mov_ri(&a, 9, 0 - 2)
+    w = words(1)
+    w[0] = 2457862185
+    m = m + same(6, &a, &w)
+    a = new_asm()
+    a64_mov_ri(&a, 9, 0 - 65536)
+    w = words(1)
+    w[0] = 2459959273
+    m = m + same(7, &a, &w)
+    a = new_asm()
+    a64_mov_ri(&a, 9, 0 - 4294967296)
+    w = words(2)
+    w[0] = 3537895401
+    w[1] = 4076863465
+    m = m + same(8, &a, &w)
+    a = new_asm()
+    a64_mov_ri(&a, 9, 5000000000)
+    w = words(3)
+    w[0] = 3533586441
+    w[1] = 4070916265
+    w[2] = 4072669225
+    m = m + same(9, &a, &w)
+    a = new_asm()
+    a64_mov_ri(&a, 9, 0 - 123456789)
+    w = words(2)
+    w[0] = 2459542153
+    w[1] = 4072608905
+    m = m + same(10, &a, &w)
+    a = new_asm()
+    a64_mov_ri(&a, 9, 9223372036854775807)
+    w = words(1)
+    w[0] = 2465202185
+    m = m + same(11, &a, &w)
+    a = new_asm()
+    a64_mov_ri(&a, 9, 0 - 9223372036854775807 - 1)
+    w = words(1)
+    w[0] = 3538944009
+    m = m + same(12, &a, &w)
+    a = new_asm()
+    a64_mov_rr(&a, 9, 10)
+    w = words(1)
+    w[0] = 2852783081
+    m = m + same(13, &a, &w)
+    a = new_asm()
+    a64_mov_rr(&a, 29, 31)
+    w = words(1)
+    w[0] = 2432697341
+    m = m + same(14, &a, &w)
+    a = new_asm()
+    a64_addsub_ri(&a, false, 9, 10, 100)
+    w = words(1)
+    w[0] = 2432799049
+    m = m + same(15, &a, &w)
+    a = new_asm()
+    a64_addsub_ri(&a, true, 9, 10, 100)
+    w = words(1)
+    w[0] = 3506540873
+    m = m + same(16, &a, &w)
+    a = new_asm()
+    a64_addsub_ri(&a, false, 9, 10, 0 - 100)
+    w = words(1)
+    w[0] = 3506540873
+    m = m + same(17, &a, &w)
+    a = new_asm()
+    a64_addsub_ri(&a, false, 9, 9, 0)
+    w = words(0)
+    m = m + same(18, &a, &w)
+    a = new_asm()
+    a64_addsub_ri(&a, false, 9, 10, 8192)
+    w = words(1)
+    w[0] = 2436893001
+    m = m + same(19, &a, &w)
+    a = new_asm()
+    a64_addsub_ri(&a, true, 31, 31, 160)
+    w = words(1)
+    w[0] = 3506603007
+    m = m + same(20, &a, &w)
+    a = new_asm()
+    a64_addsub_ri(&a, true, 31, 31, 100000)
+    w = words(3)
+    w[0] = 3532706833
+    w[1] = 4070572081
+    w[2] = 3409011711
+    m = m + same(21, &a, &w)
+    a = new_asm()
+    a64_addsub_ri(&a, false, 31, 31, 100000)
+    w = words(3)
+    w[0] = 3532706833
+    w[1] = 4070572081
+    w[2] = 2335269887
+    m = m + same(22, &a, &w)
+    a = new_asm()
+    a64_addsub_ri(&a, false, 9, 29, 4097)
+    w = words(2)
+    w[0] = 3531735089
+    w[1] = 2335269801
+    m = m + same(23, &a, &w)
+    a = new_asm()
+    a64_add_rr(&a, 9, 10, 11)
+    w = words(1)
+    w[0] = 2332754249
+    m = m + same(24, &a, &w)
+    a = new_asm()
+    a64_sub_rr(&a, 9, 10, 11)
+    w = words(1)
+    w[0] = 3406496073
+    m = m + same(25, &a, &w)
+    a = new_asm()
+    a64_and_rr(&a, 9, 10, 11)
+    w = words(1)
+    w[0] = 2315977033
+    m = m + same(26, &a, &w)
+    a = new_asm()
+    a64_orr_rr(&a, 9, 10, 11)
+    w = words(1)
+    w[0] = 2852847945
+    m = m + same(27, &a, &w)
+    a = new_asm()
+    a64_eor_rr(&a, 9, 10, 11)
+    w = words(1)
+    w[0] = 3389718857
+    m = m + same(28, &a, &w)
+    a = new_asm()
+    a64_mul(&a, 9, 10, 11)
+    w = words(1)
+    w[0] = 2601221449
+    m = m + same(29, &a, &w)
+    a = new_asm()
+    a64_sdiv(&a, 9, 10, 11)
+    w = words(1)
+    w[0] = 2596998473
+    m = m + same(30, &a, &w)
+    a = new_asm()
+    a64_udiv(&a, 9, 10, 11)
+    w = words(1)
+    w[0] = 2596997449
+    m = m + same(31, &a, &w)
+    a = new_asm()
+    a64_smulh(&a, 9, 10, 11)
+    w = words(1)
+    w[0] = 2605415753
+    m = m + same(32, &a, &w)
+    a = new_asm()
+    a64_lslv(&a, 9, 10, 11)
+    w = words(1)
+    w[0] = 2597003593
+    m = m + same(33, &a, &w)
+    a = new_asm()
+    a64_lsrv(&a, 9, 10, 11)
+    w = words(1)
+    w[0] = 2597004617
+    m = m + same(34, &a, &w)
+    a = new_asm()
+    a64_asrv(&a, 9, 10, 11)
+    w = words(1)
+    w[0] = 2597005641
+    m = m + same(35, &a, &w)
+    a = new_asm()
+    a64_add_rr_lsl(&a, 9, 10, 11, 3)
+    w = words(1)
+    w[0] = 2332757321
+    m = m + same(36, &a, &w)
+    a = new_asm()
+    a64_madd(&a, 9, 10, 11, 12)
+    w = words(1)
+    w[0] = 2601201993
+    m = m + same(37, &a, &w)
+    a = new_asm()
+    a64_msub(&a, 9, 10, 11, 12)
+    w = words(1)
+    w[0] = 2601234761
+    m = m + same(38, &a, &w)
+    a = new_asm()
+    a64_shift_i(&a, 0, 9, 10, 0)
+    w = words(1)
+    w[0] = 3544251721
+    m = m + same(39, &a, &w)
+    return m
+
+fn part1() => int:
+    let m = 0
+    let a = new_asm()
+    let w = words(1)
+    a = new_asm()
+    a64_shift_i(&a, 1, 9, 10, 0)
+    w = words(1)
+    w[0] = 3544251721
+    m = m + same(40, &a, &w)
+    a = new_asm()
+    a64_shift_i(&a, 2, 9, 10, 0)
+    w = words(1)
+    w[0] = 2470509897
+    m = m + same(41, &a, &w)
+    a = new_asm()
+    a64_shift_i(&a, 0, 9, 10, 1)
+    w = words(1)
+    w[0] = 3548379465
+    m = m + same(42, &a, &w)
+    a = new_asm()
+    a64_shift_i(&a, 1, 9, 10, 1)
+    w = words(1)
+    w[0] = 3544317257
+    m = m + same(43, &a, &w)
+    a = new_asm()
+    a64_shift_i(&a, 2, 9, 10, 1)
+    w = words(1)
+    w[0] = 2470575433
+    m = m + same(44, &a, &w)
+    a = new_asm()
+    a64_shift_i(&a, 0, 9, 10, 5)
+    w = words(1)
+    w[0] = 3548113225
+    m = m + same(45, &a, &w)
+    a = new_asm()
+    a64_shift_i(&a, 1, 9, 10, 5)
+    w = words(1)
+    w[0] = 3544579401
+    m = m + same(46, &a, &w)
+    a = new_asm()
+    a64_shift_i(&a, 2, 9, 10, 5)
+    w = words(1)
+    w[0] = 2470837577
+    m = m + same(47, &a, &w)
+    a = new_asm()
+    a64_shift_i(&a, 0, 9, 10, 63)
+    w = words(1)
+    w[0] = 3544252745
+    m = m + same(48, &a, &w)
+    a = new_asm()
+    a64_shift_i(&a, 1, 9, 10, 63)
+    w = words(1)
+    w[0] = 3548380489
+    m = m + same(49, &a, &w)
+    a = new_asm()
+    a64_shift_i(&a, 2, 9, 10, 63)
+    w = words(1)
+    w[0] = 2474638665
+    m = m + same(50, &a, &w)
+    a = new_asm()
+    a64_neg(&a, 9, 10)
+    w = words(1)
+    w[0] = 3406431209
+    m = m + same(51, &a, &w)
+    a = new_asm()
+    a64_mvn(&a, 9, 10)
+    w = words(1)
+    w[0] = 2854880233
+    m = m + same(52, &a, &w)
+    a = new_asm()
+    a64_extend(&a, 9, 10, 1, true)
+    w = words(1)
+    w[0] = 2470452553
+    m = m + same(53, &a, &w)
+    a = new_asm()
+    a64_extend(&a, 9, 10, 1, false)
+    w = words(1)
+    w[0] = 1392516425
+    m = m + same(54, &a, &w)
+    a = new_asm()
+    a64_extend(&a, 9, 10, 2, true)
+    w = words(1)
+    w[0] = 2470460745
+    m = m + same(55, &a, &w)
+    a = new_asm()
+    a64_extend(&a, 9, 10, 2, false)
+    w = words(1)
+    w[0] = 1392524617
+    m = m + same(56, &a, &w)
+    a = new_asm()
+    a64_extend(&a, 9, 10, 4, true)
+    w = words(1)
+    w[0] = 2470477129
+    m = m + same(57, &a, &w)
+    a = new_asm()
+    a64_extend(&a, 9, 10, 4, false)
+    w = words(1)
+    w[0] = 705299433
+    m = m + same(58, &a, &w)
+    a = new_asm()
+    a64_cmp_rr(&a, 9, 10)
+    w = words(1)
+    w[0] = 3943301439
+    m = m + same(59, &a, &w)
+    a = new_asm()
+    a64_cmp_ri(&a, 9, 100)
+    w = words(1)
+    w[0] = 4043411775
+    m = m + same(60, &a, &w)
+    a = new_asm()
+    a64_cmp_ri(&a, 9, 0 - 100)
+    w = words(1)
+    w[0] = 2969669951
+    m = m + same(61, &a, &w)
+    a = new_asm()
+    a64_cmp_ri(&a, 9, 100000)
+    w = words(3)
+    w[0] = 3532706833
+    w[1] = 4070572081
+    w[2] = 3943760191
+    m = m + same(62, &a, &w)
+    a = new_asm()
+    a64_cset(&a, 9, 0)
+    w = words(1)
+    w[0] = 2594117609
+    m = m + same(63, &a, &w)
+    a = new_asm()
+    a64_cset(&a, 9, 1)
+    w = words(1)
+    w[0] = 2594113513
+    m = m + same(64, &a, &w)
+    a = new_asm()
+    a64_cset(&a, 9, 2)
+    w = words(1)
+    w[0] = 2594125801
+    m = m + same(65, &a, &w)
+    a = new_asm()
+    a64_cset(&a, 9, 3)
+    w = words(1)
+    w[0] = 2594121705
+    m = m + same(66, &a, &w)
+    a = new_asm()
+    a64_cset(&a, 9, 8)
+    w = words(1)
+    w[0] = 2594150377
+    m = m + same(67, &a, &w)
+    a = new_asm()
+    a64_cset(&a, 9, 9)
+    w = words(1)
+    w[0] = 2594146281
+    m = m + same(68, &a, &w)
+    a = new_asm()
+    a64_cset(&a, 9, 10)
+    w = words(1)
+    w[0] = 2594158569
+    m = m + same(69, &a, &w)
+    a = new_asm()
+    a64_cset(&a, 9, 11)
+    w = words(1)
+    w[0] = 2594154473
+    m = m + same(70, &a, &w)
+    a = new_asm()
+    a64_cset(&a, 9, 12)
+    w = words(1)
+    w[0] = 2594166761
+    m = m + same(71, &a, &w)
+    a = new_asm()
+    a64_cset(&a, 9, 13)
+    w = words(1)
+    w[0] = 2594162665
+    m = m + same(72, &a, &w)
+    a = new_asm()
+    a64_cset(&a, 9, 4)
+    w = words(1)
+    w[0] = 2594133993
+    m = m + same(73, &a, &w)
+    a = new_asm()
+    a64_ld(&a, 9, 29, 0, 8)
+    w = words(1)
+    w[0] = 4181722025
+    m = m + same(74, &a, &w)
+    a = new_asm()
+    a64_st(&a, 29, 0, 9, 8)
+    w = words(1)
+    w[0] = 4177527721
+    m = m + same(75, &a, &w)
+    a = new_asm()
+    a64_ld(&a, 9, 29, 8, 8)
+    w = words(1)
+    w[0] = 4181723049
+    m = m + same(76, &a, &w)
+    a = new_asm()
+    a64_st(&a, 29, 8, 9, 8)
+    w = words(1)
+    w[0] = 4177528745
+    m = m + same(77, &a, &w)
+    a = new_asm()
+    a64_ld(&a, 9, 29, 32760, 8)
+    w = words(1)
+    w[0] = 4185915305
+    m = m + same(78, &a, &w)
+    a = new_asm()
+    a64_st(&a, 29, 32760, 9, 8)
+    w = words(1)
+    w[0] = 4181721001
+    m = m + same(79, &a, &w)
+    return m
+
+fn part2() => int:
+    let m = 0
+    let a = new_asm()
+    let w = words(1)
+    a = new_asm()
+    a64_ld(&a, 9, 29, 0 - 8, 8)
+    w = words(1)
+    w[0] = 4167009193
+    m = m + same(80, &a, &w)
+    a = new_asm()
+    a64_st(&a, 29, 0 - 8, 9, 8)
+    w = words(1)
+    w[0] = 4162814889
+    m = m + same(81, &a, &w)
+    a = new_asm()
+    a64_ld(&a, 9, 29, 255, 8)
+    w = words(1)
+    w[0] = 4165989289
+    m = m + same(82, &a, &w)
+    a = new_asm()
+    a64_st(&a, 29, 255, 9, 8)
+    w = words(1)
+    w[0] = 4161794985
+    m = m + same(83, &a, &w)
+    a = new_asm()
+    a64_ld(&a, 9, 29, 3, 8)
+    w = words(1)
+    w[0] = 4164957097
+    m = m + same(84, &a, &w)
+    a = new_asm()
+    a64_st(&a, 29, 3, 9, 8)
+    w = words(1)
+    w[0] = 4160762793
+    m = m + same(85, &a, &w)
+    a = new_asm()
+    a64_ld(&a, 9, 29, 40000, 8)
+    w = words(2)
+    w[0] = 3532883985
+    w[1] = 4168182697
+    m = m + same(86, &a, &w)
+    a = new_asm()
+    a64_st(&a, 29, 40000, 9, 8)
+    w = words(2)
+    w[0] = 3532883985
+    w[1] = 4163988393
+    m = m + same(87, &a, &w)
+    a = new_asm()
+    a64_ld(&a, 9, 29, 0, 4)
+    w = words(1)
+    w[0] = 3107980201
+    m = m + same(88, &a, &w)
+    a = new_asm()
+    a64_st(&a, 29, 0, 9, 4)
+    w = words(1)
+    w[0] = 3103785897
+    m = m + same(89, &a, &w)
+    a = new_asm()
+    a64_ld(&a, 9, 29, 8, 4)
+    w = words(1)
+    w[0] = 3107982249
+    m = m + same(90, &a, &w)
+    a = new_asm()
+    a64_st(&a, 29, 8, 9, 4)
+    w = words(1)
+    w[0] = 3103787945
+    m = m + same(91, &a, &w)
+    a = new_asm()
+    a64_ld(&a, 9, 29, 32760, 4)
+    w = words(2)
+    w[0] = 3532652305
+    w[1] = 3094440873
+    m = m + same(92, &a, &w)
+    a = new_asm()
+    a64_st(&a, 29, 32760, 9, 4)
+    w = words(2)
+    w[0] = 3532652305
+    w[1] = 3090246569
+    m = m + same(93, &a, &w)
+    a = new_asm()
+    a64_ld(&a, 9, 29, 0 - 8, 4)
+    w = words(1)
+    w[0] = 3093267369
+    m = m + same(94, &a, &w)
+    a = new_asm()
+    a64_st(&a, 29, 0 - 8, 9, 4)
+    w = words(1)
+    w[0] = 3089073065
+    m = m + same(95, &a, &w)
+    a = new_asm()
+    a64_ld(&a, 9, 29, 255, 4)
+    w = words(1)
+    w[0] = 3092247465
+    m = m + same(96, &a, &w)
+    a = new_asm()
+    a64_st(&a, 29, 255, 9, 4)
+    w = words(1)
+    w[0] = 3088053161
+    m = m + same(97, &a, &w)
+    a = new_asm()
+    a64_ld(&a, 9, 29, 3, 4)
+    w = words(1)
+    w[0] = 3091215273
+    m = m + same(98, &a, &w)
+    a = new_asm()
+    a64_st(&a, 29, 3, 9, 4)
+    w = words(1)
+    w[0] = 3087020969
+    m = m + same(99, &a, &w)
+    a = new_asm()
+    a64_ld(&a, 9, 29, 40000, 4)
+    w = words(2)
+    w[0] = 3532883985
+    w[1] = 3094440873
+    m = m + same(100, &a, &w)
+    a = new_asm()
+    a64_st(&a, 29, 40000, 9, 4)
+    w = words(2)
+    w[0] = 3532883985
+    w[1] = 3090246569
+    m = m + same(101, &a, &w)
+    a = new_asm()
+    a64_ld(&a, 9, 29, 0, 2)
+    w = words(1)
+    w[0] = 2034238377
+    m = m + same(102, &a, &w)
+    a = new_asm()
+    a64_st(&a, 29, 0, 9, 2)
+    w = words(1)
+    w[0] = 2030044073
+    m = m + same(103, &a, &w)
+    a = new_asm()
+    a64_ld(&a, 9, 29, 8, 2)
+    w = words(1)
+    w[0] = 2034242473
+    m = m + same(104, &a, &w)
+    a = new_asm()
+    a64_st(&a, 29, 8, 9, 2)
+    w = words(1)
+    w[0] = 2030048169
+    m = m + same(105, &a, &w)
+    a = new_asm()
+    a64_ld(&a, 9, 29, 32760, 2)
+    w = words(2)
+    w[0] = 3532652305
+    w[1] = 2020699049
+    m = m + same(106, &a, &w)
+    a = new_asm()
+    a64_st(&a, 29, 32760, 9, 2)
+    w = words(2)
+    w[0] = 3532652305
+    w[1] = 2016504745
+    m = m + same(107, &a, &w)
+    a = new_asm()
+    a64_ld(&a, 9, 29, 0 - 8, 2)
+    w = words(1)
+    w[0] = 2019525545
+    m = m + same(108, &a, &w)
+    a = new_asm()
+    a64_st(&a, 29, 0 - 8, 9, 2)
+    w = words(1)
+    w[0] = 2015331241
+    m = m + same(109, &a, &w)
+    a = new_asm()
+    a64_ld(&a, 9, 29, 255, 2)
+    w = words(1)
+    w[0] = 2018505641
+    m = m + same(110, &a, &w)
+    a = new_asm()
+    a64_st(&a, 29, 255, 9, 2)
+    w = words(1)
+    w[0] = 2014311337
+    m = m + same(111, &a, &w)
+    a = new_asm()
+    a64_ld(&a, 9, 29, 3, 2)
+    w = words(1)
+    w[0] = 2017473449
+    m = m + same(112, &a, &w)
+    a = new_asm()
+    a64_st(&a, 29, 3, 9, 2)
+    w = words(1)
+    w[0] = 2013279145
+    m = m + same(113, &a, &w)
+    a = new_asm()
+    a64_ld(&a, 9, 29, 40000, 2)
+    w = words(2)
+    w[0] = 3532883985
+    w[1] = 2020699049
+    m = m + same(114, &a, &w)
+    a = new_asm()
+    a64_st(&a, 29, 40000, 9, 2)
+    w = words(2)
+    w[0] = 3532883985
+    w[1] = 2016504745
+    m = m + same(115, &a, &w)
+    a = new_asm()
+    a64_ld(&a, 9, 29, 0, 1)
+    w = words(1)
+    w[0] = 960496553
+    m = m + same(116, &a, &w)
+    a = new_asm()
+    a64_st(&a, 29, 0, 9, 1)
+    w = words(1)
+    w[0] = 956302249
+    m = m + same(117, &a, &w)
+    a = new_asm()
+    a64_ld(&a, 9, 29, 8, 1)
+    w = words(1)
+    w[0] = 960504745
+    m = m + same(118, &a, &w)
+    a = new_asm()
+    a64_st(&a, 29, 8, 9, 1)
+    w = words(1)
+    w[0] = 956310441
+    m = m + same(119, &a, &w)
+    return m
+
+fn part3() => int:
+    let m = 0
+    let a = new_asm()
+    let w = words(1)
+    a = new_asm()
+    a64_ld(&a, 9, 29, 32760, 1)
+    w = words(2)
+    w[0] = 3532652305
+    w[1] = 946957225
+    m = m + same(120, &a, &w)
+    a = new_asm()
+    a64_st(&a, 29, 32760, 9, 1)
+    w = words(2)
+    w[0] = 3532652305
+    w[1] = 942762921
+    m = m + same(121, &a, &w)
+    a = new_asm()
+    a64_ld(&a, 9, 29, 0 - 8, 1)
+    w = words(1)
+    w[0] = 945783721
+    m = m + same(122, &a, &w)
+    a = new_asm()
+    a64_st(&a, 29, 0 - 8, 9, 1)
+    w = words(1)
+    w[0] = 941589417
+    m = m + same(123, &a, &w)
+    a = new_asm()
+    a64_ld(&a, 9, 29, 255, 1)
+    w = words(1)
+    w[0] = 960757673
+    m = m + same(124, &a, &w)
+    a = new_asm()
+    a64_st(&a, 29, 255, 9, 1)
+    w = words(1)
+    w[0] = 956563369
+    m = m + same(125, &a, &w)
+    a = new_asm()
+    a64_ld(&a, 9, 29, 3, 1)
+    w = words(1)
+    w[0] = 960499625
+    m = m + same(126, &a, &w)
+    a = new_asm()
+    a64_st(&a, 29, 3, 9, 1)
+    w = words(1)
+    w[0] = 956305321
+    m = m + same(127, &a, &w)
+    a = new_asm()
+    a64_ld(&a, 9, 29, 40000, 1)
+    w = words(2)
+    w[0] = 3532883985
+    w[1] = 946957225
+    m = m + same(128, &a, &w)
+    a = new_asm()
+    a64_st(&a, 29, 40000, 9, 1)
+    w = words(2)
+    w[0] = 3532883985
+    w[1] = 942762921
+    m = m + same(129, &a, &w)
+    a = new_asm()
+    a64_ldst_idx(&a, true, 9, 12, 13, false, 8)
+    w = words(1)
+    w[0] = 4167920009
+    m = m + same(130, &a, &w)
+    a = new_asm()
+    a64_ldst_idx(&a, true, 9, 12, 13, true, 8)
+    w = words(1)
+    w[0] = 4167924105
+    m = m + same(131, &a, &w)
+    a = new_asm()
+    a64_ldst_idx(&a, false, 9, 12, 13, true, 8)
+    w = words(1)
+    w[0] = 4163729801
+    m = m + same(132, &a, &w)
+    a = new_asm()
+    a64_ldst_idx(&a, false, 9, 12, 13, false, 8)
+    w = words(1)
+    w[0] = 4163725705
+    m = m + same(133, &a, &w)
+    a = new_asm()
+    a64_ldst_idx(&a, true, 9, 12, 13, false, 4)
+    w = words(1)
+    w[0] = 3094178185
+    m = m + same(134, &a, &w)
+    a = new_asm()
+    a64_ldst_idx(&a, true, 9, 12, 13, true, 4)
+    w = words(1)
+    w[0] = 3094182281
+    m = m + same(135, &a, &w)
+    a = new_asm()
+    a64_ldst_idx(&a, false, 9, 12, 13, true, 4)
+    w = words(1)
+    w[0] = 3089987977
+    m = m + same(136, &a, &w)
+    a = new_asm()
+    a64_ldst_idx(&a, false, 9, 12, 13, false, 4)
+    w = words(1)
+    w[0] = 3089983881
+    m = m + same(137, &a, &w)
+    a = new_asm()
+    a64_ldst_idx(&a, true, 9, 12, 13, false, 2)
+    w = words(1)
+    w[0] = 2020436361
+    m = m + same(138, &a, &w)
+    a = new_asm()
+    a64_ldst_idx(&a, true, 9, 12, 13, true, 2)
+    w = words(1)
+    w[0] = 2020440457
+    m = m + same(139, &a, &w)
+    a = new_asm()
+    a64_ldst_idx(&a, false, 9, 12, 13, true, 2)
+    w = words(1)
+    w[0] = 2016246153
+    m = m + same(140, &a, &w)
+    a = new_asm()
+    a64_ldst_idx(&a, false, 9, 12, 13, false, 2)
+    w = words(1)
+    w[0] = 2016242057
+    m = m + same(141, &a, &w)
+    a = new_asm()
+    a64_ldst_idx(&a, true, 9, 12, 13, false, 1)
+    w = words(1)
+    w[0] = 946694537
+    m = m + same(142, &a, &w)
+    a = new_asm()
+    a64_ldst_idx(&a, false, 9, 12, 13, false, 1)
+    w = words(1)
+    w[0] = 942500233
+    m = m + same(143, &a, &w)
+    a = new_asm()
+    a64_save_fp_lr(&a)
+    w = words(1)
+    w[0] = 2835381245
+    m = m + same(144, &a, &w)
+    a = new_asm()
+    a64_load_fp_lr(&a)
+    w = words(1)
+    w[0] = 2839575549
+    m = m + same(145, &a, &w)
+    a = new_asm()
+    a64_ret(&a)
+    w = words(1)
+    w[0] = 3596551104
+    m = m + same(146, &a, &w)
+    a = new_asm()
+    a64_brk(&a)
+    w = words(1)
+    w[0] = 3558866944
+    m = m + same(147, &a, &w)
+    a = new_asm()
+    a64_blr(&a, 16)
+    w = words(1)
+    w[0] = 3594453504
+    m = m + same(148, &a, &w)
+    a = new_asm()
+    a64_fmov_to(&a, 0, 9, false)
+    w = words(1)
+    w[0] = 2657550624
+    m = m + same(149, &a, &w)
+    a = new_asm()
+    a64_fmov_to(&a, 1, 10, true)
+    w = words(1)
+    w[0] = 505872705
+    m = m + same(150, &a, &w)
+    a = new_asm()
+    a64_fmov_from(&a, 9, 0, false)
+    w = words(1)
+    w[0] = 2657484809
+    m = m + same(151, &a, &w)
+    a = new_asm()
+    a64_fmov_from(&a, 10, 1, true)
+    w = words(1)
+    w[0] = 505806890
+    m = m + same(152, &a, &w)
+    a = new_asm()
+    a64_farith(&a, 0, false, 0, 1, 2)
+    w = words(1)
+    w[0] = 509749280
+    m = m + same(153, &a, &w)
+    a = new_asm()
+    a64_farith(&a, 0, true, 3, 4, 5)
+    w = words(1)
+    w[0] = 505751683
+    m = m + same(154, &a, &w)
+    a = new_asm()
+    a64_farith(&a, 1, false, 0, 1, 2)
+    w = words(1)
+    w[0] = 509753376
+    m = m + same(155, &a, &w)
+    a = new_asm()
+    a64_farith(&a, 1, true, 3, 4, 5)
+    w = words(1)
+    w[0] = 505755779
+    m = m + same(156, &a, &w)
+    a = new_asm()
+    a64_farith(&a, 2, false, 0, 1, 2)
+    w = words(1)
+    w[0] = 509741088
+    m = m + same(157, &a, &w)
+    a = new_asm()
+    a64_farith(&a, 2, true, 3, 4, 5)
+    w = words(1)
+    w[0] = 505743491
+    m = m + same(158, &a, &w)
+    a = new_asm()
+    a64_farith(&a, 3, false, 0, 1, 2)
+    w = words(1)
+    w[0] = 509745184
+    m = m + same(159, &a, &w)
+    return m
+
+fn part4() => int:
+    let m = 0
+    let a = new_asm()
+    let w = words(1)
+    a = new_asm()
+    a64_farith(&a, 3, true, 3, 4, 5)
+    w = words(1)
+    w[0] = 505747587
+    m = m + same(160, &a, &w)
+    a = new_asm()
+    a64_fneg(&a, false, 0, 1)
+    w = words(1)
+    w[0] = 509689888
+    m = m + same(161, &a, &w)
+    a = new_asm()
+    a64_fneg(&a, true, 2, 3)
+    w = words(1)
+    w[0] = 505495650
+    m = m + same(162, &a, &w)
+    a = new_asm()
+    a64_fcmp(&a, false, 0, 1)
+    w = words(1)
+    w[0] = 509681664
+    m = m + same(163, &a, &w)
+    a = new_asm()
+    a64_fcmp(&a, true, 2, 3)
+    w = words(1)
+    w[0] = 505618496
+    m = m + same(164, &a, &w)
+    a = new_asm()
+    a64_cvt_i2f(&a, 0, 9, false, true)
+    w = words(1)
+    w[0] = 2657222944
+    m = m + same(165, &a, &w)
+    a = new_asm()
+    a64_cvt_i2f(&a, 0, 9, true, true)
+    w = words(1)
+    w[0] = 2653028640
+    m = m + same(166, &a, &w)
+    a = new_asm()
+    a64_cvt_i2f(&a, 0, 9, false, false)
+    w = words(1)
+    w[0] = 2657288480
+    m = m + same(167, &a, &w)
+    a = new_asm()
+    a64_cvt_i2f(&a, 0, 9, true, false)
+    w = words(1)
+    w[0] = 2653094176
+    m = m + same(168, &a, &w)
+    a = new_asm()
+    a64_cvt_f2i(&a, 9, 0, false, true)
+    w = words(1)
+    w[0] = 2658664457
+    m = m + same(169, &a, &w)
+    a = new_asm()
+    a64_cvt_f2i(&a, 9, 0, true, true)
+    w = words(1)
+    w[0] = 2654470153
+    m = m + same(170, &a, &w)
+    a = new_asm()
+    a64_cvt_f2i(&a, 9, 0, false, false)
+    w = words(1)
+    w[0] = 2658729993
+    m = m + same(171, &a, &w)
+    a = new_asm()
+    a64_cvt_f2i(&a, 9, 0, true, false)
+    w = words(1)
+    w[0] = 2654535689
+    m = m + same(172, &a, &w)
+    a = new_asm()
+    a64_fcvt(&a, 0, 1, true)
+    w = words(1)
+    w[0] = 509755424
+    m = m + same(173, &a, &w)
+    a = new_asm()
+    a64_fcvt(&a, 0, 1, false)
+    w = words(1)
+    w[0] = 505593888
+    m = m + same(174, &a, &w)
+    return m
+
+/#/ Branches to labels, forward and back, are patched when the function ends.
+fn branches() => int:
+    let m = 0
+    let a = new_asm()
+    a.begin_fun()
+    let top = a.new_label()
+    let out = a.new_label()
+    a.bind(top)
+    a64_bcc(&a, ac_eq(), out)
+    a64_b(&a, top)
+    a64_cbz(&a, 9, out)
+    a64_cbnz(&a, 9, top)
+    a.bind(out)
+    a64_ret(&a)
+    if !a64_end_fun(&a):
+        say("MISS branches: end_fun\n")
+        return 1
+    let w = words(5)
+    w[0] = 1409286272
+    w[1] = 402653183
+    w[2] = 3019898953
+    w[3] = 3053453225
+    w[4] = 3596551104
+    m = m + same(900, &a, &w)
+    /#/ a label never bound
+    let b = new_asm()
+    b.begin_fun()
+    let l = b.new_label()
+    a64_b(&b, l)
+    if a64_end_fun(&b):
+        say("MISS branches: an unbound label was accepted\n")
+        m = m + 1
+    return m
+
+/#/ Does the object hold the 4-byte word `w` (little-endian) at some multiple of 4 from `from`?
+fn has_word(o: &Txt, w: int) => bool:
+    for k in 0..o.n - 3:
+        if o.b[k] == (w & 255) && o.b[k + 1] == ((w >> 8) & 255) && o.b[k + 2] == ((w >> 16) & 255) && o.b[k + 3] == ((w >> 24) & 255):
+            return true
+    return false
+
+fn target_is(name: &str) => int:
+    let t = new_txt()
+    t.put(name)
+    return set_target(&t)
+
+/#/ A program compiled for aarch64 is an ELF object of that machine with the prologue, a call and
+/#/ the return in it; the same program for x86-64 afterwards is not.
+fn object() => int:
+    let m = 0
+    let src = "fn fib(n: int) => int:\n    if n < 2:\n        return n\n    return fib(n - 1) + fib(n - 2)\n\nfn main() => int:\n    return fib(10)\n"
+    if target_is("aarch64-linux") != 0:
+        say("MISS object: no aarch64 target\n")
+        return 1
+    let o = build_src(clone src, 1)
+    if o.n == 0:
+        say("MISS object: no aarch64 object\n")
+        return 1
+    if o.b[18] != 183 || o.b[19] != 0:
+        say("MISS object: the machine is not aarch64\n")
+        m = m + 1
+    if !has_word(&o, 2835381245):
+        say("MISS object: no stp x29, x30, [sp]\n")
+        m = m + 1
+    if !has_word(&o, 3596551104):
+        say("MISS object: no ret\n")
+        m = m + 1
+    if !has_word(&o, 2483027968):
+        say("MISS object: no bl\n")
+        m = m + 1
+    if target_is("x86_64-linux") != 0:
+        return m + 1
+    let x = build_src(clone src, 1)
+    if x.n == 0 || x.b[18] != 62:
+        say("MISS object: the x86-64 object is not x86-64\n")
+        m = m + 1
+    if has_word(&x, 3596551104):
+        say("MISS object: aarch64 code in the x86-64 object\n")
+        m = m + 1
+    return m
+
+fn main() => int:
+    let m = 0
+    m = m + part0()
+    m = m + part1()
+    m = m + part2()
+    m = m + part3()
+    m = m + part4()
+    m = m + branches()
+    m = m + object()
+    return m
