@@ -74,5 +74,33 @@ fn main() => int:
         if !has(&log4, "n = 4") || !has(&log4, "acc = 0") || !has(&log4, "x = 2") || !has(&log4, "in main () at t.cf:16"):
             say("MISS: variables or backtrace in JIT code\n")
             m = m + 1
+    /#/ linked by `cc` (--dynamic), and built in pieces (--incremental): lines and backtraces
+    let dsrc = "use puts in libc of c\n\nfn twice(n: int) => int:\n    let k = n * 2\n    return k\n\nfn main() => int:\n    puts(\"hello\")\n    let r = twice(4)\n    return r - 8\n"
+    let dp = txt_of("gdbt/d.cf")
+    let dt = txt_of(&dsrc)
+    write_file(&dp, &dt)
+    if system("cd gdbt && coffee2 d.cf --dynamic -g -O0 -o d > build5.log 2>&1 && coffee2 d.cf --incremental cache -g -O0 --dynamic -o di > build6.log 2>&1") != 0:
+        say("MISS: dynamic build\n")
+        return m + 1
+    system("cd gdbt && gdb -batch -ex 'break 4' -ex run -ex bt -ex 'info args' ./d > gdb5.log 2>&1; gdb -batch -ex 'break 4' -ex run -ex bt ./di > gdb6.log 2>&1")
+    let lp5 = txt_of("gdbt/gdb5.log")
+    let log5 = read_file(&lp5)
+    let lp6 = txt_of("gdbt/gdb6.log")
+    let log6 = read_file(&lp6)
+    if !has(&log5, "n = 4") || !has(&log5, "in main () at d.cf:9"):
+        say("MISS: dynamic variables or backtrace\n")
+        m = m + 1
+    if !has(&log6, "twice () at d.cf:4") || !has(&log6, "in main () at d.cf:9"):
+        say("MISS: incremental lines or backtrace\n")
+        m = m + 1
+    /#/ -O1: the variables are kept in the frame too, so they show up with the same values
+    if system("cd gdbt && coffee2 t.cf --static -g -O1 -o t1 > build7.log 2>&1 && gdb -batch -ex 'break 11' -ex run -ex 'info args' -ex 'info locals' ./t1 > gdb7.log 2>&1") != 0:
+        say("MISS: -O1 build\n")
+        return m + 1
+    let lp7 = txt_of("gdbt/gdb7.log")
+    let log7 = read_file(&lp7)
+    if !has(&log7, "n = 4") || !has(&log7, "f = 1.5") || !has(&log7, "ok = true"):
+        say("MISS: variables at -O1\n")
+        m = m + 1
     fflush(0)
     return m

@@ -470,7 +470,7 @@ fn online_cpus() => int:
     return total
 
 /#/ Builds the program in `fl` into `dir`, linking `out`. Returns 0 when it worked.
-fn build_incremental(fl: &Flat, a0: Ast, dir: &Txt, out: &Txt, opt: int, jobs: int, static_link: bool, auto_static: bool) => int:
+fn build_incremental(fl: &Flat, a0: Ast, dir: &Txt, out: &Txt, opt: int, jobs: int, static_link: bool, auto_static: bool, debug: bool) => int:
     system(txt_str(&mkdir_cmd(dir)))
     if a0.err_count > 0:
         say(f"front end: {a0.err_count} parse errors\n")
@@ -478,6 +478,9 @@ fn build_incremental(fl: &Flat, a0: Ast, dir: &Txt, out: &Txt, opt: int, jobs: i
     phase("parse")
     let defines = defines_runtime(&a0)
     let ch = compiler_hash()
+    if debug:
+        /#/ objects with line tables are not the objects without
+        ch.put("-g")
     let cfc = fl.cfc_str()
     let n = fl.nunit
     let bodies = unit_bodies(fl, &a0, n)
@@ -601,6 +604,8 @@ fn build_incremental(fl: &Flat, a0: Ast, dir: &Txt, out: &Txt, opt: int, jobs: i
                 return 1
             phase("units")
         write_file(&state_path, &want_state)
+    /#/ the runtime objects below carry no line table
+    no_lines()
     /#/ the objects, and the number-printing runtime when some file calls it and none defines it
     let uses = false
     for u in 0..n:
@@ -659,6 +664,17 @@ fn build_incremental(fl: &Flat, a0: Ast, dir: &Txt, out: &Txt, opt: int, jobs: i
     let flags = new_txt()
     fl.link_flags(&flags)
     let rc = link_objects(&plain, &objs, &flags, out, static_link, auto_static)
+    if rc == 0 && debug:
+        /#/ `cc` made this one: DWARF from the line tables of the objects and the symbols it kept
+        let dbg = new_txt()
+        for u in 0..n:
+            let ob = read_file(&cache_path(dir, &clone names[u], ".o"))
+            let sec = elf_section_bytes(&ob, ".cf_lines")
+            dbg.put_all(&sec)
+        let exe = read_file(out)
+        let more = add_dwarf(&exe, &dbg)
+        if more.n > 0:
+            write_file(out, &more)
     phase("link")
     return rc
 

@@ -1,0 +1,172 @@
+/#/ DWARF for an executable another linker made (`--dynamic`, where `cc` links): the sections are built
+/#/ from the line table the compiler kept in memory and the addresses and sizes in the executable's own
+/#/ symbol table, and appended to the file with the section header table moved to the end.
+use * in dwcore
+use * in txt
+
+fn ef_rd(t: &Txt, at: int, n: int) => int:
+    let v = 0
+    for k in 0..n:
+        v = v | (t.b[at + k] << (8 * k))
+    return v
+
+fn ef_wr(t: &Txt, at: int, n: int, v: int) => void:
+    for k in 0..n:
+        t.b[at + k] = (v >> (8 * k)) & 255
+
+fn ef_w(t: &Txt, n: int, v: int) => void:
+    for k in 0..n:
+        t.put_byte((v >> (8 * k)) & 255)
+
+/#/ Is the NUL-ended text at `at` in `t` the same as the line `w`?
+fn ef_name_is(t: &Txt, at: int, w: &Txt) => bool:
+    for k in 0..w.n:
+        if at + k >= t.n || t.b[at + k] != w.b[k]:
+            return false
+    return at + w.n < t.n && t.b[at + w.n] == 0
+
+/#/ The section number named `name` (-1 when there is none).
+fn ef_section(t: &Txt, name: &str) => int:
+    let shoff = ef_rd(t, 40, 8)
+    let shnum = ef_rd(t, 60, 2)
+    let shstr = ef_rd(t, 62, 2)
+    let strtab = ef_rd(t, shoff + shstr * 64 + 24, 8)
+    for s in 0..shnum:
+        let nm = strtab + ef_rd(t, shoff + s * 64, 4)
+        let k = 0
+        while k < len(name) && t.b[nm + k] == int(name[k]):
+            k = k + 1
+        if k == len(name) && t.b[nm + k] == 0:
+            return s
+    return 0 - 1
+
+/#/ The bytes of the section `name` of the ELF file `t` (empty when it has none).
+fn elf_section_bytes(t: &Txt, name: &str) => Txt:
+    let out = new_txt()
+    if t.n < 64 || t.b[0] != 127:
+        return out
+    let s = ef_section(t, name)
+    if s < 0:
+        return out
+    let shoff = ef_rd(t, 40, 8)
+    let off = ef_rd(t, shoff + s * 64 + 24, 8)
+    let size = ef_rd(t, shoff + s * 64 + 32, 8)
+    for k in 0..size:
+        out.put_byte(t.b[off + k])
+    return out
+
+/#/ `exe` with the debug sections for the line table `dbg`; empty when it cannot be done (not a 64-bit
+/#/ ELF, no symbol table, or it has debug sections already).
+fn add_dwarf(exe: &Txt, dbg: &Txt) => Txt:
+    let none = new_txt()
+    if exe.n < 64 || exe.b[0] != 127 || exe.b[4] != 2 || dbg.n == 0:
+        return none
+    if ef_section(exe, ".debug_info") >= 0:
+        return none
+    let sym = ef_section(exe, ".symtab")
+    if sym < 0:
+        return none
+    let shoff = ef_rd(exe, 40, 8)
+    let shnum = ef_rd(exe, 60, 2)
+    let shstr = ef_rd(exe, 62, 2)
+    let sy_off = ef_rd(exe, shoff + sym * 64 + 24, 8)
+    let sy_size = ef_rd(exe, shoff + sym * 64 + 32, 8)
+    let sy_str = ef_rd(exe, shoff + ef_rd(exe, shoff + sym * 64 + 40, 4) * 64 + 24, 8)
+    let nsym = sy_size // 24
+    /#/ the functions of the table, by the symbols
+    let ta = new_dw_list()
+    let ts = new_dw_list()
+    let start = 0
+    for i in 0..dbg.n + 1:
+        if i < dbg.n && dbg.b[i] != 10:
+            continue
+        if i > start + 2 && dbg.b[start] == int('F') && dbg.b[start + 1] == 32:
+            let w = new_txt()
+            for k in start + 2..i:
+                w.put_byte(dbg.b[k])
+            let addr = 0 - 1
+            let size = 0
+            for q in 0..nsym:
+                let e = sy_off + q * 24
+                if (ef_rd(exe, e + 4, 1) & 15) == 2 && ef_name_is(exe, sy_str + ef_rd(exe, e, 4), &w):
+                    addr = ef_rd(exe, e + 8, 8)
+                    size = ef_rd(exe, e + 16, 8)
+            dw_push(&ta, addr)
+            dw_push(&ts, size)
+        start = i + 1
+    let dab = new_txt()
+    let din = new_txt()
+    let dli = new_txt()
+    let dfr = new_txt()
+    if !build_dwarf_core(dbg, &ta, &ts, &dab, &din, &dli, &dfr):
+        return none
+    let out = new_txt()
+    out.put_all(exe)
+    while out.n % 8 != 0:
+        out.put_byte(0)
+    let o_dab = out.n
+    out.put_all(&dab)
+    let o_din = out.n
+    out.put_all(&din)
+    let o_dli = out.n
+    out.put_all(&dli)
+    let o_dfr = out.n
+    out.put_all(&dfr)
+    /#/ the section names: the old ones, then ours
+    let old_str = ef_rd(exe, shoff + shstr * 64 + 24, 8)
+    let old_len = ef_rd(exe, shoff + shstr * 64 + 32, 8)
+    while out.n % 8 != 0:
+        out.put_byte(0)
+    let o_str = out.n
+    for k in 0..old_len:
+        out.put_byte(exe.b[old_str + k])
+    let n_dab = old_len
+    out.put(".debug_abbrev")
+    out.put_byte(0)
+    let n_din = old_len + 14
+    out.put(".debug_info")
+    out.put_byte(0)
+    let n_dli = n_din + 12
+    out.put(".debug_line")
+    out.put_byte(0)
+    let n_dfr = n_dli + 12
+    out.put(".debug_frame")
+    out.put_byte(0)
+    let str_len = n_dfr + 13
+    while out.n % 8 != 0:
+        out.put_byte(0)
+    let new_sh = out.n
+    for k in 0..shnum * 64:
+        out.put_byte(exe.b[shoff + k])
+    /#/ the string table section now lives at the end
+    ef_wr(&out, new_sh + shstr * 64 + 24, 8, o_str)
+    ef_wr(&out, new_sh + shstr * 64 + 32, 8, str_len)
+    for q in 0..4:
+        let nm = n_dab
+        let off = o_dab
+        let sz = dab.n
+        if q == 1:
+            nm = n_din
+            off = o_din
+            sz = din.n
+        elif q == 2:
+            nm = n_dli
+            off = o_dli
+            sz = dli.n
+        elif q == 3:
+            nm = n_dfr
+            off = o_dfr
+            sz = dfr.n
+        ef_w(&out, 4, nm)
+        ef_w(&out, 4, 1)
+        ef_w(&out, 8, 0)
+        ef_w(&out, 8, 0)
+        ef_w(&out, 8, off)
+        ef_w(&out, 8, sz)
+        ef_w(&out, 4, 0)
+        ef_w(&out, 4, 0)
+        ef_w(&out, 8, 1)
+        ef_w(&out, 8, 0)
+    ef_wr(&out, 40, 8, new_sh)
+    ef_wr(&out, 60, 2, shnum + 4)
+    return out

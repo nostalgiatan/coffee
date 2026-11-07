@@ -9,6 +9,7 @@ use * in cstr
 use * in files
 use * in flat
 use * in linemap
+use * in addwarf
 use * in nested
 use * in alias
 use * in incr
@@ -244,7 +245,7 @@ fn main() => int:
         if cli.level > 0:
             cir_opt = 1
         let vmap = new_txt()
-        if cli.debug && cir_opt == 0:
+        if cli.debug:
             set_debug_vars()
         let cir = build_cir_map(copy_bytes(&fl.out.b, fl.out.n), fl.out.n, cir_opt, fl.cfc_str(), &vmap)
         no_lines()
@@ -269,6 +270,14 @@ fn main() => int:
     let opt = 0
     if cli.level > 0:
         opt = 1
+    if cli.debug || cli.lines_path.n > 0:
+        let pwd = pwd_of()
+        set_line_map(&fl.seg_line, &fl.seg_src, &fl.seg_unit, fl.nseg, &fl.units, fl.lines, &pwd)
+        if cli.debug:
+            set_debug()
+            /#/ the types of separately built files would not agree, so no variables then
+            if cli.cache.n == 0:
+                set_debug_vars()
     if cli.cache.n > 0 && !cli.emit_only:
         let target = cli.out_path()
         let jobs = cli.jobs
@@ -277,14 +286,7 @@ fn main() => int:
         if jobs > 16:
             jobs = 16
         hoist_classes(&tree)
-        return build_incremental(&fl, tree, &cli.cache, &target, opt, jobs, cli.static_link, cli.auto_static)
-    if cli.debug || cli.lines_path.n > 0:
-        let pwd = pwd_of()
-        set_line_map(&fl.seg_line, &fl.seg_src, &fl.seg_unit, fl.nseg, &fl.units, fl.lines, &pwd)
-        if cli.debug:
-            set_debug()
-            if opt == 0:
-                set_debug_vars()
+        return build_incremental(&fl, tree, &cli.cache, &target, opt, jobs, cli.static_link, cli.auto_static, cli.debug)
     let obj = build_txt(&fl.out, opt, fl.cfc_str())
     if obj.n == 0:
         return 1
@@ -317,6 +319,12 @@ fn main() => int:
     let flags = new_txt()
     fl.link_flags(&flags)
     let rc = link_objects(&list, &quoted, &flags, &out, cli.static_link, cli.auto_static)
+    if rc == 0 && cli.debug:
+        /#/ a program `cc` linked has no DWARF yet: build it from the symbols the link kept
+        let exe = read_file(&out)
+        let more = add_dwarf(&exe, &lines_txt)
+        if more.n > 0:
+            write_file(&out, &more)
     remove_file(&obj_path)
     if cli.static_link:
         remove_file(&rt_path)

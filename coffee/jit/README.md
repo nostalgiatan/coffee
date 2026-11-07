@@ -29,5 +29,12 @@ Limits of this first version: the image is mapped read-write-execute in one piec
 - `cfjit prog.cir --perf-map` writes `/tmp/perf-PID.map` once the image is loaded, so `perf` names JIT addresses.
 - `coffee2 prog.cf --lines file -g` does the same for AOT code, with `file:line` instead of flat lines;
   `coffee/driver/tools/cfline.sh exe file addr` looks an address up.
-- `coffee2 prog.cf -g --static` also makes DWARF (line table and one subprogram per function; with `-O0` also parameters, locals and types), see `docs/reference/cli.md`.
-- Not yet: DWARF for JIT code, line marks in incremental builds and in `--sandbox` code maps, variables at `-O1` and above.
+- `coffee2 prog.cf -g` also makes DWARF (lines, call frame information, and with `--static`/`--dynamic` parameters, locals and types), see `docs/reference/cli.md`.
+- JIT code under gdb: `coffee2 prog.cf -g --emit-cir -o prog.cir` writes `prog.cir.map` (the line map, the variables and the types) beside the module. `cfjit prog.cir --gdb` generates the code (not from the cache), maps it at the fixed address `0x40000000`, writes `prog.cir.dbg` (an ELF file with the DWARF of the generated code) and `prog.cir.gdb` (`add-symbol-file prog.cir.dbg 0x40000000`). Then:
+
+      gdb -x prog.cir.gdb -ex run --args cfjit prog.cir --gdb
+      (gdb) break sum
+      (gdb) continue
+
+  With a debugger attached `cfjit --gdb` raises SIGTRAP once the code is in memory, so `run` stops there and the breakpoints can be set before `continue`. Run it from the directory of the `.cir` (the script names `prog.cir.dbg` as given).
+- Not yet: line marks in `--sandbox` code maps, variables in `--incremental` builds (lines work), a JIT that registers its code through the GDB JIT interface, variables in registers (`-g` keeps them in the frame).
