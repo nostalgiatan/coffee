@@ -1,0 +1,19 @@
+/#/ The machine code of `cf_syscall(n, a, b, c, d, e, f)`: the C calling convention moved into the
+/#/ registers of the system call instruction, then a return. One table for the linker (which adds it to a
+/#/ program) and for the code generator (which puts it in a `--pic` library's object).
+
+/#/ `arch`: 0 x86-64, 1 aarch64.
+fn syscall_stub_for(arch: int) => buf<int>:
+    if arch == 1:
+        /#/ mov x8,x0; mov x0,x1; mov x1,x2; mov x2,x3; mov x3,x4; mov x4,x5; mov x5,x6; svc #0; ret
+        let a64 = [232, 3, 0, 170, 224, 3, 1, 170, 225, 3, 2, 170, 226, 3, 3, 170, 227, 3, 4, 170, 228, 3, 5, 170, 229, 3, 6, 170, 1, 0, 0, 212, 192, 3, 95, 214]
+        let out: buf<int> = new_buf(int, 36)
+        for k in 0..36:
+            out[k] = a64[k]
+        return out
+    /#/ mov rax,rdi; mov rdi,rsi; mov rsi,rdx; mov rdx,rcx; mov r10,r8; mov r8,r9; mov r9,[rsp+8]; syscall; ret
+    let x86 = [72, 137, 248, 72, 137, 247, 72, 137, 214, 72, 137, 202, 77, 137, 194, 77, 137, 200, 76, 139, 76, 36, 8, 15, 5, 195]
+    let out: buf<int> = new_buf(int, 26)
+    for k in 0..26:
+        out[k] = x86[k]
+    return out

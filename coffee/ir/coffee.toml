@@ -3,4 +3,4 @@ name = "ir"
 version = "0.1.0"
 
 [test]
-include = ["../own/src", "../types/src", "../sema/src", "../parser/src", "../lexer/src", "src"]
+include = ["../ld/src", "../own/src", "../types/src", "../sema/src", "../parser/src", "../lexer/src", "src"]
