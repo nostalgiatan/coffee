@@ -104,5 +104,21 @@ fn main() => int:
     /#/ an aggregate parameter is copied while the 3rd and 4th arguments are still in rdx and rcx
     m = m + expect(62, run_sbx("class P:\n    a: int\n    b: int\n\nfn f(p: P, s: int, x: int, y: int) => int:\n    return p.a * 1000 + p.b * 100 + s * 10 + x - y\n\nfn main() => int:\n    return f(P { a: 1, b: 2 }, 3, 7, 5) - 1232\n"), 0)
     m = m + expect(33, run_sbx_with("fn main() => int:\n    return 7\n", "--cache"), 7)
+    /#/ host functions: integers through, a buffer changed in place, a pointer returned as an offset, a range outside the memory a trap
+    write_file(&txt_of("sbl.cfc"), &txt_of("c fn host_add(a: int, b: int) => int:\nc fn host_upper(p: int, n: int) => int:\nc fn host_echo(p: int) => int:\n"))
+    write_file(&txt_of("sbl.cf"), &txt_of("c fn host_add(a: int, b: int) => int:\n    return a + b\n\nc fn host_upper(p: int, n: int) => int:\n    let t = 0\n    for i in 0..n:\n        let c = peek8((p + i) as object)\n        if c >= 97 && c <= 122:\n            poke8((p + i) as object, c - 32)\n        t = t + c\n    return t\n\nc fn host_echo(p: int) => int:\n    return p\n"))
+    if system("coffee2 sbl.cf -I . --emit-cir --target=aarch64 -o sbl.cir > sbb.log 2>&1") != 0:
+        say("MISS: the host library did not build\n")
+        return m + 1
+    let hs = "--with=sbl.cir --host=host_add=ii:i --host=host_upper=pl:i --host=host_echo=i:i"
+    let hp = "use host_add, host_upper, host_echo in sbl of c\n\nfn main() => int:\n    let b = new_buf(int, 2)\n    let pp = int(buf_ptr(b))\n    poke8(pp as object, 104)\n    poke8((pp + 1) as object, 105)\n    return "
+    m = m + expect(63, run_sbx_with(hp + "host_add(20, 22)\n", clone hs), 42)
+    m = m + expect(64, run_sbx_with(hp + "host_upper(pp, 2) - 209 + peek8(pp as object) - 72 + peek8((pp + 1) as object) - 73\n", clone hs), 0)
+    m = m + expect(65, run_sbx_with(hp + "host_echo(pp + 4294967296) - pp\n", clone hs), 0)
+    m = m + expect(66, run_sbx_with(hp + "host_upper(16, 2)\n", clone hs), 139)
+    m = m + expect(67, trapped("11"), 0)
+    m = m + expect(68, run_sbx_with(hp + "host_upper(pp, 99999999999)\n", clone hs), 139)
+    m = m + expect(69, run_sbx_with(hp + "host_add(1, 2) + host_echo(0)\n", "--with=sbl.cir --host=host_add=ii:i"), 2)
+    system("rm -f sbl.cf sbl.cfc sbl.cir")
     system("rm -f sbb_cfjit sbb.build sbb.cf sbb.cir sbb.cir.sbxb.a64.cim sbb.log sbb.out")
     return m

@@ -5,6 +5,7 @@ use * in image
 use * in loader
 use * in sandbox
 use * in sandbox_a64
+use * in hostcall
 use * in sbxcheck_a64
 use * in sbxcheck
 use * in sbxrules
@@ -170,6 +171,22 @@ fn with_args() => Txt:
             w.put_byte(raw.b[i])
     return out
 
+/#/ The value of every `--host=NAME=SIGNATURE` on the command line, one per line (see hostcall.cf).
+fn host_args() => Txt:
+    let raw = read_file(&txt_of("/proc/self/cmdline"))
+    let w = new_txt()
+    let out = new_txt()
+    for i in 0..raw.n + 1:
+        if i == raw.n || raw.b[i] == 0:
+            if w.n > 7 && w.b[0] == 45 && w.b[1] == 45 && w.b[2] == 104 && w.b[3] == 111 && w.b[4] == 115 && w.b[5] == 116 && w.b[6] == 61:
+                for k in 7..w.n:
+                    out.put_byte(w.b[k])
+                out.put_byte(10)
+            w.clear()
+        else:
+            w.put_byte(raw.b[i])
+    return out
+
 /#/ The module in the file `path` (made with `coffee2 --emit-cir`; it may have no `main`) loaded and linked
 /#/ against `syms`, and what it defines added to them. 0 when it worked; else a message was said.
 fn load_with(path: &Txt, syms: &Exports) => int:
@@ -300,9 +317,6 @@ fn main() => int:
         if im.err != 0:
             say("cfjit: a relocation could not be applied\n")
             return 2
-        if sbx && im.nimp > 0:
-            say("cfjit: the module calls functions the sandbox does not offer\n")
-            return 2
         let want = txt_of("main")
         at = im.find(&want)
         if want_gdb:
@@ -332,34 +346,6 @@ fn main() => int:
     if at < 0:
         say("cfjit: the module has no main\n")
         return 2
-    if sbx:
-        if flag_arg("--perf-map"):
-            /#/ the code of the sandbox is mapped by `sandbox_run`: the addresses in the map are offsets from its start
-            write_perf_map(&im, 0)
-        if a64:
-            let bad64 = sbx_verify_a64(&im.b, im.text_n, im.sys_at)
-            if bad64 >= 0:
-                say(f"cfjit: the code is not safe to run in the sandbox (offset {bad64}, rule {sbr_name(sbx_rule)}, reason {sbx_a64_why})\n")
-                return 2
-            let r64 = sandbox_run_a64(&im, at, allow_arg(), num_arg("mem"), num_arg("cpu"))
-            if r64 == 0 - 1:
-                say("cfjit: the sandbox could not be made\n")
-                return 2
-            if r64 == 0 - 2:
-                return 139
-            return r64
-        sbx_set_base(bm)
-        let bad = sbx_verify(&im.b, im.text_n, im.sys_at)
-        if bad >= 0:
-            say(f"cfjit: the code is not safe to run in the sandbox (offset {bad}, rule {sbr_name(sbx_rule)}, reason {sbx_why}, bytes {int(im.b.b[bad])} {int(im.b.b[bad + 1])} {int(im.b.b[bad + 2])} {int(im.b.b[bad + 3])} {int(im.b.b[bad + 4])})\n")
-            return 2
-        let rs = sandbox_run(&im, at, allow_arg(), num_arg("mem"), num_arg("cpu"), bm)
-        if rs == 0 - 1:
-            say("cfjit: the sandbox could not be made\n")
-            return 2
-        if rs == 0 - 2:
-            return 139
-        return rs
     /#/ what the code may call: the modules of `--with=` (in order, each can call the ones before it)
     let syms = new_exports()
     let libs = with_args()
@@ -372,6 +358,66 @@ fn main() => int:
             from = i + 1
             if load_with(&lp, &syms) != 0:
                 return 2
+    if sbx:
+        /#/ the host functions of the sandbox code: the `--host=` ones, found among what the `--with=` modules define
+        let hosts = new_hosts()
+        let hl = host_args()
+        let hfrom = 0
+        for i in 0..hl.n:
+            if hl.b[i] == 10:
+                let nm = new_txt()
+                let sg = new_txt()
+                let eq = false
+                for q in hfrom..i:
+                    if !eq && hl.b[q] == 61:
+                        eq = true
+                    elif eq:
+                        sg.put_byte(hl.b[q])
+                    else:
+                        nm.put_byte(hl.b[q])
+                hfrom = i + 1
+                let ha = syms.find(&nm)
+                if ha == 0 || !sig_ok(&sg):
+                    say(f"cfjit: --host={txt_str(&nm)}: not defined by a --with module, or not a signature\n")
+                    return 2
+                hosts.add(&nm, &sg, ha)
+        let imp_lo = 0 - 1
+        for k in 0..im.nimp:
+            let hn = name_txt(&im.names, im.imp_name[k])
+            if hosts.find(&hn) < 0 || im.imp_slot[k] < 0:
+                say(f"cfjit: the module calls '{txt_str(&hn)}', which is not a host function of the sandbox\n")
+                return 2
+            if imp_lo < 0 || im.imp_slot[k] - 8 < imp_lo:
+                imp_lo = im.imp_slot[k] - 8
+        if imp_lo >= 0:
+            sbx_set_imports(imp_lo, imp_lo + 16 * im.nimp)
+        if flag_arg("--perf-map"):
+            /#/ the code of the sandbox is mapped by `sandbox_run`: the addresses in the map are offsets from its start
+            write_perf_map(&im, 0)
+        if a64:
+            let bad64 = sbx_verify_a64(&im.b, im.text_n, im.sys_at)
+            if bad64 >= 0:
+                say(f"cfjit: the code is not safe to run in the sandbox (offset {bad64}, rule {sbr_name(sbx_rule)}, reason {sbx_a64_why})\n")
+                return 2
+            let r64 = sandbox_run_a64(&im, at, allow_arg(), num_arg("mem"), num_arg("cpu"), &hosts)
+            if r64 == 0 - 1:
+                say("cfjit: the sandbox could not be made\n")
+                return 2
+            if r64 == 0 - 2:
+                return 139
+            return r64
+        sbx_set_base(bm)
+        let bad = sbx_verify(&im.b, im.text_n, im.sys_at)
+        if bad >= 0:
+            say(f"cfjit: the code is not safe to run in the sandbox (offset {bad}, rule {sbr_name(sbx_rule)}, reason {sbx_why}, bytes {int(im.b.b[bad])} {int(im.b.b[bad + 1])} {int(im.b.b[bad + 2])} {int(im.b.b[bad + 3])} {int(im.b.b[bad + 4])})\n")
+            return 2
+        let rs = sandbox_run(&im, at, allow_arg(), num_arg("mem"), num_arg("cpu"), bm, &hosts)
+        if rs == 0 - 1:
+            say("cfjit: the sandbox could not be made\n")
+            return 2
+        if rs == 0 - 2:
+            return 139
+        return rs
     let want_at = 0
     if want_gdb:
         want_at = gdb_base()

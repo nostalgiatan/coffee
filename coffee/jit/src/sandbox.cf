@@ -10,6 +10,7 @@
 use * in image
 use * in asm
 use * in loader
+use * in hostcall
 
 fn page_up(n: int) => int:
     return (n + 4095) // 4096 * 4096
@@ -222,7 +223,7 @@ fn catch_signal(sig: int, handler: int, restorer: int, act: int) => int:
 
 /#/ Runs `main` (at `main_at` in the code of `im`) in the sandbox. `allow` says which standard streams it may use (see below). Returns its result, or -1 when
 /#/ the sandbox could not be made, or -2 when it trapped (the signal is in `trap_signal()`).
-fn sandbox_run(im: &Image, main_at: int, allow: int, mem_mb: int, cpu_ms: int, bm: bool) => int:
+fn sandbox_run(im: &Image, main_at: int, allow: int, mem_mb: int, cpu_ms: int, bm: bool, hosts: &Hosts) => int:
     let region = sys_mmap(4294967296 + 131072, 0, 16418)
     if !mapped(region):
         return 0 - 1
@@ -268,6 +269,22 @@ fn sandbox_run(im: &Image, main_at: int, allow: int, mem_mb: int, cpu_ms: int, b
     if im.hc_at > 0:
         poke64(code + im.hc_at, stubs + 1024)
         poke64(code + im.hc_at + 16, stubs + 1280)
+    /#/ the host functions the module calls: a trampoline each, its address in the slot of the import
+    if im.nimp > 0:
+        let tramp = sys_mmap(page_up(im.nimp * 512), 7, 34)
+        if !mapped(tramp):
+            return 0 - 1
+        let off = 0
+        for k in 0..im.nimp:
+            let hk = hosts.find(&name_txt(&im.names, im.imp_name[k]))
+            if hk < 0 || im.imp_slot[k] < 0:
+                return 0 - 1
+            let tr = host_tramp_x86(hosts.addr[hk], &hosts.sig(hk), region, im.lin_at, im.limit, ctrl, stubs + 256)
+            if tr.n > 512:
+                return 0 - 1
+            copy_in(tramp + off, &tr)
+            poke64(code + im.imp_slot[k], tramp + off)
+            off = off + 512
     /#/ the descriptors that may be used: bit 0 of `allow` reads 0, bit 1 writes 1, bit 2 writes 2
     if (allow & 1) != 0:
         poke8(ctrl + 512, 1)

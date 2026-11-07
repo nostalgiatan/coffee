@@ -70,6 +70,17 @@ fn main() => int:
     let t = bytes_of("232 11 0 0 0 195")
     m = m + expect(27, sbx_verify(&t, t.n, 16), -1)
     m = m + expect(28, sbx_verify(&t, t.n, 17), 0)
+    /#/ the entries of the imports (16 bytes apart, from 16 up to 48) are call targets too, nothing between them or after
+    sbx_set_imports(16, 48)
+    let ti = bytes_of("232 27 0 0 0 195")
+    m = m + expect(60, sbx_verify(&ti, ti.n, -1), -1)
+    ti = bytes_of("232 12 0 0 0 195")
+    m = m + expect(61, sbx_verify(&ti, ti.n, -1), 0)
+    ti = bytes_of("232 43 0 0 0 195")
+    m = m + expect(62, sbx_verify(&ti, ti.n, -1), 0)
+    ti = bytes_of("233 11 0 0 0 195")
+    m = m + expect(63, sbx_verify(&ti, ti.n, -1), 0)
+    sbx_set_imports(0, 0)
     /#/ the last instruction must not fall off the end
     m = m + expect(30, check("72 3 193"), 0)
     m = m + expect(31, check("72 3 193 195 72 3 193"), 4)

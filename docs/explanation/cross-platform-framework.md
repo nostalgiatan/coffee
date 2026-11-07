@@ -158,7 +158,7 @@ class Access: kind, width, base, index, scale, disp, pfx
 | 11 | 沙盒验证规则成数据,共用反例集 | 9 | 待做 |
 | 12 | aarch64 沙盒加载器(x28、陷阱、cfjit) | 9 | 待做 |
 | 13 | 删除 `gs` 模式 | 10 的实测 | 待做 |
-| 14 | 宿主调用跳板 | 10 | 待做 |
+| 14 | 宿主调用跳板 | 10 | 完成 |
 | 15 | PE 对象写入器、Win64 调用约定、`os_windows_x86_64.cf`、Windows 加载器 | 5 到 7 | 待做 |
 | 16 | riscv64 | 5 到 9 | 待做 |
 

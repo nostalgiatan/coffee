@@ -1,0 +1,74 @@
+/#/ Host functions for sandbox code (`--with=` modules whose `c fn`s are offered with `--host=NAME=SIGNATURE`): the arguments
+/#/ and results pass through the trampoline, a pointer is checked and turned into an address, a pointer a function returns
+/#/ becomes an offset again, a range outside the memory of the module ends the run in a trap, and a module that calls a
+/#/ function nobody offered is not run. Both x86-64 modes. `coffee2` and `cfjit` are found through PATH.
+use * in say
+use * in txt
+use * in cstr
+use * in files
+use system, fflush in libc of c
+
+fn expect(what: int, got: int, want: int) => int:
+    if got != want:
+        say(f"MISS #{what}: got {got}, want {want}\n")
+        fflush(0)
+        return 1
+    return 0
+
+fn put(name: str, src: str) => void:
+    write_file(&txt_of(&name), &txt_of(&src))
+
+fn sh(cmd: str) => int:
+    let c = txt_of(&cmd)
+    let st = system(txt_str(&c))
+    return (st >> 8) & 255
+
+/#/ Runs a program whose `main` returns `expr` (with `pp` the offset of a two-byte array) in the mode `mode`, the three functions offered.
+fn run(expr: &str, mode: &str, sigs: &str) => int:
+    let src = txt_of("use host_add, host_upper, host_echo in hl of c\n\nfn main() => int:\n    let b = new_buf(int, 2)\n    let pp = int(buf_ptr(b))\n    poke8(pp as object, 104)\n    poke8((pp + 1) as object, 105)\n    return ")
+    src.put(expr)
+    src.put("\n")
+    write_file(&txt_of("hcp.cf"), &src)
+    if sh("coffee2 hcp.cf -I . --emit-cir -o hcp.cir > hc.log 2>&1") != 0:
+        return -1
+    let c = txt_of("cfjit hcp.cir ")
+    c.put(mode)
+    c.put(" --with=hclib.cir ")
+    c.put(sigs)
+    c.put(" > hc.out 2>&1")
+    return sh(txt_str(&c))
+
+fn main() => int:
+    let m = 0
+    put("hl.cfc", "c fn host_add(a: int, b: int) => int:\nc fn host_upper(p: int, n: int) => int:\nc fn host_echo(p: int) => int:\n")
+    put("hclib.cf", "c fn host_add(a: int, b: int) => int:\n    return a + b\n\nc fn host_upper(p: int, n: int) => int:\n    let t = 0\n    for i in 0..n:\n        let c = peek8((p + i) as object)\n        if c >= 97 && c <= 122:\n            poke8((p + i) as object, c - 32)\n        t = t + c\n    return t\n\nc fn host_echo(p: int) => int:\n    return p\n")
+    if sh("coffee2 hclib.cf -I . --emit-cir -o hclib.cir > hc.log 2>&1") != 0:
+        say("MISS: the library did not build\n")
+        return 1
+    let all = "--host=host_add=ii:i --host=host_upper=pl:i --host=host_echo=i:i"
+    for k in 0..2:
+        let mode = "--sandbox"
+        if k == 1:
+            mode = "--sandbox=base"
+        let base = 100 * k
+        /#/ integers through; a buffer the function changes (209 is the sum of the old bytes); a pointer returned is an offset again
+        m = m + expect(base + 1, run("host_add(20, 22)", &mode, &all), 42)
+        m = m + expect(base + 2, run("host_upper(pp, 2) - 209 + peek8(pp as object) - 72 + peek8((pp + 1) as object) - 73", &mode, &all), 0)
+        m = m + expect(base + 3, run("host_echo(pp) - pp", &mode, &all), 0)
+        /#/ the high bits of an address are not part of it, and an empty range is fine
+        m = m + expect(base + 4, run("host_echo(pp + 4294967296) - pp", &mode, &all), 0)
+        m = m + expect(base + 5, run("host_upper(pp + 4294967296, 2) - 209", &mode, &all), 0)
+        m = m + expect(base + 6, run("host_upper(pp, 0)", &mode, &all), 0)
+        /#/ a range outside the memory ends the run in a trap: the null page, a length that does not fit, a wrapping sum
+        m = m + expect(base + 7, run("host_upper(16, 2)", &mode, &all), 139)
+        m = m + expect(base + 8, run("host_upper(pp, 99999999999)", &mode, &all), 139)
+        m = m + expect(base + 9, run("host_upper(pp, 0 - 1)", &mode, &all), 139)
+        m = m + expect(base + 10, sh("grep -q 'trapped (signal 11)' hc.out"), 0)
+        /#/ a function nobody offered, an offer nothing defines, a signature that is not one
+        m = m + expect(base + 11, run("host_add(1, 2) + host_echo(0)", &mode, "--host=host_add=ii:i"), 2)
+        m = m + expect(base + 12, sh("grep -q \"calls 'host_echo'\" hc.out"), 0)
+        m = m + expect(base + 13, run("host_add(1, 2)", &mode, "--host=host_nothing=i:i --host=host_add=ii:i"), 2)
+        m = m + expect(base + 14, run("host_upper(pp, 2)", &mode, "--host=host_upper=p:i"), 2)
+        m = m + expect(base + 15, run("host_upper(pp, 2)", &mode, "--host=host_upper=pl:x"), 2)
+    system("rm -f hl.cfc hclib.cf hclib.cir hcp.cf hcp.cir hc.log hc.out")
+    return m

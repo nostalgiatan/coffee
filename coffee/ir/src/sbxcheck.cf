@@ -348,7 +348,7 @@ fn sbx_verify(code: &Txt, n: int, entry: int) => int:
         let l = sbx_decode(code, i, n, &d)
         if d.kind != 0:
             let t = d.tgt
-            if !(d.kind == 2 && t == entry):
+            if !(d.kind == 2 && sbx_call_entry(t, entry)):
                 if t < 0 || t >= n || bnd[t] == 0:
                     sbx_rule = sbr_branch()
                     return i

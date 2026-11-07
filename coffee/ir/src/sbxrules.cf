@@ -56,6 +56,21 @@ fn sbr_applies(arch: int, r: int) => bool:
 /#/ The rule of the last refusal, set by the verifier that made it.
 let sbx_rule = 0
 
+/#/ The entries of the imports that a call may go to besides `entry`: `lo` up to `hi`, one every 16 bytes
+/#/ (the image makes them, see make_image_sbx); empty when `hi` is `lo`.
+let sbx_imp_lo = 0
+let sbx_imp_hi = 0
+
+fn sbx_set_imports(lo: int, hi: int) => void:
+    sbx_imp_lo = lo
+    sbx_imp_hi = hi
+
+/#/ May a call go to `t` without it being the start of an instruction of the code: `entry`, or an import entry?
+fn sbx_call_entry(t: int, entry: int) => bool:
+    if t == entry:
+        return true
+    return t >= sbx_imp_lo && t < sbx_imp_hi && (t - sbx_imp_lo) % 16 == 0
+
 /#/ The rule of x86-64 reason `why` (the numbers of `dec_no` in sbxcheck.cf), indexed by the reason.
 fn sbr_of_x86(why: int) => int:
     let t = [0, 1, 1, 1, 1, 1, 1, 1, 1, 2, 3, 4, 4, 4, 2, 4]

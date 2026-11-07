@@ -230,6 +230,16 @@ fn sbx_heap_size() => int:
 fn sbx_header() => int:
     return 16
 
+/#/ The bytes ff 25 02 00 00 00 of `jmp [rip+2]`.
+fn host_entry_x86(q: int) => int:
+    if q == 0:
+        return 255
+    if q == 1:
+        return 37
+    if q == 2:
+        return 2
+    return 0
+
 /#/ The image of sandbox code (generated with `Asm.sbx` set): the code, and the linear memory it
 /#/ starts with. References to rodata and data are numbers in the linear memory (absolute 32-bit
 /#/ relocations); calls are relative. A call of anything not in the module, and the address of a
@@ -344,6 +354,35 @@ fn make_image_sbx(o: &Obj, a: &Asm) => Image:
         im.exit_at = to
         while im.b.n < to + 64:
             im.b.put_byte(0)
+    /#/ an entry of 16 bytes for each import the loader may offer as a host function: an indirect jump through
+    /#/ the slot in its last 8 bytes, which the loader fills with the trampoline of the function
+    let ent_of: buf<int> = new_buf(int, o.ns + 1)
+    let ni = 0
+    for k in 0..o.ns:
+        ent_of[k] = 0 - 1
+        if o.s_def[k] < 0 && k != sys_sym:
+            if ni == 0:
+                while im.b.n % 16 != 0:
+                    im.b.put_byte(0)
+            ent_of[k] = im.b.n
+            if target_arch == arch_aarch64():
+                w32(&im.b, 1476395088)
+                w32(&im.b, 3592356352)
+            else:
+                for q in 0..6:
+                    im.b.put_byte(host_entry_x86(q))
+                im.b.put_byte(204)
+                im.b.put_byte(204)
+            for q in 0..8:
+                im.b.put_byte(0)
+            ni = ni + 1
+    for k in 0..im.nimp:
+        im.imp_slot[k] = 0 - 1
+    for k in 0..o.ns:
+        if ent_of[k] >= 0:
+            for q in 0..im.nimp:
+                if im.imp_name[q] == o.s_name[k]:
+                    im.imp_slot[q] = ent_of[k] + 8
     for q in 0..sbx_header():
         im.lin.put_byte(0)
     im.lin.put_all(&o.ro)
@@ -389,6 +428,8 @@ fn make_image_sbx(o: &Obj, a: &Asm) => Image:
             let tk = sym - 2
             if o.s_def[tk] < 0 && tk == sys_sym:
                 d = sys_at + a.rl_add[r] - at
+            elif o.s_def[tk] < 0 && ent_of[tk] >= 0:
+                d = ent_of[tk] + a.rl_add[r] - at
             elif o.s_def[tk] < 0 || o.s_sec[tk] != 1:
                 im.err = 2
                 return im

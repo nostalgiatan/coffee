@@ -194,7 +194,7 @@ fn sbx_verify_a64(code: &Txt, n: int, entry: int) => int:
         falls = !d.ends
         if d.kind != 0:
             let t = d.tgt
-            if !(d.kind == 2 && t == entry):
+            if !(d.kind == 2 && sbx_call_entry(t, entry)):
                 if t < 0 || t >= n:
                     sbx_a64_why = 15
                     sbx_rule = sbr_branch()

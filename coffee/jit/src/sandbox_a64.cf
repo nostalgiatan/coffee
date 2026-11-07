@@ -11,6 +11,7 @@ use * in image
 use * in asm
 use * in loader
 use * in sandbox
+use * in hostcall
 
 fn w32a(t: &Txt, w: int) => void:
     for b in 0..4:
@@ -186,7 +187,7 @@ fn catch_signal_a64(sig: int, handler: int, act: int) => int:
     return syscall(134, sig, act, 0, 8, 0, 0)
 
 /#/ Runs `main` (at `main_at` in the code of `im`) in the sandbox; the same contract as `sandbox_run`.
-fn sandbox_run_a64(im: &Image, main_at: int, allow: int, mem_mb: int, cpu_ms: int) => int:
+fn sandbox_run_a64(im: &Image, main_at: int, allow: int, mem_mb: int, cpu_ms: int, hosts: &Hosts) => int:
     let region = sys_mmap(4294967296 + 131072, 0, 16418)
     if !mapped(region):
         return 0 - 1
@@ -227,6 +228,23 @@ fn sandbox_run_a64(im: &Image, main_at: int, allow: int, mem_mb: int, cpu_ms: in
     if im.hc_at > 0:
         poke64(code + im.hc_at, stubs + 1024)
         poke64(code + im.hc_at + 16, stubs + 1536)
+    /#/ the host functions the module calls: a trampoline each, its address in the slot of the import
+    let tramp = 0
+    if im.nimp > 0:
+        tramp = sys_mmap(page_up(im.nimp * 512), 3, 34)
+        if !mapped(tramp):
+            return 0 - 1
+        for k in 0..im.nimp:
+            let hk = hosts.find(&name_txt(&im.names, im.imp_name[k]))
+            if hk < 0 || im.imp_slot[k] < 0:
+                return 0 - 1
+            let tr = host_tramp_a64(hosts.addr[hk], &hosts.sig(hk), region, im.lin_at, im.limit, ctrl, stubs + 512)
+            if tr.n > 512:
+                return 0 - 1
+            copy_in(tramp + 512 * k, &tr)
+            poke64(code + im.imp_slot[k], tramp + 512 * k)
+        if sys_mprotect(tramp, page_up(im.nimp * 512), 5) != 0:
+            return 0 - 1
     /#/ the code and the stubs are made executable once written (the kernel makes the instruction cache see them)
     if sys_mprotect(code, page_up(im.b.n + 1), 5) != 0 || sys_mprotect(stubs, 4096, 5) != 0:
         return 0 - 1
@@ -271,6 +289,9 @@ fn sandbox_run_a64(im: &Image, main_at: int, allow: int, mem_mb: int, cpu_ms: in
         syscall(103, 0, ctrl + 384, 0, 0, 0, 0)
     let t = peek64(ctrl + 16)
     if t != 0:
-        say(f"cfjit: the sandbox trapped (signal {t}) at code offset {peek64(ctrl + 24) - code}, address {peek64(ctrl + 32)}\n")
+        if peek64(ctrl + 24) >= code:
+            say(f"cfjit: the sandbox trapped (signal {t}) at code offset {peek64(ctrl + 24) - code}, address {peek64(ctrl + 32)}\n")
+        else:
+            say(f"cfjit: the sandbox trapped (signal {t})\n")
         return 0 - 2
     return rc

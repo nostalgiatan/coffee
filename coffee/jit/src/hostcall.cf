@@ -1,0 +1,184 @@
+/#/ Host functions for sandbox code (see docs/explanation/jit-design.md). A sandbox module may call a function it does not
+/#/ define when the host registered it with a signature; the call goes to a trampoline that checks the pointer
+/#/ arguments, turns the offsets of the linear memory into addresses, calls the function on the stack of the code and turns
+/#/ a pointer it returns back into an offset. A module that calls anything else is not run.
+/#/
+/#/ The signature is the letters of the arguments, a colon and the letter of the result: `i` an integer, `p` a pointer
+/#/ into the linear memory, which must be followed by `l`, the number of bytes at it (the whole range must be mapped
+/#/ memory of the module, else the run ends in a trap), `l` that length. The result is `i`, `v` (none) or `p` (an
+/#/ address in the linear memory becomes its offset, any other 0). At most six arguments, no floating point.
+use * in asm
+use * in txt
+use * in loader
+use * in asm_a64
+
+class Hosts:
+    names: Txt
+    sigs: Txt
+    at: buf<int>
+    sig_at: buf<int>
+    addr: buf<int>
+    n: int
+
+    /#/ Registers `name` at `addr` with signature `sig`; the lines of both are kept apart by a newline.
+    fn add(self, name: &Txt, sig: &Txt, addr: int) => void:
+        if self.n >= len(self.at):
+            self.at = buf_resize(self.at, self.n * 2 + 4)
+            self.sig_at = buf_resize(self.sig_at, self.n * 2 + 4)
+            self.addr = buf_resize(self.addr, self.n * 2 + 4)
+        self.at[self.n] = self.names.n
+        self.names.put_all(name)
+        self.names.put_byte(0)
+        self.sig_at[self.n] = self.sigs.n
+        self.sigs.put_all(sig)
+        self.sigs.put_byte(0)
+        self.addr[self.n] = addr
+        self.n = self.n + 1
+
+    /#/ The number of the host function called `w`, -1 when there is none.
+    fn find(self, w: &Txt) => int:
+        for k in 0..self.n:
+            let p = self.at[k]
+            let q = 0
+            while q < w.n && self.names.b[p + q] == w.b[q]:
+                q = q + 1
+            if q == w.n && self.names.b[p + q] == 0:
+                return k
+        return 0 - 1
+
+    /#/ The signature of function `k`.
+    fn sig(self, k: int) => Txt:
+        return name_txt(&self.sigs, self.sig_at[k])
+
+fn new_hosts() => Hosts:
+    return Hosts { names: new_txt(), sigs: new_txt(), at: new_buf(int, 4), sig_at: new_buf(int, 4), addr: new_buf(int, 4), n: 0 }
+
+/#/ Is `sig` a signature (see above)?
+fn sig_ok(sig: &Txt) => bool:
+    let n = 0
+    let i = 0
+    while i < sig.n && sig.b[i] != 58:
+        let c = sig.b[i]
+        if c == 112:
+            if i + 1 >= sig.n || sig.b[i + 1] != 108:
+                return false
+            n = n + 2
+            i = i + 2
+        elif c == 105 || c == 108:
+            n = n + 1
+            i = i + 1
+        else:
+            return false
+    if n > 6 || i + 2 != sig.n:
+        return false
+    let r = sig.b[i + 1]
+    return r == 105 || r == 118 || r == 112
+
+/#/ The register of integer argument `i` (rdi, rsi, rdx, rcx, r8, r9).
+fn hreg_x86(i: int) => int:
+    if i == 0:
+        return 7
+    if i == 1:
+        return 6
+    if i == 2:
+        return 2
+    if i == 3:
+        return 1
+    return 8 + i - 4
+
+/#/ The trampoline of the function at `fn_addr` with signature `sig`, for x86-64: reached from the sandbox code with the
+/#/ arguments in the registers of the C convention. `region` is the start of the linear memory, `lo` the first offset the
+/#/ module may name and `limit` the end of what is mapped; a range outside ends the run like a fault does (`ctrl` the
+/#/ control block, `trap` the stub that returns to the host).
+fn host_tramp_x86(fn_addr: int, sig: &Txt, region: int, lo: int, limit: int, ctrl: int, trap: int) => Txt:
+    let a = new_asm()
+    a.begin_fun()
+    let bad = a.new_label()
+    let i = 0
+    while sig.b[i] != 58:
+        if sig.b[i] == 112:
+            let p = hreg_x86(i)
+            let l = hreg_x86(i + 1)
+            a.mov_ri(11, limit)
+            a.cmp_rr(l, 11)
+            a.jcc(cc_a(), bad)
+            a.mov_ri(0, 4294967295)
+            a.and_rr(p, 0)
+            a.mov_ri(10, lo)
+            a.cmp_rr(p, 10)
+            a.jcc(cc_b(), bad)
+            a.mov_rr(10, p)
+            a.add_rr(10, l)
+            a.cmp_rr(10, 11)
+            a.jcc(cc_a(), bad)
+            a.mov_ri(0, region)
+            a.add_rr(p, 0)
+        i = i + 1
+    a.sub_ri(4, 8)
+    a.mov_ri(0, fn_addr)
+    a.call_reg(0)
+    a.add_ri(4, 8)
+    if sig.b[i + 1] == 112:
+        let ok = a.new_label()
+        a.mov_ri(10, region)
+        a.sub_rr(0, 10)
+        a.mov_ri(11, limit)
+        a.cmp_rr(0, 11)
+        a.jcc(cc_b(), ok)
+        a.mov_ri(0, 0)
+        a.bind(ok)
+    a.ret()
+    a.bind(bad)
+    a.mov_ri(10, ctrl)
+    a.mov_ri(11, 11)
+    a.store(10, 16, 11, 8)
+    a.mov_ri(0, trap)
+    a.push(0)
+    a.ret()
+    a.end_fun()
+    return clone a.c
+
+/#/ The same trampoline for aarch64: the arguments in x0 to x5, x28 the start of the linear memory.
+fn host_tramp_a64(fn_addr: int, sig: &Txt, region: int, lo: int, limit: int, ctrl: int, trap: int) => Txt:
+    let a = new_asm()
+    let bad = a.new_label()
+    let i = 0
+    while sig.b[i] != 58:
+        if sig.b[i] == 112:
+            let p = i
+            let l = i + 1
+            a64_mov_ri(&a, 11, limit)
+            a64_cmp_rr(&a, l, 11)
+            a64_bcc(&a, ac_hi(), bad)
+            a64_extend(&a, p, p, 4, false)
+            a64_mov_ri(&a, 10, lo)
+            a64_cmp_rr(&a, p, 10)
+            a64_bcc(&a, ac_lo(), bad)
+            a64_add_rr(&a, 10, p, l)
+            a64_cmp_rr(&a, 10, 11)
+            a64_bcc(&a, ac_hi(), bad)
+            a64_add_rr(&a, p, p, 28)
+        i = i + 1
+    a64_addsub_ri(&a, true, 31, 31, 16)
+    a64_save_fp_lr(&a)
+    a64_mov_ri(&a, 9, fn_addr)
+    a64_blr(&a, 9)
+    a64_load_fp_lr(&a)
+    a64_addsub_ri(&a, false, 31, 31, 16)
+    if sig.b[i + 1] == 112:
+        let ok = a.new_label()
+        a64_sub_rr(&a, 0, 0, 28)
+        a64_mov_ri(&a, 11, limit)
+        a64_cmp_rr(&a, 0, 11)
+        a64_bcc(&a, ac_lo(), ok)
+        a64_mov_ri(&a, 0, 0)
+        a.bind(ok)
+    a64_ret(&a)
+    a.bind(bad)
+    a64_mov_ri(&a, 10, ctrl)
+    a64_mov_ri(&a, 11, 11)
+    a64_st(&a, 10, 16, 11, 8)
+    a64_mov_ri(&a, 9, trap)
+    a64_w(&a, 3592355840 | (9 << 5))
+    a64_end_fun(&a)
+    return clone a.c
