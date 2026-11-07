@@ -362,6 +362,43 @@ fn inline_calls(f: &Fun, lib: &Lib, cur: int) => bool:
                 break
     return any
 
+/#/ Expands the self-calls of `f` (function `n` of `lib`) by one level: each is replaced by a copy of the
+/#/ body as it is now, so half as many calls are made. Only for a small body, and only when the copies
+/#/ stay small. Returns whether it did.
+fn self_inline(f: &Fun, lib: &Lib, n: int) => bool:
+    let id = lib.f_id[n]
+    let calls = 0
+    let live = 0
+    for b in 0..f.nb:
+        let i = f.bfirst[b]
+        while i >= 0:
+            live = live + 1
+            if f.op[i] == int(Op.Call) && f.aux[i] == id && f.fwd[i] < 0:
+                calls = calls + 1
+            i = f.nx[i]
+    if calls == 0 || calls > 2 || live > 40 || live * (calls + 1) > 120:
+        return false
+    lib.save(f, n, id)
+    if lib.f_nb[n] == 0:
+        return false
+    let did = false
+    let again = true
+    let left = calls
+    while again && left > 0:
+        again = false
+        for b in 0..f.nb:
+            let i = f.bfirst[b]
+            while i >= 0 && !again:
+                if f.op[i] == int(Op.Call) && f.aux[i] == id && f.fwd[i] < 0 && lib.npar[lib.f_b0[n]] == f.b[i] && lib.f_ret[n] == f.rep[i]:
+                    inline_call(f, lib, i, n)
+                    again = true
+                    did = true
+                    left = left - 1
+                i = f.nx[i]
+            if again:
+                break
+    return did
+
 /#/ ---- escape analysis -----------------------------------------------------
 
 /#/ Is `x` (an address) the base of a use that cannot let it outlive the function's frame: a load or store
@@ -720,6 +757,8 @@ fn module_opt(lib: &Lib, f: &Fun, rs: &Reps) => void:
         if tail_recursion(f, lib.f_id[n]):
             optimize_rs(f, rs, true)
         if escape_alloc(f, lib):
+            optimize_rs(f, rs, true)
+        if self_inline(f, lib, n):
             optimize_rs(f, rs, true)
         let id = lib.f_id[n]
         lib.save(f, n, id)
