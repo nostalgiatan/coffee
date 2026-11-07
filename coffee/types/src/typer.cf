@@ -924,6 +924,12 @@ class Typer:
         if tok_is(a, tok, "sizeof"):
             return t.int_ty(8, true)
         if tok_is(a, tok, "new_buf"):
+            if first >= 0 && a.kind[first] == int(Nk.TypeRef):
+                let elem = self.rd.from_ref(t, a, first)
+                let count = a.next[first]
+                if count >= 0:
+                    self.expect(t, g, a, count, t.int_ty(8, true))
+                return t.buf_of(elem)
             if first < 0 || a.kind[first] != int(Nk.Name):
                 self.args_untyped(t, g, a, n)
                 return 0

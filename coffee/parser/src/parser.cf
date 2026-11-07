@@ -465,6 +465,28 @@ class Ast:
         self.depth = self.depth - 1
         return self.fin(n)
 
+    /#/ Is the text of token `tok` the word `w`?
+    fn word_is(self, tok: int, w: &str) => bool:
+        let st = self.toks.start[tok]
+        if self.toks.end[tok] - st != len(w):
+            return false
+        for k in 0..len(w):
+            if self.byte_at(st + k) != byte(w, k):
+                return false
+        return true
+
+    /#/ Do the next tokens spell a sized type (`int(4)+`, `float(4)`) followed by a comma?
+    fn sized_elem_ahead(self) => bool:
+        let k = self.peek()
+        if k != int(Tk.KwInt) && k != int(Tk.KwFloat):
+            return false
+        if self.peek_at(1) != int(Tk.LParen) || self.peek_at(2) != int(Tk.Int) || self.peek_at(3) != int(Tk.RParen):
+            return false
+        let after = self.peek_at(4)
+        if after == int(Tk.Plus) || after == int(Tk.Minus):
+            after = self.peek_at(5)
+        return after == int(Tk.Comma)
+
     fn parse_postfix(self) => int:
         let start = self.pos
         let left = self.parse_primary()
@@ -474,7 +496,16 @@ class Ast:
                 let n = self.add(int(Nk.Call), start)
                 self.bump()
                 self.pa[n] = left
-                self.child[n] = self.parse_list(int(Tk.RParen))
+                if self.sized_elem_ahead() && self.kind[left] == int(Nk.Name) && self.word_is(self.tok[left], "new_buf"):
+                    /#/ `new_buf(int(1)-, n)`, `new_buf(float(4), n)`: the element type is spelled as a type here, not as a cast
+                    let first = self.parse_type()
+                    self.child[n] = first
+                    if self.eat(int(Tk.Comma)):
+                        self.next[first] = self.parse_list(int(Tk.RParen))
+                    elif !self.eat(int(Tk.RParen)):
+                        self.record(self.pos, int(Ec.ExpectedClose))
+                else:
+                    self.child[n] = self.parse_list(int(Tk.RParen))
                 left = self.fin(n)
             elif k == int(Tk.LBracket):
                 let n = self.add(int(Nk.Index), start)

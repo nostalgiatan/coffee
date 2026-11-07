@@ -106,6 +106,8 @@ f"Hello {name}"      /#/ 格式化字符串（f-string）
 | `float(4)` | 4 字节浮点数 | 32 位 | `float` |
 | `float(8)` | 8 字节浮点数 | 64 位 | `double` |
 | `bool` | 布尔类型 | 1 字节 | `_Bool` / `bool` |
+
+**短名**:`i8` `i16` `i32` `i64` 是 `int(1)+` `int(2)+` `int(4)+` `int(8)+`,`u8` `u16` `u32` `u64` 是 `int(1)-` `int(2)-` `int(4)-` `int(8)-`,`f32` `f64` 是 `float(4)` `float(8)`。两种写法是同一个类型,可以混用。长写法在类型位置都能用(`buf<int(1)->`、`new_buf(int(1)-, n)`);表达式里的 `float(4)` 仍然是转换,不是类型,所以要把值转成 4 字节浮点数写 `f32(x)`。
 | `str` / `string` | 字符串类型 | 指针 | `const char*` |
 | `void` | 空类型 | - | `void` |
 
