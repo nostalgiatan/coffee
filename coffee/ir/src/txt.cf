@@ -21,8 +21,11 @@ class Txt:
         self.n = 0
 
     fn put_all(self, w: &Txt) => void:
+        if self.n + w.n > len(self.b):
+            self.b = buf_resize(self.b, (self.n + w.n) * 2)
         for i in 0..w.n:
-            self.put_byte(w.b[i])
+            self.b[self.n + i] = w.b[i]
+        self.n = self.n + w.n
 
     fn put_int(self, v: int) => void:
         if v < 0 - 9223372036854775807:

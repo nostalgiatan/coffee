@@ -177,6 +177,12 @@ class Rd:
         return v
 
     fn var(self, t: &Txt) => int:
+        /#/ most values are one byte
+        if self.at < self.end:
+            let b0 = t.b[self.at]
+            if b0 < 128:
+                self.at = self.at + 1
+                return (b0 >> 1) ^ (0 - (b0 & 1))
         let u = 0
         let sh = 0
         while true:
@@ -447,7 +453,18 @@ fn reach_from(lw: &Lower, id: int, seen: &buf<int>) => void:
     let lib = &lw.lib
     let work: buf<int> = new_buf(int, lib.nf + 1)
     let nw = 0
-    let first = lib.find(id)
+    /#/ the function of each name number (`Lib.find` looks through all of them)
+    let top = id
+    for n in 0..lib.nf:
+        if lib.f_id[n] > top:
+            top = lib.f_id[n]
+    let where_: buf<int> = new_buf(int, top + 2)
+    for k in 0..top + 2:
+        where_[k] = 0 - 1
+    for n in 0..lib.nf:
+        if lib.f_id[n] >= 0 && where_[lib.f_id[n]] < 0:
+            where_[lib.f_id[n]] = n
+    let first = where_[id]
     if first < 0:
         return
     seen[first] = 1
@@ -477,7 +494,9 @@ fn reach_from(lw: &Lower, id: int, seen: &buf<int>) => void:
                 else:
                     target = fmo
             if target >= 0:
-                let k = lib.find(target)
+                let k = -1
+                if target <= top:
+                    k = where_[target]
                 if k >= 0 && seen[k] == 0:
                     seen[k] = 1
                     work[nw] = k

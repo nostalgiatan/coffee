@@ -15,8 +15,11 @@ fn read_file(path: &Txt) => Txt:
     let chunk: buf<i8> = new_buf(i8, 65536)
     let got = read(fd, buf_ptr(chunk), 65536)
     while got > 0:
+        if t.n + got > len(t.b):
+            t.b = buf_resize(t.b, (t.n + got) * 2)
         for k in 0..got:
-            t.put_byte(int(chunk[k]) & 255)
+            t.b[t.n + k] = int(chunk[k]) & 255
+        t.n = t.n + got
         got = read(fd, buf_ptr(chunk), 65536)
     close(fd)
     return t

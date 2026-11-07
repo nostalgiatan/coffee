@@ -107,6 +107,8 @@ fn lap(on: bool, what: &str, t0: int) => int:
     return 0
 
 fn main() => int:
+    /#/ the IR checker costs about a third of a start; the machine code of a sandbox is checked on its own
+    set_verify(flag_arg("--verify"))
     let sbx = flag_arg("--sandbox")
     let path = path_arg()
     if path.n == 0:
@@ -127,7 +129,9 @@ fn main() => int:
         mode = 1
         cache_path.put(".sbx")
     cache_path.put(".cim")
-    let key = cim_key(&cir, mode)
+    let key = 0
+    if use_cache:
+        key = cim_key(&cir, mode)
     let im = blank_image()
     let at = 0 - 1
     if use_cache:
@@ -169,6 +173,8 @@ fn main() => int:
         if use_cache:
             write_file(&cache_path, &write_cim(&im, at, key))
     lap(timing, "after the drop of the IR", t0)
+    if flag_arg("--no-run"):
+        return 0
     if sbx:
         let bad = sbx_verify(&im.b, im.text_n, im.sys_at)
         if bad >= 0:

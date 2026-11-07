@@ -20,10 +20,18 @@ class Obj:
     /#/ the initialized data
     data: Txt
     ns: int
+    /#/ open-addressing index of the symbols by name: symbol number + 1, 0 for a free place (a power of two long)
+    hx: buf<int>
 
     /#/ The symbol (object number) named like `w`, made when new.
     fn sym(self, w: &Txt) => int:
-        for k in 0..self.ns:
+        let mask = len(self.hx) - 1
+        let h = 0 - 3750763034362895579
+        for q in 0..w.n:
+            h = (h ^ int(w.b[q])) * 1099511628211
+        let slot = (h >> 7) & mask
+        while self.hx[slot] != 0:
+            let k = self.hx[slot] - 1
             let at = self.s_name[k]
             if at + w.n < self.names.n:
                 let q = 0
@@ -31,6 +39,7 @@ class Obj:
                     q = q + 1
                 if q == w.n && self.names.b[at + w.n] == 0:
                     return k + 2
+            slot = (slot + 1) & mask
         if self.ns >= len(self.s_name):
             let cap = (self.ns + 1) * 2
             self.s_name = buf_resize(self.s_name, cap)
@@ -43,8 +52,26 @@ class Obj:
         self.s_sec[self.ns] = 1
         self.names.put_all(w)
         self.names.put_byte(0)
+        self.hx[slot] = self.ns + 1
         self.ns = self.ns + 1
+        if self.ns * 2 > len(self.hx):
+            self.regrow()
         return self.ns + 1
+
+    /#/ The index again, twice as long.
+    fn regrow(self) => void:
+        self.hx = new_buf(int, len(self.hx) * 2)
+        let mask = len(self.hx) - 1
+        for k in 0..self.ns:
+            let h = 0 - 3750763034362895579
+            let at = self.s_name[k]
+            while self.names.b[at] != 0:
+                h = (h ^ int(self.names.b[at])) * 1099511628211
+                at = at + 1
+            let slot = (h >> 7) & mask
+            while self.hx[slot] != 0:
+                slot = (slot + 1) & mask
+            self.hx[slot] = k + 1
 
     fn dump_ro(self, t: &Txt) => void:
         t.put_all(&self.ro)
@@ -79,7 +106,7 @@ class Obj:
 fn new_obj() => Obj:
     let nm = new_txt()
     nm.put_byte(0)
-    let o = Obj { ro: new_txt(), names: nm, s_name: new_buf(int, 16), s_def: new_buf(int, 16), s_size: new_buf(int, 16), s_sec: new_buf(int, 16), data: new_txt(), ns: 0 }
+    let o = Obj { ro: new_txt(), names: nm, s_name: new_buf(int, 16), s_def: new_buf(int, 16), s_size: new_buf(int, 16), s_sec: new_buf(int, 16), data: new_txt(), ns: 0, hx: new_buf(int, 256) }
     /#/ the zero block that stands in for `undef` aggregates
     for k in 0..256:
         o.ro.put_byte(0)
