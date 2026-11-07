@@ -17,6 +17,7 @@ use * in sbxcheck_a64
 use * in sbxrules
 use * in txt
 use * in elf
+use * in coff
 use * in stub
 
 /#/ Set by `--sandbox`: the code is made for the sandbox (`Asm.sbx`): all memory through the linear memory.
@@ -35,6 +36,9 @@ fn arch_aarch64() => int:
 fn os_linux() => int:
     return 0
 
+fn os_windows() => int:
+    return 1
+
 let target_arch = 0
 let target_os = 0
 
@@ -49,7 +53,7 @@ fn has_prefix(t: &Txt, p: &str) => bool:
 
 /#/ The names accepted by `--target=`, for the error message.
 fn target_names() => str:
-    return "x86_64-linux, aarch64-linux"
+    return "x86_64-linux, aarch64-linux, x86_64-windows, x86_64-linux-ms"
 
 /#/ Chooses the target by its name; 0 when it was set, 1 when the name is unknown, 2 when it is known
 /#/ but there is no code generator for it yet (none now: both known ones have one).
@@ -57,11 +61,26 @@ fn set_target(name: &Txt) => int:
     if name.is("x86_64-linux") || name.is("x86_64"):
         target_arch = arch_x86_64()
         target_os = os_linux()
+        set_win64(false)
+        set_vector_loops(true)
+        return 0
+    if name.is("x86_64-windows") || name.is("x86_64-windows-gnu"):
+        target_arch = arch_x86_64()
+        target_os = os_windows()
+        set_win64(true)
+        set_vector_loops(true)
+        return 0
+    /#/ the Win64 convention in an ELF object: what the tests link against gcc's `__attribute__((ms_abi))` functions
+    if name.is("x86_64-linux-ms"):
+        target_arch = arch_x86_64()
+        target_os = os_linux()
+        set_win64(true)
         set_vector_loops(true)
         return 0
     if name.is("aarch64-linux") || name.is("aarch64"):
         target_arch = arch_aarch64()
         target_os = os_linux()
+        set_win64(false)
         /#/ fixed 4-byte instructions: every function starts on one
         fn_align_at_least(4)
         set_vector_loops(true)
@@ -85,6 +104,8 @@ fn target_object(g: &Gen) => Txt:
                 say(f"error: the sandbox code is not safe (offset {bad}, rule {sbr_name(sbx_rule)}, reason {sbx_a64_why})\n")
                 return new_txt()
         return ga_elf(g)
+    if target_os == os_windows():
+        return write_coff(&g.o, &g.a)
     return g_elf(g)
 
 /#/ The C library a `--static` program gets for the target: `rt/src/min.cf`, which every system shares,
@@ -96,6 +117,8 @@ fn min_rt_text() => str:
 
 /#/ The machine code of `cf_syscall` for the target (the table is `ld/src/stub.cf`, which the linker uses too).
 fn tg_syscall_stub() => buf<int>:
+    if tg_win64() && target_arch == arch_x86_64():
+        return syscall_stub_for(10)
     return syscall_stub_for(target_arch)
 
 /#/ Is the name at `at` in `names` (NUL-ended) the text `w`?

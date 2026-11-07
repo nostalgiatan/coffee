@@ -46,6 +46,12 @@ fn main() => int:
     m = m + expect(10, st("aarch64"), 0)
     m = m + expect(11, st("x86_64-linux"), 0)
     m = m + expect(4, st("riscv"), 1)
+    /#/ Windows: the COFF object and the Win64 convention; "x86_64-linux-ms" is the convention in an ELF object
+    m = m + expect(15, st("x86_64-windows"), 0)
+    m = m + expect(16, target_os, os_windows())
+    m = m + expect(17, st("x86_64-linux-ms"), 0)
+    m = m + expect(18, target_os, os_linux())
+    m = m + expect(19, st("x86_64-linux"), 0)
     m = m + expect(5, st(""), 1)
     m = m + expect(6, target_arch, arch_x86_64())
     m = m + expect(7, hp("--target=x", "--target="), 1)

@@ -1,0 +1,74 @@
+/#/ The COFF object of `--target=x86_64-windows`: the file and section headers, the symbols, the string table and the relocations,
+/#/ read back from the bytes. (The code is checked against gcc's `ms_abi` by tools/winabi/run.sh, and the object against MinGW's
+/#/ linker by tools/winabi/coff.sh.)
+use * in say
+use * in target
+use * in drive
+use * in txt
+use fflush in libc of c
+
+fn expect(what: int, got: int, want: int) => int:
+    if got != want:
+        say(f"MISS #{what}: got {got}, want {want}\n")
+        fflush(0)
+        return 1
+    return 0
+
+fn rd16(t: &Txt, at: int) => int:
+    return int(t.b[at]) + int(t.b[at + 1]) * 256
+
+fn rd32(t: &Txt, at: int) => int:
+    return rd16(t, at) + rd16(t, at + 2) * 65536
+
+fn ge(a: int, b: int) => int:
+    if a >= b:
+        return 1
+    return 0
+
+fn yes(b: bool) => int:
+    if b:
+        return 1
+    return 0
+
+fn st(name: &str) => int:
+    let t = new_txt()
+    t.put(name)
+    return set_target(&t)
+
+fn main() => int:
+    let m = 0
+    m = m + expect(1, st("x86_64-windows"), 0)
+    m = m + expect(2, target_os, os_windows())
+    m = m + expect(3, yes(tg_win64()), 1)
+    let o = build_obj("use puts in libc of c\n\nfn f(a: int) => int:\n    puts(\"x\")\n    return a + 1\n", 1, "")
+    m = m + expect(4, rd16(&o, 0), 34404)
+    m = m + expect(5, rd16(&o, 2), 2)
+    /#/ the first section is the function's: .text$f, with the flags of code
+    m = m + expect(6, int(o.b[20]), '.')
+    m = m + expect(7, int(o.b[25]), '$')
+    m = m + expect(8, int(o.b[26]), 'f')
+    m = m + expect(9, int(o.b[27]), 0)
+    m = m + expect(10, rd32(&o, 20 + 36), 1611661344)
+    m = m + expect(11, rd16(&o, 20 + 32), 2)
+    let rel = rd32(&o, 20 + 24)
+    m = m + expect(12, rd16(&o, rel + 8), 4)
+    m = m + expect(13, rd16(&o, rel + 18), 4)
+    /#/ the string is in .rdata (symbol 0), the call goes to puts (symbol 3, after .rdata's two entries and f)
+    m = m + expect(14, rd32(&o, rel + 4), 0)
+    m = m + expect(15, rd32(&o, rel + 14), 3)
+    /#/ the displacement kept in the code is the addend plus 4: 0 for the call, the offset in .rdata for the address
+    let code = rd32(&o, 20 + 20)
+    m = m + expect(16, rd32(&o, code + rd32(&o, rel + 10)), 0)
+    m = m + expect(17, ge(rd32(&o, code + rd32(&o, rel)), 256), 1)
+    /#/ the symbol table ends the file but for the string table, whose first four bytes are its size
+    let sy = rd32(&o, 8)
+    let ns = rd32(&o, 12)
+    m = m + expect(18, ns, 4)
+    m = m + expect(19, sy + 18 * ns + rd32(&o, sy + 18 * ns), o.n)
+    /#/ `f` is a function (type 0x20) of section 1, external
+    m = m + expect(20, rd16(&o, sy + 36 + 12), 1)
+    m = m + expect(21, rd16(&o, sy + 36 + 14), 32)
+    m = m + expect(22, int(o.b[sy + 36 + 16]), 2)
+    st("x86_64-linux")
+    m = m + expect(23, yes(tg_win64()), 0)
+    return m

@@ -761,6 +761,13 @@ class Asm:
     fn splat_q(self, x: int) => void:
         self.vec_op(true, 108, x, x)
 
+    /#/ [base + disp] = the 16 bytes of xmm `x`, and back (unaligned)
+    fn movups_st(self, base: int, disp: int, x: int) => void:
+        self.rmem(0, 15, 17, x, base, disp, false)
+
+    fn movups_ld(self, x: int, base: int, disp: int) => void:
+        self.rmem(0, 15, 16, x, base, disp, false)
+
     /#/ xmm dst = xmm src (all 128 bits)
     fn movaps(self, dst: int, src: int) => void:
         self.rr(0, 15, 40, dst, src, false)

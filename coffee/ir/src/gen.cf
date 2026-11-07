@@ -14,6 +14,7 @@
 /#/ r8, r9, floats in xmm0 to xmm7, the rest on the stack). An aggregate is passed as a pointer to
 /#/ its place in the caller's frame and returned through a pointer in the first integer register.
 use * in elf
+use * in target_x86
 use * in dbgtype
 
 use * in gen_dbg
@@ -23,6 +24,14 @@ use * in gen_x86_isel
 use * in gen_x86_vec
 use * in gen_x86_fun
 fn int_reg(k: int) => int:
+    if tg_win64():
+        if k == 0:
+            return 1
+        if k == 1:
+            return 2
+        if k == 2:
+            return 8
+        return 9
     if k == 0:
         return 7
     if k == 1:
@@ -50,6 +59,8 @@ class Gen:
     frame: int
     err: int
     av: buf<int>
+    /#/ where the arguments of the call being made go (see `g_do_call`)
+    al: buf<int>
     nav: int
     /#/ where the string literals are in .rodata, by number
     sbase: int
@@ -64,6 +75,8 @@ class Gen:
     xsg: buf<int>
     did: buf<int>
     nsaved: int
+    /#/ Win64: the bytes at the bottom of the frame where a `c fn` keeps xmm6..xmm15, 0 for none
+    xsave: int
     /#/ 8 when [rbp-8] holds the pointer a function returning an aggregate was given, else 0
     rbase: int
     saved: buf<int>
@@ -155,7 +168,7 @@ fn g_bad(g: &Gen) => void:
     g.err = g.err + 1
 
 fn new_gen() => Gen:
-    return Gen { a: new_asm(), o: new_obj(), voff: new_buf(int, 64), sh: new_buf(int, 64), sframe: 0, tmp: 0, frame: 0, err: 0, av: new_buf(int, 16), nav: 0, sbase: 256, soff: new_buf(int, 16), nstr: 0, home: new_buf(int, 64), xhome: new_buf(int, 64), ord: new_buf(int, 16), emit: new_buf(int, 16), xsg: new_buf(int, 64), did: new_buf(int, 64), nsaved: 0, rbase: 0, saved: new_buf(int, 8), ed: new_buf(int, 16), ned: 0, ra_lo: new_buf(int, 1), ra_hi: new_buf(int, 1), ra_wt: new_buf(int, 1), uq_d: new_buf(int, 16), uq_b: new_buf(int, 16), nuq: 0, ra_dblk: new_buf(int, 1), ra_dset: new_buf(int, 1), ra_cp: new_buf(int, 16), ra_ncp: 0, ra_cm: new_buf(int, 16), cur: -1, msk: new_buf(int, 16), fmask: 0, nuse: new_buf(int, 64), am_base: 0, am_idx: -1, am_scale: 1, am_disp: 0, epi: 0, epi_jump: false, hc: new_buf(int, 16), nhc: 0, fk_bits: new_buf(int, 8), fk_lab: new_buf(int, 8), nfk: 0, fu_rl: new_buf(int, 16), fu_k: new_buf(int, 16), nfu: 0, fsym: 0, lm_at: new_buf(int, 64), lm_ln: new_buf(int, 64), lm_n: 0, mk_l: new_buf(int, 64), mk_ln: new_buf(int, 64), mk_n: 0, lf_sym: new_buf(int, 64), lf_start: new_buf(int, 64), lf_m0: new_buf(int, 64), lf_n: 0, dt: new_dbg_types(), vtxt: new_txt(), vr_s: new_buf(int, 64), vr_e: new_buf(int, 64), dv: new_buf(int, 1), coal: new_buf(int, 1), dn: new_buf(int, 1), ptop: 0 }
+    return Gen { a: new_asm(), o: new_obj(), voff: new_buf(int, 64), sh: new_buf(int, 64), sframe: 0, tmp: 0, frame: 0, err: 0, av: new_buf(int, 16), al: new_buf(int, 16), nav: 0, sbase: 256, soff: new_buf(int, 16), nstr: 0, home: new_buf(int, 64), xhome: new_buf(int, 64), ord: new_buf(int, 16), emit: new_buf(int, 16), xsg: new_buf(int, 64), did: new_buf(int, 64), nsaved: 0, xsave: 0, rbase: 0, saved: new_buf(int, 8), ed: new_buf(int, 16), ned: 0, ra_lo: new_buf(int, 1), ra_hi: new_buf(int, 1), ra_wt: new_buf(int, 1), uq_d: new_buf(int, 16), uq_b: new_buf(int, 16), nuq: 0, ra_dblk: new_buf(int, 1), ra_dset: new_buf(int, 1), ra_cp: new_buf(int, 16), ra_ncp: 0, ra_cm: new_buf(int, 16), cur: -1, msk: new_buf(int, 16), fmask: 0, nuse: new_buf(int, 64), am_base: 0, am_idx: -1, am_scale: 1, am_disp: 0, epi: 0, epi_jump: false, hc: new_buf(int, 16), nhc: 0, fk_bits: new_buf(int, 8), fk_lab: new_buf(int, 8), nfk: 0, fu_rl: new_buf(int, 16), fu_k: new_buf(int, 16), nfu: 0, fsym: 0, lm_at: new_buf(int, 64), lm_ln: new_buf(int, 64), lm_n: 0, mk_l: new_buf(int, 64), mk_ln: new_buf(int, 64), mk_n: 0, lf_sym: new_buf(int, 64), lf_start: new_buf(int, 64), lf_m0: new_buf(int, 64), lf_n: 0, dt: new_dbg_types(), vtxt: new_txt(), vr_s: new_buf(int, 64), vr_e: new_buf(int, 64), dv: new_buf(int, 1), coal: new_buf(int, 1), dn: new_buf(int, 1), ptop: 0 }
 
 fn rsize_scalar(r: int) => int:
     if r == int(Rp.I8):

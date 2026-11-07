@@ -140,7 +140,7 @@ IR 之后的两个变换:
 | G | aarch64 沙盒加载器(x28、陷阱;`sandbox_a64.cf`,在 `qemu-aarch64` 下过各阶段测试) | 完成 |
 | H | 宿主调用跳板(`--host=名字=签名`,`hostcall.cf`;两个后端) | 完成 |
 | I | 删除 `gs`(满足第 6.3 节的条件之后) | 复测:基址是 `gs` 开销的 2.09 倍(+9.2% 对 +4.4%),略超 2 倍,暂缓(验证器数据流去 `lea` 试过,无效,已撤回) |
-| J | PE 对象写入器、Win64 调用约定、`os_windows_*.cf`、Windows 加载器 | 待做 |
+| J | PE 对象写入器、Win64 调用约定、`os_windows_*.cf`、Windows 加载器 | 编译器一侧完成:COFF 写入器(`coff.cf`)、Win64 约定(`x86_64-linux-ms` 在 Linux 上对 gcc 的 `ms_abi` 测过)、`--target=x86_64-windows` 经 MinGW 链接;展开信息、加载器、运行时待做([Windows 目标](../reference/windows-backend.md)) |
 | K | riscv64 | 待做 |
 | 可选 | pkeys 加速模式;静态叠放影子帧 | 不排期 |
 

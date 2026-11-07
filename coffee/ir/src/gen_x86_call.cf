@@ -25,46 +25,47 @@ fn g_is_int_class(g: &Gen, r: int) => bool:
 fn g_do_call(g: &Gen, f: &Fun, rs: &Reps, i: int, sym: int, variadic: bool) => void:
     let ret = f.rep[i]
     let sret = ret >= rp_first_agg()
-    /#/ which arguments go on the stack
+    let win = tg_win64()
+    /#/ where each argument goes: the number of its integer or xmm register, -1 for the stack. System V counts the two
+    /#/ kinds apart; Win64 counts the positions, so that the third argument is r8 (or xmm2) whatever kind the first two were.
+    if len(g.al) < g.nav + 1:
+        g.al = new_buf(int, (g.nav + 1) * 2)
     let ni = 0
     let nx = 0
     if sret:
         ni = 1
+        if win:
+            nx = 1
     let on_stack = 0
+    let nxr = 0
     for k in 0..g.nav:
         let r = f.rep[g_res(g, f, g.av[k])]
         if r >= rp_first_agg() || g_is_int_class(g, r):
-            if ni < 6:
-                ni = ni + 1
+            if ni < tg_int_args():
+                g.al[k] = ni
             else:
+                g.al[k] = 0 - 1
                 on_stack = on_stack + 1
-        elif nx < 8:
-            nx = nx + 1
+            ni = ni + 1
+            if win:
+                nx = nx + 1
         else:
-            on_stack = on_stack + 1
+            if nx < tg_xmm_args():
+                g.al[k] = nx
+                nxr = nxr + 1
+            else:
+                g.al[k] = 0 - 1
+                on_stack = on_stack + 1
+            nx = nx + 1
+            if win:
+                ni = ni + 1
     if on_stack % 2 == 1:
         g.a.sub_ri(4, 8)
     /#/ the stack arguments, last first
     let k = g.nav - 1
     while k >= 0:
-        let r = f.rep[g_res(g, f, g.av[k])]
-        let reg_ok = false
-        /#/ recompute whether this one fits in a register: count the ones before it
-        let ci = 0
-        if sret:
-            ci = 1
-        let cx = 0
-        for j in 0..k:
-            let rj = f.rep[g_res(g, f, g.av[j])]
-            if rj >= rp_first_agg() || g_is_int_class(g, rj):
-                ci = ci + 1
-            else:
-                cx = cx + 1
-        if r >= rp_first_agg() || g_is_int_class(g, r):
-            reg_ok = ci < 6
-        else:
-            reg_ok = cx < 8
-        if !reg_ok:
+        if g.al[k] < 0:
+            let r = f.rep[g_res(g, f, g.av[k])]
             if r >= rp_first_agg():
                 let x = g_res(g, f, g.av[k])
                 if f.op[x] == int(Op.Undef):
@@ -75,37 +76,36 @@ fn g_do_call(g: &Gen, f: &Fun, rs: &Reps, i: int, sym: int, variadic: bool) => v
                 g_ld(g, 0, f, g.av[k])
             g.a.push(0)
         k = k - 1
+    if win:
+        g.a.sub_ri(4, tg_shadow())
     if sret:
-        g.a.lea(7, g_vb(g, i), 0 - g.voff[i])
-    let ci = 0
-    if sret:
-        ci = 1
-    let cx = 0
+        g.a.lea(int_reg(0), g_vb(g, i), 0 - g.voff[i])
     for an in 0..g.nav:
         let v = g.av[an]
         let x = g_res(g, f, v)
         let r = f.rep[x]
+        let at = g.al[an]
         if r >= rp_first_agg():
-            if ci < 6:
+            if at >= 0:
                 if f.op[x] == int(Op.Undef):
-                    g.a.lea_rip(int_reg(ci), 1, 0)
+                    g.a.lea_rip(int_reg(at), 1, 0)
                 else:
-                    g.a.lea(int_reg(ci), g_vb(g, x), 0 - g.voff[x])
-            ci = ci + 1
+                    g.a.lea(int_reg(at), g_vb(g, x), 0 - g.voff[x])
         elif g_is_int_class(g, r):
-            if ci < 6:
-                g_ld(g, int_reg(ci), f, v)
-            ci = ci + 1
+            if at >= 0:
+                g_ld(g, int_reg(at), f, v)
         else:
-            if cx < 8:
+            if at >= 0:
                 if g.xhome[x] >= 0:
-                    g.a.movaps(cx, g.xhome[x])
+                    g.a.movaps(at, g.xhome[x])
                 else:
                     g_ld(g, 0, f, v)
-                    g.a.movq_x(cx, 0, r == int(Rp.F32))
-            cx = cx + 1
-    if variadic:
-        g.a.mov_ri(0, nx)
+                    g.a.movq_x(at, 0, r == int(Rp.F32))
+                if win && variadic:
+                    /#/ a variadic callee reads the first four arguments from the integer registers
+                    g.a.movq_r(int_reg(at), at, r == int(Rp.F32))
+    if variadic && !win:
+        g.a.mov_ri(0, nxr)
     if sym < 0:
         g.a.call_reg(11)
     else:
@@ -113,8 +113,9 @@ fn g_do_call(g: &Gen, f: &Fun, rs: &Reps, i: int, sym: int, variadic: bool) => v
     let pop = on_stack
     if on_stack % 2 == 1:
         pop = pop + 1
+    pop = pop * 8 + tg_shadow()
     if pop > 0:
-        g.a.add_ri(4, pop * 8)
+        g.a.add_ri(4, pop)
     if ret == int(Rp.Void) || sret || f.uses[i] == 0:
         return
     if g_is_int_class(g, ret):

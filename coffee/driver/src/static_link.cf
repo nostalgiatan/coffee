@@ -13,9 +13,15 @@ fn set_keep_syms() => void:
 /#/ The `cc` command start for linking: sections nobody reaches are dropped, and the symbols too
 /#/ unless `-g` was given.
 fn cc_link_start() => Txt:
+    /#/ for Windows the MinGW-w64 cross compiler links (and supplies the C library)
+    let t = txt_of("cc")
+    if target_os == os_windows():
+        t = txt_of("x86_64-w64-mingw32-gcc")
     if keep_syms:
-        return txt_of("cc -w -Wl,--gc-sections -o '")
-    return txt_of("cc -w -s -Wl,--gc-sections -o '")
+        t.put(" -w -Wl,--gc-sections -o '")
+    else:
+        t.put(" -w -s -Wl,--gc-sections -o '")
+    return t
 
 /#/ Links the objects into `out`: `paths` has one object per line, `quoted` the same as `'a' 'b'` for
 /#/ `cc`, `flags` is what the program's `.cfc` files add to the `cc` line. With `static_link` the

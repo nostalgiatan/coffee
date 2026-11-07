@@ -2,7 +2,8 @@
 /#/ registers of the system call instruction, then a return. One table for the linker (which adds it to a
 /#/ program) and for the code generator (which puts it in a `--pic` library's object).
 
-/#/ `arch`: 0 x86-64, 1 aarch64.
+/#/ `arch`: 0 x86-64, 1 aarch64, 10 x86-64 with the Win64 calling convention (the arguments in rcx, rdx, r8, r9 and the stack
+/#/ above 32 bytes of shadow space; rsi and rdi are kept).
 fn syscall_stub_for(arch: int) => buf<int>:
     if arch == 1:
         /#/ mov x8,x0; mov x0,x1; mov x1,x2; mov x2,x3; mov x3,x4; mov x4,x5; mov x5,x6; svc #0; ret
@@ -10,6 +11,12 @@ fn syscall_stub_for(arch: int) => buf<int>:
         let out: buf<int> = new_buf(int, 36)
         for k in 0..36:
             out[k] = a64[k]
+        return out
+    if arch == 10:
+        let ms = [86, 87, 72, 137, 200, 72, 137, 215, 76, 137, 198, 76, 137, 202, 76, 139, 84, 36, 56, 76, 139, 68, 36, 64, 76, 139, 76, 36, 72, 15, 5, 95, 94, 195]
+        let out: buf<int> = new_buf(int, 34)
+        for k in 0..34:
+            out[k] = ms[k]
         return out
     /#/ mov rax,rdi; mov rdi,rsi; mov rsi,rdx; mov rdx,rcx; mov r10,r8; mov r8,r9; mov r9,[rsp+8]; syscall; ret
     let x86 = [72, 137, 248, 72, 137, 247, 72, 137, 214, 72, 137, 202, 77, 137, 194, 77, 137, 200, 76, 139, 76, 36, 8, 15, 5, 195]

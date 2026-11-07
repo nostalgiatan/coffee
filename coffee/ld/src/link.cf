@@ -53,7 +53,15 @@ fn machine_of(arch: int) => int:
         return 183
     return 62
 
+/#/ The program's code follows the Win64 calling convention (`--target=x86_64-linux-ms`; used by the tests of that convention).
+let ld_win64: bool = false
+
+fn set_ld_win64(on: bool) => void:
+    ld_win64 = on
+
 fn syscall_stub() => buf<int>:
+    if ld_win64 && ld_arch == 0:
+        return syscall_stub_for(10)
     return syscall_stub_for(ld_arch)
 
 class Linker:
@@ -396,6 +404,13 @@ class Linker:
         let call_at = 12
         let call_ty = 4
         let call_add = 0 - 4
+        if ld_win64 && ld_arch == 0:
+            /#/ xor ebp,ebp; mov rcx,[rsp]; lea rdx,[rsp+8]; sub rsp,32; call main; mov edi,eax; mov eax,60; syscall
+            let ms = [49, 237, 72, 139, 12, 36, 72, 141, 84, 36, 8, 72, 131, 236, 32, 232, 0, 0, 0, 0, 137, 199, 184, 60, 0, 0, 0, 15, 5]
+            code = new_buf(int, 29)
+            for k in 0..29:
+                code[k] = ms[k]
+            call_at = 16
         if ld_arch == 1:
             /#/ mov x29,#0; ldr x0,[sp]; add x1,sp,#8; bl main; mov x8,#94 (exit_group); svc #0
             let a64 = [29, 0, 128, 210, 224, 3, 64, 249, 225, 35, 0, 145, 0, 0, 0, 148, 200, 11, 128, 210, 1, 0, 0, 212]

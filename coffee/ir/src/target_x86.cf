@@ -83,3 +83,32 @@ fn tg_xmm_first() => int:
 
 fn tg_xmm_arg_first() => int:
     return 8
+
+/#/ The Win64 calling convention instead of System V's (`--target=x86_64-windows`; `x86_64-linux-ms` is the same convention
+/#/ in an ELF object, so that it can be tested against gcc's `ms_abi` functions on Linux). The first four arguments of any kind
+/#/ go in rcx, rdx, r8, r9 or xmm0..xmm3 by their position, the caller leaves 32 bytes of shadow space below the stack arguments,
+/#/ rsi, rdi and xmm6..xmm15 are the callee's to keep (the code does that in the functions C may call: the `c fn`s).
+let win64_abi = false
+
+fn set_win64(on: bool) => void:
+    win64_abi = on
+
+fn tg_win64() => bool:
+    return win64_abi
+
+/#/ The number of arguments that travel in integer registers, and in xmm registers.
+fn tg_int_args() => int:
+    if win64_abi:
+        return 4
+    return 6
+
+fn tg_xmm_args() => int:
+    if win64_abi:
+        return 4
+    return 8
+
+/#/ The bytes between the return address and the first stack argument.
+fn tg_shadow() => int:
+    if win64_abi:
+        return 32
+    return 0

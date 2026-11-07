@@ -37,9 +37,18 @@ fn g_site_mask(g: &Gen, f: &Fun, i: int) => int:
     let m = tg_mask_all()
     if id >= 0 && id < len(g.msk) && g.msk[id] > 0:
         m = g.msk[id] - 8
-    if f.b[i] >= 5:
+    /#/ the argument positions that are r8 and r9 (Win64: the third and fourth, and an aggregate result takes the first)
+    let at5 = 5
+    let at6 = 6
+    let nb = f.b[i]
+    if tg_win64():
+        at5 = 3
+        at6 = 4
+        if f.rep[i] >= rp_first_agg():
+            nb = nb + 1
+    if nb >= at5:
         m = m | tg_mask_arg5()
-    if f.b[i] >= 6:
+    if nb >= at6:
         m = m | tg_mask_arg6()
     if f.rep[i] >= rp_first_agg():
         m = m | tg_mask_arg5()

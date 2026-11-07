@@ -196,6 +196,7 @@ fn parse_cli(fl: &Flat) => Cli:
                     cli.set_bad()
                 else:
                     set_ld_arch(target_arch)
+                    set_ld_win64(tg_win64())
             elif w.is("-O0"):
                 cli.set_level(0)
             elif w.is("-O1"):
@@ -304,7 +305,10 @@ fn main() => int:
             map_path.put(".map")
             write_file(&map_path, &map)
         return 0
-    if !cli.emit_only && !cli.dynamic && can_link_static(&fl.out):
+    if target_os == os_windows() && cli.static_link:
+        say("error: --static has no meaning for Windows: the program is linked with the C runtime of MinGW-w64\n")
+        return 1
+    if !cli.emit_only && !cli.dynamic && target_os != os_windows() && can_link_static(&fl.out):
         /#/ nothing the built-in C library lacks is imported: no `cc` needed
         cli.static_link = true
         cli.auto_static = true

@@ -159,7 +159,7 @@ class Access: kind, width, base, index, scale, disp, pfx
 | 12 | aarch64 沙盒加载器(x28、陷阱、cfjit) | 9 | 待做 |
 | 13 | 删除 `gs` 模式 | 10 的实测 | 待做 |
 | 14 | 宿主调用跳板 | 10 | 完成 |
-| 15 | PE 对象写入器、Win64 调用约定、`os_windows_x86_64.cf`、Windows 加载器 | 5 到 7 | 待做 |
+| 15 | PE 对象写入器、Win64 调用约定、`os_windows_x86_64.cf`、Windows 加载器 | 5 到 7 | 编译器一侧完成(见 [Windows 目标](../reference/windows-backend.md));展开信息、加载器、运行时待做 |
 | 16 | riscv64 | 5 到 9 | 待做 |
 
 门槛脚本:`ir/tools/corpus-x86.sh`、`ir/tools/corpus-a64.sh`(同一棵树上用两个编译器各跑一遍,比较 `.sha`)。第 6 步(线性扫描骨架合一)是剩下的整理里最难的一步,因为 x86 的调用者保存约束要表驱动化。9 以后有语义改动,每步要单独量。

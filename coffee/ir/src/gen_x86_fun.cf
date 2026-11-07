@@ -12,8 +12,36 @@ use * in dbgtype
 fn g_elf(g: &Gen) => Txt:
     return write_elf(&g.o, &g.a)
 
+/#/ Win64: a function C may call keeps rsi, rdi (pushed with the saved registers) and xmm6..xmm15 (in the bottom 160 bytes of the frame).
+fn g_win_export(g: &Gen) => bool:
+    return tg_win64() && g.o.s_pub[g.fsym - 2] == 1
+
+/#/ The frame of `n` bytes; on Windows a frame of a page or more is touched page by page from the top, so that the guard page of the
+/#/ stack is reached in order.
+fn g_alloc_frame(g: &Gen, n: int) => void:
+    if tg_win64() && n > 4096:
+        let left = n
+        while left > 4096:
+            g.a.sub_ri(4, 4096)
+            g.a.load(0, 4, 0, 8)
+            left = left - 4096
+        g.a.sub_ri(4, left)
+        return
+    g.a.sub_ri(4, n)
+
+fn g_save_xmm(g: &Gen) => void:
+    if g.xsave > 0:
+        for k in 0..10:
+            g.a.movups_st(5, 0 - g.frame + 16 * k, 6 + k)
+
+fn g_restore_xmm(g: &Gen) => void:
+    if g.xsave > 0:
+        for k in 0..10:
+            g.a.movups_ld(6 + k, 5, 0 - g.frame + 16 * k)
+
 /#/ The saved registers come back by pop, from below the frame's locals.
 fn g_epilogue(g: &Gen) => void:
+    g_restore_xmm(g)
     if g.sframe > 0 && !g.a.acc.bm:
         g.a.add_ri(14, g.sframe)
     if g.nsaved > 0:
@@ -48,7 +76,16 @@ fn g_gen_fun(g: &Gen, f: &Fun, rs: &Reps, sy: &Names) => bool:
     block_order(f, &g.emit, true)
     g_alloc_regs(g, f, rs)
     g_count_uses(g, f)
+    g.xsave = 0
+    if g_win_export(g):
+        if len(g.saved) < g.nsaved + 2:
+            g.saved = buf_resize(g.saved, g.nsaved + 4)
+        g.saved[g.nsaved] = 6
+        g.saved[g.nsaved + 1] = 7
+        g.nsaved = g.nsaved + 2
+        g.xsave = 160
     g_layout(g, f, rs)
+    g.frame = g.frame + g.xsave
     let start = g.a.pos()
     for b in 0..f.nb:
         g.a.new_label()
@@ -57,11 +94,12 @@ fn g_gen_fun(g: &Gen, f: &Fun, rs: &Reps, sy: &Names) => bool:
     /#/ [rbp-8] is the place of the pointer for a returned aggregate (rdi); the saved registers
     /#/ follow, then the locals
     if g.rbase > 0:
-        g.a.push(7)
+        g.a.push(int_reg(0))
     for k in 0..g.nsaved:
         g.a.push(g.saved[k])
     if g.frame > g.rbase + 8 * g.nsaved:
-        g.a.sub_ri(4, g.frame - g.rbase - 8 * g.nsaved)
+        g_alloc_frame(g, g.frame - g.rbase - 8 * g.nsaved)
+    g_save_xmm(g)
     if g.sframe > 0 && !g.a.acc.bm:
         g.a.sub_ri(14, g.sframe)
     let nret = 0
@@ -76,19 +114,22 @@ fn g_gen_fun(g: &Gen, f: &Fun, rs: &Reps, sy: &Names) => bool:
     let cs = 0
     if f.ret >= rp_first_agg():
         ci = 1
+        if tg_win64():
+            cx = 1
+    let win = tg_win64()
     let p = f.pfirst[0]
     /#/ rcx and rdx may still hold arguments: an address made for a copy must not use them
     g.a.acc.keep = 6
     while p >= 0:
         let r = f.rep[p]
         if r >= rp_first_agg() || g_is_int_class(g, r):
-            if ci < 6:
+            if ci < tg_int_args():
                 if r >= rp_first_agg():
                     g_copy_mem(g, g_vb(g, p), 0 - g.voff[p], int_reg(ci), 0, rsize(rs, r))
                 else:
                     g_st(g, p, int_reg(ci))
             else:
-                g.a.load(0, 5, 16 + 8 * cs, 8)
+                g.a.load(0, 5, 16 + tg_shadow() + 8 * cs, 8)
                 if r >= rp_first_agg():
                     g.a.mov_rr(6, 0)
                     g_copy_mem(g, g_vb(g, p), 0 - g.voff[p], 6, 0, rsize(rs, r))
@@ -96,18 +137,22 @@ fn g_gen_fun(g: &Gen, f: &Fun, rs: &Reps, sy: &Names) => bool:
                     g_st(g, p, 0)
                 cs = cs + 1
             ci = ci + 1
+            if win:
+                cx = cx + 1
         else:
-            if cx < 8:
+            if cx < tg_xmm_args():
                 if g.xhome[p] >= 0:
                     g.a.movaps(g.xhome[p], cx)
                 else:
                     g.a.movq_r(0, cx, r == int(Rp.F32))
                     g_st(g, p, 0)
             else:
-                g.a.load(0, 5, 16 + 8 * cs, 8)
+                g.a.load(0, 5, 16 + tg_shadow() + 8 * cs, 8)
                 g_st(g, p, 0)
                 cs = cs + 1
             cx = cx + 1
+            if win:
+                ci = ci + 1
         p = f.nx[p]
     g.a.acc.keep = 0
     for k in 0..g.nhc:

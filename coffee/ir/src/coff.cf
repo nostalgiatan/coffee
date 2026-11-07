@@ -1,0 +1,279 @@
+/#/ An x86-64 COFF object (what Windows linkers read): one `.text$<name>` section per function with its own relocations (so a
+/#/ linker can drop the functions nothing reaches), `.rdata`, `.data`, the symbols and the string table. With `--pic` a `.drectve`
+/#/ section lists the `c fn`s as exports.
+/#/
+/#/ Symbol numbers in the object: 0 and 1 are the `.rdata` section symbol and its auxiliary record, then the symbols of `Obj` in
+/#/ the order they were made (`2 + k`) -- the same numbers the code generator's relocations use, except that its 1 (`.rodata`) is 0 here.
+/#/
+/#/ Not written yet: the unwind data (`.pdata`, `.xdata`), so that an exception cannot pass through the generated functions, and the
+/#/ line table (`.cf_lines`).
+use * in asm
+use * in elf
+
+/#/ The COFF section flags of alignment `n` (a power of two up to 8192): the field is the exponent plus one, in bits 20 to 23.
+fn coff_align(n: int) => int:
+    let e = 1
+    let v = 1
+    while v < n && e < 14:
+        v = v * 2
+        e = e + 1
+    return e << 20
+
+/#/ One section header; `name` is the 8 bytes (or `/` and the offset in the string table).
+fn coff_sh(t: &Txt, name: &Txt, size: int, raw: int, relocs: int, nrel: int, flags: int) => void:
+    for k in 0..8:
+        if k < name.n:
+            t.put_byte(name.b[k])
+        else:
+            t.put_byte(0)
+    w32(t, 0)
+    w32(t, 0)
+    w32(t, size)
+    w32(t, raw)
+    w32(t, relocs)
+    w32(t, 0)
+    if nrel > 65534:
+        w16(t, 65535)
+        w16(t, 0)
+        w32(t, flags | 16777216)
+    else:
+        w16(t, nrel)
+        w16(t, 0)
+        w32(t, flags)
+
+/#/ The name of a section for the header: itself when it fits in 8 bytes, else `/` and the decimal offset of the name in the string table.
+fn coff_secname(st: &Txt, name: &Txt) => Txt:
+    let r = new_txt()
+    if name.n <= 8:
+        r.put_all(name)
+        return r
+    r.put_byte('/')
+    r.put_int(st.n)
+    st.put_all(name)
+    st.put_byte(0)
+    return r
+
+/#/ A symbol table entry: the name inline or at `soff` in the string table (given when `long`).
+fn coff_sym(t: &Txt, name: &Txt, inline: bool, soff: int, value: int, sec: int, ty: int, cls: int, aux: int) => void:
+    if inline:
+        for k in 0..8:
+            if k < name.n:
+                t.put_byte(name.b[k])
+            else:
+                t.put_byte(0)
+    else:
+        w32(t, 0)
+        w32(t, soff)
+    w32(t, value)
+    w16(t, sec)
+    w16(t, ty)
+    t.put_byte(cls)
+    t.put_byte(aux)
+
+/#/ The object file.
+fn write_coff(o: &Obj, a: &Asm) => Txt:
+    /#/ the functions: the defined `.text` symbols, in the order they were assembled
+    let fn_sym: buf<int> = new_buf(int, o.ns + 1)
+    let nf = 0
+    for k in 0..o.ns:
+        if o.s_def[k] >= 0 && o.s_sec[k] == 1:
+            fn_sym[nf] = k
+            nf = nf + 1
+    let gap = nf // 2
+    while gap > 0:
+        for i in gap..nf:
+            let x = fn_sym[i]
+            let j = i
+            while j >= gap && o.s_def[fn_sym[j - gap]] > o.s_def[x]:
+                fn_sym[j] = fn_sym[j - gap]
+                j = j - gap
+            fn_sym[j] = x
+        gap = gap // 2
+    let has_data = o.data.n > 0
+    let nsec = nf + 1
+    if has_data:
+        nsec = nsec + 1
+    let drect = new_txt()
+    if elf_hide:
+        for k in 0..o.ns:
+            if o.s_def[k] >= 0 && o.s_pub[k] == 1:
+                drect.put("/EXPORT:")
+                let at = o.s_name[k]
+                while o.names.b[at] != 0:
+                    drect.put_byte(o.names.b[at])
+                    at = at + 1
+                drect.put_byte(' ')
+    if drect.n > 0:
+        nsec = nsec + 1
+    if nsec > 65279:
+        say(f"coff: {nsec} sections in one object are too many\n")
+        return new_txt()
+    /#/ the relocations of each function, offsets from its start
+    let rel = new_txt()
+    let fn_ra: buf<int> = new_buf(int, nf + 1)
+    let fn_rn: buf<int> = new_buf(int, nf + 1)
+    let fn_at: buf<int> = new_buf(int, a.nrl + 1)
+    let cur = 0
+    for k in 0..a.nrl:
+        let at = a.rl_at[k]
+        while cur < nf && at >= o.s_def[fn_sym[cur]] + o.s_size[fn_sym[cur]]:
+            cur = cur + 1
+        if cur >= nf || at < o.s_def[fn_sym[cur]]:
+            say(f"coff: a relocation at {at} is in no function\n")
+            return new_txt()
+        fn_at[k] = cur
+        fn_rn[cur] = fn_rn[cur] + 1
+    let ty = 0
+    let k0 = 0
+    for j in 0..nf:
+        fn_ra[j] = rel.n
+        if fn_rn[j] > 65534:
+            /#/ the first record holds the count (including itself)
+            w32(&rel, fn_rn[j] + 1)
+            w32(&rel, 0)
+            w16(&rel, 0)
+        for k in k0..a.nrl:
+            if fn_at[k] != j:
+                break
+            let sy = a.rl_sym[k]
+            if sy == 1:
+                sy = 0
+            let rt = a.rl_ty[k]
+            w32(&rel, a.rl_at[k] - o.s_def[fn_sym[j]])
+            w32(&rel, sy)
+            if rt == r_pc32() || rt == r_plt32():
+                w16(&rel, 4)
+            elif rt == r_abs32():
+                w16(&rel, 2)
+            elif rt == 1:
+                w16(&rel, 1)
+            else:
+                say(f"coff: the relocation type {rt} has no COFF form\n")
+                return new_txt()
+            k0 = k + 1
+    /#/ the string table starts with its own size
+    let st = new_txt()
+    w32(&st, 0)
+    /#/ the section headers
+    let sh = new_txt()
+    let nm = new_txt()
+    let fl_text = 1610612768 | coff_align(fn_align)
+    let off = 20 + 40 * nsec
+    let fn_off: buf<int> = new_buf(int, nf + 1)
+    let code_end = off
+    for j in 0..nf:
+        fn_off[j] = code_end
+        code_end = code_end + o.s_size[fn_sym[j]]
+        code_end = (code_end + 3) // 4 * 4
+    let rdata_off = code_end
+    let data_off = rdata_off + (o.ro.n + 3) // 4 * 4
+    let drect_off = data_off
+    if has_data:
+        drect_off = data_off + (o.data.n + 3) // 4 * 4
+    let rel_off = drect_off + (drect.n + 3) // 4 * 4
+    /#/ the relocations follow the data of the sections; each function's start is known only now
+    let rpos = new_buf(int, nf + 1)
+    for j in 0..nf:
+        rpos[j] = rel_off + fn_ra[j]
+    for j in 0..nf:
+        nm.clear()
+        nm.put(".text$")
+        let at = o.s_name[fn_sym[j]]
+        while o.names.b[at] != 0:
+            nm.put_byte(o.names.b[at])
+            at = at + 1
+        let sn = coff_secname(&st, &nm)
+        let rp = 0
+        if fn_rn[j] > 0:
+            rp = rpos[j]
+        coff_sh(&sh, &sn, o.s_size[fn_sym[j]], fn_off[j], rp, fn_rn[j], fl_text)
+    nm.clear()
+    nm.put(".rdata")
+    coff_sh(&sh, &nm, o.ro.n, rdata_off, 0, 0, 1073741888 | coff_align(16))
+    if has_data:
+        nm.clear()
+        nm.put(".data")
+        coff_sh(&sh, &nm, o.data.n, data_off, 0, 0, 3221225536 | coff_align(8))
+    if drect.n > 0:
+        nm.clear()
+        nm.put(".drectve")
+        coff_sh(&sh, &nm, drect.n, drect_off, 0, 0, 1051136)
+    /#/ the symbols
+    let syms = new_txt()
+    let nsyms = 0
+    nm.clear()
+    nm.put(".rdata")
+    coff_sym(&syms, &nm, true, 0, 0, nf + 1, 0, 3, 1)
+    w32(&syms, o.ro.n)
+    w16(&syms, 0)
+    w16(&syms, 0)
+    w32(&syms, 0)
+    w16(&syms, nf + 1)
+    for q in 0..4:
+        syms.put_byte(0)
+    nsyms = 2
+    let fn_of: buf<int> = new_buf(int, o.ns + 1)
+    for j in 0..nf:
+        fn_of[fn_sym[j]] = j + 1
+    for k in 0..o.ns:
+        nm.clear()
+        let at = o.s_name[k]
+        while o.names.b[at] != 0:
+            nm.put_byte(o.names.b[at])
+            at = at + 1
+        let inl = nm.n <= 8
+        let soff = 0
+        if !inl:
+            soff = st.n
+            st.put_all(&nm)
+            st.put_byte(0)
+        if o.s_def[k] < 0:
+            coff_sym(&syms, &nm, inl, soff, 0, 0, 0, 2, 0)
+        elif o.s_sec[k] == 8:
+            coff_sym(&syms, &nm, inl, soff, o.s_def[k], nf + 2, 0, 2, 0)
+        else:
+            coff_sym(&syms, &nm, inl, soff, 0, fn_of[k], 32, 2, 0)
+        nsyms = nsyms + 1
+    let sym_off = rel_off + rel.n
+    /#/ the file
+    let out = new_txt()
+    w16(&out, 34404)
+    w16(&out, nsec)
+    w32(&out, 0)
+    w32(&out, sym_off)
+    w32(&out, nsyms)
+    w16(&out, 0)
+    w16(&out, 0)
+    out.put_all(&sh)
+    for j in 0..nf:
+        for q in 0..o.s_size[fn_sym[j]]:
+            out.put_byte(a.c.b[o.s_def[fn_sym[j]] + q])
+        pad_to(&out, 4)
+    /#/ the displacement of a call or a reference is kept in the code, as the addend plus 4 (COFF's relative form is to the byte after it)
+    for k in 0..a.nrl:
+        let j = fn_at[k]
+        let rt = a.rl_ty[k]
+        let v = a.rl_add[k]
+        if rt == r_pc32() || rt == r_plt32():
+            v = v + 4
+        let p = fn_off[j] + a.rl_at[k] - o.s_def[fn_sym[j]]
+        if rt == 1:
+            for q in 0..8:
+                out.b[p + q] = (v >> (8 * q)) & 255
+        else:
+            for q in 0..4:
+                out.b[p + q] = (v >> (8 * q)) & 255
+    o.dump_ro(&out)
+    pad_to(&out, 4)
+    if has_data:
+        o.dump_data(&out)
+        pad_to(&out, 4)
+    out.put_all(&drect)
+    pad_to(&out, 4)
+    out.put_all(&rel)
+    out.put_all(&syms)
+    /#/ the size of the string table, in its first four bytes
+    for q in 0..4:
+        st.b[q] = (st.n >> (8 * q)) & 255
+    out.put_all(&st)
+    return out
