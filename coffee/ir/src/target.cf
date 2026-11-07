@@ -9,6 +9,7 @@ use * in fun
 use * in names
 use * in rep
 use * in gen_x86_fun
+use * in minrt
 
 /#/ The architectures and systems a target name may use.
 fn arch_x86_64() => int:
@@ -44,6 +45,9 @@ fn set_target(name: &Txt) => int:
         target_os = os_linux()
         return 0
     if name.is("aarch64-linux") || name.is("aarch64"):
+        /#/ chosen all the same, so that what depends on the target can be looked at; the driver stops
+        target_arch = arch_aarch64()
+        target_os = os_linux()
         return 2
     return 1
 
@@ -52,3 +56,10 @@ fn gen_function(g: &Gen, f: &Fun, rs: &Reps, sy: &Names) => bool:
     if target_arch == arch_x86_64():
         return g_gen_fun(g, f, rs, sy)
     return false
+
+/#/ The C library a `--static` program gets for the target: `rt/src/min.cf`, which every system shares,
+/#/ with the system's part (`rt/src/os_*.cf`) in two places: after min.cf's state variables and at the end.
+fn min_rt_text() => str:
+    if target_arch == arch_x86_64() && target_os == os_linux():
+        return min_rt_common_a() + min_rt_os_linux_x86_64_a() + min_rt_common_b() + min_rt_os_linux_x86_64_b()
+    return min_rt_common_a() + min_rt_os_linux_aarch64_a() + min_rt_common_b() + min_rt_os_linux_aarch64_b()

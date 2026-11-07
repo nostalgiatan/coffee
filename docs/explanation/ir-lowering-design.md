@@ -68,11 +68,13 @@
 
 ## `--target=` 框架(已做,只有 x86-64)
 
+运行时按目标分开的部分见 [运行时按目标分开](target-runtime.md)。
+
 `ir/src/target.cf` 记录目标(`target_arch`、`target_os`),`set_target` 认名字:`x86_64-linux`(也是默认,可简写 `x86_64`)可用,`aarch64-linux` 认得但没有代码生成器(报错),别的名字报未知。驱动的 `--target=名字` 调它。`gen_function` 是挑代码生成器的唯一入口,`Lower.put_fun` 通过它生成函数;第二个后端接在这里。
 
 还没有按目标分开的部分,加第二个目标时依次要做:
 
-- 运行时的系统调用(`rt/src/min.cf` 里的 `syscall`、`peek`/`poke` 之上的封装):号码和调用约定按目标不同。
+- 运行时的系统调用:已分开(`rt/src/os_*.cf`),见上面链接。
 - 目标文件与可执行文件格式(`elf.cf`、`ld/`):机器编号、重定位类型、入口桩。
 - 汇编器(`asm.cf`)和 `gen_<目标>_*.cf`,寄存器描述放进 `target_<目标>.cf`。
 - `tea` 和 `cfjit` 的 `--target` 透传;`cfjit` 只能运行本机的目标。

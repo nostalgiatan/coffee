@@ -40,6 +40,29 @@ fn abs_sec() => int:
 fn common_sec() => int:
     return 0 - 3
 
+/#/ The architecture of the objects to link (0 x86-64, 1 aarch64); the driver sets it from `--target=`.
+let ld_arch: int = 0
+
+fn set_ld_arch(a: int) => void:
+    ld_arch = a
+
+/#/ The machine code of `cf_syscall(n, a, b, c, d, e, f)`: the C calling convention moved into the
+/#/ registers of the system call instruction, then a return.
+fn syscall_stub() => buf<int>:
+    if ld_arch == 1:
+        /#/ mov x8,x0; mov x0,x1; mov x1,x2; mov x2,x3; mov x3,x4; mov x4,x5; mov x5,x6; svc #0; ret
+        let a64 = [232, 3, 0, 170, 224, 3, 1, 170, 225, 3, 2, 170, 226, 3, 3, 170, 227, 3, 4, 170, 228, 3, 5, 170, 229, 3, 6, 170, 1, 0, 0, 212, 192, 3, 95, 214]
+        let out: buf<int> = new_buf(int, 36)
+        for k in 0..36:
+            out[k] = a64[k]
+        return out
+    /#/ mov rax,rdi; mov rdi,rsi; mov rsi,rdx; mov rdx,rcx; mov r10,r8; mov r8,r9; mov r9,[rsp+8]; syscall; ret
+    let x86 = [72, 137, 248, 72, 137, 247, 72, 137, 214, 72, 137, 202, 77, 137, 194, 77, 137, 200, 76, 139, 76, 36, 8, 15, 5, 195]
+    let out: buf<int> = new_buf(int, 26)
+    for k in 0..26:
+        out[k] = x86[k]
+    return out
+
 class Linker:
     /#/ all input files, one after the other
     blob: Txt
@@ -418,10 +441,10 @@ class Linker:
         let id = self.find(&w)
         if id < 0 || self.g_need.b[id] != 1 || self.g_def.b[id] >= 0:
             return
-        /#/ mov rax,rdi; mov rdi,rsi; mov rsi,rdx; mov rdx,rcx; mov r10,r8; mov r8,r9; mov r9,[rsp+8]; syscall; ret
-        let code = [72, 137, 248, 72, 137, 247, 72, 137, 214, 72, 137, 202, 77, 137, 194, 77, 137, 200, 76, 139, 76, 36, 8, 15, 5, 195]
+        let code = syscall_stub()
+        let nstub = len(code)
         let off = self.blob.n
-        for k in 0..26:
+        for k in 0..nstub:
             self.blob.put_byte(code[k])
         let sec0 = self.sc_type.n
         let sym0 = self.y_sec.n
@@ -431,7 +454,7 @@ class Linker:
         self.sc_type.push(1)
         self.sc_flags.push(6)
         self.sc_off.push(off)
-        self.sc_size.push(26)
+        self.sc_size.push(nstub)
         self.sc_align.push(16)
         self.sc_grp.push(0 - 1)
         self.sc_goff.push(0)

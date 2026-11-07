@@ -190,6 +190,8 @@ fn parse_cli(fl: &Flat) => Cli:
                 elif st == 2:
                     say(f"error: the target '{txt_str(&tn)}' has no code generator yet (known: {target_names()})\n")
                     cli.set_bad()
+                else:
+                    set_ld_arch(target_arch)
             elif w.is("-O0"):
                 cli.set_level(0)
             elif w.is("-O1"):

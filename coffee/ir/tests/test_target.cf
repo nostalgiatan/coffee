@@ -23,6 +23,20 @@ fn hp(text: &str, p: &str) => int:
         return 1
     return 0
 
+/#/ Does `text` contain `part`?
+fn has(text: &str, part: &str) => int:
+    let n = len(text)
+    let k = len(part)
+    for i in 0..n - k + 1:
+        let same = true
+        for j in 0..k:
+            if int(text[i + j]) != int(part[j]):
+                same = false
+                break
+        if same:
+            return 1
+    return 0
+
 fn main() => int:
     let m = 0
     m = m + expect(1, st("x86_64-linux"), 0)
@@ -30,7 +44,21 @@ fn main() => int:
     m = m + expect(3, st("aarch64-linux"), 2)
     m = m + expect(4, st("riscv"), 1)
     m = m + expect(5, st(""), 1)
-    m = m + expect(6, target_arch, arch_x86_64())
+    m = m + expect(6, target_arch, arch_aarch64())
+    st("x86_64")
+    m = m + expect(15, target_arch, arch_x86_64())
     m = m + expect(7, hp("--target=x", "--target="), 1)
     m = m + expect(8, hp("--targe", "--target="), 0)
+    /#/ the runtime of the target: write is system call 1 on x86-64 Linux and 64 on aarch64 Linux
+    st("x86_64-linux")
+    let rx = min_rt_text()
+    m = m + expect(9, has(&rx, "syscall(1, int(fd)"), 1)
+    m = m + expect(10, has(&rx, "syscall(64, int(fd)"), 0)
+    st("aarch64-linux")
+    let ra = min_rt_text()
+    m = m + expect(11, has(&ra, "syscall(64, int(fd)"), 1)
+    m = m + expect(12, has(&ra, "syscall(1, int(fd)"), 0)
+    m = m + expect(13, has(&ra, "syscall(222, 0, n"), 1)
+    m = m + expect(14, has(&ra, "c fn malloc") + has(&rx, "c fn malloc"), 2)
+    st("x86_64-linux")
     return m
