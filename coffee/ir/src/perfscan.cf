@@ -130,10 +130,26 @@ fn scan_fun(f: &Fun, names: &Names, fname: &Txt, code: int, spills: int, nsaved:
         let from = f.efrom[e]
         let to = f.eto[e]
         if from >= 0 && to >= 0 && to <= from && from < f.nb:
-            nloops = nloops + 1
-            for b in to..from + 1:
-                depth[b] = depth[b] + 1
-                lhead[b] = to
+            /#/ the loop is the blocks that reach the back edge without passing the header; when that
+            /#/ walk gets back to the entry, the header does not dominate the edge and it is no loop
+            let mark: buf<int> = new_buf(int, f.nb + 1)
+            mark[from] = 1
+            mark[to] = 1
+            let changed = true
+            while changed:
+                changed = false
+                for e2 in 0..f.ne:
+                    let a = f.efrom[e2]
+                    let z = f.eto[e2]
+                    if a >= 0 && z >= 0 && a < f.nb && z < f.nb && mark[z] == 1 && z != to && mark[a] == 0:
+                        mark[a] = 1
+                        changed = true
+            if to == 0 || mark[0] == 0:
+                nloops = nloops + 1
+                for b in 0..f.nb:
+                    if mark[b] == 1:
+                        depth[b] = depth[b] + 1
+                        lhead[b] = to
     let esc: buf<int> = new_buf(int, f.ni + 1)
     let reads: buf<int> = new_buf(int, f.ni + 1)
     let writes: buf<int> = new_buf(int, f.ni + 1)

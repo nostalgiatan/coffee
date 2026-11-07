@@ -22,7 +22,7 @@ fn has(t: &Txt, w: &str) => bool:
 fn main() => int:
     let m = 0
     system("rm -rf perft && mkdir perft")
-    let lsrc = "fn work(a: int, d: int) => int:\n    let t = 0\n    let unused = 5\n    for i in 0..a:\n        t = t + i // d\n        let z = i + 0\n        t = t + z * 1\n    return t\n\nfn alloc_loop(n: int) => int:\n    let t = 0\n    for i in 0..n:\n        let s = \"ab\" + \"cd\"\n        t = t + len(s)\n    return t\n\nfn main() => int:\n    return work(10, 3) + alloc_loop(3) - 18\n"
+    let lsrc = "fn work(a: int, d: int) => int:\n    let t = 0\n    let unused = 5\n    for i in 0..a:\n        t = t + i // d\n        let z = i + 0\n        t = t + z * 1\n    return t\n\nfn alloc_loop(n: int) => int:\n    let t = 0\n    for i in 0..n:\n        let s = \"ab\" + \"cd\"\n        t = t + len(s)\n    return t\n\nfn after_loop(n: int) => int:\n    let t = 0\n    for i in 0..n:\n        t = t + i\n    let s = \"ab\" + \"cd\"\n    return t + len(s)\n\nfn main() => int:\n    return work(10, 3) + alloc_loop(3) - 18\n"
     let lp = txt_of("perft/lint.cf")
     let lt = txt_of(&lsrc)
     write_file(&lp, &lt)
@@ -37,7 +37,10 @@ fn main() => int:
     if !has(&out, "lint.cf:13: perf: in 'alloc_loop': allocation call inside a loop"):
         say("MISS: the allocation in the loop is not found\n")
         m = m + 1
-    if !has(&out, "function") || !has(&out, "total of 3 functions") || !has(&out, "alloc_loop"):
+    if has(&out, "lint.cf:20: perf"):
+        say("FALSE: an allocation after a loop is reported as inside it\n")
+        return 1
+    if !has(&out, "function") || !has(&out, "total of 4 functions") || !has(&out, "alloc_loop"):
         say("MISS: the table of --stats\n")
         m = m + 1
     /#/ the sampling profiler (it needs ptrace; where that is not allowed it is skipped)
