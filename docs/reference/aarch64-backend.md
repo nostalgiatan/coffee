@@ -70,8 +70,8 @@ AAPCS64:整数和指针放 x0 到 x7,浮点放 v0 到 v7,其余按 8 字节一�
 
 - `ir/tests/test_a64.cf`(`tea test`):每个编码函数写出的字,和 LLVM 汇编器(`llvm-mc -triple=aarch64`)对同一条指令的结果比较;分支修补;`--target=aarch64-linux` 编出的目标文件是机器号 183 且有序言、`bl`、`ret`。
 - `ir/tools/a64diff.py <coffee2>`:`ir/tools/a64progs/*.cf` 和一个生成的 6000 个值同时活着的大帧程序,各自原生(x86-64)运行一次、再编成 aarch64 运行,退出码和标准输出必须相同。
-- `ir/tools/a64cases.py <coffee2>`:`compat/tests` 里 191 个 `exits(...)` 用例。qemu 下 188 个通过,3 个链接失败,因为静态运行时没有 `getenv`、`printf`、`memset`(x86 上这些程序由 `cc` 链接)。
-- `ir/tools/a64suites.py <coffee2> <阶段目录>...`:每个阶段的 `tests/test*.cf` 编成 aarch64 在 qemu 下运行,退出 0 为通过。`lexer parser sema types own` 共 32 个全过,`ld` 9 个里 7 个过(其余 2 个要运行链接出的 x86 程序),`rt/test_fmt` 缺 `atof`。会调用 `cc`、运行 x86 程序或用 `system` 的测试(`ir` 的 `expect_mc` 系列、`compat` 的 harness、`driver`、`tea`)在 qemu 下本来就不能跑,不算失败。
+- `ir/tools/a64cases.py <coffee2>`:`compat/tests` 里 191 个 `exits(...)` 用例。qemu 下 191 个全部通过。
+- `ir/tools/a64suites.py <coffee2> <阶段目录>...`:每个阶段的 `tests/test*.cf` 编成 aarch64 在 qemu 下运行,退出 0 为通过。`lexer parser sema types own` 共 32 个全过,`ld` 9 个里 7 个过(其余 2 个要运行链接出的 x86 程序),`rt/test_fmt` 通过(运行时的 `atof` 是按 Go 的十进制算法写的,与 strtod 一样舍入到最近偶数)。会调用 `cc`、运行 x86 程序或用 `system` 的测试(`ir` 的 `expect_mc` 系列、`compat` 的 harness、`driver`、`tea`)在 qemu 下本来就不能跑,不算失败。
 - 整个编译器(`driver/src/main.cf`)用 `--target=aarch64-linux --static` 编成 aarch64 程序(1.6 MB),在 qemu 下运行它编译同一个程序,x86 目标文件与原生编译器逐字节相同;它用 `--target=aarch64-linux --static` 编译自己得到的文件与第一次逐字节相同(6 秒)。
 - `ir/tools/a64sim.py`:不用 qemu 的解释器,用 `llvm-objdump` 反汇编目标文件执行。
 
@@ -86,6 +86,6 @@ AAPCS64:整数和指针放 x0 到 x7,浮点放 v0 到 v7,其余按 8 字节一�
 - **向量循环**(`VLoop`):需要 NEON 的 `gen_a64_vec.cf`。
 - **沙箱**:基址寄存器形式(`cfjit --sandbox=base`)在 aarch64 上是 `[x28, w偏移, uxtw]`,不多花指令;还没做,`Asm.sbx` 在这个目标上不起作用。
 - 按常数的无符号除法(`legalize` 也没有)、跳转表、`CallI` 以外的尾调用;条件分支只能跳 ±1 MB,更大的函数 `a64_end_fun` 返回 false(报告为生成失败)。
-- 静态运行时缺 `getenv`、`printf`、`memset`、`atof` 等(与 x86 一样,用到它们的程序要 `cc`,而 `cc` 不是交叉编译器)。
+- 静态运行时的 `printf` 只做整数、字符、字符串(`%d %i %u %x %X %o %c %s %p %%`,标志 `-` `0`、宽度、长度字母),最多 5 个参数,没有 `%f`;`sprintf`、`fprintf`、`strtod`、`qsort` 等其余 libc 函数没有,用到它们的程序要 `cc`,而 `cc` 不是交叉编译器。
 - 动态链接(`cc`)和 TLS、IFUNC 等 glibc 的东西。
 - `cfjit`、`tea` 的 `--target` 透传。

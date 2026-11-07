@@ -1,0 +1,36 @@
+/#/ The C library functions the static runtime has: printf (integers, strings, characters, widths), puts,
+/#/ putchar, memset, memmove, memcmp, getenv, atoi, atof.
+use printf, puts, putchar, memset, memmove, memcmp, getenv, atoi, atof, strlen in libc of c
+
+fn main() => int:
+    let h = 0
+    printf("plain text\n")
+    printf("%d %i %u|%5d|%-5d|\n", 42, -7, 123456, 31, 31)
+    printf("%05d|%x %X %o|%c\n", 31, 255, 255, 8, 65)
+    printf("%s|%10s|%-6s|%%\n", "str", "str", "ab")
+    printf("%ld %lu %lx\n", -9000000000, 9000000000, 3000000000)
+    printf("%d %s\n", 0, "zero")
+    puts("a line")
+    putchar(66)
+    putchar(10)
+    let b = new_buf(u8, 16)
+    memset(b as object, 7, 16)
+    h = h + int(b[0]) + int(b[15])
+    let c = new_buf(u8, 16)
+    memset(c as object, 7, 16)
+    h = h + memcmp(b as object, c as object, 16)
+    c[9] = u8(8)
+    if memcmp(b as object, c as object, 16) < 0:
+        h = h + 100
+    for i in 0..16:
+        b[i] = u8(i)
+    memmove((int(b as object) + 2) as object, b as object, 10)
+    h = h + int(b[2]) * 3 + int(b[11])
+    let e = getenv("COFFEE_NO_SUCH_VARIABLE_X")
+    if int(e) == 0:
+        h = h + 1000
+    h = h + atoi("  -123abc") + atoi("77")
+    let x = atof("3.25") + atof("-1e3") + atof("0.1") + atof("12345.678")
+    printf("%d\n", int(x * 1000.0))
+    printf("%d\n", h)
+    return h % 251

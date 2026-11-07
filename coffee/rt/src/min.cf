@@ -136,3 +136,534 @@ c fn strcmp(x: object, y: object) => int(4)+:
     while peek8((a + i) as object) != 0 && peek8((a + i) as object) == peek8((b + i) as object):
         i = i + 1
     return i32(peek8((a + i) as object) - peek8((b + i) as object))
+
+c fn memset(p: object, c: int, n: int) => object:
+    let d = int(p)
+    let b = c & 255
+    let w = b * 72340172838076673
+    let i = 0
+    while i + 8 <= n:
+        poke64((d + i) as object, w)
+        i = i + 8
+    while i < n:
+        poke8((d + i) as object, b)
+        i = i + 1
+    return p
+
+c fn memmove(dst: object, src: object, n: int) => object:
+    let d = int(dst)
+    let s = int(src)
+    if d <= s || d >= s + n:
+        let i = 0
+        while i + 8 <= n:
+            poke64((d + i) as object, peek64((s + i) as object))
+            i = i + 8
+        while i < n:
+            poke8((d + i) as object, peek8((s + i) as object))
+            i = i + 1
+    else:
+        let i = n
+        while i > 0:
+            i = i - 1
+            poke8((d + i) as object, peek8((s + i) as object))
+    return dst
+
+c fn memcmp(x: object, y: object, n: int) => int(4)+:
+    let a = int(x)
+    let b = int(y)
+    let i = 0
+    while i < n:
+        let p = peek8((a + i) as object)
+        let q = peek8((b + i) as object)
+        if p != q:
+            return i32(p - q)
+        i = i + 1
+    return i32(0)
+
+/#/ The value of the variable `name` of the environment, or null.
+c fn getenv(name: object) => object:
+    let env = cf_environ()
+    let n = strlen(name)
+    let k = 0
+    while true:
+        let e = peek64((env + k * 8) as object)
+        if e == 0:
+            break
+        let i = 0
+        while i < n && peek8((e + i) as object) == peek8((int(name) + i) as object):
+            i = i + 1
+        if i == n && peek8((e + n) as object) == 61:
+            return (e + n + 1) as object
+        k = k + 1
+    return 0 as object
+
+c fn atoi(s: object) => int(4)+:
+    let a = int(s)
+    let i = 0
+    while peek8((a + i) as object) == 32 || (peek8((a + i) as object) >= 9 && peek8((a + i) as object) <= 13):
+        i = i + 1
+    let neg = false
+    if peek8((a + i) as object) == 45:
+        neg = true
+        i = i + 1
+    elif peek8((a + i) as object) == 43:
+        i = i + 1
+    let v = 0
+    while peek8((a + i) as object) >= 48 && peek8((a + i) as object) <= 57:
+        v = v * 10 + peek8((a + i) as object) - 48
+        i = i + 1
+    if neg:
+        v = 0 - v
+    return i32(v)
+
+/#/ The decimal number of `atof`, as in Go's strconv/decimal.go: `st` holds the count of digits, the
+/#/ position of the decimal point, whether digits were dropped, and the address of the digits (0 to 9, up
+/#/ to 800 of them, and room for a shifted copy behind).
+fn cf_dget(st: int, k: int) => int:
+    return peek64((st + 8 * k) as object)
+
+fn cf_dset(st: int, k: int, v: int) => void:
+    poke64((st + 8 * k) as object, v)
+
+fn cf_dtrim(st: int) => void:
+    let nd = cf_dget(st, 0)
+    let dig = cf_dget(st, 3)
+    while nd > 0 && peek8((dig + nd - 1) as object) == 0:
+        nd = nd - 1
+    cf_dset(st, 0, nd)
+    if nd == 0:
+        cf_dset(st, 1, 0)
+
+fn cf_dright(st: int, k: int) => void:
+    let nd = cf_dget(st, 0)
+    let dig = cf_dget(st, 3)
+    let r = 0
+    let w = 0
+    let n = 0
+    while (n >> k) == 0:
+        if r >= nd:
+            if n == 0:
+                cf_dset(st, 0, 0)
+                return
+            while (n >> k) == 0:
+                n = n * 10
+                r = r + 1
+            break
+        n = n * 10 + peek8((dig + r) as object)
+        r = r + 1
+    cf_dset(st, 1, cf_dget(st, 1) - (r - 1))
+    let mask = (1 << k) - 1
+    while r < nd:
+        let c = peek8((dig + r) as object)
+        poke8((dig + w) as object, n >> k)
+        w = w + 1
+        n = (n & mask) * 10 + c
+        r = r + 1
+    while n > 0:
+        let q = n >> k
+        n = (n & mask) * 10
+        if w < 800:
+            poke8((dig + w) as object, q)
+            w = w + 1
+        elif q > 0:
+            cf_dset(st, 2, 1)
+    cf_dset(st, 0, w)
+    cf_dtrim(st)
+
+fn cf_dleft(st: int, k: int) => void:
+    let nd = cf_dget(st, 0)
+    let dig = cf_dget(st, 3)
+    let out = dig + 810
+    let carry = 0
+    let i = nd - 1
+    while i >= 0:
+        let n = (peek8((dig + i) as object) << k) + carry
+        let q = n // 10
+        poke8((out + 9 + i) as object, n - q * 10)
+        carry = q
+        i = i - 1
+    let j = 8
+    while j >= 0:
+        let q = carry // 10
+        poke8((out + j) as object, carry - q * 10)
+        carry = q
+        j = j - 1
+    let lead = 0
+    while lead < nd + 9 && peek8((out + lead) as object) == 0:
+        lead = lead + 1
+    let nn = nd + 9 - lead
+    if nn > 800:
+        for t in 800..nn:
+            if peek8((out + lead + t) as object) != 0:
+                cf_dset(st, 2, 1)
+        nn = 800
+    for t in 0..nn:
+        poke8((dig + t) as object, peek8((out + lead + t) as object))
+    cf_dset(st, 1, cf_dget(st, 1) + 9 - lead)
+    cf_dset(st, 0, nn)
+    cf_dtrim(st)
+
+/#/ The shifts by more than 27 bits, in steps
+fn cf_dleftn(st: int, k: int) => void:
+    let r = k
+    while r > 0:
+        let n = r
+        if n > 27:
+            n = 27
+        cf_dleft(st, n)
+        r = r - n
+
+fn cf_drightn(st: int, k: int) => void:
+    let r = k
+    while r > 0:
+        let n = r
+        if n > 27:
+            n = 27
+        cf_dright(st, n)
+        r = r - n
+
+fn cf_dshift(i: int) => int:
+    if i >= 9:
+        return 27
+    if i == 0:
+        return 1
+    if i == 1:
+        return 3
+    if i == 2:
+        return 6
+    if i == 3:
+        return 9
+    if i == 4:
+        return 13
+    if i == 5:
+        return 16
+    if i == 6:
+        return 19
+    if i == 7:
+        return 23
+    return 26
+
+/#/ 2 to the power `n` (0 to 1023), exact
+fn cf_pw2(n: int) => float:
+    let r = 1.0
+    let b = 2.0
+    let k = n
+    while k > 0:
+        if k & 1 == 1:
+            r = r * b
+        b = b * b
+        k = k >> 1
+    return r
+
+/#/ The number at the start of `s`: sign, digits, a point and digits, an exponent; rounded to the nearest
+/#/ double as strtod does (it ties to even).
+c fn atof(s: object) => float(8):
+    let a = int(s)
+    let i = 0
+    while peek8((a + i) as object) == 32 || (peek8((a + i) as object) >= 9 && peek8((a + i) as object) <= 13):
+        i = i + 1
+    let neg = false
+    if peek8((a + i) as object) == 45:
+        neg = true
+        i = i + 1
+    elif peek8((a + i) as object) == 43:
+        i = i + 1
+    let st = int(malloc(64 + 2 * 810))
+    cf_dset(st, 0, 0)
+    cf_dset(st, 1, 0)
+    cf_dset(st, 2, 0)
+    cf_dset(st, 3, st + 64)
+    let dig = st + 64
+    let saw_dot = false
+    let dp = 0
+    let nd = 0
+    while true:
+        let c = peek8((a + i) as object)
+        if c == 46 && !saw_dot:
+            saw_dot = true
+            dp = nd
+        elif c >= 48 && c <= 57:
+            if c == 48 && nd == 0:
+                dp = dp - 1
+            elif nd < 800:
+                poke8((dig + nd) as object, c - 48)
+                nd = nd + 1
+            elif c != 48:
+                cf_dset(st, 2, 1)
+        else:
+            break
+        i = i + 1
+    if !saw_dot:
+        dp = nd
+    cf_dset(st, 0, nd)
+    cf_dset(st, 1, dp)
+    cf_dtrim(st)
+    let c = peek8((a + i) as object)
+    if (c == 101 || c == 69) && cf_dget(st, 0) != 0:
+        let j = i + 1
+        let eneg = false
+        if peek8((a + j) as object) == 45:
+            eneg = true
+            j = j + 1
+        elif peek8((a + j) as object) == 43:
+            j = j + 1
+        if peek8((a + j) as object) >= 48 && peek8((a + j) as object) <= 57:
+            let ev = 0
+            while peek8((a + j) as object) >= 48 && peek8((a + j) as object) <= 57:
+                if ev < 10000:
+                    ev = ev * 10 + peek8((a + j) as object) - 48
+                j = j + 1
+            if eneg:
+                ev = 0 - ev
+            cf_dset(st, 1, cf_dget(st, 1) + ev)
+    let r = 0.0
+    let inf = false
+    if cf_dget(st, 0) == 0 || cf_dget(st, 1) < 0 - 330:
+        r = 0.0
+    elif cf_dget(st, 1) > 310:
+        inf = true
+    else:
+        let ex = 0
+        while cf_dget(st, 1) > 0:
+            let n = cf_dshift(cf_dget(st, 1))
+            cf_dright(st, n)
+            ex = ex + n
+        while cf_dget(st, 1) < 0 || (cf_dget(st, 1) == 0 && peek8(dig as object) < 5):
+            let n = cf_dshift(0 - cf_dget(st, 1))
+            cf_dleft(st, n)
+            ex = ex - n
+        ex = ex - 1
+        if ex < 0 - 1022:
+            let n = 0 - 1022 - ex
+            cf_drightn(st, n)
+            ex = ex + n
+        if ex >= 1024:
+            inf = true
+        else:
+            cf_dleftn(st, 53)
+            let m = 0
+            let dp2 = cf_dget(st, 1)
+            let nd2 = cf_dget(st, 0)
+            if dp2 > 20:
+                m = 9007199254740992
+            else:
+                let t = 0
+                while t < dp2 && t < nd2:
+                    m = m * 10 + peek8((dig + t) as object)
+                    t = t + 1
+                while t < dp2:
+                    m = m * 10
+                    t = t + 1
+                /#/ round half to even; digits dropped count as more than half
+                if dp2 >= 0 && dp2 < nd2:
+                    let dd = peek8((dig + dp2) as object)
+                    if dd == 5 && dp2 + 1 == nd2:
+                        if cf_dget(st, 2) == 1 || (dp2 > 0 && peek8((dig + dp2 - 1) as object) % 2 == 1):
+                            m = m + 1
+                    elif dd >= 5:
+                        m = m + 1
+            if m == 9007199254740992:
+                m = 4503599627370496
+                ex = ex + 1
+            if ex >= 1024:
+                inf = true
+            else:
+                if m < 4503599627370496:
+                    ex = 0 - 1023
+                    if m == 0:
+                        ex = 0 - 1074 + 52
+                /#/ value = m * 2^(ex - 52) (a denormal has ex = -1023, one less than its scale)
+                let e2 = ex - 52
+                if ex == 0 - 1023:
+                    e2 = 0 - 1074
+                r = float(m)
+                if e2 > 0:
+                    r = r * cf_pw2(e2)
+                elif e2 < 0:
+                    let q = 0 - e2
+                    if q > 500:
+                        r = r / cf_pw2(500)
+                        q = q - 500
+                    r = r / cf_pw2(q)
+    free(st as object)
+    if inf:
+        r = 1.0 / 0.0
+    if neg:
+        r = 0.0 - r
+    return r
+
+/#/ Writes `n` bytes at `p` to the standard output.
+fn cf_out(p: int, n: int) => void:
+    if n > 0:
+        write(i32(1), p as object, n)
+
+/#/ Writes the byte `c` to the standard output, using the 32 bytes at `buf`.
+fn cf_pad(buf: int, c: int, n: int) => void:
+    poke8(buf as object, c)
+    cf_out(buf, 1)
+
+/#/ The digits of the unsigned `v` in `base`, written at the end of the 24 bytes at `buf`; the offset of the first.
+fn cf_digits(v: int, base: int, upper: bool, buf: int) => int:
+    let at = 24
+    let q = v
+    let r = 0
+    if v < 0:
+        q = (((v >> 1) & 9223372036854775807) // base) * 2
+        r = v - q * base
+        if r >= base:
+            q = q + 1
+            r = r - base
+        at = at - 1
+        if r < 10:
+            poke8((buf + at) as object, 48 + r)
+        elif upper:
+            poke8((buf + at) as object, 55 + r)
+        else:
+            poke8((buf + at) as object, 87 + r)
+    if q == 0 && at == 24:
+        at = at - 1
+        poke8((buf + at) as object, 48)
+    while q > 0:
+        r = q % base
+        q = q // base
+        at = at - 1
+        if r < 10:
+            poke8((buf + at) as object, 48 + r)
+        elif upper:
+            poke8((buf + at) as object, 55 + r)
+        else:
+            poke8((buf + at) as object, 87 + r)
+    return at
+
+fn cf_pick(k: int, a: int, b: int, c: int, d: int, e: int) => int:
+    if k == 0:
+        return a
+    if k == 1:
+        return b
+    if k == 2:
+        return c
+    if k == 3:
+        return d
+    return e
+
+/#/ `printf` for integer, character and string arguments (at most 5 of them, as the registers give):
+/#/ %d %i %u %x %X %o %c %s %p %%, the flags `-` and `0`, a width, and the length letters l, ll, z, h.
+c fn printf(format: object, a1: int, a2: int, a3: int, a4: int, a5: int) => int(4)+:
+    let f = int(format)
+    let buf = int(malloc(32))
+    let total = 0
+    let k = 0
+    let i = 0
+    let lit = 0
+    while true:
+        let c = peek8((f + i) as object)
+        if c == 0:
+            break
+        if c != 37:
+            i = i + 1
+            continue
+        cf_out(f + lit, i - lit)
+        total = total + i - lit
+        i = i + 1
+        let left = false
+        let zero = false
+        while peek8((f + i) as object) == 45 || peek8((f + i) as object) == 48:
+            if peek8((f + i) as object) == 45:
+                left = true
+            else:
+                zero = true
+            i = i + 1
+        let width = 0
+        while peek8((f + i) as object) >= 48 && peek8((f + i) as object) <= 57:
+            width = width * 10 + peek8((f + i) as object) - 48
+            i = i + 1
+        let wide = false
+        while peek8((f + i) as object) == 108 || peek8((f + i) as object) == 122 || peek8((f + i) as object) == 104 || peek8((f + i) as object) == 106:
+            if peek8((f + i) as object) != 104:
+                wide = true
+            i = i + 1
+        let cv = peek8((f + i) as object)
+        i = i + 1
+        lit = i
+        if cv == 37:
+            cf_out(f + i - 1, 1)
+            total = total + 1
+            continue
+        let v = cf_pick(k, a1, a2, a3, a4, a5)
+        k = k + 1
+        let at = 24
+        let neg = false
+        let sp = 0
+        let sl = 0
+        if cv == 115:
+            sp = v
+            if sp == 0:
+                sp = buf
+                poke64(buf as object, 45545652842024)
+                sl = 6
+            else:
+                sl = strlen(sp as object)
+        elif cv == 99:
+            poke8(buf as object, v & 255)
+            sp = buf
+            sl = 1
+        else:
+            if cv == 100 || cv == 105:
+                if !wide:
+                    v = ((v & 4294967295) ^ 2147483648) - 2147483648
+                if v < 0:
+                    neg = true
+                    v = 0 - v
+                at = cf_digits(v, 10, false, buf)
+            else:
+                if !wide:
+                    v = v & 4294967295
+                if cv == 117:
+                    at = cf_digits(v, 10, false, buf)
+                elif cv == 111:
+                    at = cf_digits(v, 8, false, buf)
+                elif cv == 120 || cv == 112:
+                    at = cf_digits(v, 16, false, buf)
+                else:
+                    at = cf_digits(v, 16, true, buf)
+            sp = buf + at
+            sl = 24 - at
+        let pad = width - sl
+        if neg:
+            pad = pad - 1
+        if pad < 0:
+            pad = 0
+        if !left && !zero:
+            for j in 0..pad:
+                cf_pad(buf, 32, 1)
+        if neg:
+            cf_pad(buf, 45, 1)
+        if !left && zero:
+            for j in 0..pad:
+                cf_pad(buf, 48, 1)
+        cf_out(sp, sl)
+        if left:
+            for j in 0..pad:
+                cf_pad(buf, 32, 1)
+        total = total + sl + pad
+        if neg:
+            total = total + 1
+    cf_out(f + lit, i - lit)
+    total = total + i - lit
+    free(buf as object)
+    return i32(total)
+
+c fn puts(s: object) => int(4)+:
+    let n = strlen(s)
+    cf_out(int(s), n)
+    let b = int(malloc(8))
+    cf_pad(b, 10, 1)
+    free(b as object)
+    return i32(n + 1)
+
+c fn putchar(c: int(4)+) => int(4)+:
+    let b = int(malloc(8))
+    poke8(b as object, int(c) & 255)
+    cf_out(b, 1)
+    free(b as object)
+    return c
