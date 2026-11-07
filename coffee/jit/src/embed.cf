@@ -209,7 +209,7 @@ c fn cfjit_free(h: int) => void:
     let c = &ctxs[h - 1]
     for id in 0..c.nm:
         if c.m_state[id] != 0:
-            syscall(11, c.m_base[id], c.m_size[id], 0, 0, 0, 0)
+            syscall(sc_munmap(), c.m_base[id], c.m_size[id], 0, 0, 0, 0)
     ctx_used[h - 1] = 0
 
 /#/ Offers the C function at `fn` to the modules under `name`. 0 on success.
@@ -270,7 +270,7 @@ c fn cfjit_unload(h: int, n: int) => int:
     if c.m_state[id] == 1 && depended_on(c, id):
         return 0 - 2
     c.ex.drop_range(c.m_base[id], c.m_base[id] + c.m_size[id])
-    syscall(11, c.m_base[id], c.m_size[id], 0, 0, 0, 0)
+    syscall(sc_munmap(), c.m_base[id], c.m_size[id], 0, 0, 0, 0)
     c.m_state[id] = 0
     return 0
 
@@ -314,7 +314,7 @@ c fn cfjit_replace(h: int, n: int, data: object, len_: int, err: object, errn: i
                         put_err_name(err, errn, "the new module lacks '", &w, "', which another module calls")
     if !ok:
         c.ex.drop_range(c.m_base[id], c.m_base[id] + c.m_size[id])
-        syscall(11, c.m_base[id], c.m_size[id], 0, 0, 0, 0)
+        syscall(sc_munmap(), c.m_base[id], c.m_size[id], 0, 0, 0, 0)
         c.m_state[id] = 0
         for k in c.m_exp0[old]..c.m_exp0[old] + c.m_nexp[old]:
             let nm = name_txt(&c.arena, c.exp_name[k])

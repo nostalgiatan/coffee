@@ -88,11 +88,16 @@ fn make_image(o: &Obj, a: &Asm) => Image:
         elif o.s_def[k] < 0:
             nimp = nimp + 1
     im.stub_at = image_round(a.c.n, 16)
-    let stubs_end = im.stub_at + 8 * nimp
+    /#/ x86: `jmp [rip+disp]` and two bytes of padding; aarch64: adrp, ldr, br and a nop
+    let ssz = 8
+    if target_arch == arch_aarch64():
+        ssz = 16
+    let sysn = len(tg_syscall_stub())
+    let stubs_end = im.stub_at + ssz * nimp
     let sys_at = image_round(stubs_end, 16)
     let code_end = stubs_end
     if sys_sym >= 0:
-        code_end = sys_at + 26
+        code_end = sys_at + sysn
     im.rx_end = image_round(code_end, 4096)
     im.ro_at = im.rx_end
     im.ro_end = im.ro_at + image_round(o.ro.n, 4096)
@@ -105,7 +110,7 @@ fn make_image(o: &Obj, a: &Asm) => Image:
         if o.s_def[k] < 0 && k == sys_sym:
             stub_of[k] = sys_at
         elif o.s_def[k] < 0:
-            stub_of[k] = im.stub_at + 8 * im.nimp
+            stub_of[k] = im.stub_at + ssz * im.nimp
             im.imp_name[im.nimp] = o.s_name[k]
             im.imp_slot[im.nimp] = im.slot_at + 8 * im.nimp
             im.nimp = im.nimp + 1
@@ -120,20 +125,28 @@ fn make_image(o: &Obj, a: &Asm) => Image:
     im.b.put_all(&a.c)
     while im.b.n < im.stub_at:
         im.b.put_byte(0)
-    /#/ jmp [rip+disp] to the slot, two bytes of padding
     for k in 0..im.nimp:
-        let at = im.stub_at + 8 * k
-        im.b.put_byte(255)
-        im.b.put_byte(37)
-        w32(&im.b, im.imp_slot[k] - (at + 6))
-        im.b.put_byte(204)
-        im.b.put_byte(204)
+        let at = im.stub_at + ssz * k
+        if target_arch == arch_aarch64():
+            /#/ adrp x16,slot; ldr x16,[x16,#lo12]; br x16; nop
+            let slot = im.imp_slot[k]
+            let pg = (slot >> 12) - (at >> 12)
+            w32(&im.b, 2415919120 | ((pg & 3) << 29) | (((pg >> 2) & 524287) << 5))
+            w32(&im.b, 4181721088 | (((slot & 4095) // 8) << 10) | (16 << 5) | 16)
+            w32(&im.b, 3592356352)
+            w32(&im.b, 3573751839)
+        else:
+            /#/ jmp [rip+disp] to the slot, two bytes of padding
+            im.b.put_byte(255)
+            im.b.put_byte(37)
+            w32(&im.b, im.imp_slot[k] - (at + 6))
+            im.b.put_byte(204)
+            im.b.put_byte(204)
     if sys_sym >= 0:
         while im.b.n < sys_at:
             im.b.put_byte(0)
-        /#/ mov rax,rdi; mov rdi,rsi; mov rsi,rdx; mov rdx,rcx; mov r10,r8; mov r8,r9; mov r9,[rsp+8]; syscall; ret
-        let code = [72, 137, 248, 72, 137, 247, 72, 137, 214, 72, 137, 202, 77, 137, 194, 77, 137, 200, 76, 139, 76, 36, 8, 15, 5, 195]
-        for q in 0..26:
+        let code = tg_syscall_stub()
+        for q in 0..sysn:
             im.b.put_byte(code[q])
     while im.b.n < im.ro_at:
         im.b.put_byte(0)
@@ -161,9 +174,31 @@ fn make_image(o: &Obj, a: &Asm) => Image:
             im.err = 1
             return im
         let d = target + a.rl_add[r] - at
+        if target_arch == arch_aarch64():
+            if !apply_a64(&im.b, at, a.rl_ty[r], target + a.rl_add[r]):
+                im.err = 1
+                return im
+            continue
         for q in 0..4:
             im.b.b[at + q] = (d >> (8 * q)) & 255
     return im
+
+/#/ The instruction at `at` with the relocation `ty` for the address `to` (offsets in the image, whose
+/#/ base is page aligned) applied; false for a kind that is not known.
+fn apply_a64(b: &Txt, at: int, ty: int, to: int) => bool:
+    let w = b.b[at] | (b.b[at + 1] << 8) | (b.b[at + 2] << 16) | (b.b[at + 3] << 24)
+    if ty == 283 || ty == 282:
+        w = w | (((to - at) >> 2) & 67108863)
+    elif ty == 275:
+        let pg = (to >> 12) - (at >> 12)
+        w = w | ((pg & 3) << 29) | (((pg >> 2) & 524287) << 5)
+    elif ty == 277:
+        w = w | ((to & 4095) << 10)
+    else:
+        return false
+    for q in 0..4:
+        b.b[at + q] = (w >> (8 * q)) & 255
+    return true
 
 /#/ The image of the module in `lw`, once its functions are generated. Like `object`, it adds the
 /#/ strings and globals to the generator, so only one of the two can be asked for.

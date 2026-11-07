@@ -101,10 +101,24 @@ AAPCS64:整数和指针放 x0 到 x7,浮点放 v0 到 v7,其余按 8 字节一�
 - 验证器 `ir/src/sbxcheck_a64.cf`(`sbx_verify_a64`):访存只能是 `[x28, w, uxtw]` 或宿主帧 `[x29, #imm]`(存储不得碰 `[x29, #0..15]` 里保存的 x29/x30,|偏移| 小于 32768),没有前/后变址、字面量、独占、原子、结构访存和 `stp`/`ldp`(除了固定的 `stp`/`ldp x29, x30, [sp]`);不写 x28;x29 只由 `mov x29, sp` 设,x30 只由 `bl` 和那条 `ldp` 设,sp 只由 `add`/`sub sp, sp, #imm`(≤ 32768)改;分支只有 `b`、`bl`、`b.cond`、`cbz`/`cbnz` 到代码内的字(`bl` 还可以到 `entry`)和 `ret`、`brk #0`;没有 `br`、`blr`、`svc`、`msr`、`adr` 等。驱动在 `--sandbox` 下生成目标文件时对代码过一遍验证器;目标文件里 `bl` 的目标还是重定位前的占位,所以调用目标的检查要在映像上做(cfjit)。
 - 测试:`ir/tests/test_sbxcheck_a64.cf`(LLVM 汇编出的 48 组字:接受 6 组,拒绝 42 种);`ir/tools/a64sbx.py <coffee2>`:`compat` 的 191 个用例用 `--sandbox` 编译,187 个通过验证器,4 个被生成器拒绝(栈参数或函数值)。运行沙箱代码要加载器(`cfjit` 的 aarch64 版,见下)。
 
+## cfjit
+
+不带沙箱的 JIT 在 aarch64 上能用:`coffee2 x.cf --emit-cir --target=aarch64` 做 `.cir`(目标不同,链进去的运行时的系统调用号就不同),用 `--target=aarch64` 编出来的 `cfjit`(`coffee2 jit/src/main.cf <jit/coffee.toml 的 include> --static --target=aarch64`)加载:
+
+```
+qemu-aarch64 cfjit x.cir --target=aarch64
+tea jit --target aarch64 --runner qemu-aarch64 --jit ./cfjit_a64 --compiler coffee2
+```
+
+`cfjit` 加载的是它自己生成的代码,所以它的目标就是它运行的机器;`--target=aarch64` 只告诉它不要用 x86 的默认(`mmap`、`mprotect`、`munmap`、`clock_gettime`、`getpid`、`kill` 的号码按目标选,`jit/src/loader.cf` 的 `sc_*`)。映像(`ir/src/image.cf` 的 `make_image`)按目标写:外部函数的桩是 16 字节(`adrp x16, 槽`、`ldr x16, [x16, #lo12]`、`br x16`、`nop`),`cf_syscall` 用 `ld/src/stub.cf` 的那张表,重定位按类型(283/282/275/277)填进指令。映像的基址是页对齐的,所以用映像内的偏移就够。没有刷指令缓存的调用:Linux 在页变成可执行(`mprotect`)时让指令缓存看到新代码。
+
+测试:`jit/tests/compare.sh` 加环境变量 `JITRUN=qemu-aarch64 CIRARGS=--target=aarch64 JITARGS=--target=aarch64`,把各阶段的 `tests/` 在原生和 aarch64 `cfjit` 下各跑一遍比较;lexer、parser、sema、types、own、ir 的用例全部一致。静态运行时多了 `fmod`(`FRem` 在 aarch64 上是对 `fmod` 的调用,x86 上是 `fprem`)。
+
 ## 还没有的
 
 - 跳转表、`CallI` 以外的尾调用。
 - 向量循环一轮只做一个向量(x86 做两个)。
 - 静态运行时的 `printf` 只做整数、字符、字符串(`%d %i %u %x %X %o %c %s %p %%`,标志 `-` `0`、宽度、长度字母),最多 5 个参数,没有 `%f`;`sprintf`、`fprintf`、`strtod`、`qsort` 等其余 libc 函数没有,用到它们的程序要 `cc`,而 `cc` 不是交叉编译器。
 - 动态链接(`cc`)和 TLS、IFUNC 等 glibc 的东西。
-- `cfjit`、`tea` 的 `--target` 透传。
+- aarch64 上的沙箱加载器:`cfjit` 的沙箱模式(`jit/src/sandbox.cf`)用 x86 的信号帧、`arch_prctl`、`gs`,没有移植;`--sandbox` 生成的 aarch64 代码目前只能过验证器,不能由 `cfjit` 运行。
+- `cfjit` 的 `--gdb`、`--perf-map`、`--cache` 以外的调试功能只在 x86 上试过(`--gdb` 的 ELF 文件写的是 x86 机器号)。

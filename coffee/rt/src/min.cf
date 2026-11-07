@@ -667,3 +667,29 @@ c fn putchar(c: int(4)+) => int(4)+:
     cf_out(b, 1)
     free(b as object)
     return c
+
+/#/ The remainder of `x / y` rounded toward zero, with the sign of `x`; exact (doubling `y` and
+/#/ subtracting never rounds). NaN for an infinite `x`, a zero `y` or a NaN; `x` for an infinite `y`.
+c fn fmod(x: float(8), y: float(8)) => float(8):
+    let ax = x
+    if x < 0.0:
+        ax = 0.0 - x
+    let ay = y
+    if y < 0.0:
+        ay = 0.0 - y
+    if x != x || y != y || ay == 0.0 || ax > 1.7976931348623157e308:
+        return 0.0 / 0.0
+    if ay > 1.7976931348623157e308 || ax < ay:
+        return x
+    let r = ax
+    while r >= ay:
+        let t = ay
+        while t * 2.0 <= r && t * 2.0 < 1.7976931348623157e308:
+            t = t * 2.0
+        r = r - t
+    if x < 0.0:
+        return 0.0 - r
+    return r
+
+c fn fmodf(x: float(4), y: float(4)) => float(4):
+    return f32(fmod(f64(x), f64(y)))
