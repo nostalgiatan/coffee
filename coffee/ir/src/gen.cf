@@ -2119,6 +2119,8 @@ class Gen:
         self.a.cmp_rr(0, 1)
         self.a.jcc(13, done)
         self.a.bind(top)
+        /#/ `inv[k]` is the invariant a stack slot stands for (it is copied only when something writes to the slot)
+        let inv: buf<int> = new_buf(int, plen + 2)
         let sp = 0
         for q in 0..plen:
             let tk = f.cval(self.res(f, f.pool[base + nops + q]))
@@ -2126,14 +2128,23 @@ class Gen:
             let arg = tk >> 8
             if code == 1:
                 self.a.vload(sp, self.vl_reg(arg), 0, eb)
+                inv[sp] = -1
                 sp = sp + 1
             elif code == 2:
-                self.a.movaps(sp, 8 + arg)
+                inv[sp] = arg
                 sp = sp + 1
             elif code == 3:
                 sp = sp - 1
-                self.vl_bin(arg, lane, fl, dbl, sp - 1, sp)
+                if inv[sp - 1] >= 0:
+                    self.a.movaps(sp - 1, 8 + inv[sp - 1])
+                    inv[sp - 1] = -1
+                let src = sp
+                if inv[sp] >= 0:
+                    src = 8 + inv[sp]
+                self.vl_bin(arg, lane, fl, dbl, sp - 1, src)
             else:
+                if inv[sp - 1] >= 0:
+                    self.a.movaps(sp - 1, 8 + inv[sp - 1])
                 self.a.vstore(self.vl_reg(arg), 0, eb, sp - 1)
                 sp = sp - 1
         self.a.add_ri(0, w)

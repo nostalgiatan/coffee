@@ -1074,10 +1074,11 @@ class Ast:
         if self.at(int(Tk.Ident)):
             self.pa[n] = self.pos
             self.bump()
-        else:
+        elif self.peek() != int(Tk.LParen):
+            /#/ no name, and not an anonymous `fn(...)`: a keyword where the name goes (`fn class()`) is
+            /#/ skipped, so the rest parses as the head
             self.record(self.pos, int(Ec.ExpectedName))
-            /#/ a keyword where the name goes (`fn class()`): skip it, so the rest parses as the head
-            if self.peek() != int(Tk.LParen) && self.peek() != int(Tk.Newline) && self.peek() != int(Tk.Eof):
+            if self.peek() != int(Tk.Newline) && self.peek() != int(Tk.Eof):
                 self.bump()
         let last = -1
         if self.at(int(Tk.Lt)):

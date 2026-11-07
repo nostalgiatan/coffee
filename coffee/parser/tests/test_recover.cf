@@ -5,7 +5,7 @@ use * in tree_shape
 fn main() => int:
     let m = 0
     m = m + miss_error("let = 3\nlet y = 2\n", int(Ec.ExpectedName), 1)
-    m = m + miss_error("fn (\n", int(Ec.ExpectedName), 6)
+    m = m + miss_error("fn (\n", int(Ec.ExpectedName), 5)
     m = m + miss_error("1 +\n", int(Ec.ExpectedExpr), 1)
     /#/ a keyword where a function name goes is reported, not dropped
     m = m + miss_error("fn class() => int:\n    return 1\n", int(Ec.ExpectedName), 1)
