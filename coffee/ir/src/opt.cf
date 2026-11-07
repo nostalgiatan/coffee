@@ -195,11 +195,28 @@ fn pred_first(f: &Fun, b: int) => int:
 /#/ A block that only one block enters, by a plain jump, joins that block.
 fn merge_blocks(f: &Fun) => bool:
     let changed = false
+    /#/ how many edges enter each block, and the first: joining blocks changes neither for the others
+    let pcn: buf<int> = new_buf(int, f.nb + 1)
+    let pfe: buf<int> = new_buf(int, f.nb + 1)
+    for e in 0..f.ne:
+        let t = f.eto[e]
+        if t >= 0:
+            if pcn[t] == 0:
+                pfe[t] = e
+            pcn[t] = pcn[t] + 1
+    /#/ the block a joined block went into; the edges that leave it are renamed at the end
+    let into: buf<int> = new_buf(int, f.nb + 1)
+    for b in 0..f.nb:
+        into[b] = b
     for b in 1..f.nb:
-        if f.bfirst[b] >= 0 && pred_count(f, b) == 1:
-            let e = pred_first(f, b)
+        if f.bfirst[b] >= 0 && pcn[b] == 1:
+            let e = pfe[b]
             let a = f.efrom[e]
-            let t = f.blast[a]
+            while a >= 0 && into[a] != a:
+                a = into[a]
+            let t = -1
+            if a >= 0:
+                t = f.blast[a]
             if a != b && a >= 0 && t >= 0 && f.op[t] == int(Op.Br) && f.aux[t] == e:
                 /#/ the parameters are what the edge passes
                 let p = f.pfirst[b]
@@ -231,10 +248,14 @@ fn merge_blocks(f: &Fun) => bool:
                     f.blast[a] = f.blast[b]
                 f.bfirst[b] = -1
                 f.blast[b] = -1
-                for q in 0..f.ne:
-                    if f.efrom[q] == b:
-                        f.efrom[q] = a
+                into[b] = a
                 changed = true
+    if changed:
+        for q in 0..f.ne:
+            let x = f.efrom[q]
+            while x >= 0 && into[x] != x:
+                x = into[x]
+            f.efrom[q] = x
     return changed
 
 /#/ ---- dead code -----------------------------------------------------------

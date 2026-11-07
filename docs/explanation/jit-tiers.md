@@ -176,3 +176,16 @@ A float constant used inside a loop is a value of its own for the register alloc
 entry of the function (when no edge leads back to the entry) and loaded there once with `movabs`+`movq`.
 It takes one of xmm8 to xmm15 when it is not alive across a call; otherwise it is loaded at each use as
 before. mandel now runs in 0.11 s against 0.10 s for gcc -O2. Test: `ir/tests/test_floathoist.cf`.
+
+## Compile-time algorithms (profile of coffee2 compiling itself)
+
+callgrind of `coffee2 driver/src/main.cf`, instructions: 11.02G before, 5.92G after (-46%), output unchanged.
+
+| change | where | before |
+|---|---|---|
+| ownership liveness as bitsets per block; an event's answer from the variable's own events (binary search) instead of a variables x events table rewritten every round | `own/src/own.cf` `liveness`, `live_at` | 17% |
+| forward ownership solve runs only blocks whose entry state changed | `own.cf` `solve` | 7% |
+| `merge_blocks` takes edge counts once instead of scanning all edges per block | `ir/src/opt.cf` | 5% |
+| value-number table is dropped, not cleared, when it was grown for a big function | `ir/src/fun.cf` `clear_vn` | 7% |
+| keyword lookup by (start, length) pairs | `lexer/src/lexer.cf` | 5% |
+| hashed lookups: `Names.find`, `Tys.intern`, `Lib.find` (lazy id index), members of a class or enum (`Syms.member_head`) | names.cf, ty.cf, lib.cf, sym_table.cf | about 15% together |

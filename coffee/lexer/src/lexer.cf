@@ -80,6 +80,29 @@ fn is_ident(c: int) => bool:
 fn keyword_table() => str:
     return "fn c class type packed enum of if elif else while for in match let mv clone copy rm clean raise return break continue use as true false int float bool string str void"
 
+/#/ The keyword text with, after it, their number and the (start, length) of each.
+fn keyword_index(text: &buf<int>, tn: int) => buf<int>:
+    let nk = 0
+    for p in 0..tn:
+        if text[p] == ' ':
+            nk = nk + 1
+    nk = nk + 1
+    let out: buf<int> = new_buf(int, tn + 2 + 2 * nk)
+    for p in 0..tn:
+        out[p] = text[p]
+    out[tn] = nk
+    let idx = 0
+    let p = 0
+    while p < tn:
+        let q = p
+        while q < tn && text[q] != ' ':
+            q = q + 1
+        out[tn + 1 + 2 * idx] = p
+        out[tn + 2 + 2 * idx] = q - p
+        idx = idx + 1
+        p = q + 1
+    return out
+
 fn keyword_scan(src: &buf<int>, s: int, e: int, table: &buf<int>, tn: int) => int:
     let n = e - s
     /#/ the longest keyword is `continue`; no keyword starts with any other letter than these
@@ -88,21 +111,20 @@ fn keyword_scan(src: &buf<int>, s: int, e: int, table: &buf<int>, tn: int) => in
     let c0 = sbyte(src, s)
     if c0 < 'a' || c0 > 'w' || c0 == 'd' || c0 == 'g' || c0 == 'h' || c0 == 'j' || c0 == 'k' || c0 == 'n' || c0 == 'q':
         return -1
+    /#/ `table` holds the text, then the number of keywords and a (start, length) pair for each
+    let nk = table[tn]
     let idx = 0
-    let p = 0
-    while p < tn:
-        let q = p
-        while q < tn && table[q] != ' ':
-            q = q + 1
-        if q - p == n && table[p] == c0:
+    while idx < nk:
+        let p = table[tn + 1 + 2 * idx]
+        if table[tn + 2 + 2 * idx] == n && table[p] == c0:
             let same = true
-            for k in 0..n:
+            for k in 1..n:
                 if sbyte(src, s + k) != table[p + k]:
                     same = false
+                    break
             if same:
                 return idx
         idx = idx + 1
-        p = q + 1
     return -1
 
 /#/ Token kind of the word at [s, e): a keyword kind or Ident.
@@ -473,7 +495,8 @@ fn lex_into(src: &buf<int>, size: int, from: int, n: int, t: &Tokens, at_bol0: b
     lexed_len = size
     let kt = keyword_table()
     let kn = len(kt)
-    let kws = bytes_of_str(&kt)
+    let kws0 = bytes_of_str(&kt)
+    let kws = keyword_index(&kws0, kn)
     let stack = new_buf(int, 128)
     let sp = 1
     let depth = 0

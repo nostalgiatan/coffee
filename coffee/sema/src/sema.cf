@@ -376,13 +376,20 @@ class Checker:
         while cur >= 0 && depth < 32:
             let next = -1
             let has_parent = false
-            for i in 0..g.n:
-                if g.info[i] == cur:
-                    if (g.kind[i] == int(Sk.Field) || (methods && g.kind[i] == int(Sk.Method))) && g.same_span(i, a, s, e, h):
-                        return i
-                    if g.kind[i] == int(Sk.Parent):
-                        has_parent = true
-                        next = g.find_class_row(i)
+            let best = -1
+            let last_parent = -1
+            let q = g.member_head(cur) - 1
+            while q >= 0:
+                if (g.kind[q] == int(Sk.Field) || (methods && g.kind[q] == int(Sk.Method))) && (best < 0 || q < best) && g.same_span(q, a, s, e, h):
+                    best = q
+                if g.kind[q] == int(Sk.Parent) && q > last_parent:
+                    last_parent = q
+                q = g.member_next(q) - 1
+            if best >= 0:
+                return best
+            if last_parent >= 0:
+                has_parent = true
+                next = g.find_class_row(last_parent)
             if has_parent && next < 0:
                 return -2
             cur = next

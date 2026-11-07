@@ -59,9 +59,11 @@ fn subst_env(t: &Tys, ty: int, env: int) => int:
 
 /#/ Does enum `e` (a row of `g`) have a variant that carries values?
 fn has_payload(t: &Tys, g: &Syms, e: int) => bool:
-    for i in 0..g.n:
-        if g.info[i] == e && g.kind[i] == int(Sk.Variant) && g.ty[i] >= 0 && t.kind[g.ty[i]] == int(Ty.Fn):
+    let q = g.member_head(e) - 1
+    while q >= 0:
+        if g.kind[q] == int(Sk.Variant) && g.ty[q] >= 0 && t.kind[g.ty[q]] == int(Ty.Fn):
             return true
+        q = g.member_next(q) - 1
     return false
 
 /#/ Is the value of `x` a single pointer to a block it stands for?

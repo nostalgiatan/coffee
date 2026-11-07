@@ -10,10 +10,13 @@ fn member_of(g: &Syms, a: &Ast, owner: int, tok: int, kind: int) => int:
     let s = a.toks.start[tok]
     let e = a.toks.end[tok]
     let h = g.span_hash(a, s, e)
-    for i in 0..g.n:
-        if g.info[i] == owner && g.kind[i] == kind && g.same_span(i, a, s, e, h):
-            return i
-    return -1
+    let best = -1
+    let q = g.member_head(owner) - 1
+    while q >= 0:
+        if g.kind[q] == kind && (best < 0 || q < best) && g.same_span(q, a, s, e, h):
+            best = q
+        q = g.member_next(q) - 1
+    return best
 
 /#/ Declares the types of module `m`, whose tree is `a`. The modules it imports from must be
 /#/ declared first.

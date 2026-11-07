@@ -44,6 +44,12 @@ class Syms:
     ty: buf<int>
     link: buf<int>
     head: buf<int>
+    /#/ the index of member rows by owner (see `member_head`)
+    mh: buf<int>
+    mx: buf<int>
+    mn: int
+    gen: int
+    mg: int
     n: int
     pool: buf<int>
     pool_n: int
@@ -200,8 +206,36 @@ class Syms:
         return -1
 
     /#/ Drops every row from `mark` up.
+    /#/ The newest member row (field, method, variant or parent) of `owner` as row + 1; 0 when none.
+    /#/ `member_next` goes on to the one before. The index takes in the rows added since its last use.
+    fn member_head(self, owner: int) => int:
+        if self.mg != self.gen:
+            self.mg = self.gen
+            self.mn = 0
+            for k in 0..len(self.mh):
+                self.mh[k] = 0
+        if len(self.mh) < self.n + 1:
+            self.mh = buf_resize(self.mh, (self.n + 1) * 2)
+        if len(self.mx) < self.n + 1:
+            self.mx = buf_resize(self.mx, (self.n + 1) * 2)
+        while self.mn < self.n:
+            let k = self.kind[self.mn]
+            if k == int(Sk.Field) || k == int(Sk.Method) || k == int(Sk.Variant) || k == int(Sk.Parent):
+                let o = self.info[self.mn]
+                if o >= 0 && o < len(self.mh):
+                    self.mx[self.mn] = self.mh[o]
+                    self.mh[o] = self.mn + 1
+            self.mn = self.mn + 1
+        if owner < 0 || owner >= len(self.mh):
+            return 0
+        return self.mh[owner]
+
+    fn member_next(self, row: int) => int:
+        return self.mx[row]
+
     fn truncate(self, mark: int) => void:
         if mark < self.n:
+            self.gen = self.gen + 1
             let k = self.n - 1
             while k >= mark:
                 self.head[self.hash[k] % buckets] = self.link[k]
@@ -216,4 +250,4 @@ class Syms:
         return self.pool[self.off[i]]
 
 fn new_syms() => Syms:
-    return Syms { hash: new_buf(int, 64), off: new_buf(int, 64), size: new_buf(int, 64), kind: new_buf(int, 64), info: new_buf(int, 64), mod: new_buf(int, 64), used: new_buf(int, 64), tok: new_buf(int, 64), ty: new_buf(int, 64), link: new_buf(int, 64), head: new_buf(int, buckets), n: 0, pool: new_buf(int, 256), pool_n: 0 }
+    return Syms { hash: new_buf(int, 64), off: new_buf(int, 64), size: new_buf(int, 64), kind: new_buf(int, 64), info: new_buf(int, 64), mod: new_buf(int, 64), used: new_buf(int, 64), tok: new_buf(int, 64), ty: new_buf(int, 64), link: new_buf(int, 64), head: new_buf(int, buckets), mh: new_buf(int, 64), mx: new_buf(int, 64), mn: 0, gen: 0, mg: 0, n: 0, pool: new_buf(int, 256), pool_n: 0 }

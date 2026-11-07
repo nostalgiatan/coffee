@@ -140,7 +140,10 @@ class Flow:
     /#/ results
     diags: ODiags
     moved_at: buf<int>
-    live_after: buf<int>
+    lv_start: buf<int>
+    lv_pos: buf<int>
+    lv_blk: buf<int>
+    lv_w: int
     reach: buf<int>
     st_in: buf<int>
     live_in: buf<int>
@@ -785,48 +788,78 @@ class Flow:
 
     /#/ Does variable `v` stay in use after event `i`?
     fn live_at(self, i: int, v: int) => bool:
-        return self.live_after[i * self.nv + v] != 0
+        let b = self.lv_blk[i]
+        /#/ the first event of the variable after `i`: a read makes it live, an end does not
+        let lo = self.lv_start[v]
+        let hi = self.lv_start[v + 1]
+        while lo < hi:
+            let mid = (lo + hi) // 2
+            if self.lv_pos[mid] > i:
+                hi = mid
+            else:
+                lo = mid + 1
+        if lo < self.lv_start[v + 1] && self.lv_pos[lo] < self.be[b]:
+            return self.reads_var(self.ek[self.lv_pos[lo]])
+        return ((self.live_out[b * self.lv_w + v // 60] >> (v % 60)) & 1) != 0
 
-    /#/ Backwards: which variables are read later. Fills `live_after` for every event.
+    /#/ Backwards: which variables are read later. A variable is a bit of its block's `live_in` and
+    /#/ `live_out` (words of 60 bits). Inside a block the answer for one event is found from the
+    /#/ events of that variable (`lv_pos`, by variable, in event order), see `live_at`.
     fn liveness(self) => void:
         let nv = self.nv
-        let size = self.nb * nv + 1
-        self.live_in = new_buf(int, size)
-        self.live_out = new_buf(int, size)
-        self.live_after = new_buf(int, self.ne * nv + 1)
-        let tmp: buf<int> = new_buf(int, nv + 1)
-        let round = 0
+        let wn = nv // 60 + 1
+        self.lv_w = wn
+        self.live_in = new_buf(int, self.nb * wn + 1)
+        self.live_out = new_buf(int, self.nb * wn + 1)
+        let gen: buf<int> = new_buf(int, self.nb * wn + 1)
+        let kill: buf<int> = new_buf(int, self.nb * wn + 1)
+        /#/ the events that read or end a variable, by variable
+        self.lv_start = new_buf(int, nv + 2)
+        self.lv_blk = new_buf(int, self.ne + 1)
+        for b in 0..self.nb:
+            for i in self.bs[b]..self.be[b]:
+                self.lv_blk[i] = b
+                let k = self.ek[i]
+                let x = self.ev[i]
+                if self.reads_var(k):
+                    self.lv_start[x + 1] = self.lv_start[x + 1] + 1
+                    if ((kill[b * wn + x // 60] >> (x % 60)) & 1) == 0:
+                        gen[b * wn + x // 60] = gen[b * wn + x // 60] | (1 << (x % 60))
+                elif k == int(Ev.Let) || k == int(Ev.Assign):
+                    self.lv_start[x + 1] = self.lv_start[x + 1] + 1
+                    kill[b * wn + x // 60] = kill[b * wn + x // 60] | (1 << (x % 60))
+        for v in 0..nv:
+            self.lv_start[v + 1] = self.lv_start[v + 1] + self.lv_start[v]
+        self.lv_pos = new_buf(int, self.lv_start[nv] + 1)
+        let fill: buf<int> = new_buf(int, nv + 1)
+        for i in 0..self.ne:
+            let k = self.ek[i]
+            if self.reads_var(k) || k == int(Ev.Let) || k == int(Ev.Assign):
+                let x = self.ev[i]
+                self.lv_pos[self.lv_start[x] + fill[x]] = i
+                fill[x] = fill[x] + 1
         let changed = true
-        while changed && round < 200:
+        while changed:
             changed = false
-            round = round + 1
             for e in 0..self.nedge:
                 let f = self.ef[e]
                 let to = self.et[e]
-                for v in 0..nv:
-                    if self.live_in[to * nv + v] != 0 && self.live_out[f * nv + v] == 0:
-                        self.live_out[f * nv + v] = 1
+                for j in 0..wn:
+                    let x = self.live_out[f * wn + j] | self.live_in[to * wn + j]
+                    if x != self.live_out[f * wn + j]:
+                        self.live_out[f * wn + j] = x
                         changed = true
             let b = self.nb - 1
             while b >= 0:
-                for v in 0..nv:
-                    tmp[v] = self.live_out[b * nv + v]
-                let i = self.be[b] - 1
-                while i >= self.bs[b]:
-                    for v in 0..nv:
-                        self.live_after[i * nv + v] = tmp[v]
-                    let k = self.ek[i]
-                    let x = self.ev[i]
-                    if k == int(Ev.Let) || k == int(Ev.Assign):
-                        tmp[x] = 0
-                    elif k == int(Ev.Use) || k == int(Ev.Consume) || k == int(Ev.Borrow) || k == int(Ev.Move) || k == int(Ev.Write):
-                        tmp[x] = 1
-                    i = i - 1
-                for v in 0..nv:
-                    if self.live_in[b * nv + v] != tmp[v]:
-                        self.live_in[b * nv + v] = tmp[v]
+                for j in 0..wn:
+                    let x = gen[b * wn + j] | (self.live_out[b * wn + j] & (0 - 1 - kill[b * wn + j]))
+                    if x != self.live_in[b * wn + j]:
+                        self.live_in[b * wn + j] = x
                         changed = true
                 b = b - 1
+
+    fn reads_var(self, k: int) => bool:
+        return k == int(Ev.Use) || k == int(Ev.Consume) || k == int(Ev.Borrow) || k == int(Ev.Move) || k == int(Ev.Write)
 
     /#/ Do two places of the same variable overlap? An index step matches any index.
     fn overlap(self, s1: int, l1: int, s2: int, l2: int) => bool:
@@ -956,34 +989,52 @@ class Flow:
         let width = 2 * nv + 1
         self.w = new_buf(int, width)
         self.st_in = new_buf(int, self.nb * width + 1)
-        let st_out: buf<int> = new_buf(int, self.nb * width + 1)
         self.reach = new_buf(int, self.nb + 1)
         self.reach[0] = 1
-        let changed = true
-        let round = 0
-        while changed && round < 100:
-            changed = false
-            round = round + 1
-            for b in 0..self.nb:
-                if self.reach[b] != 0:
-                    self.run_block(a, b, width, false)
+        /#/ the edges out of each block
+        let oc: buf<int> = new_buf(int, self.nb + 2)
+        for e in 0..self.nedge:
+            oc[self.ef[e] + 1] = oc[self.ef[e] + 1] + 1
+        for b in 0..self.nb:
+            oc[b + 1] = oc[b + 1] + oc[b]
+        let oe: buf<int> = new_buf(int, self.nedge + 1)
+        let ofill: buf<int> = new_buf(int, self.nb + 1)
+        for e in 0..self.nedge:
+            oe[oc[self.ef[e]] + ofill[self.ef[e]]] = e
+            ofill[self.ef[e]] = ofill[self.ef[e]] + 1
+        /#/ blocks whose entry state changed are run again, the others are not
+        let dirty: buf<int> = new_buf(int, self.nb + 1)
+        let work: buf<int> = new_buf(int, self.nb * 8 + 8)
+        let wh = 0
+        let wt = 0
+        work[0] = 0
+        wt = 1
+        dirty[0] = 1
+        let budget = self.nb * 100 + 100
+        while wh < wt && budget > 0:
+            budget = budget - 1
+            let b = work[wh % len(work)]
+            wh = wh + 1
+            dirty[b] = 0
+            self.run_block(a, b, width, false)
+            for k in oc[b]..oc[b + 1]:
+                let to = self.et[oe[k]]
+                let grew = false
+                if self.reach[to] == 0:
+                    self.reach[to] = 1
                     for j in 0..width:
-                        st_out[b * width + j] = self.w[j]
-            for e in 0..self.nedge:
-                let f = self.ef[e]
-                let to = self.et[e]
-                if self.reach[f] != 0:
-                    if self.reach[to] == 0:
-                        self.reach[to] = 1
-                        for j in 0..width:
-                            self.st_in[to * width + j] = st_out[f * width + j]
-                        changed = true
-                    else:
-                        for j in 0..width:
-                            let x = self.st_in[to * width + j] | st_out[f * width + j]
-                            if x != self.st_in[to * width + j]:
-                                self.st_in[to * width + j] = x
-                                changed = true
+                        self.st_in[to * width + j] = self.w[j]
+                    grew = true
+                else:
+                    for j in 0..width:
+                        let x = self.st_in[to * width + j] | self.w[j]
+                        if x != self.st_in[to * width + j]:
+                            self.st_in[to * width + j] = x
+                            grew = true
+                if grew && dirty[to] == 0 && wt - wh < len(work):
+                    dirty[to] = 1
+                    work[wt % len(work)] = to
+                    wt = wt + 1
         for b in 0..self.nb:
             if self.reach[b] != 0:
                 self.run_block(a, b, width, true)
@@ -1031,7 +1082,7 @@ class Flow:
             self.exit_of[self.v_node[v]] = self.v_exit[v]
 
 fn new_flow(a: &Ast) => Flow:
-    return Flow { ek: new_buf(int, 64), ev: new_buf(int, 64), en: new_buf(int, 64), ea: new_buf(int, 64), eb: new_buf(int, 64), ec: new_buf(int, 64), ed: new_buf(int, 64), ne: 0, bs: new_buf(int, 16), be: new_buf(int, 16), nb: 0, ef: new_buf(int, 16), et: new_buf(int, 16), nedge: 0, cur: -1, v_tok: new_buf(int, 16), v_ty: new_buf(int, 16), v_param: new_buf(int, 16), v_node: new_buf(int, 16), v_exit: new_buf(int, 16), nv: 0, sc: new_syms(), ss: new_buf(int, 16), sn: 0, lh: new_buf(int, 8), lx: new_buf(int, 8), ld: new_buf(int, 8), nl_loops: 0, pp: new_buf(int, 64), pn: 0, pt: new_buf(int, 16), plen: 0, pvar: -1, lroot: new_buf(int, 64), lps: new_buf(int, 64), lpl: new_buf(int, 64), lmut: new_buf(int, 64), lthru: new_buf(int, 64), nl: 0, s0: 0, target: -1, diags: new_odiags(), moved_at: new_buf(int, a.count + 1), exit_of: new_buf(int, a.count + 1), live_after: new_buf(int, 1), reach: new_buf(int, 1), st_in: new_buf(int, 1), live_in: new_buf(int, 1), live_out: new_buf(int, 1), w: new_buf(int, 1) }
+    return Flow { ek: new_buf(int, 64), ev: new_buf(int, 64), en: new_buf(int, 64), ea: new_buf(int, 64), eb: new_buf(int, 64), ec: new_buf(int, 64), ed: new_buf(int, 64), ne: 0, bs: new_buf(int, 16), be: new_buf(int, 16), nb: 0, ef: new_buf(int, 16), et: new_buf(int, 16), nedge: 0, cur: -1, v_tok: new_buf(int, 16), v_ty: new_buf(int, 16), v_param: new_buf(int, 16), v_node: new_buf(int, 16), v_exit: new_buf(int, 16), nv: 0, sc: new_syms(), ss: new_buf(int, 16), sn: 0, lh: new_buf(int, 8), lx: new_buf(int, 8), ld: new_buf(int, 8), nl_loops: 0, pp: new_buf(int, 64), pn: 0, pt: new_buf(int, 16), plen: 0, pvar: -1, lroot: new_buf(int, 64), lps: new_buf(int, 64), lpl: new_buf(int, 64), lmut: new_buf(int, 64), lthru: new_buf(int, 64), nl: 0, s0: 0, target: -1, diags: new_odiags(), moved_at: new_buf(int, a.count + 1), exit_of: new_buf(int, a.count + 1), lv_start: new_buf(int, 1), lv_pos: new_buf(int, 1), lv_blk: new_buf(int, 1), lv_w: 1, reach: new_buf(int, 1), st_in: new_buf(int, 1), live_in: new_buf(int, 1), live_out: new_buf(int, 1), w: new_buf(int, 1) }
 
 /#/ Checks every function and method of module `m` (tree `a`); `ty` is the typer's result for
 /#/ it. Findings are in `diags`, implicit moves in `moved_at`.

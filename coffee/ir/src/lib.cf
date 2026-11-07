@@ -6,6 +6,8 @@
 use * in opt
 
 class Lib:
+    fx: buf<int>
+    fx_n: int
     op: buf<int>
     rep: buf<int>
     ty: buf<int>
@@ -205,10 +207,20 @@ class Lib:
 
     /#/ The function whose name number is `id`, -1 when the module does not define it.
     fn find(self, id: int) => int:
-        for n in 0..self.nf:
-            if self.f_id[n] == id:
-                return n
+        if id < 0:
+            return -1
+        /#/ the functions made since the last look are entered in `fx` (name number to function + 1)
+        while self.fx_n < self.nf:
+            let k = self.f_id[self.fx_n]
+            if k >= 0:
+                if k >= len(self.fx):
+                    self.fx = buf_resize(self.fx, (k + 1) * 2)
+                if self.fx[k] == 0:
+                    self.fx[k] = self.fx_n + 1
+            self.fx_n = self.fx_n + 1
+        if id < len(self.fx) && self.fx[id] > 0:
+            return self.fx[id] - 1
         return -1
 
 fn new_lib() => Lib:
-    return Lib { op: new_buf(int, 64), rep: new_buf(int, 64), ty: new_buf(int, 64), a: new_buf(int, 64), b: new_buf(int, 64), c: new_buf(int, 64), aux: new_buf(int, 64), nx: new_buf(int, 64), pv: new_buf(int, 64), uses: new_buf(int, 64), fwd: new_buf(int, 64), blk: new_buf(int, 64), ni: 0, bfirst: new_buf(int, 16), blast: new_buf(int, 16), pfirst: new_buf(int, 16), plast: new_buf(int, 16), npar: new_buf(int, 16), nb: 0, efrom: new_buf(int, 16), eto: new_buf(int, 16), eargs: new_buf(int, 16), eargn: new_buf(int, 16), ne: 0, pool: new_buf(int, 64), np: 0, nm: new_buf(int, 64), nmn: 0, nf: 0, f_i0: new_buf(int, 8), f_ni: new_buf(int, 8), f_b0: new_buf(int, 8), f_nb: new_buf(int, 8), f_e0: new_buf(int, 8), f_ne: new_buf(int, 8), f_p0: new_buf(int, 8), f_np: new_buf(int, 8), f_n0: new_buf(int, 8), f_nn: new_buf(int, 8), f_ret: new_buf(int, 8), f_id: new_buf(int, 8), f_fx: new_buf(int, 8), f_done: new_buf(int, 8) }
+    return Lib { fx: new_buf(int, 16), fx_n: 0, op: new_buf(int, 64), rep: new_buf(int, 64), ty: new_buf(int, 64), a: new_buf(int, 64), b: new_buf(int, 64), c: new_buf(int, 64), aux: new_buf(int, 64), nx: new_buf(int, 64), pv: new_buf(int, 64), uses: new_buf(int, 64), fwd: new_buf(int, 64), blk: new_buf(int, 64), ni: 0, bfirst: new_buf(int, 16), blast: new_buf(int, 16), pfirst: new_buf(int, 16), plast: new_buf(int, 16), npar: new_buf(int, 16), nb: 0, efrom: new_buf(int, 16), eto: new_buf(int, 16), eargs: new_buf(int, 16), eargn: new_buf(int, 16), ne: 0, pool: new_buf(int, 64), np: 0, nm: new_buf(int, 64), nmn: 0, nf: 0, f_i0: new_buf(int, 8), f_ni: new_buf(int, 8), f_b0: new_buf(int, 8), f_nb: new_buf(int, 8), f_e0: new_buf(int, 8), f_ne: new_buf(int, 8), f_p0: new_buf(int, 8), f_np: new_buf(int, 8), f_n0: new_buf(int, 8), f_nn: new_buf(int, 8), f_ret: new_buf(int, 8), f_id: new_buf(int, 8), f_fx: new_buf(int, 8), f_done: new_buf(int, 8) }

@@ -132,9 +132,7 @@ class Fun:
         self.cn = 0
         self.cur = -1
         self.attrs = 0
-        self.vn_n = 0
-        for k in 0..len(self.vn):
-            self.vn[k] = -1
+        self.clear_vn()
 
     fn set_attrs(self, a: int) => void:
         self.attrs = a
@@ -183,9 +181,22 @@ class Fun:
 
     /#/ Forgets the shared values: the table no longer describes the instructions.
     fn reset_vn(self) => void:
+        self.clear_vn()
+
+    /#/ An empty table of value numbers. One grown for a big function is dropped for a small one
+    /#/ rather than cleared: clearing costs its size for every function after it.
+    fn clear_vn(self) => void:
+        if self.vn_n * 8 < len(self.vn) && len(self.vn) > 256:
+            self.vn = new_buf(int, 64)
+        elif self.vn_n > 0:
+            for k in 0..len(self.vn):
+                self.vn[k] = -1
+        else:
+            return
+        if len(self.vn) == 64:
+            for k in 0..64:
+                self.vn[k] = -1
         self.vn_n = 0
-        for k in 0..len(self.vn):
-            self.vn[k] = -1
 
     /#/ Sets operand `k` of instruction `i`, the inverse of `val_at`.
     fn set_val_at(self, i: int, k: int, v: int) => void:

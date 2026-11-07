@@ -7,6 +7,10 @@ class Names:
     n: int
     off: buf<int>
     cnt: int
+    /#/ chains of names by the hash of their text: heads (name + 1), next, hash of each
+    nh: buf<int>
+    nn: buf<int>
+    hs: buf<int>
 
     fn add(self, name: &str) => int:
         if self.cnt + 1 >= len(self.off):
@@ -19,7 +23,28 @@ class Names:
             self.n = self.n + 1
         self.off[self.cnt + 1] = self.n
         self.cnt = self.cnt + 1
+        self.reg()
         return self.cnt - 1
+
+    /#/ Enters the name just added (the last one) in the chains.
+    fn reg(self) => void:
+        let id = self.cnt - 1
+        if id >= len(self.nn):
+            self.nn = buf_resize(self.nn, (id + 1) * 2)
+            self.hs = buf_resize(self.hs, (id + 1) * 2)
+        let h = 1469598103934665603
+        for k in self.off[id]..self.off[id + 1]:
+            h = (h ^ self.b[k]) * 1099511628211
+        h = h & 4611686018427387903
+        self.hs[id] = h
+        if self.cnt * 2 > len(self.nh):
+            let cap = len(self.nh) * 2
+            self.nh = new_buf(int, cap)
+            for j in 0..id:
+                self.nn[j] = self.nh[self.hs[j] % cap]
+                self.nh[self.hs[j] % cap] = j + 1
+        self.nn[id] = self.nh[h % len(self.nh)]
+        self.nh[h % len(self.nh)] = id + 1
 
     fn put(self, o: &Txt, id: int) => void:
         for k in self.off[id]..self.off[id + 1]:
@@ -37,18 +62,26 @@ class Names:
             self.n = self.n + 1
         self.off[self.cnt + 1] = self.n
         self.cnt = self.cnt + 1
+        self.reg()
         return self.cnt - 1
 
     /#/ The number of the name spelled by `w`; -1 when there is none.
     fn find(self, w: &Txt) => int:
-        for id in 0..self.cnt:
-            if self.off[id + 1] - self.off[id] == w.n:
+        let h = 1469598103934665603
+        for k in 0..w.n:
+            h = (h ^ w.b[k]) * 1099511628211
+        h = h & 4611686018427387903
+        let id = self.nh[h % len(self.nh)] - 1
+        while id >= 0:
+            if self.hs[id] == h && self.off[id + 1] - self.off[id] == w.n:
                 let same = true
                 for k in 0..w.n:
                     if self.b[self.off[id] + k] != w.b[k]:
                         same = false
+                        break
                 if same:
                     return id
+            id = self.nn[id] - 1
         return -1
 
     /#/ The number of the name spelled by `w`; added when new.
@@ -66,7 +99,8 @@ class Names:
             self.n = self.n + 1
         self.off[self.cnt + 1] = self.n
         self.cnt = self.cnt + 1
+        self.reg()
         return self.cnt - 1
 
 fn new_names() => Names:
-    return Names { b: new_buf(int, 64), n: 0, off: new_buf(int, 16), cnt: 0 }
+    return Names { b: new_buf(int, 64), n: 0, off: new_buf(int, 16), cnt: 0, nh: new_buf(int, 64), nn: new_buf(int, 16), hs: new_buf(int, 16) }
