@@ -222,9 +222,20 @@ let ir_dump = false
 /#/ With `--emit-lines` the line marks of the code made are put in `lines_txt` (see `lines_dump`).
 let lines_on = false
 let lines_txt = new_txt()
+/#/ With `-g` the same table goes into the object, for the linker to make DWARF of.
+let dbg_on = false
 
 fn set_lines() => void:
     lines_on = true
+
+fn set_debug() => void:
+    dbg_on = true
+    lines_on = true
+
+/#/ The line marks of what is made from now on are not wanted (the runtime that is linked in).
+fn no_lines() => void:
+    dbg_on = false
+    lines_on = false
 
 fn set_ir_dump() => void:
     ir_dump = true
@@ -3576,7 +3587,11 @@ class Lower:
     /#/ The object file.
     fn object(self) => Txt:
         if lines_on:
-            lines_dump(&self.mc, &lines_txt)
+            let lt = new_txt()
+            lines_dump(&self.mc, &lt)
+            lines_txt.put_all(&lt)
+            if dbg_on:
+                self.mc.o.dbg = lt
         self.mc.add_rodata(&self.sbytes)
         for k in 0..self.gl_n:
             let w = new_txt()

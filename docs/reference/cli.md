@@ -21,7 +21,7 @@ coffee2 input.cf [-o output] [-I dir] [-O0|-O1|-O2|-O3] [--emit-obj] [--emit-fla
 | `--incremental dir` | 每个源文件一个 `.o`,放在 `dir`,没变的复用;再链接。前端仍检查整个程序。文件的记号(注释和空行不算)、别的文件的接口(函数头、类字段和方法头、枚举、别名、模块级 `let`、泛型整体)、编译器、`.cfc`、优化级别任何一样变了,才重编。这个模式下优化器不跨文件内联。 |
 | `-j n` | 增量构建里同时编译 `n` 个文件(进程,共享前端的结果);默认是在线的处理器数,最多 16。产物和 `-j 1` 逐字节相同。 |
 | `--dynamic` | 强制用 `cc` 链接。 |
-| `-g` | 输出文件保留符号表(函数和数据的名字、大小、地址)和节头,gdb、perf 能显示名字。不给时输出没有符号表也没有节头(`--static`),用 `cc` 链接时加 `-s`。 |
+| `-g` | 输出文件保留符号表(函数和数据的名字、大小、地址)和节头,gdb、perf 能显示名字。`--static` 的可执行文件还带 DWARF(`.debug_abbrev`、`.debug_info`、`.debug_line`,版本 4,每个函数一个子程序、一段行号序列),gdb 能按源码行下断点、单步、`bt` 显示 `文件:行`,valgrind/callgrind 的报告里有 `文件:行`。文件名是各 `.cf` 源文件(相对路径加编译时的 `PWD`),不是展开后的文本。没有类型和变量信息,所以 `info locals`、`print x` 还不行。用 `cc` 链接(`--dynamic`)或 `--incremental` 时不生成 DWARF。不给 `-g` 时输出没有符号表也没有节头(`--static`),用 `cc` 链接时加 `-s`。 |
 | `--verify` | 每个函数翻译前跑 IR 验证器(`tea test` 加这个);不给时不跑,编译快约 9%。 |
 | `--align` | 每个函数从 16 字节边界开始(`tea` 的发布构建加这个)。不给时函数紧挨着放,文件更小。 |
 | `--static` | 不用 `cc` 和 C 库:程序加上 `rt/src/min.cf` 里用 Coffee 写的 C 库(`malloc`、`calloc`、`free`、`memcpy`、`strlen`、`strdup`、`strcmp`、`open`、`read`、`write`、`close`、`remove`、`access`、`chmod`、`fork`、`waitpid`、`system`、`clock_gettime`、`exit` 等,走 Linux 系统调用;没有 `printf`、`fopen`,因为它们要变长参数),由 `ld/` 的链接器在本进程里链成静态可执行文件。程序不能用别的 C 函数(`printf`、`fopen` 等),否则链接报 `undefined symbol`。可以和 `--incremental` 一起用。程序只导入 `min.cf` 有的 libc 函数时,不加选项也是这样链接;导入了别的 C 函数或别的 C 库就用 `cc`。 |

@@ -22,6 +22,8 @@ class Obj:
     ns: int
     /#/ open-addressing index of the symbols by name: symbol number + 1, 0 for a free place (a power of two long)
     hx: buf<int>
+    /#/ the line table (see `lines_dump`) for the linker, in a section `.cf_lines`; empty for none
+    dbg: Txt
 
     /#/ The symbol (object number) named like `w`, made when new.
     fn sym(self, w: &Txt) => int:
@@ -106,7 +108,7 @@ class Obj:
 fn new_obj() => Obj:
     let nm = new_txt()
     nm.put_byte(0)
-    let o = Obj { ro: new_txt(), names: nm, s_name: new_buf(int, 16), s_def: new_buf(int, 16), s_size: new_buf(int, 16), s_sec: new_buf(int, 16), data: new_txt(), ns: 0, hx: new_buf(int, 256) }
+    let o = Obj { ro: new_txt(), names: nm, s_name: new_buf(int, 16), s_def: new_buf(int, 16), s_size: new_buf(int, 16), s_sec: new_buf(int, 16), data: new_txt(), ns: 0, hx: new_buf(int, 256), dbg: new_txt() }
     /#/ the zero block that stands in for `undef` aggregates
     for k in 0..256:
         o.ro.put_byte(0)
@@ -214,6 +216,12 @@ fn write_elf(o: &Obj, a: &Asm) => Txt:
             sh.put_byte(o.names.b[at])
             at = at + 1
         sh.put_byte(0)
+    let n_dbg = sh.n
+    let ndbg = 0
+    if o.dbg.n > 0:
+        sh.put(".cf_lines")
+        sh.put_byte(0)
+        ndbg = 1
     /#/ relocations and symbols
     /#/ the relocations of each function, offsets from its start; they were recorded in code order
     let rela = new_txt()
@@ -282,6 +290,8 @@ fn write_elf(o: &Obj, a: &Asm) => Txt:
     pad_to(&out, 8)
     let off_rela = out.n
     out.put_all(&rela)
+    let off_dbg = out.n
+    out.put_all(&o.dbg)
     let off_sym = out.n
     out.put_all(&syms)
     let off_str = out.n
@@ -302,6 +312,8 @@ fn write_elf(o: &Obj, a: &Asm) => Txt:
     for j in 0..nf:
         shdr(&out, fn_tn[j], 1, 6, fn_off[j], o.s_size[fn_sym[j]], 0, 0, fn_align, 0)
         shdr(&out, fn_rn[j], 4, 64, off_rela + fn_ra[j], fn_rz[j], 5, 9 + 2 * j, 8, 24)
+    if ndbg == 1:
+        shdr(&out, n_dbg, 1, 0, off_dbg, o.dbg.n, 0, 0, 1, 0)
     /#/ the file header, over the zeros at the start
     let h = new_txt()
     h.put_byte(127)
@@ -322,7 +334,7 @@ fn write_elf(o: &Obj, a: &Asm) => Txt:
     w16(&h, 0)
     w16(&h, 0)
     w16(&h, 64)
-    w16(&h, 9 + 2 * nf)
+    w16(&h, 9 + 2 * nf + ndbg)
     w16(&h, 7)
     for k in 0..64:
         out.b[k] = h.b[k]

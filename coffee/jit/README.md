@@ -29,4 +29,5 @@ Limits of this first version: the image is mapped read-write-execute in one piec
 - `cfjit prog.cir --perf-map` writes `/tmp/perf-PID.map` once the image is loaded, so `perf` names JIT addresses.
 - `coffee2 prog.cf --lines file -g` does the same for AOT code, with `file:line` instead of flat lines;
   `coffee/driver/tools/cfline.sh exe file addr` looks an address up.
-- Not yet: DWARF (`gdb` source lines), line marks in incremental builds and in `--sandbox` code maps.
+- `coffee2 prog.cf -g --static` also makes DWARF (line table and one subprogram per function), see `docs/reference/cli.md`.
+- Not yet: DWARF for JIT code, line marks in incremental builds and in `--sandbox` code maps, variables and types.

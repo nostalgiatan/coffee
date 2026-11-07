@@ -1,0 +1,64 @@
+/#/ `-g`: the object carries the line table, and the linked executable has DWARF sections made from it.
+use * in say
+use * in drive
+use * in cstr
+use * in files
+use * in flat
+use * in alias
+use * in nested
+use * in minrt
+use * in static_link
+use fflush in libc of c
+
+/#/ Does `t` have the bytes of `w` in it?
+fn has(t: &Txt, w: &str) => bool:
+    for i in 0..t.n:
+        let k = 0
+        while k < len(w) && i + k < t.n && t.b[i + k] == int(w[k]):
+            k = k + 1
+        if k == len(w):
+            return true
+    return false
+
+fn main() => int:
+    let m = 0
+    let src = "fn sum(n: int) => int:\n    let s = 0\n    for i in 0..n:\n        s = s + i\n    return s\n\nfn main() => int:\n    return sum(4) - 6\n"
+    /#/ the map of the lines: one stretch, file `t.cf`
+    let seg_line = new_buf(int, 2)
+    let seg_src = new_buf(int, 2)
+    let seg_unit = new_buf(int, 2)
+    seg_src[0] = 1
+    let units = txt_of("t.cf\n")
+    let dir = txt_of("/work")
+    set_line_map(&seg_line, &seg_src, &seg_unit, 1, &units, 8, &dir)
+    set_debug()
+    let obj = build_src(src, 1)
+    no_lines()
+    if obj.n == 0 || !has(&obj, ".cf_lines"):
+        say("MISS: no line table in the object\n")
+        m = m + 1
+    let l = new_linker()
+    l.syms = true
+    let mrt = min_rt_text()
+    let rt = build_text(bytes_of_str(&mrt), len(mrt), 1, "")
+    let n1 = txt_of("t.o")
+    let n2 = txt_of("rt.o")
+    l.add_file(&obj, &n1)
+    l.add_file(&rt, &n2)
+    let exe = link_exe(&l)
+    if exe.n == 0:
+        say("MISS: no executable\n")
+        m = m + 1
+    if !has(&exe, ".debug_line") || !has(&exe, ".debug_info") || !has(&exe, ".debug_abbrev") || !has(&exe, "/work") || !has(&exe, "t.cf"):
+        say("MISS: a debug section or name is not in the executable\n")
+        m = m + 1
+    /#/ without -g there are no debug sections
+    let l2 = new_linker()
+    l2.add_file(&obj, &n1)
+    l2.add_file(&rt, &n2)
+    let exe2 = link_exe(&l2)
+    if exe2.n == 0 || has(&exe2, ".debug_line"):
+        say("MISS: debug sections without -g\n")
+        m = m + 1
+    fflush(0)
+    return m

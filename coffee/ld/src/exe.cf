@@ -3,6 +3,7 @@
 /#/ `link_exe` is the whole link once the inputs are added; the result is the bytes of the file,
 /#/ or an empty text after an error was reported.
 use * in link
+use * in dwarf
 
 /#/ where an executable is loaded
 fn exe_base() => int:
@@ -79,9 +80,32 @@ fn add_symbols(l: &Linker, out: &Txt, base: int) => int:
     let n_shs = sh.n
     sh.put(".shstrtab")
     sh.put_byte(0)
+    /#/ the pieces are named as the usual sections are, for tools that look for `.text`
     let n_seg = sh.n
-    sh.put(".seg")
+    sh.put(".text")
     sh.put_byte(0)
+    let n_segro = sh.n
+    sh.put(".rodata")
+    sh.put_byte(0)
+    let n_segrw = sh.n
+    sh.put(".data")
+    sh.put_byte(0)
+    let dab = new_txt()
+    let din = new_txt()
+    let dli = new_txt()
+    let has_dw = build_dwarf(l, base, &dab, &din, &dli)
+    let n_dab = sh.n
+    let n_din = 0
+    let n_dli = 0
+    if has_dw:
+        sh.put(".debug_abbrev")
+        sh.put_byte(0)
+        n_din = sh.n
+        sh.put(".debug_info")
+        sh.put_byte(0)
+        n_dli = sh.n
+        sh.put(".debug_line")
+        sh.put_byte(0)
     put_zeros(out, align_to(out.n, 8) - out.n)
     let off_sym = out.n
     out.put_all(&tab)
@@ -89,6 +113,12 @@ fn add_symbols(l: &Linker, out: &Txt, base: int) => int:
     out.put_all(&strs)
     let off_shs = out.n
     out.put_all(&sh)
+    let off_dab = out.n
+    out.put_all(&dab)
+    let off_din = out.n
+    out.put_all(&din)
+    let off_dli = out.n
+    out.put_all(&dli)
     put_zeros(out, align_to(out.n, 8) - out.n)
     let shoff = out.n
     put_zeros(out, 64)
@@ -98,7 +128,12 @@ fn add_symbols(l: &Linker, out: &Txt, base: int) => int:
             fl = fl | 4
         if l.sg_flags.b[k] & 2 != 0:
             fl = fl | 1
-        put32(out, n_seg)
+        let nmo = n_segro
+        if l.sg_flags.b[k] & 1 != 0:
+            nmo = n_seg
+        elif l.sg_flags.b[k] & 2 != 0:
+            nmo = n_segrw
+        put32(out, nmo)
         put32(out, 1)
         put64(out, fl)
         put64(out, base + l.sg_rva.b[k])
@@ -138,6 +173,31 @@ fn add_symbols(l: &Linker, out: &Txt, base: int) => int:
     put32(out, 0)
     put64(out, 1)
     put64(out, 0)
+    l.nshdr = nseg + 4
+    if has_dw:
+        for q in 0..3:
+            let nmo = n_dab
+            let off = off_dab
+            let sz = dab.n
+            if q == 1:
+                nmo = n_din
+                off = off_din
+                sz = din.n
+            elif q == 2:
+                nmo = n_dli
+                off = off_dli
+                sz = dli.n
+            put32(out, nmo)
+            put32(out, 1)
+            put64(out, 0)
+            put64(out, 0)
+            put64(out, off)
+            put64(out, sz)
+            put32(out, 0)
+            put32(out, 0)
+            put64(out, 1)
+            put64(out, 0)
+        l.nshdr = nseg + 7
     return shoff
 
 fn link_exe(l: &Linker) => Txt:
@@ -171,7 +231,7 @@ fn link_exe(l: &Linker) => Txt:
     let shstr = 0
     if l.syms:
         shoff = add_symbols(l, &out, base)
-        shnum = nseg + 4
+        shnum = l.nshdr
         shstr = nseg + 3
     /#/ the headers, over the start of the first piece
     let h = new_txt()

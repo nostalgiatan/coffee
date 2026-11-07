@@ -1,0 +1,286 @@
+/#/ DWARF for a linked executable: `.debug_abbrev`, `.debug_info` (one unit, a subprogram for each
+/#/ function with lines) and `.debug_line` (one sequence for each function), made from the line tables
+/#/ the compiler left in the objects (`Linker.dbg`: `D dir`, `F function`, `L offset file:line`) and the
+/#/ addresses the link gave the functions. Version 4, so `gdb`, `valgrind` and `perf` read it.
+use * in link
+
+fn dw_uleb(t: &Txt, v: int) => void:
+    let x = v
+    let more = true
+    while more:
+        let b = x & 127
+        x = x >> 7
+        if x != 0:
+            t.put_byte(b | 128)
+        else:
+            t.put_byte(b)
+            more = false
+
+fn dw_sleb(t: &Txt, v: int) => void:
+    let x = v
+    let more = true
+    while more:
+        let b = x & 127
+        x = x >> 7
+        let sign = (b & 64) != 0
+        if (x == 0 && !sign) || (x == 0 - 1 && sign):
+            t.put_byte(b)
+            more = false
+        else:
+            t.put_byte(b | 128)
+
+fn dw_w16(t: &Txt, v: int) => void:
+    for k in 0..2:
+        t.put_byte((v >> (8 * k)) & 255)
+
+fn dw_w32(t: &Txt, v: int) => void:
+    for k in 0..4:
+        t.put_byte((v >> (8 * k)) & 255)
+
+fn dw_w64(t: &Txt, v: int) => void:
+    for k in 0..8:
+        t.put_byte((v >> (8 * k)) & 255)
+
+/#/ The number (from 1) of `name` among the lines of `files`, which gets it when it is new.
+fn dw_file(files: &Txt, name: &Txt) => int:
+    let n = 0
+    let s = 0
+    for i in 0..files.n:
+        if files.b[i] == 10:
+            n = n + 1
+            if i - s == name.n:
+                let same = true
+                for k in 0..name.n:
+                    if files.b[s + k] != name.b[k]:
+                        same = false
+                if same:
+                    return n
+            s = i + 1
+    files.put_all(name)
+    files.put_byte(10)
+    return n + 1
+
+/#/ Makes the three sections; false when no function has lines.
+fn build_dwarf(l: &Linker, base: int, abbrev: &Txt, info: &Txt, line: &Txt) => bool:
+    let t = &l.dbg
+    if t.n == 0:
+        return false
+    let dir = new_txt()
+    let files = new_txt()
+    let prog = new_txt()
+    let kids = new_txt()
+    let lo = 0
+    let hi = 0
+    let nfn = 0
+    /#/ the function being read
+    let live = false
+    let fresh = false
+    let faddr = 0
+    let fsize = 0
+    let cur_addr = 0
+    let cur_line = 1
+    let cur_file = 1
+    let start = 0
+    for i in 0..t.n + 1:
+        if i < t.n && t.b[i] != 10:
+            continue
+        if i > start + 2 && t.b[start + 1] == 32:
+            let c = t.b[start]
+            if c == int('D'):
+                if dir.n == 0:
+                    for k in start + 2..i:
+                        dir.put_byte(t.b[k])
+            elif c == int('F'):
+                if live:
+                    if faddr + fsize > cur_addr:
+                        prog.put_byte(2)
+                        dw_uleb(&prog, faddr + fsize - cur_addr)
+                    prog.put_byte(0)
+                    prog.put_byte(1)
+                    prog.put_byte(1)
+                live = false
+                let w = new_txt()
+                for k in start + 2..i:
+                    w.put_byte(t.b[k])
+                let id = l.find(&w)
+                if id >= 0 && l.g_def.b[id] >= 0:
+                    let sid = l.g_def.b[id]
+                    let f = l.final_sym(sid)
+                    let sec = l.y_sec.b[f]
+                    if sec >= 0 && sec < l.sc_grp.n && l.sc_grp.b[sec] >= 0:
+                        live = true
+                        fresh = true
+                        faddr = l.sym_addr(sid, base)
+                        fsize = l.y_size.b[f]
+                        if nfn == 0 || faddr < lo:
+                            lo = faddr
+                        if faddr + fsize > hi:
+                            hi = faddr + fsize
+                        nfn = nfn + 1
+                        prog.put_byte(0)
+                        prog.put_byte(9)
+                        prog.put_byte(2)
+                        dw_w64(&prog, faddr)
+                        cur_addr = faddr
+                        cur_line = 1
+                        cur_file = 1
+                        kids.put_byte(2)
+                        kids.put_all(&w)
+                        kids.put_byte(0)
+                        dw_w64(&kids, faddr)
+                        dw_w64(&kids, fsize)
+            elif c == int('L') && live:
+                let q = start + 2
+                let off = 0
+                while q < i && t.b[q] != 32:
+                    off = off * 10 + t.b[q] - 48
+                    q = q + 1
+                q = q + 1
+                let colon = i
+                for k in q..i:
+                    if t.b[k] == 58:
+                        colon = k
+                let name = new_txt()
+                for k in q..colon:
+                    name.put_byte(t.b[k])
+                let ln = 0
+                for k in colon + 1..i:
+                    ln = ln * 10 + t.b[k] - 48
+                let fi = dw_file(&files, &name)
+                if fresh && off > 0:
+                    /#/ the start of the function is a row too (the line of its first statement), so that a
+                    /#/ debugger sees the prologue as part of the function
+                    if fi != cur_file:
+                        prog.put_byte(4)
+                        dw_uleb(&prog, fi)
+                        cur_file = fi
+                    prog.put_byte(3)
+                    dw_sleb(&prog, ln - cur_line)
+                    cur_line = ln
+                    prog.put_byte(1)
+                fresh = false
+                if fi != cur_file:
+                    prog.put_byte(4)
+                    dw_uleb(&prog, fi)
+                    cur_file = fi
+                if ln != cur_line:
+                    prog.put_byte(3)
+                    dw_sleb(&prog, ln - cur_line)
+                    cur_line = ln
+                if faddr + off > cur_addr:
+                    prog.put_byte(2)
+                    dw_uleb(&prog, faddr + off - cur_addr)
+                    cur_addr = faddr + off
+                prog.put_byte(1)
+        start = i + 1
+    if live:
+        if faddr + fsize > cur_addr:
+            prog.put_byte(2)
+            dw_uleb(&prog, faddr + fsize - cur_addr)
+        prog.put_byte(0)
+        prog.put_byte(1)
+        prog.put_byte(1)
+    if nfn == 0:
+        return false
+    /#/ .debug_abbrev
+    abbrev.put_byte(1)
+    abbrev.put_byte(17)
+    abbrev.put_byte(1)
+    for p in 0..7:
+        let at = 0
+        let form = 0
+        if p == 0:
+            at = 37
+            form = 8
+        elif p == 1:
+            at = 19
+            form = 11
+        elif p == 2:
+            at = 3
+            form = 8
+        elif p == 3:
+            at = 27
+            form = 8
+        elif p == 4:
+            at = 17
+            form = 1
+        elif p == 5:
+            at = 18
+            form = 7
+        else:
+            at = 16
+            form = 23
+        abbrev.put_byte(at)
+        abbrev.put_byte(form)
+    abbrev.put_byte(0)
+    abbrev.put_byte(0)
+    abbrev.put_byte(2)
+    abbrev.put_byte(46)
+    abbrev.put_byte(0)
+    abbrev.put_byte(3)
+    abbrev.put_byte(8)
+    abbrev.put_byte(17)
+    abbrev.put_byte(1)
+    abbrev.put_byte(18)
+    abbrev.put_byte(7)
+    abbrev.put_byte(63)
+    abbrev.put_byte(25)
+    abbrev.put_byte(0)
+    abbrev.put_byte(0)
+    abbrev.put_byte(0)
+    /#/ .debug_info
+    let cu = new_txt()
+    cu.put_byte(1)
+    cu.put("coffee2")
+    cu.put_byte(0)
+    cu.put_byte(12)
+    let first = 0
+    while first < files.n && files.b[first] != 10:
+        cu.put_byte(files.b[first])
+        first = first + 1
+    cu.put_byte(0)
+    if dir.n == 0:
+        cu.put_byte(46)
+    cu.put_all(&dir)
+    cu.put_byte(0)
+    dw_w64(&cu, lo)
+    dw_w64(&cu, hi - lo)
+    dw_w32(&cu, 0)
+    cu.put_all(&kids)
+    cu.put_byte(0)
+    dw_w32(info, cu.n + 7)
+    dw_w16(info, 4)
+    dw_w32(info, 0)
+    info.put_byte(8)
+    info.put_all(&cu)
+    /#/ .debug_line
+    let hdr = new_txt()
+    hdr.put_byte(1)
+    hdr.put_byte(1)
+    hdr.put_byte(1)
+    hdr.put_byte(251)
+    hdr.put_byte(14)
+    hdr.put_byte(13)
+    for k in 0..12:
+        let n = 0
+        if k == 1 || k == 2 || k == 3 || k == 4 || k == 8 || k == 11:
+            n = 1
+        hdr.put_byte(n)
+    hdr.put_byte(0)
+    let s = 0
+    for i in 0..files.n:
+        if files.b[i] == 10:
+            for k in s..i:
+                hdr.put_byte(files.b[k])
+            hdr.put_byte(0)
+            hdr.put_byte(0)
+            hdr.put_byte(0)
+            hdr.put_byte(0)
+            s = i + 1
+    hdr.put_byte(0)
+    dw_w32(line, 2 + 4 + hdr.n + prog.n)
+    dw_w16(line, 4)
+    dw_w32(line, hdr.n)
+    line.put_all(&hdr)
+    line.put_all(&prog)
+    return true

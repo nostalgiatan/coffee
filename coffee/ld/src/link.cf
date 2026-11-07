@@ -105,6 +105,10 @@ class Linker:
     quiet: bool
     /#/ keep the names of functions and data in the file (a symbol table for debuggers)
     syms: bool
+    /#/ the line tables of the objects (`.cf_lines`), for the debug sections of an executable made with `syms`
+    dbg: Txt
+    /#/ how many section headers `add_symbols` wrote
+    nshdr: int
     live: buf<int>
 
     fn err(self, what: &str, who: &Txt) => void:
@@ -241,6 +245,16 @@ class Linker:
             self.sc_rva.push(0)
             if ty == 2:
                 symtab = i
+        /#/ the line table, a section called `.cf_lines`
+        let shs = rd16(b, off + 62)
+        if self.syms && shs > 0 && shs < shnum:
+            let names = self.sc_off.b[sec0 + shs]
+            for i in 0..shnum:
+                let w = cstr_at(b, names + rd32(b, shoff + 64 * i))
+                if w.n == 9 && w.is(".cf_lines"):
+                    let from = self.sc_off.b[sec0 + i]
+                    for q in 0..self.sc_size.b[sec0 + i]:
+                        self.dbg.put_byte(b.b[from + q])
         if symtab < 0:
             return
         /#/ the symbols
@@ -700,4 +714,4 @@ class Linker:
         return 1
 
 fn new_linker() => Linker:
-    return Linker { blob: new_txt(), errs: 0, nin: 0, in_sec0: new_col(), in_sym0: new_col(), sc_type: new_col(), sc_flags: new_col(), sc_off: new_col(), sc_size: new_col(), sc_align: new_col(), sc_grp: new_col(), sc_goff: new_col(), sc_rva: new_col(), y_sec: new_col(), y_val: new_col(), y_size: new_col(), y_bind: new_col(), y_type: new_col(), y_nm: new_col(), y_rva: new_col(), y_got: new_col(), r_sec: new_col(), r_off: new_col(), r_type: new_col(), r_sym: new_col(), r_add: new_col(), pool: new_txt(), nm_off: new_col(), ht: new_buf(int, 64), g_def: new_col(), g_how: new_col(), g_need: new_col(), pulled: new_col(), gsize: new_buf(int, 4), galign: new_buf(int, 4), gbase: new_buf(int, 4), ngot: 0, got_rva: 0, sg_off: new_col(), sg_rva: new_col(), sg_fsz: new_col(), sg_msz: new_col(), sg_flags: new_col(), image_size: 0, gc_on: false, quiet: false, syms: false, live: new_buf(int, 1) }
+    return Linker { blob: new_txt(), errs: 0, nin: 0, in_sec0: new_col(), in_sym0: new_col(), sc_type: new_col(), sc_flags: new_col(), sc_off: new_col(), sc_size: new_col(), sc_align: new_col(), sc_grp: new_col(), sc_goff: new_col(), sc_rva: new_col(), y_sec: new_col(), y_val: new_col(), y_size: new_col(), y_bind: new_col(), y_type: new_col(), y_nm: new_col(), y_rva: new_col(), y_got: new_col(), r_sec: new_col(), r_off: new_col(), r_type: new_col(), r_sym: new_col(), r_add: new_col(), pool: new_txt(), nm_off: new_col(), ht: new_buf(int, 64), g_def: new_col(), g_how: new_col(), g_need: new_col(), pulled: new_col(), gsize: new_buf(int, 4), galign: new_buf(int, 4), gbase: new_buf(int, 4), ngot: 0, got_rva: 0, sg_off: new_col(), sg_rva: new_col(), sg_fsz: new_col(), sg_msz: new_col(), sg_flags: new_col(), image_size: 0, gc_on: false, quiet: false, syms: false, dbg: new_txt(), nshdr: 0, live: new_buf(int, 1) }
