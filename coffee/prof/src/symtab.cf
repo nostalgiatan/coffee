@@ -1,0 +1,295 @@
+/#/ Function symbols and source lines for `cfprof`: from the ELF symbol table of the program, from
+/#/ `/tmp/perf-PID.map` (JIT code), and from a line table (`F name`, `L offset file:line`).
+use * in files
+use * in txt
+use * in names
+
+class Symtab:
+    addr: buf<int>
+    size: buf<int>
+    nm: buf<int>
+    pool: Txt
+    n: int
+    /#/ symbols 0..ne come from the ELF file (addresses without `base`), the rest are absolute
+    ne: int
+    base: int
+    dyn: bool
+    exe: Txt
+    /#/ line tables: function name offsets in `lpool`, first row, row count; rows: offset, place
+    lf_nm: buf<int>
+    lf_first: buf<int>
+    lf_cnt: buf<int>
+    lf_n: int
+    r_off: buf<int>
+    r_place: buf<int>
+    r_n: int
+    lpool: Txt
+    places: Names
+    /#/ for each symbol, the line table function (-2: not looked up, -1: none)
+    sym_lf: buf<int>
+
+    fn add(self, a: int, sz: int, w: &Txt) => void:
+        if self.n >= len(self.addr):
+            let cap = (self.n + 1) * 2
+            self.addr = buf_resize(self.addr, cap)
+            self.size = buf_resize(self.size, cap)
+            self.nm = buf_resize(self.nm, cap)
+        self.addr[self.n] = a
+        self.size[self.n] = sz
+        self.nm[self.n] = self.pool.n
+        self.pool.put_all(w)
+        self.pool.put_byte(0)
+        self.n = self.n + 1
+
+    /#/ Orders symbols `lo..hi` by address (shell sort).
+    fn sort_range(self, lo: int, hi: int) => void:
+        let gap = (hi - lo) // 2
+        while gap > 0:
+            for i in lo + gap..hi:
+                let a = self.addr[i]
+                let s = self.size[i]
+                let m = self.nm[i]
+                let j = i
+                while j >= lo + gap && self.addr[j - gap] > a:
+                    self.addr[j] = self.addr[j - gap]
+                    self.size[j] = self.size[j - gap]
+                    self.nm[j] = self.nm[j - gap]
+                    j = j - gap
+                self.addr[j] = a
+                self.size[j] = s
+                self.nm[j] = m
+            gap = gap // 2
+
+    fn rd(self, t: &Txt, at: int, n: int) => int:
+        let v = 0
+        for k in 0..n:
+            v = v | (t.b[at + k] << (8 * k))
+        return v
+
+    /#/ The function symbols of the ELF file `path`.
+    fn load_elf(self, path: &Txt) => void:
+        let t = read_file(path)
+        self.exe = new_txt()
+        self.exe.put_all(path)
+        if t.n < 64 || t.b[0] != 127 || t.b[4] != 2:
+            return
+        self.dyn = self.rd(&t, 16, 2) == 3
+        let shoff = self.rd(&t, 40, 8)
+        let shnum = self.rd(&t, 60, 2)
+        for s in 0..shnum:
+            let sh = shoff + s * 64
+            if self.rd(&t, sh + 4, 4) != 2:
+                continue
+            let off = self.rd(&t, sh + 24, 8)
+            let size = self.rd(&t, sh + 32, 8)
+            let strsec = shoff + self.rd(&t, sh + 40, 4) * 64
+            let stroff = self.rd(&t, strsec + 24, 8)
+            for q in 0..size // 24:
+                let e = off + q * 24
+                if (self.rd(&t, e + 4, 1) & 15) == 2 && self.rd(&t, e + 6, 2) != 0:
+                    let w = new_txt()
+                    let p = stroff + self.rd(&t, e, 4)
+                    while t.b[p] != 0:
+                        w.put_byte(t.b[p])
+                        p = p + 1
+                    self.add(self.rd(&t, e + 8, 8), self.rd(&t, e + 16, 8), &w)
+        self.ne = self.n
+        self.sort_range(0, self.ne)
+
+    /#/ `/tmp/perf-PID.map`: `hex_address hex_size name` lines.
+    fn load_perf_map(self, path: &Txt) => void:
+        let t = read_file(path)
+        if t.n <= 0:
+            return
+        let start = 0
+        for i in 0..t.n + 1:
+            if i < t.n && t.b[i] != 10:
+                continue
+            let a = 0
+            let k = start
+            while k < i && t.b[k] != 32:
+                a = a * 16 + hex_digit(t.b[k])
+                k = k + 1
+            let sz = 0
+            k = k + 1
+            while k < i && t.b[k] != 32:
+                sz = sz * 16 + hex_digit(t.b[k])
+                k = k + 1
+            k = k + 1
+            let w = new_txt()
+            while k < i:
+                w.put_byte(t.b[k])
+                k = k + 1
+            if w.n > 0:
+                self.add(a, sz, &w)
+            start = i + 1
+        self.sort_range(self.ne, self.n)
+
+    /#/ The load address of a position independent program: the first line of `/proc/PID/maps` that names it.
+    fn set_base_from_maps(self, pid: int) => void:
+        if !self.dyn:
+            return
+        let p = txt_of("/proc/")
+        p.put_int(pid)
+        p.put("/maps")
+        let t = read_file(&p)
+        let name = new_txt()
+        for i in 0..self.exe.n:
+            if self.exe.b[i] == 47:
+                name.clear()
+            else:
+                name.put_byte(self.exe.b[i])
+        let start = 0
+        for i in 0..t.n + 1:
+            if i < t.n && t.b[i] != 10:
+                continue
+            if i - start > name.n + 1:
+                let ok = t.b[i - name.n - 1] == 47
+                for k in 0..name.n:
+                    if ok && t.b[i - name.n + k] != name.b[k]:
+                        ok = false
+                if ok:
+                    let a = 0
+                    let k = start
+                    while k < i && t.b[k] != 45:
+                        a = a * 16 + hex_digit(t.b[k])
+                        k = k + 1
+                    self.base = a
+                    return
+            start = i + 1
+
+    /#/ The symbol that holds `pc`, -1 when none does.
+    fn find(self, pc: int) => int:
+        let r = self.find_in(0, self.ne, pc - self.base)
+        if r >= 0:
+            return r
+        return self.find_in(self.ne, self.n, pc)
+
+    fn find_in(self, lo: int, hi: int, pc: int) => int:
+        let a = lo
+        let b = hi
+        while a < b:
+            let mid = (a + b) // 2
+            if self.addr[mid] <= pc:
+                a = mid + 1
+            else:
+                b = mid
+        let k = a - 1
+        if k < lo:
+            return 0 - 1
+        let size = self.size[k]
+        if size == 0:
+            size = 1
+        if pc < self.addr[k] + size:
+            return k
+        return 0 - 1
+
+    /#/ The offset of `pc` in its function, -1 when it is in none.
+    fn offset_in_fn(self, pc: int) => int:
+        let k = self.find(pc)
+        if k < 0:
+            return 0 - 1
+        if k < self.ne:
+            return pc - self.base - self.addr[k]
+        return pc - self.addr[k]
+
+    fn name_to(self, k: int, out: &Txt) => void:
+        if k < 0:
+            out.put("[unknown]")
+            return
+        let p = self.nm[k]
+        while self.pool.b[p] != 0:
+            out.put_byte(self.pool.b[p])
+            p = p + 1
+
+    /#/ A line table: `D dir` lines are ignored, `F name` starts a function, `L offset place` a row.
+    fn load_lines(self, path: &Txt) => void:
+        let t = read_file(path)
+        if t.n <= 0:
+            return
+        let start = 0
+        for i in 0..t.n + 1:
+            if i < t.n && t.b[i] != 10:
+                continue
+            if i > start + 2 && t.b[start + 1] == 32:
+                let c = t.b[start]
+                if c == int('F'):
+                    if self.lf_n >= len(self.lf_nm):
+                        let cap = (self.lf_n + 1) * 2
+                        self.lf_nm = buf_resize(self.lf_nm, cap)
+                        self.lf_first = buf_resize(self.lf_first, cap)
+                        self.lf_cnt = buf_resize(self.lf_cnt, cap)
+                    self.lf_nm[self.lf_n] = self.lpool.n
+                    for k in start + 2..i:
+                        self.lpool.put_byte(t.b[k])
+                    self.lpool.put_byte(0)
+                    self.lf_first[self.lf_n] = self.r_n
+                    self.lf_cnt[self.lf_n] = 0
+                    self.lf_n = self.lf_n + 1
+                elif c == int('L') && self.lf_n > 0:
+                    let k = start + 2
+                    let off = 0
+                    while k < i && t.b[k] != 32:
+                        off = off * 10 + t.b[k] - 48
+                        k = k + 1
+                    let w = new_txt()
+                    for q in k + 1..i:
+                        w.put_byte(t.b[q])
+                    if self.r_n >= len(self.r_off):
+                        let cap = (self.r_n + 1) * 2
+                        self.r_off = buf_resize(self.r_off, cap)
+                        self.r_place = buf_resize(self.r_place, cap)
+                    self.r_off[self.r_n] = off
+                    self.r_place[self.r_n] = self.places.intern(&w)
+                    self.r_n = self.r_n + 1
+                    self.lf_cnt[self.lf_n - 1] = self.lf_cnt[self.lf_n - 1] + 1
+            start = i + 1
+
+    /#/ The line table function named like symbol `k`, -1 when there is none.
+    fn lf_of(self, k: int) => int:
+        if len(self.sym_lf) < self.n + 1:
+            self.sym_lf = new_buf(int, self.n + 1)
+            for j in 0..self.n + 1:
+                self.sym_lf[j] = 0 - 2
+        if self.sym_lf[k] != 0 - 2:
+            return self.sym_lf[k]
+        let found = 0 - 1
+        for f in 0..self.lf_n:
+            let a = self.lf_nm[f]
+            let b = self.nm[k]
+            while self.lpool.b[a] != 0 && self.lpool.b[a] == self.pool.b[b]:
+                a = a + 1
+                b = b + 1
+            if self.lpool.b[a] == 0 && self.pool.b[b] == 0:
+                found = f
+                break
+        self.sym_lf[k] = found
+        return found
+
+    /#/ The place (an id of `places`) of `pc` in symbol `k`, -1 when the line table has none.
+    fn place_of(self, k: int, pc: int) => int:
+        if k < 0 || self.lf_n == 0:
+            return 0 - 1
+        let f = self.lf_of(k)
+        if f < 0:
+            return 0 - 1
+        let off = pc - self.addr[k]
+        if k < self.ne:
+            off = pc - self.base - self.addr[k]
+        let best = 0 - 1
+        for r in self.lf_first[f]..self.lf_first[f] + self.lf_cnt[f]:
+            if self.r_off[r] <= off:
+                best = self.r_place[r]
+        return best
+
+fn hex_digit(c: int) => int:
+    if c >= 48 && c <= 57:
+        return c - 48
+    if c >= 97 && c <= 102:
+        return c - 87
+    if c >= 65 && c <= 70:
+        return c - 55
+    return 0
+
+fn new_symtab() => Symtab:
+    return Symtab { addr: new_buf(int, 64), size: new_buf(int, 64), nm: new_buf(int, 64), pool: new_txt(), n: 0, ne: 0, base: 0, dyn: false, exe: new_txt(), lf_nm: new_buf(int, 16), lf_first: new_buf(int, 16), lf_cnt: new_buf(int, 16), lf_n: 0, r_off: new_buf(int, 64), r_place: new_buf(int, 64), r_n: 0, lpool: new_txt(), places: new_names(), sym_lf: new_buf(int, 1) }

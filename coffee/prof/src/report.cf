@@ -1,0 +1,191 @@
+/#/ The numbers `cfprof` prints, from the samples and the symbols.
+use * in files
+use * in txt
+use * in say
+use * in cstr
+use * in symtab
+
+/#/ `v` (1/1000 units) as `12.3`, in a field of width `w`.
+fn put_pct(out: &Txt, count: int, total: int, w: int) => void:
+    let p = 0
+    if total > 0:
+        p = count * 1000 // total
+    let t = new_txt()
+    t.put_int(p // 10)
+    t.put_byte(46)
+    t.put_int(p % 10)
+    for k in t.n..w:
+        out.put_byte(32)
+    out.put_all(&t)
+
+fn put_num(out: &Txt, v: int, w: int) => void:
+    let t = new_txt()
+    t.put_int(v)
+    for k in t.n..w:
+        out.put_byte(32)
+    out.put_all(&t)
+
+/#/ The index of the largest value of `c` below `n` that is not taken (`-1` when all are zero).
+fn argmax(c: &buf<int>, n: int) => int:
+    let best = 0 - 1
+    let bv = 0
+    for i in 0..n:
+        if c[i] > bv:
+            bv = c[i]
+            best = i
+    return best
+
+fn print_report(s: &Samples, st: &Symtab, top: int, hz: int, ms: int) => void:
+    let nsym = st.n + 1
+    let self_c: buf<int> = new_buf(int, nsym + 1)
+    let incl_c: buf<int> = new_buf(int, nsym + 1)
+    let seen: buf<int> = new_buf(int, nsym + 1)
+    let nplace = st.places.cnt + 1
+    let line_c: buf<int> = new_buf(int, nplace + 1)
+    let at = 0
+    let k = 0
+    while at < s.n:
+        let nf = s.d[at]
+        k = k + 1
+        for f in 0..nf:
+            let pc = s.d[at + 1 + f]
+            let sym = st.find(pc)
+            if sym < 0:
+                sym = st.n
+            if f == 0:
+                self_c[sym] = self_c[sym] + 1
+                let pl = st.place_of(sym, pc)
+                if pl >= 0:
+                    line_c[pl] = line_c[pl] + 1
+            if seen[sym] != k:
+                seen[sym] = k
+                incl_c[sym] = incl_c[sym] + 1
+        at = at + nf + 1
+    /#/ the callers of the functions with the most self time (the frame after the first that is another function)
+    let kmax = 6
+    if top < kmax:
+        kmax = top
+    let hot: buf<int> = new_buf(int, kmax + 1)
+    let tmp: buf<int> = new_buf(int, nsym + 1)
+    for q in 0..nsym:
+        tmp[q] = self_c[q]
+    let nhot = 0
+    for r in 0..kmax:
+        let b = argmax(&tmp, nsym)
+        if b < 0:
+            break
+        hot[nhot] = b
+        nhot = nhot + 1
+        tmp[b] = 0
+    let edges: buf<int> = new_buf(int, (nhot + 1) * nsym + 1)
+    at = 0
+    while at < s.n:
+        let nf = s.d[at]
+        let sym0 = st.find(s.d[at + 1])
+        if sym0 < 0:
+            sym0 = st.n
+        for h in 0..nhot:
+            if hot[h] == sym0:
+                let f = 1
+                while f < nf:
+                    let c = st.find(s.d[at + 1 + f])
+                    if c < 0:
+                        c = st.n
+                    if c != sym0:
+                        edges[h * nsym + c] = edges[h * nsym + c] + 1
+                        break
+                    f = f + 1
+        at = at + nf + 1
+    let out = new_txt()
+    out.put("cfprof: ")
+    out.put_int(s.count)
+    out.put(" samples at ")
+    out.put_int(hz)
+    out.put(" Hz, ")
+    out.put_int(ms)
+    out.put(" ms\n\n")
+    out.put("  self%  incl%  samples  function\n")
+    for r in 0..top:
+        let b = argmax(&self_c, nsym)
+        if b < 0:
+            break
+        put_pct(&out, self_c[b], s.count, 7)
+        put_pct(&out, incl_c[b], s.count, 7)
+        put_num(&out, self_c[b], 9)
+        out.put("  ")
+        if b == st.n:
+            out.put("[unknown]")
+        else:
+            st.name_to(b, &out)
+        out.put_byte(10)
+        self_c[b] = 0
+    /#/ by self% only the first `top` were taken; the inclusive ones that matter follow
+    out.put("\n  incl%  samples  function (by inclusive time)\n")
+    for r in 0..top:
+        let b = argmax(&incl_c, nsym)
+        if b < 0:
+            break
+        put_pct(&out, incl_c[b], s.count, 7)
+        put_num(&out, incl_c[b], 9)
+        out.put("  ")
+        if b == st.n:
+            out.put("[unknown]")
+        else:
+            st.name_to(b, &out)
+        out.put_byte(10)
+        incl_c[b] = 0
+    out.put("\n  called from (the functions with the most self time)\n")
+    for h in 0..nhot:
+        out.put("  ")
+        if hot[h] == st.n:
+            out.put("[unknown]")
+        else:
+            st.name_to(hot[h], &out)
+        out.put(" <-")
+        let row: buf<int> = new_buf(int, nsym + 1)
+        for q in 0..nsym:
+            row[q] = edges[h * nsym + q]
+        for r in 0..3:
+            let b = argmax(&row, nsym)
+            if b < 0:
+                break
+            out.put_byte(32)
+            if b == st.n:
+                out.put("[unknown]")
+            else:
+                st.name_to(b, &out)
+            out.put(" (")
+            put_pct(&out, row[b], s.count, 0)
+            out.put("%)")
+            row[b] = 0
+        out.put_byte(10)
+    if st.lf_n > 0:
+        out.put("\n  self%  samples  line\n")
+        for r in 0..top:
+            let b = argmax(&line_c, nplace)
+            if b < 0:
+                break
+            put_pct(&out, line_c[b], s.count, 7)
+            put_num(&out, line_c[b], 9)
+            out.put("  ")
+            st.places.put(&out, b)
+            out.put_byte(10)
+            line_c[b] = 0
+    say(txt_str(&out))
+
+/#/ Folded stacks (`a;b;c count`, outermost first), the input of flamegraph.pl and speedscope.
+fn write_folded(s: &Samples, st: &Symtab, path: &Txt) => void:
+    let out = new_txt()
+    let at = 0
+    while at < s.n:
+        let nf = s.d[at]
+        let f = nf - 1
+        while f >= 0:
+            let sym = st.find(s.d[at + 1 + f])
+            st.name_to(sym, &out)
+            if f > 0:
+                out.put_byte(59)
+            f = f - 1
+        out.put(" 1\n")
+        at = at + nf + 1
+    write_file(path, &out)

@@ -1,0 +1,73 @@
+/#/ The performance tools: `--stats`, `--lint-perf` and the sampling profiler `cfprof`.
+use * in say
+use * in drive
+use * in cstr
+use * in files
+use * in flat
+use * in alias
+use * in nested
+use * in minrt
+use * in static_link
+use system, fflush in libc of c
+
+fn has(t: &Txt, w: &str) => bool:
+    for i in 0..t.n:
+        let k = 0
+        while k < len(w) && i + k < t.n && t.b[i + k] == int(w[k]):
+            k = k + 1
+        if k == len(w):
+            return true
+    return false
+
+fn main() => int:
+    let m = 0
+    system("rm -rf perft && mkdir perft")
+    let lsrc = "fn work(a: int, d: int) => int:\n    let t = 0\n    let unused = 5\n    for i in 0..a:\n        t = t + i // d\n        let z = i + 0\n        t = t + z * 1\n    return t\n\nfn alloc_loop(n: int) => int:\n    let t = 0\n    for i in 0..n:\n        let s = \"ab\" + \"cd\"\n        t = t + len(s)\n    return t\n\nfn main() => int:\n    return work(10, 3) + alloc_loop(3) - 18\n"
+    let lp = txt_of("perft/lint.cf")
+    let lt = txt_of(&lsrc)
+    write_file(&lp, &lt)
+    if system("cd perft && coffee2 lint.cf --lint-perf --stats -O0 -o lint > out.log 2>&1") != 0:
+        say("MISS: lint build\n")
+        return 1
+    let op = txt_of("perft/out.log")
+    let out = read_file(&op)
+    if !has(&out, "lint.cf:5: perf: in 'work': division by a value that does not change in the loop"):
+        say("MISS: the division in the loop is not found\n")
+        m = m + 1
+    if !has(&out, "lint.cf:13: perf: in 'alloc_loop': allocation call inside a loop"):
+        say("MISS: the allocation in the loop is not found\n")
+        m = m + 1
+    if !has(&out, "function") || !has(&out, "total of 3 functions") || !has(&out, "alloc_loop"):
+        say("MISS: the table of --stats\n")
+        m = m + 1
+    /#/ the sampling profiler (it needs ptrace; where that is not allowed it is skipped)
+    if system("command -v cfprof > /dev/null 2>&1") == 0:
+        let hsrc = "fn inner(n: int) => int:\n    let s = 0\n    for i in 0..n:\n        s = s + i * 3 % 7\n    return s\n\nfn outer(k: int) => int:\n    let t = 0\n    for j in 0..k:\n        t = t + inner(2000000)\n    return t\n\nfn cold(x: int) => int:\n    return x + 1\n\nfn main() => int:\n    let r = outer(300)\n    let c = cold(r)\n    if c > 0:\n        return 0\n    return 1\n"
+        let hp = txt_of("perft/h.cf")
+        let ht = txt_of(&hsrc)
+        write_file(&hp, &ht)
+        if system("cd perft && coffee2 h.cf --static -g -O1 --lines h.lines -o h > build2.log 2>&1") != 0:
+            say("MISS: profile target build\n")
+            return m + 1
+        if system("cd perft && cfprof --lines h.lines --top 5 --folded h.folded -- ./h > prof.log 2>&1") == 0:
+            let pp = txt_of("perft/prof.log")
+            let prof = read_file(&pp)
+            if has(&prof, "cfprof: cannot start"):
+                fflush(0)
+                return m
+            if !has(&prof, "100.0") && !has(&prof, "99.") && !has(&prof, "98.") && !has(&prof, "97.") && !has(&prof, "96."):
+                say("MISS: the hot function has no share\n")
+                m = m + 1
+            if !has(&prof, "inner") || !has(&prof, "h.cf:4") || !has(&prof, "called from"):
+                say("MISS: function, line or callers missing from the profile\n")
+                m = m + 1
+            let fp = txt_of("perft/h.folded")
+            let folded = read_file(&fp)
+            if !has(&folded, "main;outer;inner") && !has(&folded, "outer;inner"):
+                say("MISS: folded stacks\n")
+                m = m + 1
+        else:
+            say("MISS: cfprof failed\n")
+            m = m + 1
+    fflush(0)
+    return m

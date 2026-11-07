@@ -2063,6 +2063,9 @@ class Gen:
             if self.xhome[c] >= 0:
                 self.ld(0, f, c)
                 self.a.movq_x(self.xhome[c], 0, f.rep[c] == int(Rp.F32))
+            elif self.home[c] >= 0:
+                /#/ a constant that only a store or a call argument reads got a general register
+                self.ld(self.home[c], f, c)
         self.mk_n = 0
         let last_ln = 0
         for oi in 0..f.nb:

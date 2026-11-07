@@ -1,0 +1,316 @@
+/#/ Facts about the code made for each function, for finding what is slow or pointless: `--stats` (a
+/#/ table of the size, the loads and stores, the calls, the spilled values of each function) and
+/#/ `--lint-perf` (findings with a place: allocation in a loop, a division by a loop-invariant value,
+/#/ a store nobody reads, a load of the same address twice, arithmetic that does nothing, a block
+/#/ that is allocated and only freed, many values in the frame).
+use * in fun
+use * in names
+use * in gen
+use * in op
+
+let stats_on = false
+let lint_on = false
+let lint_txt = new_txt()
+
+/#/ one row per function: name, then the numbers
+class FnStats:
+    nm: Txt
+    nm_at: buf<int>
+    v: buf<int>
+    n: int
+
+/#/ columns of `FnStats.v`
+fn st_cols() => int:
+    return 13
+
+let fstats = new_fnstats()
+
+fn new_fnstats() => FnStats:
+    return FnStats { nm: new_txt(), nm_at: new_buf(int, 64), v: new_buf(int, 64 * 13), n: 0 }
+
+fn set_stats() => void:
+    stats_on = true
+
+fn set_lint_perf() => void:
+    lint_on = true
+
+/#/ The runtime that is linked in after the program is not scanned.
+fn no_perf() => void:
+    stats_on = false
+    lint_on = false
+
+/#/ the place of a line of the flattened text: `file:line` when the driver gave the map
+fn put_place(out: &Txt, ln: int) => void:
+    if ln <= 0:
+        out.put("?")
+        return
+    let sg = dbg_seg_of(ln)
+    if sg < 0 || dbg_nseg == 0:
+        out.put("line ")
+        out.put_int(ln)
+        return
+    put_unit_name(out, dbg_seg_unit[sg])
+    out.put_byte(58)
+    out.put_int(dbg_seg_src[sg] + (ln - 1 - dbg_seg_line[sg]))
+
+/#/ the last finding, so that the same one is not made twice
+let last_finding = new_txt()
+
+fn finding(f: &Fun, i: int, fname: &Txt, code: &str, msg: &str) => void:
+    let t = new_txt()
+    put_place(&t, f.ln[i])
+    t.put(": ")
+    t.put(code)
+    t.put(": in '")
+    t.put_all(fname)
+    t.put("': ")
+    t.put(msg)
+    t.put_byte(10)
+    if t.same(&last_finding):
+        return
+    last_finding = t
+    lint_txt.put_all(&last_finding)
+
+fn is_call(op: int) => bool:
+    return op == int(Op.Call) || op == int(Op.CCall) || op == int(Op.CallI)
+
+/#/ The name of the callee of call `i` (empty for an indirect call).
+fn callee_name(f: &Fun, names: &Names, i: int) => Txt:
+    let w = new_txt()
+    if f.op[i] == int(Op.Call) || f.op[i] == int(Op.CCall):
+        names.put(&w, f.aux[i])
+    return w
+
+/#/ Marks the operands of instruction `i` as escaping uses in `esc` (by value number).
+fn mark_operands(f: &Fun, i: int, esc: &buf<int>) => void:
+    let op = f.op[i]
+    if op == int(Op.Br) || op == int(Op.Unreachable) || op == int(Op.Const) || op == int(Op.Param) || op == int(Op.Slot) || op == int(Op.Alloc):
+        return
+    if op == int(Op.Load):
+        return
+    if op == int(Op.Store):
+        let v = f.follow(f.b[i])
+        if v >= 0:
+            esc[v] = esc[v] + 1
+        return
+    if is_call(op):
+        for k in 0..f.b[i]:
+            let v = f.follow(f.pool[f.a[i] + k])
+            if v >= 0:
+                esc[v] = esc[v] + 1
+        if op == int(Op.CallI) && f.c[i] >= 0:
+            let v = f.follow(f.c[i])
+            esc[v] = esc[v] + 1
+        return
+    if op == int(Op.CondBr):
+        return
+    if op == int(Op.Free) || op == int(Op.Drop):
+        return
+    if f.a[i] >= 0:
+        let v = f.follow(f.a[i])
+        if v >= 0:
+            esc[v] = esc[v] + 1
+    if f.b[i] >= 0:
+        let v = f.follow(f.b[i])
+        if v >= 0:
+            esc[v] = esc[v] + 1
+    if f.c[i] >= 0:
+        let v = f.follow(f.c[i])
+        if v >= 0:
+            esc[v] = esc[v] + 1
+
+/#/ Looks at the function `f` (named `fname`) and the code the generator made for it: `code` bytes,
+/#/ `spills` values in the frame, `nsaved` registers saved, a `frame` of that many bytes.
+fn scan_fun(f: &Fun, names: &Names, fname: &Txt, code: int, spills: int, nsaved: int, frame: int) => void:
+    /#/ the loops: a back edge goes to a block that was made before the one it leaves
+    let depth: buf<int> = new_buf(int, f.nb + 1)
+    let lhead: buf<int> = new_buf(int, f.nb + 1)
+    let nloops = 0
+    for e in 0..f.ne:
+        let from = f.efrom[e]
+        let to = f.eto[e]
+        if from >= 0 && to >= 0 && to <= from && from < f.nb:
+            nloops = nloops + 1
+            for b in to..from + 1:
+                depth[b] = depth[b] + 1
+                lhead[b] = to
+    let esc: buf<int> = new_buf(int, f.ni + 1)
+    let reads: buf<int> = new_buf(int, f.ni + 1)
+    let writes: buf<int> = new_buf(int, f.ni + 1)
+    let last_store: buf<int> = new_buf(int, f.ni + 1)
+    let frees: buf<int> = new_buf(int, f.ni + 1)
+    for e in 0..f.ne:
+        if f.efrom[e] >= 0:
+            for k in 0..f.eargn[e]:
+                let v = f.follow(f.pool[f.eargs[e] + k])
+                if v >= 0:
+                    esc[v] = esc[v] + 1
+    let ninstr = 0
+    let nloads = 0
+    let nstores = 0
+    let ncalls = 0
+    let nallocs = 0
+    let ntraps = 0
+    for b in 0..f.nb:
+        let i = f.bfirst[b]
+        while i >= 0:
+            ninstr = ninstr + 1
+            let op = f.op[i]
+            if op == int(Op.Load):
+                nloads = nloads + 1
+                let p = f.follow(f.a[i])
+                if p >= 0 && f.op[p] == int(Op.Slot):
+                    reads[p] = reads[p] + 1
+            elif op == int(Op.Store):
+                nstores = nstores + 1
+                let p = f.follow(f.a[i])
+                if p >= 0 && f.op[p] == int(Op.Slot):
+                    writes[p] = writes[p] + 1
+                    last_store[p] = i
+            elif is_call(op):
+                ncalls = ncalls + 1
+            elif op == int(Op.Alloc) || op == int(Op.Clone):
+                nallocs = nallocs + 1
+            elif op == int(Op.Unreachable):
+                ntraps = ntraps + 1
+            if op == int(Op.Free) || op == int(Op.Drop):
+                let p = f.follow(f.a[i])
+                if p >= 0:
+                    frees[p] = frees[p] + 1
+            mark_operands(f, i, &esc)
+            i = f.nx[i]
+    if stats_on:
+        let r = fstats.n
+        if r >= len(fstats.nm_at):
+            fstats.nm_at = buf_resize(fstats.nm_at, (r + 1) * 2)
+            fstats.v = buf_resize(fstats.v, (r + 1) * 2 * st_cols())
+        fstats.nm_at[r] = fstats.nm.n
+        fstats.nm.put_all(fname)
+        fstats.nm.put_byte(0)
+        let base = r * st_cols()
+        fstats.v[base] = code
+        fstats.v[base + 1] = ninstr
+        fstats.v[base + 2] = f.nb
+        fstats.v[base + 3] = nloops
+        fstats.v[base + 4] = nloads
+        fstats.v[base + 5] = nstores
+        fstats.v[base + 6] = ncalls
+        fstats.v[base + 7] = nallocs
+        fstats.v[base + 8] = ntraps
+        fstats.v[base + 9] = spills
+        fstats.v[base + 10] = nsaved
+        fstats.v[base + 11] = frame
+        fstats.v[base + 12] = 0
+        fstats.n = r + 1
+    if !lint_on:
+        return
+    let alloc_ln = 0 - 1
+    for b in 0..f.nb:
+        let i = f.bfirst[b]
+        let seen_ptr: buf<int> = new_buf(int, 8)
+        let seen_n = 0
+        while i >= 0:
+            let op = f.op[i]
+            if depth[b] > 0:
+                if op == int(Op.Alloc) || op == int(Op.Clone):
+                    finding(f, i, fname, "perf", "heap allocation inside a loop; allocate once outside it")
+                elif op == int(Op.Call) || op == int(Op.CCall):
+                    let cn = callee_name(f, names, i)
+                    if cn.is("malloc") || cn.is("calloc") || cn.is("strdup") || cn.is("realloc"):
+                        alloc_ln = f.ln[i]
+                        finding(f, i, fname, "perf", "allocation call inside a loop; allocate once outside it")
+                    elif cn.is("memcpy") && f.ln[i] != alloc_ln:
+                        finding(f, i, fname, "perf", "memcpy inside a loop; a copy per iteration (a string or an aggregate copied again and again)")
+                elif op == int(Op.SDiv) || op == int(Op.UDiv) || op == int(Op.SRem) || op == int(Op.URem) || op == int(Op.FDiv):
+                    let d = f.follow(f.b[i])
+                    if d >= 0 && !f.is_const(d) && f.op[d] != int(Op.Const) && f.blk[d] < lhead[b]:
+                        finding(f, i, fname, "perf", "division by a value that does not change in the loop; hoist the division (a reciprocal, or a shift for a power of two)")
+            /#/ arithmetic that does nothing
+            if op == int(Op.Add) || op == int(Op.Sub) || op == int(Op.Or) || op == int(Op.Xor) || op == int(Op.Shl) || op == int(Op.AShr) || op == int(Op.LShr):
+                let y = f.follow(f.b[i])
+                if y >= 0 && f.is_const(y) && f.cval(y) == 0:
+                    finding(f, i, fname, "pointless", "arithmetic with 0 changes nothing")
+            if op == int(Op.Mul) || op == int(Op.SDiv) || op == int(Op.UDiv):
+                let y = f.follow(f.b[i])
+                if y >= 0 && f.is_const(y) && f.cval(y) == 1:
+                    finding(f, i, fname, "pointless", "multiplication or division by 1 changes nothing")
+            if op == int(Op.Cmp):
+                if f.follow(f.a[i]) == f.follow(f.b[i]):
+                    finding(f, i, fname, "pointless", "a value compared with itself")
+            /#/ the same address loaded twice with no write in between
+            if op == int(Op.Load):
+                let p = f.follow(f.a[i])
+                let dup = false
+                for k in 0..seen_n:
+                    if seen_ptr[k] == p:
+                        dup = true
+                if dup:
+                    finding(f, i, fname, "perf", "load of an address that was loaded just before, with no store or call in between")
+                elif seen_n < 8:
+                    seen_ptr[seen_n] = p
+                    seen_n = seen_n + 1
+            if op == int(Op.Store) || is_call(op) || op == int(Op.Free) || op == int(Op.Drop):
+                seen_n = 0
+            i = f.nx[i]
+    /#/ stores nobody reads, and blocks that are allocated and only freed
+    for b in 0..f.nb:
+        let i = f.bfirst[b]
+        while i >= 0:
+            let op = f.op[i]
+            if op == int(Op.Slot) && writes[i] > 0 && reads[i] == 0 && esc[i] == 0:
+                finding(f, last_store[i], fname, "pointless", "a variable is stored to but never read")
+            if op == int(Op.Alloc) && esc[i] == 0 && reads[i] == 0:
+                let used = false
+                for u in 0..f.ni:
+                    if f.op[u] == int(Op.Load) || f.op[u] == int(Op.Store) || f.op[u] == int(Op.Field):
+                        if f.follow(f.a[u]) == i:
+                            used = true
+                if !used && frees[i] > 0:
+                    finding(f, i, fname, "pointless", "a block is allocated and freed without being used")
+            i = f.nx[i]
+    if spills > 16:
+        lint_txt.put("?: perf: in '")
+        lint_txt.put_all(fname)
+        lint_txt.put("': ")
+        lint_txt.put_int(spills)
+        lint_txt.put(" values live in the frame (register pressure); split the function or shorten the live ranges\n")
+
+fn pf_col(out: &Txt, v: int, w: int) => void:
+    let t = new_txt()
+    t.put_int(v)
+    for k in t.n..w:
+        out.put_byte(32)
+    out.put_all(&t)
+
+/#/ The `--stats` table: the `top` functions with the most code, then the totals.
+fn stats_report(out: &Txt, top: int) => void:
+    let used: buf<int> = new_buf(int, fstats.n + 1)
+    let tot: buf<int> = new_buf(int, st_cols())
+    for r in 0..fstats.n:
+        for c in 0..st_cols():
+            tot[c] = tot[c] + fstats.v[r * st_cols() + c]
+    out.put("   code  instrs  blocks  loops  loads  stores  calls  allocs  traps  spills  saved  frame  function\n")
+    for k in 0..top:
+        let best = 0 - 1
+        let bv = 0 - 1
+        for r in 0..fstats.n:
+            if used[r] == 0 && fstats.v[r * st_cols()] > bv:
+                bv = fstats.v[r * st_cols()]
+                best = r
+        if best < 0:
+            break
+        used[best] = 1
+        for c in 0..12:
+            pf_col(out, fstats.v[best * st_cols() + c], 7)
+        out.put("  ")
+        let p = fstats.nm_at[best]
+        while fstats.nm.b[p] != 0:
+            out.put_byte(fstats.nm.b[p])
+            p = p + 1
+        out.put_byte(10)
+    out.put("\n")
+    for c in 0..12:
+        pf_col(out, tot[c], 7)
+    out.put("  total of ")
+    out.put_int(fstats.n)
+    out.put(" functions\n")

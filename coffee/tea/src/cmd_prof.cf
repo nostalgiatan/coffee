@@ -1,0 +1,150 @@
+/#/ `tea prof`: build the program with debug information and run it under the sampling profiler `cfprof`.
+/#/
+/#/     tea prof [file.cf] [-I dir]... [-O0|-O1] [--jit] [--hz N] [--top N] [--folded file]
+/#/              [--compiler path] [--prof path] [--cfjit path] [-- program arguments...]
+/#/
+/#/ Without a file the entry of `coffee.toml` is used. The program and its line table are made in
+/#/ `target/prof`. With `--jit` the program goes through `cfjit` (the profile is of the generated code).
+use system, fflush in libc of c
+
+class Prof:
+    compiler: Txt
+    prof: Txt
+    jit: Txt
+    file: Txt
+    inc: Txt
+    opt: Txt
+    use_jit: bool
+    hz: Txt
+    top: Txt
+    folded: Txt
+    bad: int
+
+fn parse_prof(a: &Args) => Prof:
+    let p = Prof { compiler: txt_of("coffee2"), prof: txt_of("cfprof"), jit: txt_of("cfjit"), file: new_txt(), inc: new_txt(), opt: txt_of("-O1"), use_jit: false, hz: new_txt(), top: new_txt(), folded: new_txt(), bad: 0 }
+    let i = 2
+    while i < a.n:
+        let w = a.get(i)
+        if w.is("--"):
+            break
+        elif w.is("-I") && i + 1 < a.n:
+            let d = a.get(i + 1)
+            p.inc.put(" -I '")
+            p.inc.put_all(&d)
+            p.inc.put("'")
+            i = i + 1
+        elif w.is("--compiler") && i + 1 < a.n:
+            p.compiler = a.get(i + 1)
+            i = i + 1
+        elif w.is("--prof") && i + 1 < a.n:
+            p.prof = a.get(i + 1)
+            i = i + 1
+        elif w.is("--cfjit") && i + 1 < a.n:
+            p.jit = a.get(i + 1)
+            i = i + 1
+        elif w.is("--hz") && i + 1 < a.n:
+            p.hz = a.get(i + 1)
+            i = i + 1
+        elif w.is("--top") && i + 1 < a.n:
+            p.top = a.get(i + 1)
+            i = i + 1
+        elif w.is("--folded") && i + 1 < a.n:
+            p.folded = a.get(i + 1)
+            i = i + 1
+        elif w.is("-O0") || w.is("-O1"):
+            p.opt = w
+        elif w.is("--jit"):
+            p.use_jit = true
+        elif w.n > 0 && w.b[0] != '-' && p.file.n == 0:
+            p.file = w
+        else:
+            say(f"tea: unknown option '{txt_str(&w)}'\n")
+            p.bad = 1
+        i = i + 1
+    return p
+
+fn run_prof(a: &Args) => int:
+    let p = parse_prof(a)
+    if p.bad > 0:
+        return 2
+    let pr = load_project(false)
+    if p.file.n == 0:
+        p.file = clone pr.main
+    let stem = stem_of(&p.file)
+    let base = txt_of("target/prof/")
+    base.put_all(&stem)
+    let inc = copy_txt(&p.inc)
+    inc.put_all(&pr.build_inc)
+    system("mkdir -p target/prof")
+    let c = txt_of("'")
+    c.put_all(&p.compiler)
+    c.put("' '")
+    c.put_all(&p.file)
+    c.put("'")
+    c.put_all(&inc)
+    c.put_byte(32)
+    c.put_all(&p.opt)
+    c.put(" -g")
+    let lines = copy_txt(&base)
+    if p.use_jit:
+        c.put(" --emit-cir -o '")
+        c.put_all(&base)
+        c.put(".cir'")
+        lines.put(".cir.lines")
+    else:
+        c.put(" --static --lines '")
+        c.put_all(&base)
+        c.put(".lines' -o '")
+        c.put_all(&base)
+        c.put("'")
+        lines.put(".lines")
+    if system(txt_str(&c)) != 0:
+        say("tea: build failed\n")
+        fflush(0)
+        return 1
+    if p.use_jit:
+        let l = txt_of("'")
+        l.put_all(&p.jit)
+        l.put("' '")
+        l.put_all(&base)
+        l.put(".cir' --lines --no-run")
+        if system(txt_str(&l)) != 0:
+            say("tea: cfjit failed\n")
+            return 1
+    let r = txt_of("'")
+    r.put_all(&p.prof)
+    r.put("' --lines '")
+    r.put_all(&lines)
+    r.put("'")
+    if p.hz.n > 0:
+        r.put(" --hz ")
+        r.put_all(&p.hz)
+    if p.top.n > 0:
+        r.put(" --top ")
+        r.put_all(&p.top)
+    if p.folded.n > 0:
+        r.put(" --folded '")
+        r.put_all(&p.folded)
+        r.put("'")
+    r.put(" -- '")
+    if p.use_jit:
+        r.put_all(&p.jit)
+        r.put("' '")
+        r.put_all(&base)
+        r.put(".cir' --cache --perf-map")
+    else:
+        r.put("./")
+        r.put_all(&base)
+        r.put_byte(39)
+    let rest = false
+    for i in 2..a.n:
+        let w = a.get(i)
+        if rest:
+            r.put(" '")
+            quote_into(&r, &w)
+            r.put("'")
+        elif w.is("--"):
+            rest = true
+    fflush(0)
+    let st = system(txt_str(&r))
+    return (st >> 8) & 255

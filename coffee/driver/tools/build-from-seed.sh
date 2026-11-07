@@ -1,7 +1,7 @@
 #!/bin/bash
 # Builds the self-hosted compiler with no C compiler, no Rust and no LLVM: the committed seed is a
 # static x86-64 executable of the compiler; it compiles the sources, and the result compiles them again.
-# Usage: tools/build-from-seed.sh <work dir>      (leaves <work dir>/coffee2, <work dir>/tea and <work dir>/cfjit)
+# Usage: tools/build-from-seed.sh <work dir>      (leaves <work dir>/coffee2, <work dir>/tea, <work dir>/cfjit and <work dir>/cfprof)
 # Refresh the seed after a compiler change: tools/build-from-seed.sh <work dir> --refresh
 set -e
 D=$(realpath -m "${1:?work dir}"); H=$(realpath "$(dirname "$0")/.."); cd "$H" ; mkdir -p "$D"; cd "$D"
@@ -20,6 +20,7 @@ fi
 cp $FIN coffee2
 ./coffee2 "$H/../tea/src/main.cf" -I "$H/../tea/src" -I "$H/src" -I "$H/../ir/src" -I "$H/../ld/src" -I "$H/../lexer/src" -o tea
 ./coffee2 "$H/../jit/src/main.cf" -I "$H/../jit/src" $INC --static -o cfjit
+./coffee2 "$H/../prof/src/main.cf" -I "$H/../prof/src" $INC --static -o cfprof
 if cmp -s seed $FIN; then
     echo "seed is current; coffee2 built in $D"
 elif [ "$2" = "--refresh" ]; then

@@ -34,8 +34,23 @@ fn nan_cases() => int:
             miss = miss + 1
     return miss
 
+class Box:
+    v: float
+
+/#/ a constant that is also stored to memory (a field, a buffer) next to a loop that keeps it in a register
+fn boxed(n: int) => float:
+    let b = Box { v: 1.0 }
+    let cells: buf<float> = new_buf(float, 4)
+    cells[1] = 1.0
+    let s = 0.0
+    for i in 0..n:
+        s = s + 1.0
+    return b.v + s + cells[1]
+
 fn main() => int:
     let miss = 0
+    if boxed(3) != 5.0:
+        miss = miss + 1
     if series(10) != 7.5 + 0.0 && series(10) < 0.0 - 1000.0:
         miss = miss + 1
     let a = series(4)

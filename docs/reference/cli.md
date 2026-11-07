@@ -1,7 +1,7 @@
 # 命令行参考:`coffee2`
 
 ```
-coffee2 input.cf [-o output] [-I dir] [-O0|-O1|-O2|-O3] [--emit-obj] [--emit-flat] [--lines file] [--incremental dir] [-j n] [--static] [-g] [--align] [--verify] [--time]
+coffee2 input.cf [-o output] [-I dir] [-O0|-O1|-O2|-O3] [--emit-obj] [--emit-flat] [--lines file] [--stats] [--lint-perf] [--incremental dir] [-j n] [--static] [-g] [--align] [--verify] [--time]
 ```
 
 `coffee2` 是自举编译器(`coffee/driver/src/main.cf`)。它只做编译。项目模式(`coffee.toml`)、依赖获取和 `std install` 不在这里,它们留给以后的工具链程序。
@@ -21,6 +21,8 @@ coffee2 input.cf [-o output] [-I dir] [-O0|-O1|-O2|-O3] [--emit-obj] [--emit-fla
 | `--incremental dir` | 每个源文件一个 `.o`,放在 `dir`,没变的复用;再链接。前端仍检查整个程序。文件的记号(注释和空行不算)、别的文件的接口(函数头、类字段和方法头、枚举、别名、模块级 `let`、泛型整体)、编译器、`.cfc`、优化级别任何一样变了,才重编。这个模式下优化器不跨文件内联。 |
 | `-j n` | 增量构建里同时编译 `n` 个文件(进程,共享前端的结果);默认是在线的处理器数,最多 16。产物和 `-j 1` 逐字节相同。 |
 | `--dynamic` | 强制用 `cc` 链接。 |
+| `--stats` | 编译后在标准输出打印一张表:代码量最大的 30 个函数,每个函数的字节数、IR 指令数、基本块数、循环数、load/store/调用/分配数、陷阱数(越界和除零检查)、放进栈帧的值的个数、保存的寄存器数、栈帧大小,最后是合计。只统计程序本身,不含链接进来的运行库。`--incremental` 下不可用。 |
+| `--lint-perf` | 编译后在标准输出打印性能和无意义行为的发现,每条是 `文件:行: perf\|pointless: in '函数': 说明`:循环里分配或 memcpy(每次迭代复制字符串/聚合)、循环里除以循环不变量、同一地址紧接着 load 两次、只写不读的变量、分配后只释放没用过的块、与 0 相加或乘 1、值与自身比较、栈帧里的值超过 16 个(寄存器压力)。用法见 [如何找热点和无意义的代码](../how-to/find-hot-spots.md)。 |
 | `-g` | 输出文件保留符号表(函数和数据的名字、大小、地址)和节头,gdb、perf 能显示名字,并生成 DWARF(版本 4):每个函数一个子程序、一段行号序列、`.debug_frame` 调用帧信息(所以断在函数第一条指令也能 `bt`),gdb 能按源码行下断点、单步、`bt` 显示 `文件:行`,valgrind/callgrind 的报告里有 `文件:行`。文件名是各 `.cf` 源文件(相对路径加编译时的 `PWD`),不是展开后的文本。变量和类型:每个参数和局部变量放在栈帧里,`info args`、`info locals`、`print x`、`print *p`、`ptype` 可用(任何 `-O` 级别都一样,代价是变量不再进寄存器,所以 `-g` 的代码比不带 `-g` 的慢);类的变量显示为指向结构体的指针,`&类` 与类变量是同一个指针,`str` 显示为字符串,`buf`/切片/元组显示为结构体,带 payload 的 enum 显示为 `tag` 加各变体的字段(只有 `tag` 所指的变体有值)。`--static`:DWARF 由自带的链接器生成。`--dynamic`(`cc` 链接):链接后用可执行文件自己的符号表补 DWARF,有变量。`--incremental`:每个文件的目标文件带行号表,链接后补 DWARF,只有行号和回溯,没有变量(各文件分开编译,类型编号不一致)。JIT 见 `cfjit --gdb`。不给 `-g` 时输出没有符号表也没有节头(`--static`),用 `cc` 链接时加 `-s`。 |
 | `--verify` | 每个函数翻译前跑 IR 验证器(`tea test` 加这个);不给时不跑,编译快约 9%。 |
 | `--align` | 每个函数从 16 字节边界开始(`tea` 的发布构建加这个)。不给时函数紧挨着放,文件更小。 |

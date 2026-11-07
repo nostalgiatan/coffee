@@ -192,15 +192,16 @@ fn main() => int:
         lw.mc.a.sbx = sbx
         let want_lines = flag_arg("--lines")
         let gdb_map = new_txt()
-        if want_gdb:
+        if want_gdb || want_lines:
             /#/ the line map and the variables, from beside the module
             let mp = copy_txt(&path)
             mp.put(".map")
             let mt = read_file(&mp)
             if mt.n > 0:
                 read_line_map(&mt)
-                set_debug_vars()
-                gdb_map = mt
+                if want_gdb:
+                    set_debug_vars()
+                    gdb_map = mt
         lap(timing, "read file + key", t0)
         let e = read_cir(&cir, &lw)
         lap(timing, "read_cir (done at)", t0)

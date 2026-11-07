@@ -83,6 +83,14 @@ include = ["kit"]
 
 - 操作:[如何运行测试](../how-to/run-the-tests.md)
 
+## tea prof
+
+```
+tea prof [file.cf] [-I dir]... [-O0|-O1] [--jit] [--hz N] [--top N] [--folded 文件] [--compiler path] [--prof path] [--cfjit path] [-- 程序参数...]
+```
+
+用 `-g` 编译程序(行号表放在 `target/prof/<文件名>.lines`),在采样剖析器 `cfprof` 下运行,打印热点。省略文件时用 `[build] main`。`--jit` 让程序经 `cfjit` 运行,剖析的是生成的机器码(函数名来自 `cfjit --perf-map`,行号来自 `cfjit --lines`)。默认 `-O1`。每次都重新编译。返回程序的退出码。`cfprof` 的选项见 [cfprof](cfprof.md)。
+
 ## tea jit
 
 ```

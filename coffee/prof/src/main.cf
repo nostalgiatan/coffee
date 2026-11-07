@@ -1,0 +1,307 @@
+/#/ cfprof: a sampling profiler that needs nothing but `ptrace`. It runs a program, stops it about
+/#/ `--hz` times a second, reads the registers and walks the `rbp` chain (all the code the compiler makes
+/#/ keeps frame pointers), and reports where the time went: by function (self and inclusive) and by
+/#/ source line.
+/#/
+/#/     cfprof [--hz N] [--top N] [--seconds N] [--lines file] [--folded file] [--syms elf] [--] program [args...]
+/#/
+/#/ Functions come from the program's own symbol table (`-g`, else the symbols are not kept) and from
+/#/ `/tmp/perf-PID.map` when the program is `cfjit --perf-map`; source lines from a line table made with
+/#/ `coffee2 prog.cf -g --lines file` (or `cfjit prog.cir --lines`).
+use * in cstr
+use * in files
+use * in say
+use * in txt
+use * in symtab
+use * in report
+
+/#/ ---- the command line --------------------------------------------------------
+
+/#/ The words of the command line, NUL-separated, from the second.
+fn args_raw() => Txt:
+    return read_file(&txt_of("/proc/self/cmdline"))
+
+fn word_at(raw: &Txt, k: int) => Txt:
+    let w = new_txt()
+    let n = 0
+    for i in 0..raw.n:
+        if raw.b[i] == 0:
+            n = n + 1
+        elif n == k:
+            w.put_byte(raw.b[i])
+    return w
+
+fn count_words(raw: &Txt) => int:
+    let n = 0
+    for i in 0..raw.n:
+        if raw.b[i] == 0:
+            n = n + 1
+    return n
+
+fn num_of(w: &Txt) => int:
+    let v = 0
+    for i in 0..w.n:
+        v = v * 10 + w.b[i] - 48
+    return v
+
+/#/ ---- the child ---------------------------------------------------------------
+
+fn sys_mmap(n: int) => int:
+    return syscall(9, 0, n, 3, 34, 0 - 1, 0)
+
+/#/ `w` as a NUL-ended string in memory at `at`; returns the address after it.
+fn put_cstr(at: int, w: &Txt) => int:
+    for i in 0..w.n:
+        poke8(at + i, w.b[i])
+    poke8(at + w.n, 0)
+    return at + w.n + 1
+
+fn has_slash(w: &Txt) => bool:
+    for i in 0..w.n:
+        if w.b[i] == 47:
+            return true
+    return false
+
+/#/ The file to run: `w` itself when it has a slash, else the first directory of PATH that has it.
+fn find_exe(w: &Txt, env: &Txt) => Txt:
+    if has_slash(w):
+        return clone_txt(w)
+    let key = "PATH="
+    let s = 0
+    for i in 0..env.n + 1:
+        if i == env.n || env.b[i] == 0:
+            let hit = i - s > 5
+            for k in 0..5:
+                if hit && env.b[s + k] != int(key[k]):
+                    hit = false
+            if hit:
+                let dir = new_txt()
+                for k in s + 5..i + 1:
+                    if k == i || env.b[k] == 58:
+                        let cand = new_txt()
+                        if dir.n == 0:
+                            cand.put(".")
+                        else:
+                            cand.put_all(&dir)
+                        cand.put_byte(47)
+                        cand.put_all(w)
+                        if syscall(21, int(buf_ptr_of(&cand)), 1, 0, 0, 0, 0) == 0:
+                            return cand
+                        dir.clear()
+                    else:
+                        dir.put_byte(env.b[k])
+            s = i + 1
+    return clone_txt(w)
+
+fn clone_txt(w: &Txt) => Txt:
+    let t = new_txt()
+    t.put_all(w)
+    return t
+
+/#/ The address of a NUL-ended copy of `t` (leaked; it is only used for a few system calls).
+fn buf_ptr_of(t: &Txt) => int:
+    let m = sys_mmap(t.n + 1)
+    put_cstr(m, t)
+    return m
+
+/#/ Starts `prog` with `argv` (words `a..b` of the command line) under ptrace; the child stops at its first
+/#/ instruction. Returns the pid, or -1.
+fn start_child(raw: &Txt, a: int, b: int, exe: &Txt) => int:
+    let env = read_file(&txt_of("/proc/self/environ"))
+    let size = 8192 + raw.n * 2 + env.n * 2 + exe.n * 2
+    let m = sys_mmap(size)
+    let nargs = b - a
+    let nenv = 0
+    for i in 0..env.n:
+        if env.b[i] == 0:
+            nenv = nenv + 1
+    let argv = m
+    let envp = m + 8 * (nargs + 1)
+    let at = envp + 8 * (nenv + 1)
+    let exe_at = at
+    at = put_cstr(at, exe)
+    for k in 0..nargs:
+        let w = word_at(raw, a + k)
+        poke64(argv + 8 * k, at)
+        at = put_cstr(at, &w)
+    poke64(argv + 8 * nargs, 0)
+    let start = 0
+    let e = 0
+    for i in 0..env.n:
+        if env.b[i] == 0:
+            poke64(envp + 8 * e, at)
+            for q in start..i + 1:
+                poke8(at + q - start, env.b[q])
+            at = at + i + 1 - start
+            e = e + 1
+            start = i + 1
+    poke64(envp + 8 * e, 0)
+    let pid = syscall(57, 0, 0, 0, 0, 0, 0)
+    if pid == 0:
+        syscall(101, 0, 0, 0, 0, 0, 0)
+        syscall(59, exe_at, argv, envp, 0, 0, 0)
+        syscall(60, 127, 0, 0, 0, 0, 0)
+    return pid
+
+/#/ ---- sampling ----------------------------------------------------------------
+
+/#/ The samples: for each one, its depth and then the return addresses, innermost first.
+class Samples:
+    d: buf<int>
+    n: int
+    count: int
+
+    fn push(self, v: int) => void:
+        if self.n >= len(self.d):
+            self.d = buf_resize(self.d, (self.n + 1) * 2)
+        self.d[self.n] = v
+        self.n = self.n + 1
+
+fn peek_word(pid: int, at: int, scratch: int) => int:
+    poke64(scratch, 0)
+    if syscall(101, 2, pid, at, scratch, 0, 0) < 0:
+        return 0
+    return peek64(scratch)
+
+fn now_ns() => int:
+    let ts = sys_mmap(4096)
+    syscall(228, 1, ts, 0, 0, 0, 0)
+    let v = peek64(ts) * 1000000000 + peek64(ts + 8)
+    syscall(11, ts, 4096, 0, 0, 0, 0)
+    return v
+
+/#/ Runs the child to its end, taking a sample every `period` ns; returns the exit status of the child.
+fn sample_run(pid: int, period: int, limit: int, s: &Samples, st: &Symtab) => int:
+    let scratch = sys_mmap(4096)
+    syscall(61, pid, scratch, 1073741824, 0, 0, 0)
+    let status = peek64(scratch) & 65535
+    if (status & 255) != 127:
+        return status >> 8
+    /#/ the exe's load address when it is position independent
+    st.set_base_from_maps(pid)
+    let sig = 0
+    let t_start = now_ns()
+    while true:
+        if limit > 0 && now_ns() - t_start > limit:
+            /#/ time is up: the program is killed (a hang is profiled by this)
+            syscall(62, pid, 9, 0, 0, 0, 0)
+            syscall(61, pid, scratch, 1073741824, 0, 0, 0)
+            return 124
+        syscall(101, 7, pid, 0, sig, 0, 0)
+        sig = 0
+        poke64(scratch + 640, 0)
+        poke64(scratch + 648, period)
+        syscall(35, scratch + 640, 0, 0, 0, 0, 0)
+        syscall(62, pid, 19, 0, 0, 0, 0)
+        let r = syscall(61, pid, scratch, 1073741824, 0, 0, 0)
+        if r < 0:
+            return 0
+        status = peek64(scratch) & 65535
+        if (status & 255) != 127:
+            if (status & 127) == 0:
+                return status >> 8
+            return 128 + (status & 127)
+        let stop = (status >> 8) & 255
+        if stop != 19:
+            if stop != 5:
+                sig = stop
+            continue
+        /#/ registers: rbp 4, rip 16, rsp 19
+        syscall(101, 12, pid, 0, scratch + 64, 0, 0)
+        let rip = peek64(scratch + 64 + 8 * 16)
+        let rsp = peek64(scratch + 64 + 8 * 19)
+        let bp = peek64(scratch + 64 + 8 * 4)
+        let frames = new_buf(int, 70)
+        let nf = 1
+        frames[0] = rip
+        /#/ in the prologue the return address is still on the stack
+        let off = st.offset_in_fn(rip)
+        if off == 0:
+            frames[nf] = peek_word(pid, rsp, scratch + 512)
+            nf = nf + 1
+        elif off > 0 && off < 4:
+            frames[nf] = peek_word(pid, rsp + 8, scratch + 512)
+            nf = nf + 1
+        let depth = 0
+        while depth < 60 && bp > 4096 && (bp & 7) == 0:
+            let ret = peek_word(pid, bp + 8, scratch + 512)
+            let next = peek_word(pid, bp, scratch + 512)
+            if ret == 0:
+                break
+            frames[nf] = ret
+            nf = nf + 1
+            depth = depth + 1
+            if next <= bp:
+                break
+            bp = next
+        s.push(nf)
+        for k in 0..nf:
+            s.push(frames[k])
+        s.count = s.count + 1
+    return 0
+
+fn main() => int:
+    let raw = args_raw()
+    let nw = count_words(&raw)
+    let hz = 997
+    let top = 25
+    let lines_path = new_txt()
+    let folded_path = new_txt()
+    let syms_path = new_txt()
+    let seconds = 0
+    let i = 1
+    while i < nw:
+        let w = word_at(&raw, i)
+        if w.is("--hz") && i + 1 < nw:
+            hz = num_of(&word_at(&raw, i + 1))
+            i = i + 1
+        elif w.is("--top") && i + 1 < nw:
+            top = num_of(&word_at(&raw, i + 1))
+            i = i + 1
+        elif w.is("--lines") && i + 1 < nw:
+            lines_path = word_at(&raw, i + 1)
+            i = i + 1
+        elif w.is("--folded") && i + 1 < nw:
+            folded_path = word_at(&raw, i + 1)
+            i = i + 1
+        elif w.is("--seconds") && i + 1 < nw:
+            seconds = num_of(&word_at(&raw, i + 1))
+            i = i + 1
+        elif w.is("--syms") && i + 1 < nw:
+            syms_path = word_at(&raw, i + 1)
+            i = i + 1
+        elif w.is("--"):
+            i = i + 1
+            break
+        else:
+            break
+        i = i + 1
+    if i >= nw || hz < 1:
+        say("usage: cfprof [--hz N] [--top N] [--seconds N] [--lines file] [--folded file] [--syms elf] [--] program [args...]\n")
+        return 2
+    let env = read_file(&txt_of("/proc/self/environ"))
+    let prog = word_at(&raw, i)
+    let exe = find_exe(&prog, &env)
+    let st = new_symtab()
+    if syms_path.n == 0:
+        syms_path = clone_txt(&exe)
+    st.load_elf(&syms_path)
+    let pid = start_child(&raw, i, nw, &exe)
+    if pid < 0:
+        say("cfprof: cannot start the program\n")
+        return 2
+    let s = Samples { d: new_buf(int, 1024), n: 0, count: 0 }
+    let t0 = now_ns()
+    let rc = sample_run(pid, 1000000000 // hz, seconds * 1000000000, &s, &st)
+    let secs_ms = (now_ns() - t0) // 1000000
+    /#/ JIT code: the map the program wrote
+    let pm = txt_of("/tmp/perf-")
+    pm.put_int(pid)
+    pm.put(".map")
+    st.load_perf_map(&pm)
+    if lines_path.n > 0:
+        st.load_lines(&lines_path)
+    print_report(&s, &st, top, hz, secs_ms)
+    if folded_path.n > 0:
+        write_folded(&s, &st, &folded_path)
+    return rc

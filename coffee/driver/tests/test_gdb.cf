@@ -102,5 +102,14 @@ fn main() => int:
     if !has(&log7, "n = 4") || !has(&log7, "f = 1.5") || !has(&log7, "ok = true"):
         say("MISS: variables at -O1\n")
         m = m + 1
+    /#/ -g keeps every variable in the frame; a float constant stored there once stayed uninitialized
+    /#/ (the loop below never ended)
+    let fsrc = "fn bits(s: str, single: bool) => int:\n    let m = 0\n    let digits = 0\n    let scale = 0\n    let seen_dot = false\n    let k = 0\n    while k < len(s):\n        let c = int(s[k])\n        if c >= 48 && c <= 57:\n            m = m * 10 + (c - 48)\n            if m > 0:\n                digits = digits + 1\n            if seen_dot:\n                scale = scale - 1\n        elif c == 46:\n            seen_dot = true\n        k = k + 1\n    if m == 0:\n        return 0\n    let v = float(m)\n    let p = 1.0\n    let q = scale\n    if q < 0:\n        q = 0 - q\n    for i in 0..q:\n        p = p * 10.0\n    if scale < 0:\n        v = v / p\n    else:\n        v = v * p\n    let ex = 0\n    while v >= 2.0:\n        v = v / 2.0\n        ex = ex + 1\n    while v < 1.0:\n        v = v * 2.0\n        ex = ex - 1\n    if single:\n        return ex\n    return ex + 1000\n\nfn main() => int:\n    return bits(\"3.25\", false) - 1001\n"
+    let fp = txt_of("gdbt/fb.cf")
+    let ft = txt_of(&fsrc)
+    write_file(&fp, &ft)
+    if system("cd gdbt && coffee2 fb.cf --static -g -O0 -o fb0 > build8.log 2>&1 && timeout 10 ./fb0 && coffee2 fb.cf --static -g -O1 -o fb1 > build9.log 2>&1 && timeout 10 ./fb1") != 0:
+        say("MISS: a program built with -g does not run right\n")
+        m = m + 1
     fflush(0)
     return m
