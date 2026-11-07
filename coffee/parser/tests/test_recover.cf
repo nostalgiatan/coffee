@@ -5,8 +5,11 @@ use * in tree_shape
 fn main() => int:
     let m = 0
     m = m + miss_error("let = 3\nlet y = 2\n", int(Ec.ExpectedName), 1)
-    m = m + miss_error("fn (\n", int(Ec.ExpectedName), 5)
+    m = m + miss_error("fn (\n", int(Ec.ExpectedName), 6)
     m = m + miss_error("1 +\n", int(Ec.ExpectedExpr), 1)
+    /#/ a keyword where a function name goes is reported, not dropped
+    m = m + miss_error("fn class() => int:\n    return 1\n", int(Ec.ExpectedName), 1)
+    m = m + miss_error("class A:\n    n: int\n    fn packed(self) => int:\n        return 1\n", int(Ec.ExpectedName), 1)
     /#/ stray indent and dedent tokens never loop
     m = m + miss_error("    x\n", int(Ec.UnexpectedToken), 2)
     m = m + miss_error("(((\n", int(Ec.ExpectedExpr), 5)
