@@ -91,6 +91,21 @@ fn num_arg(key: &str) => int:
             w.put_byte(raw.b[i])
     return v
 
+/#/ Microseconds on the monotonic clock.
+fn now_us() => int:
+    let ts = sys_mmap(4096, 3, 34)
+    syscall(228, 1, ts, 0, 0, 0, 0)
+    let us = peek64(ts) * 1000000 + peek64(ts + 8) // 1000
+    syscall(11, ts, 4096, 0, 0, 0, 0)
+    return us
+
+/#/ With `--time`: the phases of a start, in milliseconds, on stderr.
+fn lap(on: bool, what: &str, t0: int) => int:
+    if !on:
+        return 0
+    say(f"cfjit: {what} {(now_us() - t0) // 1000} ms\n")
+    return 0
+
 fn main() => int:
     let sbx = flag_arg("--sandbox")
     let path = path_arg()
@@ -103,6 +118,8 @@ fn main() => int:
         return 2
     /#/ with --cache the image is kept next to the .cir, and used while the .cir and the mode are the same
     let use_cache = flag_arg("--cache")
+    let timing = flag_arg("--time")
+    let t0 = now_us()
     let mode = 0
     let cache_path = new_txt()
     cache_path.put_all(&path)
@@ -122,16 +139,21 @@ fn main() => int:
     if at < 0:
         let lw = new_lower()
         lw.mc.a.sbx = sbx
+        lap(timing, "read file + key", t0)
         let e = read_cir(&cir, &lw)
+        lap(timing, "read_cir (done at)", t0)
         if e != 0:
             say(f"cfjit: not a usable .cir (code {e})\n")
             return 2
         prune_unreached(&lw)
+        lap(timing, "prune (done at)", t0)
         lw.generate()
+        lap(timing, "generate (done at)", t0)
         if lw.mc_err > 0:
             say(f"cfjit: {lw.mc_err} functions could not be translated\n")
             return 2
         im = image_for(&lw, sbx)
+        lap(timing, "image (done at)", t0)
         if im.err != 0:
             say("cfjit: a relocation could not be applied\n")
             return 2
@@ -143,8 +165,10 @@ fn main() => int:
         if at < 0:
             say("cfjit: the module has no main\n")
             return 2
+        lap(timing, "before the drop of the IR", t0)
         if use_cache:
             write_file(&cache_path, &write_cim(&im, at, key))
+    lap(timing, "after the drop of the IR", t0)
     if sbx:
         let bad = sbx_verify(&im.b, im.text_n, im.sys_at)
         if bad >= 0:

@@ -213,7 +213,11 @@ fn main() => int:
         fl.write_to(&flat_path)
         return 0
     if cli.emit_cir:
-        let cir = build_cir(copy_bytes(&fl.out.b, fl.out.n), fl.out.n, 1, fl.cfc_str())
+        /#/ -O0 makes the module of the first tier: the IR as lowered, not optimized
+        let cir_opt = 0
+        if cli.level > 0:
+            cir_opt = 1
+        let cir = build_cir(copy_bytes(&fl.out.b, fl.out.n), fl.out.n, cir_opt, fl.cfc_str())
         if cir.n == 0:
             return 1
         let cir_path = cli.out_path()
