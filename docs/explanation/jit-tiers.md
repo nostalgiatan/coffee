@@ -162,3 +162,11 @@
 
 接下来:
 - **预处理的其余部分**:预执行纯函数、初始化快照、静态热度写进 `.cir`。动手前先照上面的办法量一个能不能省时间的上界。
+
+## Float compare and branch
+
+A float `<`, `<=`, `>`, `>=` whose only use is the branch right after it now sets the flags once
+(`ucomisd`) and jumps on `ja`/`jbe`-style conditions; the `setcc`/`movzx`/`test` sequence is gone.
+An unordered operand sets CF, so `a` and `ae` are false for NaN, as the compare requires. `==` and
+`!=` still go through `setcc` pairs (they need the parity flag too). Constants such as `2.0` are still
+loaded with `movabs`+`movq` at each use; hoisting them out of loops is not done yet.

@@ -1259,6 +1259,26 @@ class Gen:
             return false
         return self.res(f, f.a[n]) == i
 
+    /#/ Is the float compare `i` one the flags carry in a single condition (not == or !=)?
+    fn fflag_ok(self, f: &Fun, i: int) => bool:
+        let p = f.aux[i]
+        return p == int(Pr.OLt) || p == int(Pr.OLe) || p == int(Pr.OGt) || p == int(Pr.OGe)
+
+    /#/ Compare the operands of the float compare `i` and return the condition that holds when it is true.
+    /#/ An unordered result sets CF, so `a` and `ae` are false for it, as the compare requires.
+    fn fcmp_flags(self, f: &Fun, i: int) => int:
+        let p = f.aux[i]
+        let single = f.rep[self.res(f, f.a[i])] == int(Rp.F32)
+        let xa = self.xsrc(f, f.a[i], 0)
+        let xb = self.xsrc(f, f.b[i], 1)
+        if p == int(Pr.OLt) || p == int(Pr.OLe):
+            self.a.ucomi(single, xb, xa)
+        else:
+            self.a.ucomi(single, xa, xb)
+        if p == int(Pr.OLt) || p == int(Pr.OGt):
+            return cc_a()
+        return cc_ae()
+
     /#/ Is `v` a constant small enough that, times an element size of at most 8, it is a displacement?
     fn near_const(self, f: &Fun, v: int) => bool:
         let x = self.res(f, v)
@@ -1541,6 +1561,8 @@ class Gen:
             return
         if op == int(Op.FCmp):
             let p = f.aux[i]
+            if self.fflag_ok(f, i) && self.fused(f, i):
+                return
             let single = f.rep[self.res(f, f.a[i])] == int(Rp.F32)
             let xa = self.xsrc(f, f.a[i], 0)
             let xb = self.xsrc(f, f.b[i], 1)
@@ -1814,6 +1836,8 @@ class Gen:
             if f.op[c] == int(Op.Cmp) && self.fused(f, c):
                 self.cmp_flags(f, c)
                 cc = self.cc_of(f.aux[c])
+            elif f.op[c] == int(Op.FCmp) && self.fflag_ok(f, c) && self.fused(f, c):
+                cc = self.fcmp_flags(f, c)
             else:
                 self.ld_ext(0, f, f.a[i], false)
                 self.a.extend(0, 0, 1, false)
