@@ -1,0 +1,79 @@
+/#/ Bounds checks: those the ranges of the loop counters settle are not made, and the ones they do not settle
+/#/ still stop the program.
+use * in say
+use * in files
+use * in cstr
+use * in txt
+use system, fflush in libc of c
+
+/#/ Where `w` is in `t` at or after `from`, -1 if it is not.
+fn find_at(t: &Txt, w: &str, from: int) => int:
+    for i in from..t.n:
+        let k = 0
+        while k < len(w) && i + k < t.n && t.b[i + k] == int(w[k]):
+            k = k + 1
+        if k == len(w):
+            return i
+    return -1
+
+/#/ Does the function `name` of the listing hold `w`?
+fn fn_has(t: &Txt, name: str, w: &str) => bool:
+    let head = f"fn {name}("
+    let s = find_at(t, &head, 0)
+    if s < 0:
+        return false
+    let e = find_at(t, "\nfn ", s + 1)
+    if e < 0:
+        e = t.n
+    let at = find_at(t, w, s)
+    return at >= 0 && at < e
+
+/#/ Writes and builds `name`.cf from `src`, the listing in `name`.ir.
+fn prep(name: str, src: str) => bool:
+    let path = f"bndt/{name}.cf"
+    let sp = txt_of(&path)
+    let st = txt_of(&src)
+    write_file(&sp, &st)
+    let cmd = f"cd bndt && coffee2 {name}.cf --emit-ir > {name}.ir 2>&1 && coffee2 {name}.cf -o {name} > {name}.log 2>&1"
+    if system(cmd) != 0:
+        say(f"MISS: {name} does not build\n")
+        return false
+    return true
+
+fn main() => int:
+    let m = 0
+    system("rm -rf bndt && mkdir bndt")
+    /#/ every index is below the length: no check is left
+    let ok1 = "fn main() => int:\n    let n = 20\n    let a = new_buf(int, n * n)\n    let t = 0\n    for i in 0..n:\n        for j in 0..n:\n            a[i * n + j] = i + j\n    for i in 0..n:\n        for j in 0..n:\n            t = t + a[j * n + i]\n    return t % 200\n"
+    /#/ one past the end in the last iteration
+    let bad1 = "fn main() => int:\n    let n = 10\n    let s = new_buf(int, n)\n    let t = 0\n    for i in 0..n + 1:\n        s[i] = i\n        t = t + s[i]\n    return t\n"
+    let bad2 = "fn main() => int:\n    let n = 10\n    let s = new_buf(int, n * n)\n    let t = 0\n    for i in 0..n:\n        for j in 0..n:\n            s[i * n + j + 1] = 1\n            t = t + 1\n    return t\n"
+    /#/ the bound is a parameter: the check stays
+    let bad3 = "fn f(s: &buf<int>, k: int) => int:\n    let t = 0\n    for i in 0..k:\n        t = t + s[i]\n    return t\n\nfn main() => int:\n    let s = new_buf(int, 8)\n    return f(&s, 9)\n"
+    /#/ the loop runs to the length: no check is needed
+    let ok2 = "fn f(s: &buf<int>) => int:\n    let t = 0\n    for i in 0..len(s):\n        t = t + s[i]\n    return t\n\nfn main() => int:\n    let s = new_buf(int, 8)\n    return f(&s)\n"
+    if !prep("ok1", ok1) || !prep("bad1", bad1) || !prep("bad2", bad2) || !prep("bad3", bad3) || !prep("ok2", ok2):
+        return 1
+    let ip = txt_of("bndt/ok1.ir")
+    let ir1 = read_file(&ip)
+    if fn_has(&ir1, "main", "cmp.ult"):
+        say("MISS: a check the loop counters settle is still made\n")
+        m = m + 1
+    let ip2 = txt_of("bndt/ok2.ir")
+    let ir2 = read_file(&ip2)
+    if fn_has(&ir2, "f", "cmp.ult"):
+        say("MISS: the loop to the length still checks the index\n")
+        m = m + 1
+    let ip3 = txt_of("bndt/bad3.ir")
+    let ir3 = read_file(&ip3)
+    if !fn_has(&ir3, "f", "cmp.ult"):
+        say("MISS: the check against an unknown bound is gone\n")
+        m = m + 1
+    if system("cd bndt && ./bad1 > /dev/null 2>&1") != 256 || system("cd bndt && ./bad2 > /dev/null 2>&1") != 256 || system("cd bndt && ./bad3 > /dev/null 2>&1") != 256:
+        say("MISS: an out-of-range index does not stop the program\n")
+        m = m + 1
+    if system("cd bndt && ./ok1 > /dev/null 2>&1") != 0 || system("cd bndt && ./ok2 > /dev/null 2>&1") != 0:
+        say("MISS: a program without out-of-range indexes stops\n")
+        m = m + 1
+    fflush(0)
+    return m

@@ -58,6 +58,8 @@ class Gen:
     xsg: buf<int>
     did: buf<int>
     nsaved: int
+    /#/ 8 when [rbp-8] holds the pointer a function returning an aggregate was given, else 0
+    rbase: int
     saved: buf<int>
     /#/ the edges leaving a block
     ed: buf<int>
@@ -292,8 +294,8 @@ class Gen:
         if self.sframe > 0:
             self.a.add_ri(14, self.sframe)
         if self.nsaved > 0:
-            if self.frame > 8 + 8 * self.nsaved:
-                self.a.lea(4, 5, 0 - 8 - 8 * self.nsaved)
+            if self.frame > self.rbase + 8 * self.nsaved:
+                self.a.lea(4, 5, 0 - self.rbase - 8 * self.nsaved)
             let k = self.nsaved - 1
             while k >= 0:
                 self.a.pop(self.saved[k])
@@ -975,7 +977,7 @@ class Gen:
         /#/ the linear memory: a pointer to them is an offset like any other, and the host stack holds
         /#/ only what the code cannot name (return addresses, saved registers, spilled scalars)
         let scur = 0
-        let cur = 8 + 8 * self.nsaved
+        let cur = self.rbase + 8 * self.nsaved
         let tmp = 0
         for b in 0..f.nb:
             let p = f.pfirst[b]
@@ -1543,6 +1545,23 @@ class Gen:
                 self.st(i, 2)
             return
         if op == int(Op.Shl) || op == int(Op.AShr) || op == int(Op.LShr):
+            if self.small_imm(f, f.b[i]):
+                let k = f.aux[self.res(f, f.b[i])]
+                if k >= 0 && k < 64:
+                    let sc = 4
+                    if op == int(Op.LShr):
+                        sc = 5
+                    elif op == int(Op.AShr):
+                        sc = 7
+                    let d = self.home[i]
+                    if d >= 0:
+                        self.ld_ext(d, f, f.a[i], op == int(Op.AShr))
+                        self.a.shift_i(sc, d, k)
+                    else:
+                        self.ld_ext(0, f, f.a[i], op == int(Op.AShr))
+                        self.a.shift_i(sc, 0, k)
+                        self.st(i, 0)
+                    return
             self.ld_ext(0, f, f.a[i], op == int(Op.AShr))
             self.ld(1, f, f.b[i])
             if op == int(Op.Shl):
@@ -1990,6 +2009,9 @@ class Gen:
     /#/ Generates function `f`; returns false if something could not be translated.
     fn gen_fun(self, f: &Fun, rs: &Reps, sy: &Names) => bool:
         self.err = 0
+        self.rbase = 0
+        if f.ret >= rp_first_agg():
+            self.rbase = 8
         self.a.begin_fun()
         if len(self.ord) < f.nb + 1:
             self.ord = new_buf(int, f.nb + 1)
@@ -2008,11 +2030,12 @@ class Gen:
         self.a.mov_rr(5, 4)
         /#/ [rbp-8] is the place of the pointer for a returned aggregate (rdi); the saved registers
         /#/ follow, then the locals
-        self.a.push(7)
+        if self.rbase > 0:
+            self.a.push(7)
         for k in 0..self.nsaved:
             self.a.push(self.saved[k])
-        if self.frame > 8 + 8 * self.nsaved:
-            self.a.sub_ri(4, self.frame - 8 - 8 * self.nsaved)
+        if self.frame > self.rbase + 8 * self.nsaved:
+            self.a.sub_ri(4, self.frame - self.rbase - 8 * self.nsaved)
         if self.sframe > 0:
             self.a.sub_ri(14, self.sframe)
         let nret = 0
@@ -2232,7 +2255,7 @@ fn lines_dump(g: &Gen, out: &Txt) => void:
                     out.put_byte(g.vtxt.b[q])
 
 fn new_gen() => Gen:
-    return Gen { a: new_asm(), o: new_obj(), voff: new_buf(int, 64), sh: new_buf(int, 64), sframe: 0, tmp: 0, frame: 0, err: 0, av: new_buf(int, 16), nav: 0, sbase: 256, soff: new_buf(int, 16), nstr: 0, home: new_buf(int, 64), xhome: new_buf(int, 64), ord: new_buf(int, 16), emit: new_buf(int, 16), xsg: new_buf(int, 64), did: new_buf(int, 64), nsaved: 0, saved: new_buf(int, 8), ed: new_buf(int, 16), ned: 0, ra_lo: new_buf(int, 1), ra_hi: new_buf(int, 1), ra_wt: new_buf(int, 1), uq_d: new_buf(int, 16), uq_b: new_buf(int, 16), nuq: 0, ra_dblk: new_buf(int, 1), ra_dset: new_buf(int, 1), ra_cp: new_buf(int, 16), ra_ncp: 0, ra_cm: new_buf(int, 16), cur: -1, msk: new_buf(int, 16), fmask: 0, nuse: new_buf(int, 64), am_base: 0, am_idx: -1, am_scale: 1, am_disp: 0, epi: 0, epi_jump: false, hc: new_buf(int, 16), nhc: 0, lm_at: new_buf(int, 64), lm_ln: new_buf(int, 64), lm_n: 0, mk_l: new_buf(int, 64), mk_ln: new_buf(int, 64), mk_n: 0, lf_sym: new_buf(int, 64), lf_start: new_buf(int, 64), lf_m0: new_buf(int, 64), lf_n: 0, dt: new_dbg_types(), vtxt: new_txt(), vr_s: new_buf(int, 64), vr_e: new_buf(int, 64) }
+    return Gen { a: new_asm(), o: new_obj(), voff: new_buf(int, 64), sh: new_buf(int, 64), sframe: 0, tmp: 0, frame: 0, err: 0, av: new_buf(int, 16), nav: 0, sbase: 256, soff: new_buf(int, 16), nstr: 0, home: new_buf(int, 64), xhome: new_buf(int, 64), ord: new_buf(int, 16), emit: new_buf(int, 16), xsg: new_buf(int, 64), did: new_buf(int, 64), nsaved: 0, rbase: 0, saved: new_buf(int, 8), ed: new_buf(int, 16), ned: 0, ra_lo: new_buf(int, 1), ra_hi: new_buf(int, 1), ra_wt: new_buf(int, 1), uq_d: new_buf(int, 16), uq_b: new_buf(int, 16), nuq: 0, ra_dblk: new_buf(int, 1), ra_dset: new_buf(int, 1), ra_cp: new_buf(int, 16), ra_ncp: 0, ra_cm: new_buf(int, 16), cur: -1, msk: new_buf(int, 16), fmask: 0, nuse: new_buf(int, 64), am_base: 0, am_idx: -1, am_scale: 1, am_disp: 0, epi: 0, epi_jump: false, hc: new_buf(int, 16), nhc: 0, lm_at: new_buf(int, 64), lm_ln: new_buf(int, 64), lm_n: 0, mk_l: new_buf(int, 64), mk_ln: new_buf(int, 64), mk_n: 0, lf_sym: new_buf(int, 64), lf_start: new_buf(int, 64), lf_m0: new_buf(int, 64), lf_n: 0, dt: new_dbg_types(), vtxt: new_txt(), vr_s: new_buf(int, 64), vr_e: new_buf(int, 64) }
 
 /#/ The multiplier that divides by `d` (not a power of two; `l` is the log2 of `d` rounded up):
 /#/ 1 + floor(2^(63 + l) / d), taken as a 64-bit pattern, by long division one bit at a time.

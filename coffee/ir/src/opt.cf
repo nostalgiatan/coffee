@@ -835,6 +835,492 @@ fn cse_branches(f: &Fun) => bool:
                 ch = sib[ch]
     return changed
 
+/#/ ---- value ranges and bounds checks --------------------------------------
+
+/#/ Integer ranges are kept as `[lo, hi]` of 64-bit values; a bound of `rg_inf` or more in size is "no bound",
+/#/ and a range with `lo > hi` is empty (not computed yet). Bounds that are kept are below 2^62, so adding two
+/#/ cannot wrap.
+let rg_inf = 4611686018427387904
+
+class RgCtx:
+    lo: buf<int>
+    hi: buf<int>
+    idom: buf<int>
+    fcmp: buf<int>
+    fpol: buf<int>
+    need: buf<int>
+    rl: int
+    rh: int
+
+fn rg_clamp(v: int) => int:
+    if v >= rg_inf:
+        return rg_inf
+    if v <= 0 - rg_inf:
+        return 0 - rg_inf
+    return v
+
+/#/ The predicate `p` seen from the other operand.
+fn rg_mirror(p: int) => int:
+    if p == int(Pr.SLt):
+        return int(Pr.SGt)
+    if p == int(Pr.SLe):
+        return int(Pr.SGe)
+    if p == int(Pr.SGt):
+        return int(Pr.SLt)
+    if p == int(Pr.SGe):
+        return int(Pr.SLe)
+    if p == int(Pr.ULt):
+        return int(Pr.UGt)
+    if p == int(Pr.ULe):
+        return int(Pr.UGe)
+    if p == int(Pr.UGt):
+        return int(Pr.ULt)
+    if p == int(Pr.UGe):
+        return int(Pr.ULe)
+    return p
+
+/#/ The predicate that holds when `p` does not.
+fn rg_negate(p: int) => int:
+    if p == int(Pr.SLt):
+        return int(Pr.SGe)
+    if p == int(Pr.SLe):
+        return int(Pr.SGt)
+    if p == int(Pr.SGt):
+        return int(Pr.SLe)
+    if p == int(Pr.SGe):
+        return int(Pr.SLt)
+    if p == int(Pr.Eq):
+        return int(Pr.Ne)
+    if p == int(Pr.Ne):
+        return int(Pr.Eq)
+    if p == int(Pr.ULt):
+        return int(Pr.UGe)
+    if p == int(Pr.UGe):
+        return int(Pr.ULt)
+    if p == int(Pr.ULe):
+        return int(Pr.UGt)
+    if p == int(Pr.UGt):
+        return int(Pr.ULe)
+    return -1
+
+/#/ The range of the whole value `v` (what it is wherever it is defined), without any branch's help.
+fn rg_global(c: &RgCtx, f: &Fun, v: int) => void:
+    if f.is_const(v):
+        let k = rg_clamp(f.cval(v))
+        c.rl = k
+        c.rh = k
+    elif f.rep[v] != int(Rp.I64):
+        c.rl = 0 - rg_inf
+        c.rh = rg_inf
+    else:
+        c.rl = c.lo[v]
+        c.rh = c.hi[v]
+
+/#/ The range of `v0` in block `b`: its own range, narrowed by the branches that decide the way into `b` or into a
+/#/ block that dominates it.
+fn rg_at(c: &RgCtx, f: &Fun, v0: int, b: int) => void:
+    let v = f.follow(v0)
+    rg_global(c, f, v)
+    let lo = c.rl
+    let hi = c.rh
+    if f.is_const(v) || f.rep[v] != int(Rp.I64):
+        return
+    let x = b
+    while x >= 0:
+        let fc = c.fcmp[x]
+        if fc >= 0:
+            let a = f.follow(f.a[fc])
+            let bb = f.follow(f.b[fc])
+            if (a == v || bb == v) && a != bb:
+                let pr = f.aux[fc]
+                if c.fpol[x] == 0:
+                    pr = rg_negate(pr)
+                let other = bb
+                if bb == v:
+                    other = a
+                    pr = rg_mirror(pr)
+                if pr >= 0:
+                    rg_global(c, f, other)
+                    let ol = c.rl
+                    let oh = c.rh
+                    if pr == int(Pr.SLt) && oh < rg_inf:
+                        hi = rg_min(hi, oh - 1)
+                    elif pr == int(Pr.SLe) && oh < rg_inf:
+                        hi = rg_min(hi, oh)
+                    elif pr == int(Pr.SGt) && ol > 0 - rg_inf:
+                        lo = rg_max(lo, ol + 1)
+                    elif pr == int(Pr.SGe) && ol > 0 - rg_inf:
+                        lo = rg_max(lo, ol)
+                    elif pr == int(Pr.Eq):
+                        lo = rg_max(lo, ol)
+                        hi = rg_min(hi, oh)
+                    elif (pr == int(Pr.ULt) || pr == int(Pr.ULe)) && ol >= 0 && oh < rg_inf:
+                        lo = rg_max(lo, 0)
+                        if pr == int(Pr.ULt):
+                            hi = rg_min(hi, oh - 1)
+                        else:
+                            hi = rg_min(hi, oh)
+        if x == 0 || c.idom[x] == x || c.idom[x] < 0:
+            break
+        x = c.idom[x]
+    c.rl = lo
+    c.rh = hi
+
+fn rg_min(a: int, b: int) => int:
+    if a < b:
+        return a
+    return b
+
+fn rg_max(a: int, b: int) => int:
+    if a > b:
+        return a
+    return b
+
+/#/ The range of instruction `i` from the ranges of its operands in its block, left in `c.rl`, `c.rh`.
+fn rg_eval(c: &RgCtx, f: &Fun, i: int) => void:
+    let o = f.op[i]
+    let b = f.blk[i]
+    let top = rg_inf
+    c.rl = 0 - top
+    c.rh = top
+    if f.rep[i] != int(Rp.I64):
+        return
+    if o == int(Op.Add) || o == int(Op.Sub) || o == int(Op.Mul):
+        rg_at(c, f, f.a[i], b)
+        let al = c.rl
+        let ah = c.rh
+        rg_at(c, f, f.b[i], b)
+        let bl = c.rl
+        let bh = c.rh
+        if al > ah || bl > bh:
+            c.rl = top
+            c.rh = 0 - top
+            return
+        c.rl = 0 - top
+        c.rh = top
+        if o == int(Op.Add):
+            if al > 0 - top && bl > 0 - top:
+                c.rl = rg_clamp(al + bl)
+            if ah < top && bh < top:
+                c.rh = rg_clamp(ah + bh)
+        elif o == int(Op.Sub):
+            if al > 0 - top && bh < top:
+                c.rl = rg_clamp(al - bh)
+            if ah < top && bl > 0 - top:
+                c.rh = rg_clamp(ah - bl)
+        else:
+            let lim = 2147483648
+            if al > 0 - lim && ah < lim && bl > 0 - lim && bh < lim:
+                let p1 = al * bl
+                let p2 = al * bh
+                let p3 = ah * bl
+                let p4 = ah * bh
+                c.rl = rg_min(rg_min(p1, p2), rg_min(p3, p4))
+                c.rh = rg_max(rg_max(p1, p2), rg_max(p3, p4))
+    elif o == int(Op.SRem) || o == int(Op.SDiv) || o == int(Op.And) || o == int(Op.AShr) || o == int(Op.LShr) || o == int(Op.Shl):
+        rg_at(c, f, f.a[i], b)
+        let al = c.rl
+        let ah = c.rh
+        let kb = f.follow(f.b[i])
+        c.rl = 0 - top
+        c.rh = top
+        if al > ah:
+            c.rl = top
+            c.rh = 0 - top
+            return
+        if f.is_const(kb):
+            let k = f.cval(kb)
+            if o == int(Op.SRem) && k > 0:
+                c.rl = 1 - k
+                c.rh = k - 1
+                if al >= 0:
+                    c.rl = 0
+                    if ah < k - 1:
+                        c.rh = ah
+            elif o == int(Op.SDiv) && k > 0:
+                if al > 0 - top:
+                    c.rl = al // k
+                if ah < top:
+                    c.rh = ah // k
+            elif o == int(Op.And) && k >= 0:
+                c.rl = 0
+                c.rh = k
+                if al >= 0 && ah < k:
+                    c.rh = ah
+            elif o == int(Op.AShr) && k >= 0 && k < 63:
+                if al > 0 - top:
+                    c.rl = al >> k
+                if ah < top:
+                    c.rh = ah >> k
+            elif o == int(Op.LShr) && k > 0 && k < 63:
+                c.rl = 0
+                c.rh = 9223372036854775807 >> (k - 1)
+                if al >= 0 && ah < top:
+                    c.rh = ah >> k
+                if c.rh >= top:
+                    c.rh = top
+            elif o == int(Op.Shl) && k >= 0 && k < 31 && al > 0 - 2147483648 && ah < 2147483648:
+                c.rl = al << k
+                c.rh = ah << k
+    elif o == int(Op.ZExt) || o == int(Op.SExt):
+        let r = f.rep[f.follow(f.a[i])]
+        let bits = rp_bits(r)
+        if bits > 0 && bits < 64:
+            if o == int(Op.ZExt):
+                c.rl = 0
+                c.rh = (1 << bits) - 1
+            else:
+                c.rl = 0 - (1 << (bits - 1))
+                c.rh = (1 << (bits - 1)) - 1
+
+/#/ One round over the values in reverse post-order; `mode` 0 joins the new range into the old one, 1 widens
+/#/ (a bound that moved goes to no bound), 2 takes the new range (narrowing, from a state that is already sound).
+/#/ Returns whether a range changed.
+fn rg_round(c: &RgCtx, f: &Fun, rpo: &buf<int>, np: int, inh: &buf<int>, innext: &buf<int>, mode: int) => bool:
+    let changed = false
+    for r in 0..np:
+        let b = rpo[r]
+        let p = f.pfirst[b]
+        let k = 0
+        while p >= 0:
+            if f.rep[p] == int(Rp.I64) && f.fwd[p] < 0 && b != 0 && c.need[p] == 1:
+                let nl = rg_inf
+                let nh = 0 - rg_inf
+                let e = inh[b]
+                while e >= 0:
+                    if k < f.eargn[e]:
+                        rg_at(c, f, f.pool[f.eargs[e] + k], f.efrom[e])
+                        nl = rg_min(nl, c.rl)
+                        nh = rg_max(nh, c.rh)
+                    else:
+                        nl = 0 - rg_inf
+                        nh = rg_inf
+                    e = innext[e]
+                if rg_set(c, p, nl, nh, mode):
+                    changed = true
+            p = f.nx[p]
+            k = k + 1
+        let i = f.bfirst[b]
+        while i >= 0:
+            if f.fwd[i] < 0 && f.rep[i] == int(Rp.I64) && c.need[i] == 1 && !f.is_const(i):
+                rg_eval(c, f, i)
+                if rg_set(c, i, c.rl, c.rh, mode):
+                    changed = true
+            i = f.nx[i]
+    return changed
+
+/#/ Stores a new range for `v` by the rules of `rg_round`; whether it differs from the old one.
+fn rg_set(c: &RgCtx, v: int, nl: int, nh: int, mode: int) => bool:
+    let ol = c.lo[v]
+    let oh = c.hi[v]
+    let l = nl
+    let h = nh
+    if mode == 0:
+        if ol <= oh:
+            l = rg_min(ol, nl)
+            h = rg_max(oh, nh)
+    elif mode == 1:
+        if ol <= oh:
+            if nl < ol:
+                l = 0 - rg_inf
+            else:
+                l = ol
+            if nh > oh:
+                h = rg_inf
+            else:
+                h = oh
+    if nl > nh:
+        l = ol
+        h = oh
+    if l == ol && h == oh:
+        return false
+    c.lo[v] = l
+    c.hi[v] = h
+    return true
+
+/#/ A bounds check `ult x, len` that the ranges (or the loop condition `x < len` on the way in) show to hold is
+/#/ not made: its branch goes the one way. Ranges are of the loop counters and what is computed from them with
+/#/ sums, products by constants and the like, narrowed by the branches that decide the way into a block.
+fn range_checks(f: &Fun) => bool:
+    if f.nb < 2 || f.ni > 6000:
+        return false
+    /#/ a check against a length that is not a constant can only be settled by a loop condition against the
+    /#/ same value
+    let upper: buf<int> = new_buf(int, f.ni + 1)
+    for b in 0..f.nb:
+        let i = f.bfirst[b]
+        while i >= 0:
+            if f.op[i] == int(Op.Cmp) && (f.aux[i] == int(Pr.SLt) || f.aux[i] == int(Pr.SLe)) && f.fwd[i] < 0:
+                upper[f.follow(f.b[i])] = 1
+            i = f.nx[i]
+    let cands = 0
+    for b in 0..f.nb:
+        let t = f.blast[b]
+        if t >= 0 && f.op[t] == int(Op.CondBr):
+            let cm = f.follow(f.a[t])
+            if f.op[cm] == int(Op.Cmp) && f.aux[cm] == int(Pr.ULt) && !f.is_const(cm):
+                let lv0 = f.follow(f.b[cm])
+                if f.is_const(lv0) || upper[lv0] == 1:
+                    cands = cands + 1
+    if cands == 0:
+        return false
+    /#/ without a back edge there is no counter whose range could settle a check
+    let looped = false
+    for e in 0..f.ne:
+        if f.efrom[e] >= 0 && f.eto[e] >= 0 && f.eto[e] <= f.efrom[e]:
+            looped = true
+    if !looped:
+        return false
+    let nb = f.nb
+    let rpo: buf<int> = new_buf(int, nb + 1)
+    let idom: buf<int> = new_buf(int, nb + 1)
+    let pc: buf<int> = new_buf(int, nb + 2)
+    let pl: buf<int> = new_buf(int, f.ne + 1)
+    let np = dominators(f, &rpo, &idom, &pc, &pl)
+    let inh: buf<int> = new_buf(int, nb + 1)
+    let innext: buf<int> = new_buf(int, f.ne + 1)
+    let nin: buf<int> = new_buf(int, nb + 1)
+    let sedge: buf<int> = new_buf(int, nb + 1)
+    for b in 0..nb:
+        inh[b] = -1
+        sedge[b] = -1
+    for e in 0..f.ne:
+        let from = f.efrom[e]
+        let to = f.eto[e]
+        if from >= 0 && to >= 0 && from < nb && to < nb && idom[from] >= 0:
+            innext[e] = inh[to]
+            inh[to] = e
+            /#/ an edge from a block the target dominates (a back edge) does not count: the way in from
+            /#/ outside decides what holds in the target and the blocks it dominates (a value does not change)
+            let y = from
+            let inside = false
+            while !inside:
+                if y == to:
+                    inside = true
+                elif y == 0 || idom[y] == y || idom[y] < 0:
+                    break
+                else:
+                    y = idom[y]
+            if !inside:
+                nin[to] = nin[to] + 1
+                sedge[to] = e
+    let c = RgCtx { lo: new_buf(int, f.ni + 1), hi: new_buf(int, f.ni + 1), idom: idom, fcmp: new_buf(int, nb + 1), fpol: new_buf(int, nb + 1), need: new_buf(int, f.ni + 1), rl: 0, rh: 0 }
+    for v in 0..f.ni:
+        c.lo[v] = rg_inf
+        c.hi[v] = 0 - rg_inf
+    let ep = f.pfirst[0]
+    while ep >= 0:
+        c.lo[ep] = 0 - rg_inf
+        c.hi[ep] = rg_inf
+        ep = f.nx[ep]
+    for b in 0..nb:
+        c.fcmp[b] = -1
+        if nin[b] == 1:
+            let e = sedge[b]
+            let p = f.efrom[e]
+            let t = f.blast[p]
+            if t >= 0 && f.op[t] == int(Op.CondBr) && f.b[t] != f.c[t]:
+                let cm = f.follow(f.a[t])
+                if f.op[cm] == int(Op.Cmp) && rp_is_int(f.rep[f.follow(f.a[cm])]) && f.rep[f.follow(f.a[cm])] == int(Rp.I64):
+                    if e == f.b[t]:
+                        c.fcmp[b] = cm
+                        c.fpol[b] = 1
+                    elif e == f.c[t]:
+                        c.fcmp[b] = cm
+                        c.fpol[b] = 0
+    /#/ only the values the checks depend on get a range: the operands of the checked pairs, what those are
+    /#/ computed from, and the other side of the branches that narrow them
+    for b in 0..nb:
+        let t = f.blast[b]
+        if t >= 0 && f.op[t] == int(Op.CondBr):
+            let cm = f.follow(f.a[t])
+            if f.op[cm] == int(Op.Cmp) && f.aux[cm] == int(Pr.ULt) && !f.is_const(cm):
+                c.need[f.follow(f.a[cm])] = 1
+                c.need[f.follow(f.b[cm])] = 1
+    let grew = true
+    while grew:
+        grew = false
+        for b in 0..nb:
+            let fc = c.fcmp[b]
+            if fc >= 0:
+                let x1 = f.follow(f.a[fc])
+                let x2 = f.follow(f.b[fc])
+                if (c.need[x1] == 1) != (c.need[x2] == 1):
+                    c.need[x1] = 1
+                    c.need[x2] = 1
+                    grew = true
+            if idom[b] >= 0:
+                let p = f.pfirst[b]
+                let k = 0
+                while p >= 0:
+                    if c.need[p] == 1 && b != 0:
+                        let e = inh[b]
+                        while e >= 0:
+                            if k < f.eargn[e]:
+                                let av = f.follow(f.pool[f.eargs[e] + k])
+                                if c.need[av] == 0:
+                                    c.need[av] = 1
+                                    grew = true
+                            e = innext[e]
+                    p = f.nx[p]
+                    k = k + 1
+                let i = f.bfirst[b]
+                while i >= 0:
+                    if c.need[i] == 1 && f.fwd[i] < 0:
+                        let o = f.op[i]
+                        if o == int(Op.Add) || o == int(Op.Sub) || o == int(Op.Mul) || o == int(Op.SRem) || o == int(Op.SDiv) || o == int(Op.And) || o == int(Op.AShr) || o == int(Op.LShr) || o == int(Op.Shl):
+                            let o1 = f.follow(f.a[i])
+                            let o2 = f.follow(f.b[i])
+                            if c.need[o1] == 0:
+                                c.need[o1] = 1
+                                grew = true
+                            if c.need[o2] == 0:
+                                c.need[o2] = 1
+                                grew = true
+                    i = f.nx[i]
+    let rounds = 0
+    while rg_round(&c, f, &rpo, np, &inh, &innext, 0) && rounds < 4:
+        rounds = rounds + 1
+    let wide = 0
+    while rg_round(&c, f, &rpo, np, &inh, &innext, 1) && wide < 12:
+        wide = wide + 1
+    if wide >= 12:
+        return false
+    for q in 0..3:
+        rg_round(&c, f, &rpo, np, &inh, &innext, 2)
+    let changed = false
+    for r in 0..np:
+        let b = rpo[r]
+        let t = f.blast[b]
+        if t >= 0 && f.op[t] == int(Op.CondBr):
+            let cm = f.follow(f.a[t])
+            if f.op[cm] == int(Op.Cmp) && f.aux[cm] == int(Pr.ULt) && !f.is_const(cm):
+                let x = f.follow(f.a[cm])
+                let lv = f.follow(f.b[cm])
+                if f.rep[x] == int(Rp.I64) && f.rep[lv] == int(Rp.I64):
+                    rg_at(&c, f, x, b)
+                    let xl = c.rl
+                    let xh = c.rh
+                    rg_at(&c, f, lv, b)
+                    let ll = c.rl
+                    let ok = xl >= 0 && xl <= xh && xh < ll
+                    /#/ or the loop condition `x < len` on the way in, with x not negative
+                    let y = b
+                    while !ok && y >= 0:
+                        let fc = c.fcmp[y]
+                        if fc >= 0 && c.fpol[y] == 1 && f.aux[fc] == int(Pr.SLt) && f.follow(f.a[fc]) == x && f.follow(f.b[fc]) == lv && xl >= 0:
+                            ok = true
+                        if y == 0 || c.idom[y] == y || c.idom[y] < 0:
+                            break
+                        y = c.idom[y]
+                    if ok:
+                        let kc = f.cint(int(Rp.I8), 1)
+                        f.uses[cm] = f.uses[cm] - 1
+                        f.uses[kc] = f.uses[kc] + 1
+                        f.a[t] = kc
+                        changed = true
+    return changed
+
 /#/ ---- loop-invariant code ---------------------------------------------------
 
 /#/ Does instruction `i` write memory or call something?
@@ -906,6 +1392,17 @@ fn hoist_invariants(f: &Fun) => bool:
                     if writes_memory(f, i):
                         mem = true
                     i = f.nx[i]
+        /#/ the one block outside the loop that jumps to the header
+        let pre0 = -1
+        let outs0 = 0
+        for e in 0..f.ne:
+            if f.eto[e] == h:
+                let fb = f.efrom[e]
+                if fb >= 0 && fb < nb && inl[fb] == 0 && idom[fb] >= 0:
+                    outs0 = outs0 + 1
+                    pre0 = fb
+        if outs0 != 1:
+            pre0 = -1
         /#/ what can move, in order
         let n = 0
         for r in 0..np:
@@ -914,6 +1411,27 @@ fn hoist_invariants(f: &Fun) => bool:
                 let i = f.bfirst[b]
                 while i >= 0:
                     let o = f.op[i]
+                    let nxt = f.nx[i]
+                    /#/ a load of what the header loads, in a loop that writes nothing, is that load
+                    if o == int(Op.Load) && !mem && b != h && f.fwd[i] < 0:
+                        let j = f.bfirst[h]
+                        let found = -1
+                        while j >= 0 && found < 0:
+                            if f.op[j] == int(Op.Load) && f.fwd[j] < 0 && f.rep[j] == f.rep[i] && f.ty[j] == f.ty[i] && f.follow(f.a[j]) == f.follow(f.a[i]):
+                                found = j
+                            j = f.nx[j]
+                        /#/ or the last load of it in the block that enters the loop, if nothing writes after it
+                        if found < 0 && pre0 >= 0:
+                            let q = f.blast[pre0]
+                            while q >= 0 && found < 0 && !writes_memory(f, q):
+                                if f.op[q] == int(Op.Load) && f.fwd[q] < 0 && f.rep[q] == f.rep[i] && f.ty[q] == f.ty[i] && f.follow(f.a[q]) == f.follow(f.a[i]):
+                                    found = q
+                                q = f.pv[q]
+                        if found >= 0:
+                            replace_inst(f, i, found)
+                            changed = true
+                            i = nxt
+                            continue
                     if f.fwd[i] < 0 && (pure_op(o) || (o == int(Op.Load) && !mem && b == h)):
                         let ok = true
                         for u in 0..f.nval(i):
@@ -1292,6 +1810,8 @@ fn value_passes(f: &Fun, rs: &Reps, split: bool) => bool:
     if split && split_stores(f, rs):
         changed = true
     if cse_branches(f):
+        changed = true
+    if range_checks(f):
         changed = true
     if hoist_invariants(f):
         changed = true
