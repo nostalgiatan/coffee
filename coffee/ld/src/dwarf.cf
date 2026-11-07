@@ -41,6 +41,171 @@ fn dw_w64(t: &Txt, v: int) => void:
     for k in 0..8:
         t.put_byte((v >> (8 * k)) & 255)
 
+
+class DwList:
+    b: buf<int>
+    n: int
+
+fn new_dw_list() => DwList:
+    return DwList { b: new_buf(int, 64), n: 0 }
+
+fn dw_push(l: &DwList, v: int) => void:
+    if l.n >= len(l.b):
+        l.b = buf_resize(l.b, (l.n + 1) * 2)
+    l.b[l.n] = v
+    l.n = l.n + 1
+
+/#/ The end of the word of `t` that starts at `s` (words are separated by spaces, `e` ends the line).
+fn dw_wend(t: &Txt, s: int, e: int) => int:
+    let k = s
+    while k < e && t.b[k] != 32:
+        k = k + 1
+    return k
+
+fn dw_num(t: &Txt, s: int, e: int) => int:
+    let neg = false
+    let k = s
+    if k < e && t.b[k] == 45:
+        neg = true
+        k = k + 1
+    let v = 0
+    while k < e:
+        v = v * 10 + t.b[k] - 48
+        k = k + 1
+    if neg:
+        return 0 - v
+    return v
+
+fn dw_str(out: &Txt, t: &Txt, s: int, e: int) => void:
+    for k in s..e:
+        out.put_byte(t.b[k])
+    out.put_byte(0)
+
+/#/ A reference to the type `id`, patched when the offsets of all types are known.
+fn dw_ref(out: &Txt, fx_p: &DwList, fx_i: &DwList, id: int) => void:
+    dw_push(fx_p, out.n)
+    dw_push(fx_i, id)
+    dw_w32(out, 0)
+
+fn dw_ab(abbrev: &Txt, code: int, tag: int, kids: int) => void:
+    abbrev.put_byte(code)
+    abbrev.put_byte(tag)
+    abbrev.put_byte(kids)
+
+fn dw_abp(abbrev: &Txt, at: int, form: int) => void:
+    abbrev.put_byte(at)
+    abbrev.put_byte(form)
+    
+/#/ The DIE of the type line `T id kind ...` in `t[s..e]`.
+fn dw_type(out: &Txt, ids: &DwList, offs: &DwList, fx_p: &DwList, fx_i: &DwList, t: &Txt, s: int, e: int) => void:
+    let a = dw_wend(t, s + 2, e)
+    let id = dw_num(t, s + 2, a)
+    let kind = t.b[a + 1]
+    let w = a + 3
+    dw_push(ids, id)
+    dw_push(offs, out.n)
+    if kind == int('i') || kind == int('f') || kind == int('o'):
+        let w2 = dw_wend(t, w, e)
+        let size = dw_num(t, w, w2)
+        out.put_byte(4)
+        let enc = 8
+        if kind == int('i'):
+            let w3 = dw_wend(t, w2 + 1, e)
+            let signed = dw_num(t, w2 + 1, w3)
+            enc = 7
+            dw_int_name(out, signed, size)
+            if signed == 1:
+                enc = 5
+        elif kind == int('f'):
+            enc = 4
+            out.put("float")
+            if size != 8:
+                out.put("32")
+        else:
+            out.put("bytes")
+        out.put_byte(0)
+        out.put_byte(enc)
+        dw_uleb(out, size)
+    elif kind == int('b'):
+        out.put_byte(4)
+        out.put("bool")
+        out.put_byte(0)
+        out.put_byte(2)
+        dw_uleb(out, 1)
+    elif kind == int('s'):
+        out.put_byte(5)
+        dw_uleb(out, 8)
+        dw_ref(out, fx_p, fx_i, 0 - 2)
+    elif kind == int('p'):
+        let target = dw_num(t, w, e)
+        if target < 0:
+            out.put_byte(6)
+            dw_uleb(out, 8)
+        else:
+            out.put_byte(5)
+            dw_uleb(out, 8)
+            dw_ref(out, fx_p, fx_i, target)
+    elif kind == int('S'):
+        let w2 = dw_wend(t, w, e)
+        out.put_byte(7)
+        dw_str(out, t, w, w2)
+        let w3 = dw_wend(t, w2 + 1, e)
+        dw_uleb(out, dw_num(t, w2 + 1, w3))
+        let w4 = dw_wend(t, w3 + 1, e)
+        let q = w4 + 1
+        while q < e:
+            let q2 = dw_wend(t, q, e)
+            let c1 = q
+            while c1 < q2 && t.b[c1] != 58:
+                c1 = c1 + 1
+            let c2 = c1 + 1
+            while c2 < q2 && t.b[c2] != 58:
+                c2 = c2 + 1
+            out.put_byte(8)
+            dw_str(out, t, q, c1)
+            dw_ref(out, fx_p, fx_i, dw_num(t, c1 + 1, c2))
+            dw_uleb(out, dw_num(t, c2 + 1, q2))
+            q = q2 + 1
+        out.put_byte(0)
+
+fn dw_int_name(out: &Txt, signed: int, size: int) => void:
+    if signed == 1 && size == 8:
+        out.put("int")
+        return
+    if signed == 1:
+        out.put("int")
+    else:
+        out.put("uint")
+    out.put_int(size * 8)
+
+/#/ The DIE of the variable line `V name type offset P|L` in `t[s..e]`.
+fn dw_var(out: &Txt, fx_p: &DwList, fx_i: &DwList, t: &Txt, s: int, e: int) => void:
+    let a = dw_wend(t, s + 2, e)
+    let b = dw_wend(t, a + 1, e)
+    let c = dw_wend(t, b + 1, e)
+    if t.b[c + 1] == int('P'):
+        out.put_byte(9)
+    else:
+        out.put_byte(10)
+    dw_str(out, t, s + 2, a)
+    dw_ref(out, fx_p, fx_i, dw_num(t, a + 1, b))
+    let ex = new_txt()
+    ex.put_byte(118)
+    dw_sleb(&ex, dw_num(t, b + 1, c))
+    dw_uleb(out, ex.n)
+    out.put_all(&ex)
+
+/#/ Writes the offset of each reference the type table gave out.
+fn dw_patch(out: &Txt, fx_p: &DwList, fx_i: &DwList, ids: &DwList, offs: &DwList, base: int, shift: int) => void:
+    for k in 0..fx_p.n:
+        let want = fx_i.b[k]
+        let v = 0
+        for j in 0..ids.n:
+            if ids.b[j] == want:
+                v = base + offs.b[j]
+        for m in 0..4:
+            out.b[shift + fx_p.b[k] + m] = (v >> (8 * m)) & 255
+
 /#/ The number (from 1) of `name` among the lines of `files`, which gets it when it is new.
 fn dw_file(files: &Txt, name: &Txt) => int:
     let n = 0
@@ -60,6 +225,26 @@ fn dw_file(files: &Txt, name: &Txt) => int:
     files.put_byte(10)
     return n + 1
 
+/#/ Appends the DIE of the function read last (`fhead`, its variables in `fvars`) to `kids`.
+fn dw_flush(kids: &Txt, fhead: &Txt, fvars: &Txt, ffx_p: &DwList, ffx_i: &DwList, kfx_p: &DwList, kfx_i: &DwList, nvar: int) => void:
+    if fhead.n == 0:
+        return
+    if nvar > 0:
+        kids.put_byte(3)
+    else:
+        kids.put_byte(2)
+    kids.put_all(fhead)
+    if nvar > 0:
+        for k in 0..ffx_p.n:
+            dw_push(kfx_p, kids.n + ffx_p.b[k])
+            dw_push(kfx_i, ffx_i.b[k])
+        kids.put_all(fvars)
+        kids.put_byte(0)
+    fhead.clear()
+    fvars.clear()
+    ffx_p.n = 0
+    ffx_i.n = 0
+
 /#/ Makes the three sections; false when no function has lines.
 fn build_dwarf(l: &Linker, base: int, abbrev: &Txt, info: &Txt, line: &Txt) => bool:
     let t = &l.dbg
@@ -69,6 +254,28 @@ fn build_dwarf(l: &Linker, base: int, abbrev: &Txt, info: &Txt, line: &Txt) => b
     let files = new_txt()
     let prog = new_txt()
     let kids = new_txt()
+    /#/ the type DIEs, their ids and offsets, and the references to patch (in them, in the kids, in the
+    /#/ function being read)
+    let tdies = new_txt()
+    let tids = new_dw_list()
+    let toffs = new_dw_list()
+    let tfx_p = new_dw_list()
+    let tfx_i = new_dw_list()
+    let kfx_p = new_dw_list()
+    let kfx_i = new_dw_list()
+    let ffx_p = new_dw_list()
+    let ffx_i = new_dw_list()
+    let fhead = new_txt()
+    let fvars = new_txt()
+    let nvar = 0
+    /#/ the char type that string pointers point to
+    dw_push(&tids, 0 - 2)
+    dw_push(&toffs, 0)
+    tdies.put_byte(4)
+    tdies.put("char")
+    tdies.put_byte(0)
+    tdies.put_byte(6)
+    dw_uleb(&tdies, 1)
     let lo = 0
     let hi = 0
     let nfn = 0
@@ -90,7 +297,15 @@ fn build_dwarf(l: &Linker, base: int, abbrev: &Txt, info: &Txt, line: &Txt) => b
                 if dir.n == 0:
                     for k in start + 2..i:
                         dir.put_byte(t.b[k])
+            elif c == int('T'):
+                dw_type(&tdies, &tids, &toffs, &tfx_p, &tfx_i, t, start, i)
+            elif c == int('V'):
+                if live:
+                    dw_var(&fvars, &ffx_p, &ffx_i, t, start, i)
+                    nvar = nvar + 1
             elif c == int('F'):
+                dw_flush(&kids, &fhead, &fvars, &ffx_p, &ffx_i, &kfx_p, &kfx_i, nvar)
+                nvar = 0
                 if live:
                     if faddr + fsize > cur_addr:
                         prog.put_byte(2)
@@ -124,11 +339,10 @@ fn build_dwarf(l: &Linker, base: int, abbrev: &Txt, info: &Txt, line: &Txt) => b
                         cur_addr = faddr
                         cur_line = 1
                         cur_file = 1
-                        kids.put_byte(2)
-                        kids.put_all(&w)
-                        kids.put_byte(0)
-                        dw_w64(&kids, faddr)
-                        dw_w64(&kids, fsize)
+                        fhead.put_all(&w)
+                        fhead.put_byte(0)
+                        dw_w64(&fhead, faddr)
+                        dw_w64(&fhead, fsize)
             elif c == int('L') && live:
                 let q = start + 2
                 let off = 0
@@ -173,6 +387,7 @@ fn build_dwarf(l: &Linker, base: int, abbrev: &Txt, info: &Txt, line: &Txt) => b
                     cur_addr = faddr + off
                 prog.put_byte(1)
         start = i + 1
+    dw_flush(&kids, &fhead, &fvars, &ffx_p, &ffx_i, &kfx_p, &kfx_i, nvar)
     if live:
         if faddr + fsize > cur_addr:
             prog.put_byte(2)
@@ -214,19 +429,47 @@ fn build_dwarf(l: &Linker, base: int, abbrev: &Txt, info: &Txt, line: &Txt) => b
         abbrev.put_byte(form)
     abbrev.put_byte(0)
     abbrev.put_byte(0)
-    abbrev.put_byte(2)
-    abbrev.put_byte(46)
+    for code in 2..4:
+        dw_ab(abbrev, code, 46, code - 2)
+        dw_abp(abbrev, 3, 8)
+        dw_abp(abbrev, 17, 1)
+        dw_abp(abbrev, 18, 7)
+        dw_abp(abbrev, 63, 25)
+        abbrev.put_byte(0)
+        abbrev.put_byte(0)
+    dw_ab(abbrev, 4, 36, 0)
+    dw_abp(abbrev, 3, 8)
+    dw_abp(abbrev, 62, 11)
+    dw_abp(abbrev, 11, 15)
     abbrev.put_byte(0)
-    abbrev.put_byte(3)
-    abbrev.put_byte(8)
-    abbrev.put_byte(17)
-    abbrev.put_byte(1)
-    abbrev.put_byte(18)
-    abbrev.put_byte(7)
-    abbrev.put_byte(63)
-    abbrev.put_byte(25)
+    abbrev.put_byte(0)
+    dw_ab(abbrev, 5, 15, 0)
+    dw_abp(abbrev, 11, 15)
+    dw_abp(abbrev, 73, 19)
     abbrev.put_byte(0)
     abbrev.put_byte(0)
+    dw_ab(abbrev, 6, 15, 0)
+    dw_abp(abbrev, 11, 15)
+    abbrev.put_byte(0)
+    abbrev.put_byte(0)
+    dw_ab(abbrev, 7, 19, 1)
+    dw_abp(abbrev, 3, 8)
+    dw_abp(abbrev, 11, 15)
+    abbrev.put_byte(0)
+    abbrev.put_byte(0)
+    dw_ab(abbrev, 8, 13, 0)
+    dw_abp(abbrev, 3, 8)
+    dw_abp(abbrev, 73, 19)
+    dw_abp(abbrev, 56, 15)
+    abbrev.put_byte(0)
+    abbrev.put_byte(0)
+    for code in 9..11:
+        dw_ab(abbrev, code, 5 + (code - 9) * 47, 0)
+        dw_abp(abbrev, 3, 8)
+        dw_abp(abbrev, 73, 19)
+        dw_abp(abbrev, 2, 24)
+        abbrev.put_byte(0)
+        abbrev.put_byte(0)
     abbrev.put_byte(0)
     /#/ .debug_info
     let cu = new_txt()
@@ -246,6 +489,11 @@ fn build_dwarf(l: &Linker, base: int, abbrev: &Txt, info: &Txt, line: &Txt) => b
     dw_w64(&cu, lo)
     dw_w64(&cu, hi - lo)
     dw_w32(&cu, 0)
+    /#/ offsets in the unit: its 11 byte header, then the DIE above, the types, the functions
+    let cbase = 11 + cu.n
+    dw_patch(&tdies, &tfx_p, &tfx_i, &tids, &toffs, cbase, 0)
+    dw_patch(&kids, &kfx_p, &kfx_i, &tids, &toffs, cbase, 0)
+    cu.put_all(&tdies)
     cu.put_all(&kids)
     cu.put_byte(0)
     dw_w32(info, cu.n + 7)

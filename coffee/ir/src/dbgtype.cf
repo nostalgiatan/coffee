@@ -1,0 +1,202 @@
+/#/ Descriptions of types for the debug table (`-O0 -g`), one line each in the table the linker makes
+/#/ DWARF of (see `ld/src/dwarf.cf`):
+/#/
+/#/     T id i size signed        an integer (an enum without payloads too)
+/#/     T id f size               a float
+/#/     T id b                    a bool
+/#/     T id s                    a string (a pointer to its text)
+/#/     T id p target             a pointer to the type `target` (-1: to nothing)
+/#/     T id S name size n field:type:offset ...      a struct
+/#/     T id o size               bytes of no known shape
+/#/
+/#/ The type of a variable is the one `dbg_type` returns: a class variable holds a pointer, so its type
+/#/ is the pointer to the struct (id 1000000 + the class's type).
+use * in storage
+use * in txt
+
+class DbgTypes:
+    done: buf<int>
+    n: int
+    out: Txt
+
+fn new_dbg_types() => DbgTypes:
+    return DbgTypes { done: new_buf(int, 64), n: 0, out: new_txt() }
+
+/#/ Is the id new? Then it is entered.
+fn dbg_new(d: &DbgTypes, id: int) => bool:
+    for i in 0..d.n:
+        if d.done[i] == id:
+            return false
+    if d.n >= len(d.done):
+        d.done = buf_resize(d.done, (d.n + 1) * 2)
+    d.done[d.n] = id
+    d.n = d.n + 1
+    return true
+
+fn dbg_int(d: &DbgTypes) => int:
+    if dbg_new(d, 3000000):
+        d.out.put("T 3000000 i 8 1\n")
+    return 3000000
+
+fn dbg_ptr(d: &DbgTypes, id: int, target: int) => void:
+    d.out.put("T ")
+    d.out.put_int(id)
+    d.out.put(" p ")
+    d.out.put_int(target)
+    d.out.put_byte(10)
+
+fn dbg_put_name(d: &DbgTypes, g: &Syms, row: int) => void:
+    for k in 0..g.size[row]:
+        d.out.put_byte(g.pool[g.off[row] + k])
+
+/#/ A pair of pointer and length as a struct.
+fn dbg_pair(d: &DbgTypes, id: int, name: &str, elem: int) => void:
+    let li = dbg_int(d)
+    let pid = 2000000 + elem
+    if dbg_new(d, pid):
+        dbg_ptr(d, pid, elem)
+    d.out.put("T ")
+    d.out.put_int(id)
+    d.out.put(" S ")
+    d.out.put(name)
+    d.out.put(" 16 2 ptr:")
+    d.out.put_int(pid)
+    d.out.put(":0 len:")
+    d.out.put_int(li)
+    d.out.put(":8\n")
+
+/#/ The struct line of class `x` (the fields of its ancestors first), and the types of its fields.
+fn dbg_class(d: &DbgTypes, t: &Tys, g: &Syms, x: int) => void:
+    let chain = new_buf(int, 8)
+    let n = 0
+    let cur = t.a[x]
+    while cur >= 0 && n < 8:
+        chain[n] = cur
+        n = n + 1
+        let next = -1
+        for i in 0..g.n:
+            if g.info[i] == cur && g.kind[i] == int(Sk.Parent):
+                next = g.find_class_row(i)
+        cur = next
+    let fields = new_txt()
+    let nf = 0
+    let size = 0
+    let c = n - 1
+    while c >= 0:
+        for i in 0..g.n:
+            if g.info[i] == chain[c] && g.kind[i] == int(Sk.Field) && g.ty[i] >= 0:
+                let f = subst_env(t, g.ty[i], x)
+                let fid = dbg_type(d, t, g, f)
+                size = align_up(size, st_align(t, g, f))
+                fields.put_byte(32)
+                for k in 0..g.size[i]:
+                    fields.put_byte(g.pool[g.off[i] + k])
+                fields.put_byte(58)
+                fields.put_int(fid)
+                fields.put_byte(58)
+                fields.put_int(size)
+                size = size + st_size(t, g, f)
+                nf = nf + 1
+        c = c - 1
+    d.out.put("T ")
+    d.out.put_int(x)
+    d.out.put(" S ")
+    dbg_put_name(d, g, t.a[x])
+    d.out.put_byte(32)
+    d.out.put_int(align_up(size, st_align(t, g, x)))
+    d.out.put_byte(32)
+    d.out.put_int(nf)
+    d.out.put_all(&fields)
+    d.out.put_byte(10)
+
+/#/ Describes type `x` and what it names, once; the id a variable of this type has.
+fn dbg_type(d: &DbgTypes, t: &Tys, g: &Syms, x: int) => int:
+    let k = t.kind[x]
+    if k == int(Ty.Void) || k == int(Ty.Error):
+        return 0 - 1
+    let id = x
+    if k == int(Ty.Named) && g.kind[t.a[x]] != int(Sk.Enum):
+        id = 1000000 + x
+    if !dbg_new(d, id):
+        return id
+    if k == int(Ty.Int):
+        d.out.put("T ")
+        d.out.put_int(id)
+        d.out.put(" i ")
+        d.out.put_int(t.a[x])
+        d.out.put_byte(32)
+        d.out.put_int(t.b[x])
+        d.out.put_byte(10)
+    elif k == int(Ty.Float):
+        d.out.put("T ")
+        d.out.put_int(id)
+        d.out.put(" f ")
+        d.out.put_int(t.a[x])
+        d.out.put_byte(10)
+    elif k == int(Ty.Bool):
+        d.out.put("T ")
+        d.out.put_int(id)
+        d.out.put(" b\n")
+    elif k == int(Ty.Str):
+        d.out.put("T ")
+        d.out.put_int(id)
+        d.out.put(" s\n")
+    elif k == int(Ty.Ref):
+        let inner = t.a[x]
+        let target = dbg_type(d, t, g, inner)
+        if t.kind[inner] == int(Ty.Named) && g.kind[t.a[inner]] != int(Sk.Enum):
+            /#/ a reference to a class is the class's own pointer
+            target = inner
+        dbg_ptr(d, id, target)
+    elif k == int(Ty.Array):
+        let target = dbg_type(d, t, g, t.a[x])
+        dbg_ptr(d, id, target)
+    elif k == int(Ty.Buf) && t.a[x] >= 0:
+        let elem = dbg_type(d, t, g, t.a[x])
+        dbg_pair(d, id, "buf", elem)
+    elif k == int(Ty.Slice):
+        let elem = dbg_type(d, t, g, t.a[x])
+        dbg_pair(d, id, "slice", elem)
+    elif k == int(Ty.Tuple):
+        let fields = new_txt()
+        let off = 0
+        for i in 0..t.count_of(x):
+            let f = t.arg(x, i)
+            let fid = dbg_type(d, t, g, f)
+            off = align_up(off, st_align(t, g, f))
+            fields.put(" _")
+            fields.put_int(i)
+            fields.put_byte(58)
+            fields.put_int(fid)
+            fields.put_byte(58)
+            fields.put_int(off)
+            off = off + st_size(t, g, f)
+        d.out.put("T ")
+        d.out.put_int(id)
+        d.out.put(" S tuple ")
+        d.out.put_int(st_size(t, g, x))
+        d.out.put_byte(32)
+        d.out.put_int(t.count_of(x))
+        d.out.put_all(&fields)
+        d.out.put_byte(10)
+    elif k == int(Ty.Named) && g.kind[t.a[x]] == int(Sk.Enum):
+        if has_payload(t, g, t.a[x]):
+            dbg_ptr(d, id, 0 - 1)
+        else:
+            d.out.put("T ")
+            d.out.put_int(id)
+            d.out.put(" i 8 0\n")
+    elif k == int(Ty.Named):
+        /#/ the variable holds a pointer to the struct
+        dbg_ptr(d, id, x)
+        if dbg_new(d, x):
+            dbg_class(d, t, g, x)
+    elif k == int(Ty.Object) || k == int(Ty.Buf):
+        dbg_ptr(d, id, 0 - 1)
+    else:
+        d.out.put("T ")
+        d.out.put_int(id)
+        d.out.put(" o ")
+        d.out.put_int(st_size(t, g, x))
+        d.out.put_byte(10)
+    return id

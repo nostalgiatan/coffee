@@ -32,7 +32,7 @@ fn main() => int:
     let dir = txt_of("/work")
     set_line_map(&seg_line, &seg_src, &seg_unit, 1, &units, 8, &dir)
     set_debug()
-    let obj = build_src(src, 1)
+    let obj = build_src(clone src, 1)
     no_lines()
     if obj.n == 0 || !has(&obj, ".cf_lines"):
         say("MISS: no line table in the object\n")
@@ -59,6 +59,23 @@ fn main() => int:
     let exe2 = link_exe(&l2)
     if exe2.n == 0 || has(&exe2, ".debug_line"):
         say("MISS: debug sections without -g\n")
+        m = m + 1
+    /#/ -O0 -g: the variables and their types
+    set_line_map(&seg_line, &seg_src, &seg_unit, 1, &units, 8, &dir)
+    set_debug()
+    set_debug_vars()
+    let obj3 = build_src(clone src, 0)
+    no_lines()
+    if !has(&obj3, "V s ") || !has(&obj3, "V n ") || !has(&obj3, " i 8 1\n"):
+        say("MISS: no variables in the object\n")
+        m = m + 1
+    let l3 = new_linker()
+    l3.syms = true
+    l3.add_file(&obj3, &n1)
+    l3.add_file(&rt, &n2)
+    let exe3 = link_exe(&l3)
+    if exe3.n == 0 || !has(&exe3, "int") || !has(&exe3, "t.cf"):
+        say("MISS: no type or variable in the executable\n")
         m = m + 1
     fflush(0)
     return m

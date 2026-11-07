@@ -14,6 +14,7 @@
 /#/ r8, r9, floats in xmm0 to xmm7, the rest on the stack). An aggregate is passed as a pointer to
 /#/ its place in the caller's frame and returned through a pointer in the first integer register.
 use * in elf
+use * in dbgtype
 
 fn int_reg(k: int) => int:
     if k == 0:
@@ -107,6 +108,12 @@ class Gen:
     lf_start: buf<int>
     lf_m0: buf<int>
     lf_n: int
+    /#/ `-O0 -g`: the types, and the variables of each function with a line table (`V` lines; `vr_s`/`vr_e`
+    /#/ say which part of `vtxt` is the one of function number `lf` k)
+    dt: DbgTypes
+    vtxt: Txt
+    vr_s: buf<int>
+    vr_e: buf<int>
 
     fn add_str(self, off: int) => void:
         if self.nstr >= len(self.soff):
@@ -2121,6 +2128,11 @@ let dbg_nseg = 0
 let dbg_units = new_txt()
 let dbg_lines = 0
 let dbg_dir = new_txt()
+/#/ Variables and their types go in the table too (set with `-O0 -g`).
+let dbg_vars = false
+
+fn set_debug_vars() => void:
+    dbg_vars = true
 
 fn set_line_map(seg_line: &buf<int>, seg_src: &buf<int>, seg_unit: &buf<int>, nseg: int, units: &Txt, lines: int, dir: &Txt) => void:
     dbg_seg_line = new_buf(int, nseg + 1)
@@ -2173,6 +2185,7 @@ fn lines_dump(g: &Gen, out: &Txt) => void:
         out.put("D ")
         out.put_all(&dbg_dir)
         out.put_byte(10)
+    out.put_all(&g.dt.out)
     for k in 0..g.lf_n:
         let fn_txt = new_txt()
         let s = g.lf_sym[k] - 2
@@ -2211,9 +2224,12 @@ fn lines_dump(g: &Gen, out: &Txt) => void:
             out.put_all(&fn_txt)
             out.put_byte(10)
             out.put_all(&rows)
+            if k < len(g.vr_s) && g.vr_e[k] > g.vr_s[k]:
+                for q in g.vr_s[k]..g.vr_e[k]:
+                    out.put_byte(g.vtxt.b[q])
 
 fn new_gen() => Gen:
-    return Gen { a: new_asm(), o: new_obj(), voff: new_buf(int, 64), sh: new_buf(int, 64), sframe: 0, tmp: 0, frame: 0, err: 0, av: new_buf(int, 16), nav: 0, sbase: 256, soff: new_buf(int, 16), nstr: 0, home: new_buf(int, 64), xhome: new_buf(int, 64), ord: new_buf(int, 16), emit: new_buf(int, 16), xsg: new_buf(int, 64), did: new_buf(int, 64), nsaved: 0, saved: new_buf(int, 8), ed: new_buf(int, 16), ned: 0, ra_lo: new_buf(int, 1), ra_hi: new_buf(int, 1), ra_wt: new_buf(int, 1), uq_d: new_buf(int, 16), uq_b: new_buf(int, 16), nuq: 0, ra_dblk: new_buf(int, 1), ra_dset: new_buf(int, 1), ra_cp: new_buf(int, 16), ra_ncp: 0, ra_cm: new_buf(int, 16), cur: -1, msk: new_buf(int, 16), fmask: 0, nuse: new_buf(int, 64), am_base: 0, am_idx: -1, am_scale: 1, am_disp: 0, epi: 0, epi_jump: false, hc: new_buf(int, 16), nhc: 0, lm_at: new_buf(int, 64), lm_ln: new_buf(int, 64), lm_n: 0, mk_l: new_buf(int, 64), mk_ln: new_buf(int, 64), mk_n: 0, lf_sym: new_buf(int, 64), lf_start: new_buf(int, 64), lf_m0: new_buf(int, 64), lf_n: 0 }
+    return Gen { a: new_asm(), o: new_obj(), voff: new_buf(int, 64), sh: new_buf(int, 64), sframe: 0, tmp: 0, frame: 0, err: 0, av: new_buf(int, 16), nav: 0, sbase: 256, soff: new_buf(int, 16), nstr: 0, home: new_buf(int, 64), xhome: new_buf(int, 64), ord: new_buf(int, 16), emit: new_buf(int, 16), xsg: new_buf(int, 64), did: new_buf(int, 64), nsaved: 0, saved: new_buf(int, 8), ed: new_buf(int, 16), ned: 0, ra_lo: new_buf(int, 1), ra_hi: new_buf(int, 1), ra_wt: new_buf(int, 1), uq_d: new_buf(int, 16), uq_b: new_buf(int, 16), nuq: 0, ra_dblk: new_buf(int, 1), ra_dset: new_buf(int, 1), ra_cp: new_buf(int, 16), ra_ncp: 0, ra_cm: new_buf(int, 16), cur: -1, msk: new_buf(int, 16), fmask: 0, nuse: new_buf(int, 64), am_base: 0, am_idx: -1, am_scale: 1, am_disp: 0, epi: 0, epi_jump: false, hc: new_buf(int, 16), nhc: 0, lm_at: new_buf(int, 64), lm_ln: new_buf(int, 64), lm_n: 0, mk_l: new_buf(int, 64), mk_ln: new_buf(int, 64), mk_n: 0, lf_sym: new_buf(int, 64), lf_start: new_buf(int, 64), lf_m0: new_buf(int, 64), lf_n: 0, dt: new_dbg_types(), vtxt: new_txt(), vr_s: new_buf(int, 64), vr_e: new_buf(int, 64) }
 
 /#/ The multiplier that divides by `d` (not a power of two; `l` is the log2 of `d` rounded up):
 /#/ 1 + floor(2^(63 + l) / d), taken as a 64-bit pattern, by long division one bit at a time.

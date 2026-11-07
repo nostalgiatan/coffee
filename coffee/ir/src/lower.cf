@@ -235,6 +235,7 @@ fn set_debug() => void:
 /#/ The line marks of what is made from now on are not wanted (the runtime that is linked in).
 fn no_lines() => void:
     dbg_on = false
+    dbg_vars = false
     lines_on = false
 
 fn set_ir_dump() => void:
@@ -280,6 +281,16 @@ class Lower:
     nloops: int
     /#/ variables that live in a slot: its value, or -1; the names `&` is applied to
     v_slot: buf<int>
+    /#/ `-O0 -g`: the variables kept in slots for the debug table: function (name number), type, slot,
+    /#/ 1 for a parameter, and the name (at `dv_nm` in `dv_names`, NUL-ended)
+    dv_fn: buf<int>
+    dv_tid: buf<int>
+    dv_slot: buf<int>
+    dv_par: buf<int>
+    dv_nm: buf<int>
+    dv_names: Txt
+    dv_n: int
+    in_params: bool
     /#/ the variable holding 1 while a variable still owns its value, or -1
     v_flag: buf<int>
     /#/ owned temporaries that were only borrowed: released at the end of the statement
@@ -2611,15 +2622,70 @@ class Lower:
                 return old
         let vr = self.rep(t, g, vt)
         let v = self.new_var(a, tok, vr, vt)
-        if tok >= 0 && !is_handle(t, g, vt) && self.is_addr(a, tok):
-            let s = self.f.slot(st_size(t, g, vt))
+        let handle = is_handle(t, g, vt)
+        let taken = tok >= 0 && self.is_addr(a, tok)
+        if tok >= 0 && ((!handle && (dbg_vars || taken)) || (handle && dbg_vars)):
+            let sz = 8
+            if !handle:
+                sz = st_size(t, g, vt)
+            let s = self.f.slot(sz)
             self.v_slot[v] = s
             self.f.store(s, val)
+            if dbg_vars:
+                self.dv_add(t, g, a, tok, vt, s)
         else:
             self.write_var(v, self.f.cur, val)
         if self.no_own == 0:
             self.own_bind(t, g, a, v, vt)
         return v
+
+    /#/ Notes variable `tok` of type `vt` in `slot` for the debug table.
+    fn dv_add(self, t: &Tys, g: &Syms, a: &Ast, tok: int, vt: int, slot: int) => void:
+        let tid = dbg_type(&self.mc.dt, t, g, vt)
+        if tid < 0:
+            return
+        if self.dv_n >= len(self.dv_fn):
+            let cap = (self.dv_n + 1) * 2
+            self.dv_fn = buf_resize(self.dv_fn, cap)
+            self.dv_tid = buf_resize(self.dv_tid, cap)
+            self.dv_slot = buf_resize(self.dv_slot, cap)
+            self.dv_par = buf_resize(self.dv_par, cap)
+            self.dv_nm = buf_resize(self.dv_nm, cap)
+        self.dv_fn[self.dv_n] = self.cur_id
+        self.dv_tid[self.dv_n] = tid
+        self.dv_slot[self.dv_n] = slot
+        self.dv_par[self.dv_n] = 0
+        if self.in_params:
+            self.dv_par[self.dv_n] = 1
+        self.dv_nm[self.dv_n] = self.dv_names.n
+        for q in a.toks.start[tok]..a.toks.end[tok]:
+            self.dv_names.put_byte(a.byte_at(q))
+        self.dv_names.put_byte(0)
+        self.dv_n = self.dv_n + 1
+
+    /#/ The variables of function `id` as `V name type offset P|L` lines for the function just made.
+    fn dump_vars(self, id: int, lf: int) => void:
+        let mc = &self.mc
+        if lf >= len(mc.vr_s):
+            mc.vr_s = buf_resize(mc.vr_s, (lf + 1) * 2)
+            mc.vr_e = buf_resize(mc.vr_e, (lf + 1) * 2)
+        mc.vr_s[lf] = mc.vtxt.n
+        for k in 0..self.dv_n:
+            if self.dv_fn[k] == id:
+                mc.vtxt.put("V ")
+                let q = self.dv_nm[k]
+                while self.dv_names.b[q] != 0:
+                    mc.vtxt.put_byte(self.dv_names.b[q])
+                    q = q + 1
+                mc.vtxt.put_byte(32)
+                mc.vtxt.put_int(self.dv_tid[k])
+                mc.vtxt.put_byte(32)
+                mc.vtxt.put_int(0 - mc.voff[self.dv_slot[k]])
+                if self.dv_par[k] == 1:
+                    mc.vtxt.put(" P\n")
+                else:
+                    mc.vtxt.put(" L\n")
+        mc.vr_e[lf] = mc.vtxt.n
 
     fn var_read(self, v: int) => int:
         if self.v_slot[v] >= 0:
@@ -3519,7 +3585,9 @@ class Lower:
                 /#/ `self` is borrowed from the caller
                 if a.kind[p] == int(Nk.SelfParam):
                     self.no_own = 1
+                self.in_params = true
                 self.bind_var(t, g, a, a.tok[p], pt, self.f.param(entry, pr, -1))
+                self.in_params = false
                 self.no_own = 0
                 i = i + 1
             p = a.next[p]
@@ -3570,7 +3638,10 @@ class Lower:
                 for q in 0..o.n:
                     say_byte(o.b[q])
             self.mc.cur = self.lib.f_id[n]
+            let marked = self.mc.lf_n
             self.put_fun()
+            if dbg_vars && self.mc.lf_n > marked:
+                self.dump_vars(self.lib.f_id[n], self.mc.lf_n - 1)
             self.mc.cur = -1
 
     /#/ The function in `self.f` as machine code; a verifier finding is counted.
@@ -3632,4 +3703,4 @@ fn new_lower() => Lower:
     return lw
 
 fn make_lower() => Lower:
-    return Lower { f: new_fun("", 0), rs: new_reps(), names: new_names(), nstr: 0, cd_name: new_buf(int, 8), cd_sig: new_buf(int, 8), cd_var: new_buf(int, 8), cd_n: 0, sc: new_syms(), v_rep: new_buf(int, 16), v_ty: new_buf(int, 16), v_slot: new_buf(int, 16), v_flag: new_buf(int, 16), tmp_v: new_buf(int, 8), tmp_ty: new_buf(int, 8), tmp_n: 0, no_own: 0, own_st: new_buf(int, 16), own_n: 0, ld: new_buf(int, 8), glue_ty: new_buf(int, 8), glue_kind: new_buf(int, 8), glue_n: 0, glue_done: 0, lay_ty: new_buf(int, 8), lay_off: new_buf(int, 8), lay_n: 0, addr: new_names(), scanned: 0, fty: 0, rt_exit: 0, rt_calloc: 0, rt_strlen: 0, rt_malloc: 0, main_fn: false, rt_free: 0, rt_strdup: 0, rt_memcpy: 0, rt_strcmp: 0, rt_write: 0, or_mark: -1, opt: 1, mc: new_gen(), sbytes: new_txt(), mc_err: 0, ver_err: 0, lib: new_lib(), cur_id: -1, fc_gn: -1, ch_len: new_buf(int, 8), ch_at: new_buf(int, 64), fl_len: new_buf(int, 8), fl_from: new_buf(int, 8), fl_pool: new_buf(int, 16), fl_n: 0, penv: -1, ue: new_buf(int, 16), iq_node: new_buf(int, 8), iq_env: new_buf(int, 8), iq_cls: new_buf(int, 8), iq_nm: new_buf(int, 8), nf_tok: new_buf(int, 8), nf_node: new_buf(int, 8), nf_id: new_buf(int, 8), nf_n: 0, pnm: -1, tag: new_txt(), uses_rt: false, ext_mode: false, ext_slot: new_buf(int, 16), gl_name: new_buf(int, 8), gl_size: new_buf(int, 8), gl_n: 0, tailb: -1, tailm: -1, retx: -1, iq_n: 0, iq_done: 0, lis: -1, nv: 0, dk: new_buf(int, 64), dv: new_buf(int, 64), dn: 0, sealed: new_buf(int, 16), inc_head: new_buf(int, 16), inc_var: new_buf(int, 16), inc_par: new_buf(int, 16), inc_next: new_buf(int, 16), inc_n: 0, pe_head: new_buf(int, 16), pe_next: new_buf(int, 16), lc: new_buf(int, 8), lb: new_buf(int, 8), nloops: 0, ret_ty: 0, bad: 0, bad_node: -1 }
+    return Lower { f: new_fun("", 0), rs: new_reps(), names: new_names(), nstr: 0, cd_name: new_buf(int, 8), cd_sig: new_buf(int, 8), cd_var: new_buf(int, 8), cd_n: 0, sc: new_syms(), v_rep: new_buf(int, 16), v_ty: new_buf(int, 16), v_slot: new_buf(int, 16), dv_fn: new_buf(int, 16), dv_tid: new_buf(int, 16), dv_slot: new_buf(int, 16), dv_par: new_buf(int, 16), dv_nm: new_buf(int, 16), dv_names: new_txt(), dv_n: 0, in_params: false, v_flag: new_buf(int, 16), tmp_v: new_buf(int, 8), tmp_ty: new_buf(int, 8), tmp_n: 0, no_own: 0, own_st: new_buf(int, 16), own_n: 0, ld: new_buf(int, 8), glue_ty: new_buf(int, 8), glue_kind: new_buf(int, 8), glue_n: 0, glue_done: 0, lay_ty: new_buf(int, 8), lay_off: new_buf(int, 8), lay_n: 0, addr: new_names(), scanned: 0, fty: 0, rt_exit: 0, rt_calloc: 0, rt_strlen: 0, rt_malloc: 0, main_fn: false, rt_free: 0, rt_strdup: 0, rt_memcpy: 0, rt_strcmp: 0, rt_write: 0, or_mark: -1, opt: 1, mc: new_gen(), sbytes: new_txt(), mc_err: 0, ver_err: 0, lib: new_lib(), cur_id: -1, fc_gn: -1, ch_len: new_buf(int, 8), ch_at: new_buf(int, 64), fl_len: new_buf(int, 8), fl_from: new_buf(int, 8), fl_pool: new_buf(int, 16), fl_n: 0, penv: -1, ue: new_buf(int, 16), iq_node: new_buf(int, 8), iq_env: new_buf(int, 8), iq_cls: new_buf(int, 8), iq_nm: new_buf(int, 8), nf_tok: new_buf(int, 8), nf_node: new_buf(int, 8), nf_id: new_buf(int, 8), nf_n: 0, pnm: -1, tag: new_txt(), uses_rt: false, ext_mode: false, ext_slot: new_buf(int, 16), gl_name: new_buf(int, 8), gl_size: new_buf(int, 8), gl_n: 0, tailb: -1, tailm: -1, retx: -1, iq_n: 0, iq_done: 0, lis: -1, nv: 0, dk: new_buf(int, 64), dv: new_buf(int, 64), dn: 0, sealed: new_buf(int, 16), inc_head: new_buf(int, 16), inc_var: new_buf(int, 16), inc_par: new_buf(int, 16), inc_next: new_buf(int, 16), inc_n: 0, pe_head: new_buf(int, 16), pe_next: new_buf(int, 16), lc: new_buf(int, 8), lb: new_buf(int, 8), nloops: 0, ret_ty: 0, bad: 0, bad_node: -1 }
