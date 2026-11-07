@@ -26,7 +26,10 @@ fn ga_vb(g: &Gen, x: int) => int:
 fn ga_ld(g: &Gen, reg: int, f: &Fun, v: int) => void:
     let x = g_res(g, f, v)
     let k = f.op[x]
-    if k == int(Op.Const):
+    if g.home[x] >= 0:
+        if g.home[x] != reg:
+            a64_mov_rr(&g.a, reg, g.home[x])
+    elif k == int(Op.Const):
         if f.rep[x] == int(Rp.F32):
             a64_mov_ri(&g.a, reg, f.aux[x] & 4294967295)
         else:
@@ -50,9 +53,27 @@ fn ga_ld_ext(g: &Gen, reg: int, f: &Fun, v: int, signed: bool) => void:
     if r == int(Rp.I8) || r == int(Rp.I16) || r == int(Rp.I32):
         a64_extend(&g.a, reg, reg, rsize_scalar(r), signed)
 
-/#/ The place of instruction `i` = reg
+/#/ The register that holds `v`: its own when it has one, else `scratch`, loaded with it.
+fn ga_src(g: &Gen, f: &Fun, v: int, scratch: int) => int:
+    let h = g.home[g_res(g, f, v)]
+    if h >= 0:
+        return h
+    ga_ld(g, scratch, f, v)
+    return scratch
+
+/#/ Where instruction `i` makes its result: its own register, else `scratch`.
+fn ga_dst(g: &Gen, i: int, scratch: int) => int:
+    if g.home[i] >= 0:
+        return g.home[i]
+    return scratch
+
+/#/ The result of instruction `i` is in `reg`: kept in its register or stored in its place.
 fn ga_st(g: &Gen, i: int, reg: int) => void:
-    a64_st(&g.a, ta_fp(), g.voff[i], reg, 8)
+    if g.home[i] >= 0:
+        if g.home[i] != reg:
+            a64_mov_rr(&g.a, g.home[i], reg)
+    else:
+        a64_st(&g.a, ta_fp(), g.voff[i], reg, 8)
 
 /#/ For an aggregate value: the base register and displacement of its bytes (an undefined one
 /#/ reads from the start of the read-only data).
@@ -96,29 +117,22 @@ fn ga_val_to(g: &Gen, f: &Fun, rs: &Reps, db: int, dd: int, v: int) => void:
         let sb = ga_ab_reg(g, f, x)
         ga_copy_mem(g, db, dd, sb, ga_ab_disp(g, f, x), rsize(rs, r))
     else:
-        ga_ld(g, 9, f, x)
-        a64_st(&g.a, db, dd, 9, 8)
+        let rv = ga_src(g, f, x, 9)
+        a64_st(&g.a, db, dd, rv, 8)
 
 /#/ Gives every value its place; the size of the frame.
 fn ga_layout(g: &Gen, f: &Fun, rs: &Reps) => void:
     if len(g.voff) < f.ni + 1:
         g.voff = new_buf(int, f.ni + 1)
         g.sh = new_buf(int, f.ni + 1)
-    if len(g.home) < f.ni + 1:
-        g.home = new_buf(int, f.ni + 1)
-        g.xhome = new_buf(int, f.ni + 1)
-        g.xsg = new_buf(int, f.ni + 1)
-    for v in 0..f.ni + 1:
-        g.home[v] = 0 - 1
-        g.xhome[v] = 0 - 1
-        g.xsg[v] = 0
-    let cur = 16 + g.rbase
+    let cur = 16 + g.rbase + 8 * g.nsaved
     let tmp = 0
     for b in 0..f.nb:
         let p = f.pfirst[b]
         while p >= 0:
-            g.voff[p] = cur
-            cur = cur + g_place_size(g, rs, f.rep[p])
+            if g.home[p] < 0:
+                g.voff[p] = cur
+                cur = cur + g_place_size(g, rs, f.rep[p])
             p = f.nx[p]
         let i = f.bfirst[b]
         while i >= 0:
@@ -129,7 +143,7 @@ fn ga_layout(g: &Gen, f: &Fun, rs: &Reps) => void:
                     sz = sz + 8
                 g.voff[i] = cur
                 cur = cur + sz
-            elif f.rep[i] != int(Rp.Void) && op != int(Op.OwnMove):
+            elif f.rep[i] != int(Rp.Void) && op != int(Op.OwnMove) && g.home[i] < 0:
                 g.voff[i] = cur
                 cur = cur + g_place_size(g, rs, f.rep[i])
             i = f.nx[i]
@@ -145,7 +159,8 @@ fn ga_layout(g: &Gen, f: &Fun, rs: &Reps) => void:
     g.frame = (cur + 15) // 16 * 16
 
 /#/ Copies what edge `e` passes into the parameters of the block it enters; through a scratch
-/#/ area when an argument is itself a parameter of that block (the copies are simultaneous).
+/#/ area when the copies are not independent (an argument is itself a parameter of that block, or lives
+/#/ in the register of a parameter written before it).
 fn ga_edge_copy(g: &Gen, f: &Fun, rs: &Reps, e: int) => void:
     let to = f.eto[e]
     let n = f.eargn[e]
@@ -156,10 +171,20 @@ fn ga_edge_copy(g: &Gen, f: &Fun, rs: &Reps, e: int) => void:
         let x = g_res(g, f, f.pool[f.eargs[e] + k])
         if f.op[x] == int(Op.Param) && f.blk[x] == to:
             hazard = true
+        let hx = g.home[x]
+        if hx >= 0:
+            let q = f.pfirst[to]
+            for j in 0..k:
+                if g.home[q] == hx:
+                    hazard = true
+                q = f.nx[q]
     if !hazard:
         let p = f.pfirst[to]
         for k in 0..n:
-            ga_val_to(g, f, rs, ta_fp(), g.voff[p], f.pool[f.eargs[e] + k])
+            if g.home[p] >= 0:
+                ga_ld(g, g.home[p], f, f.pool[f.eargs[e] + k])
+            else:
+                ga_val_to(g, f, rs, ta_fp(), g.voff[p], f.pool[f.eargs[e] + k])
             p = f.nx[p]
         return
     let at = 0
@@ -171,6 +196,88 @@ fn ga_edge_copy(g: &Gen, f: &Fun, rs: &Reps, e: int) => void:
     at = 0
     for k in 0..n:
         let sz = g_place_size(g, rs, f.rep[p])
-        ga_copy_mem(g, ta_fp(), g.voff[p], ta_fp(), g.tmp + at, sz)
+        if g.home[p] >= 0:
+            a64_ld(&g.a, g.home[p], ta_fp(), g.tmp + at, 8)
+        else:
+            ga_copy_mem(g, ta_fp(), g.voff[p], ta_fp(), g.tmp + at, sz)
         at = at + sz
         p = f.nx[p]
+
+/#/ The register of pool slot `r`: the callee-saved x19 to x27. Every value lives in one for its
+/#/ whole life, across calls too, since a callee keeps them; the function saves the ones it uses.
+fn ga_pool_reg(r: int) => int:
+    return ta_saved_first() + r
+
+/#/ Gives the values that deserve one a register (`home`; -1 for the frame), by linear scan over
+/#/ the live ranges of `g_live_ranges`, the least wanted value going to the frame when there are
+/#/ no more registers. Floats stay in the frame for now.
+fn ga_alloc_regs(g: &Gen, f: &Fun, rs: &Reps) => void:
+    let nd = g_live_ranges(g, f, rs, false)
+    g.nsaved = 0
+    if nd == 0:
+        return
+    let npool = ta_nsaved_regs()
+    let top = g.ptop + 4
+    let first: buf<int> = new_buf(int, top + 1)
+    let link: buf<int> = new_buf(int, nd + 1)
+    for q in 0..top + 1:
+        first[q] = 0 - 1
+    let sd = nd - 1
+    while sd >= 0:
+        link[sd] = first[g.ra_lo[sd]]
+        first[g.ra_lo[sd]] = sd
+        sd = sd - 1
+    let occ: buf<int> = new_buf(int, npool)
+    let used: buf<int> = new_buf(int, npool)
+    for r in 0..npool:
+        occ[r] = 0 - 1
+    for q in 0..top + 1:
+        let cd = first[q]
+        while cd >= 0:
+            let d = cd
+            let nxt = link[d]
+            let v = g.dv[d]
+            let rd = f.rep[v]
+            if rd == int(Rp.F32) || rd == int(Rp.F64):
+                cd = nxt
+                continue
+            for r in 0..npool:
+                if occ[r] >= 0 && g.ra_hi[occ[r]] < g.ra_lo[d]:
+                    occ[r] = 0 - 1
+            let fr = 0 - 1
+            let shared = 0 - 1
+            if g.coal[d] >= 0 && g.home[g.dv[g.coal[d]]] >= 0 && g.ra_lo[g.coal[d]] < g.ra_lo[d]:
+                for r in 0..npool:
+                    if ga_pool_reg(r) == g.home[g.dv[g.coal[d]]] && occ[r] == g.coal[d]:
+                        shared = r
+            if shared >= 0:
+                fr = shared
+            let hint = g_hint_reg(g, f, v)
+            if hint >= 0 && fr < 0:
+                for r in 0..npool:
+                    if ga_pool_reg(r) == hint && occ[r] < 0:
+                        fr = r
+            for r in 0..npool:
+                if occ[r] < 0 && fr < 0:
+                    fr = r
+            if fr >= 0:
+                if shared < 0 || g.ra_hi[d] > g.ra_hi[occ[fr]]:
+                    occ[fr] = d
+                g.home[v] = ga_pool_reg(fr)
+                used[fr] = 1
+            else:
+                let worst = 0
+                for r in 0..npool:
+                    if g.dn[occ[r]] < g.dn[occ[worst]]:
+                        worst = r
+                if g.dn[occ[worst]] < g.dn[d]:
+                    g.home[g.dv[occ[worst]]] = 0 - 1
+                    g.home[v] = ga_pool_reg(worst)
+                    occ[worst] = d
+            cd = nxt
+    if len(g.saved) < npool:
+        g.saved = new_buf(int, npool + 1)
+    for r in 0..npool:
+        if used[r] == 1:
+            g.saved[g.nsaved] = ga_pool_reg(r)
+            g.nsaved = g.nsaved + 1

@@ -186,9 +186,11 @@ fn g_add_edge(g: &Gen, e: int) => void:
     g.ed[g.ned] = e
     g.ned = g.ned + 1
 
-/#/ Chooses a register for the values that deserve one: `home` of every value (-1 for the frame).
+/#/ The live range, the loop-weighted use count and the definition of every value that may live in a register (`g.ra_*`,
+/#/ `g.dv`, `g.dn`, `g.coal`): the part of register allocation every target shares. `home` and `xhome` are cleared;
+/#/ the number of such values is returned. With `hoist`, float constants used in loops get a value of their own to keep in a register.
 /#/ Live ranges are single intervals of the block order, made from the liveness of every block.
-fn g_alloc_regs(g: &Gen, f: &Fun, rs: &Reps) => void:
+fn g_live_ranges(g: &Gen, f: &Fun, rs: &Reps, hoist: bool) => int:
     let n = f.ni
     if len(g.home) < n + 1:
         g.home = new_buf(int, n + 1)
@@ -241,7 +243,7 @@ fn g_alloc_regs(g: &Gen, f: &Fun, rs: &Reps) => void:
         for k in 0..g.ned:
             if f.eto[g.ed[k]] == 0:
                 entry_ok = false
-    if entry_ok:
+    if entry_ok && hoist:
         for b in 0..f.nb:
             if depth[b] == 0:
                 continue
@@ -256,7 +258,7 @@ fn g_alloc_regs(g: &Gen, f: &Fun, rs: &Reps) => void:
                 for j in 0..f.eargn[e]:
                     nd = g_hoist_const(g, f, f.pool[f.eargs[e] + j], nd)
     if nd == 0:
-        return
+        return 0
     let dv: buf<int> = new_buf(int, nd + 1)
     g.ra_lo = new_buf(int, nd + 1)
     g.ra_hi = new_buf(int, nd + 1)
@@ -456,6 +458,18 @@ fn g_alloc_regs(g: &Gen, f: &Fun, rs: &Reps) => void:
     let dn: buf<int> = new_buf(int, nd + 1)
     for d in 0..nd:
         dn[d] = g.ra_wt[d] * 1024 // (g.ra_hi[d] - g.ra_lo[d] + 2)
+    g.dv = dv
+    g.coal = coal
+    g.dn = dn
+    g.ptop = pos
+    return nd
+
+/#/ Chooses a register for the values that deserve one: `home` of every value (-1 for the frame).
+fn g_alloc_regs(g: &Gen, f: &Fun, rs: &Reps) => void:
+    let nd = g_live_ranges(g, f, rs, true)
+    if nd == 0:
+        return
+    let pos = g.ptop
     /#/ linear scan, by start
     let top = pos + 4
     let first: buf<int> = new_buf(int, top + 1)
@@ -493,7 +507,7 @@ fn g_alloc_regs(g: &Gen, f: &Fun, rs: &Reps) => void:
             let d = cd
             let nxt = link[d]
             let fr_x = -1
-            let rd = f.rep[dv[d]]
+            let rd = f.rep[g.dv[d]]
             if (rd == int(Rp.F32) || rd == int(Rp.F64)) && !g_crosses(g, g.ra_lo[d], g.ra_hi[d]):
                 let lowx = 2
                 if ent[d] == 1 || g_at_call(g, g.ra_hi[d]):
@@ -506,9 +520,9 @@ fn g_alloc_regs(g: &Gen, f: &Fun, rs: &Reps) => void:
                         fr_x = r
                 if fr_x >= 0:
                     occx[fr_x] = d
-                    g.xhome[dv[d]] = fr_x
+                    g.xhome[g.dv[d]] = fr_x
                     if rd == int(Rp.F32):
-                        g.xsg[dv[d]] = 1
+                        g.xsg[g.dv[d]] = 1
                     cd = nxt
                     continue
             /#/ which of the caller-saved registers `d` may take: not one that a call it is alive
@@ -521,11 +535,11 @@ fn g_alloc_regs(g: &Gen, f: &Fun, rs: &Reps) => void:
                     occ[r] = -1
             let fr = -1
             /#/ the hint: the register of the first operand when it ends where `d` begins
-            let hint = g_hint_reg(g, f, dv[d])
+            let hint = g_hint_reg(g, f, g.dv[d])
             let shared = -1
-            if coal[d] >= 0 && g.home[dv[coal[d]]] >= 0 && g.ra_lo[coal[d]] < g.ra_lo[d]:
+            if g.coal[d] >= 0 && g.home[g.dv[g.coal[d]]] >= 0 && g.ra_lo[g.coal[d]] < g.ra_lo[d]:
                 for r in 0..10:
-                    if regs[r] == g.home[dv[coal[d]]] && occ[r] == coal[d] && g_reg_ok(g, r, cm, restr):
+                    if regs[r] == g.home[g.dv[g.coal[d]]] && occ[r] == g.coal[d] && g_reg_ok(g, r, cm, restr):
                         shared = r
             if shared >= 0:
                 fr = shared
@@ -539,24 +553,24 @@ fn g_alloc_regs(g: &Gen, f: &Fun, rs: &Reps) => void:
             if fr >= 0:
                 if shared < 0 || g.ra_hi[d] > g.ra_hi[occ[fr]]:
                     occ[fr] = d
-                g.home[dv[d]] = regs[fr]
+                g.home[g.dv[d]] = regs[fr]
                 used[fr] = 1
             else:
                 /#/ the least wanted of the live ones and this one goes to the frame
                 let worst = -1
                 for r in 0..10:
                     if g_reg_ok(g, r, cm, restr):
-                        if worst < 0 || dn[occ[r]] < dn[occ[worst]]:
+                        if worst < 0 || g.dn[occ[r]] < g.dn[occ[worst]]:
                             worst = r
-                if dn[occ[worst]] < dn[d]:
-                    g.home[dv[occ[worst]]] = -1
-                    g.home[dv[d]] = regs[worst]
+                if g.dn[occ[worst]] < g.dn[d]:
+                    g.home[g.dv[occ[worst]]] = -1
+                    g.home[g.dv[d]] = regs[worst]
                     occ[worst] = d
             cd = nxt
     /#/ the check: nothing in a caller-saved register is alive across a call, and r8 and r9
     /#/ hold neither a parameter nor an argument of the call that ends the value
     for d in 0..nd:
-        let h = g.home[dv[d]]
+        let h = g.home[g.dv[d]]
         if tg_is_caller_saved(h):
             let bit = tg_call_bit(h)
             if ((g_cm_in(g, g.ra_lo[d], g.ra_hi[d]) >> bit) & 1) == 1:
@@ -564,7 +578,7 @@ fn g_alloc_regs(g: &Gen, f: &Fun, rs: &Reps) => void:
             if h != regs[0] && (ent[d] == 1 || g_at_call(g, g.ra_hi[d])):
                 g.err = 1
     for d in 0..nd:
-        let xh = g.xhome[dv[d]]
+        let xh = g.xhome[g.dv[d]]
         if xh >= 0:
             if g_crosses(g, g.ra_lo[d], g.ra_hi[d]) || xh < tg_xmm_first():
                 g.err = 1

@@ -15,12 +15,11 @@ fn ga_cmp_flags(g: &Gen, f: &Fun, i: int) => void:
     let signed = g_is_signed_pred(g, f.aux[i])
     let wr = f.rep[g_res(g, f, f.a[i])]
     if wr == int(Rp.I64) || wr == int(Rp.Ptr):
-        ga_ld(g, 9, f, f.a[i])
+        let la = ga_src(g, f, f.a[i], 9)
         if g_small_imm(g, f, f.b[i]):
-            a64_cmp_ri(&g.a, 9, f.aux[g_res(g, f, f.b[i])])
+            a64_cmp_ri(&g.a, la, f.aux[g_res(g, f, f.b[i])])
         else:
-            ga_ld(g, 10, f, f.b[i])
-            a64_cmp_rr(&g.a, 9, 10)
+            a64_cmp_rr(&g.a, la, ga_src(g, f, f.b[i], 10))
         return
     ga_ld_ext(g, 9, f, f.a[i], signed)
     ga_ld_ext(g, 10, f, f.b[i], signed)
@@ -38,15 +37,13 @@ fn ga_fcmp_flags(g: &Gen, f: &Fun, i: int) => void:
 /#/ The address of the folded `x` (see `g_folds`) as base, index, scale and displacement in `am_*`;
 /#/ what is not a constant is loaded into `s1` (the base) and `s2` (the index).
 fn ga_addr_of(g: &Gen, f: &Fun, x: int, s1: int, s2: int) => void:
-    ga_ld(g, s1, f, f.a[x])
-    g.am_base = s1
+    g.am_base = ga_src(g, f, f.a[x], s1)
     if f.op[x] == int(Op.Index) && g_near_const(g, f, f.b[x]):
         g.am_idx = 0 - 1
         g.am_scale = 1
         g.am_disp = f.aux[g_res(g, f, f.b[x])] * f.aux[x]
     elif f.op[x] == int(Op.Index):
-        ga_ld(g, s2, f, f.b[x])
-        g.am_idx = s2
+        g.am_idx = ga_src(g, f, f.b[x], s2)
         g.am_scale = f.aux[x]
         g.am_disp = 0
     else:
@@ -61,8 +58,8 @@ fn ga_mem(g: &Gen, load: bool, rt: int, n: int) => void:
     elif g.am_scale == n || g.am_scale == 1:
         a64_ldst_idx(&g.a, load, rt, g.am_base, g.am_idx, g.am_scale == n, n)
     else:
-        a64_add_rr_lsl(&g.a, g.am_base, g.am_base, g.am_idx, a64_log2(g.am_scale))
-        a64_ldst(&g.a, load, rt, g.am_base, 0, n)
+        a64_add_rr_lsl(&g.a, 15, g.am_base, g.am_idx, a64_log2(g.am_scale))
+        a64_ldst(&g.a, load, rt, 15, 0, n)
 
 fn ga_arith(g: &Gen, f: &Fun, i: int, op: int) => void:
     let single = f.rep[i] == int(Rp.F32)
@@ -87,31 +84,33 @@ fn ga_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => vo
     if op == int(Op.Param) || op == int(Op.Slot) || op == int(Op.OwnMove) || op == int(Op.Const) || op == int(Op.StrLit) || op == int(Op.Undef):
         return
     if op == int(Op.Add) || op == int(Op.Sub) || op == int(Op.Mul) || op == int(Op.And) || op == int(Op.Or) || op == int(Op.Xor):
-        ga_ld(g, 9, f, f.a[i])
+        let ra = ga_src(g, f, f.a[i], 9)
+        let d = ga_dst(g, i, 9)
         if (op == int(Op.Add) || op == int(Op.Sub)) && g_small_imm(g, f, f.b[i]):
-            a64_addsub_ri(&g.a, op == int(Op.Sub), 9, 9, f.aux[g_res(g, f, f.b[i])])
-            ga_st(g, i, 9)
+            a64_addsub_ri(&g.a, op == int(Op.Sub), d, ra, f.aux[g_res(g, f, f.b[i])])
+            ga_st(g, i, d)
             return
-        ga_ld(g, 10, f, f.b[i])
+        let rb = ga_src(g, f, f.b[i], 10)
         if op == int(Op.Add):
-            a64_add_rr(&g.a, 9, 9, 10)
+            a64_add_rr(&g.a, d, ra, rb)
         elif op == int(Op.Sub):
-            a64_sub_rr(&g.a, 9, 9, 10)
+            a64_sub_rr(&g.a, d, ra, rb)
         elif op == int(Op.Mul):
-            a64_mul(&g.a, 9, 9, 10)
+            a64_mul(&g.a, d, ra, rb)
         elif op == int(Op.And):
-            a64_and_rr(&g.a, 9, 9, 10)
+            a64_and_rr(&g.a, d, ra, rb)
         elif op == int(Op.Or):
-            a64_orr_rr(&g.a, 9, 9, 10)
+            a64_orr_rr(&g.a, d, ra, rb)
         else:
-            a64_eor_rr(&g.a, 9, 9, 10)
-        ga_st(g, i, 9)
+            a64_eor_rr(&g.a, d, ra, rb)
+        ga_st(g, i, d)
         return
     if op == int(Op.SMulHi):
-        ga_ld(g, 9, f, f.a[i])
-        ga_ld(g, 10, f, f.b[i])
-        a64_smulh(&g.a, 9, 9, 10)
-        ga_st(g, i, 9)
+        let ra = ga_src(g, f, f.a[i], 9)
+        let rb = ga_src(g, f, f.b[i], 10)
+        let d = ga_dst(g, i, 9)
+        a64_smulh(&g.a, d, ra, rb)
+        ga_st(g, i, d)
         return
     if op == int(Op.SDiv) || op == int(Op.SRem) || op == int(Op.UDiv) || op == int(Op.URem):
         let signed = op == int(Op.SDiv) || op == int(Op.SRem)
@@ -131,33 +130,36 @@ fn ga_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => vo
             kind = 1
         elif op == int(Op.AShr):
             kind = 2
+        let d = ga_dst(g, i, 9)
         ga_ld_ext(g, 9, f, f.a[i], op == int(Op.AShr))
         if g_small_imm(g, f, f.b[i]):
             let k = f.aux[g_res(g, f, f.b[i])]
             if k >= 0 && k < 64:
-                a64_shift_i(&g.a, kind, 9, 9, k)
-                ga_st(g, i, 9)
+                a64_shift_i(&g.a, kind, d, 9, k)
+                ga_st(g, i, d)
                 return
-        ga_ld(g, 10, f, f.b[i])
+        let rb = ga_src(g, f, f.b[i], 10)
         if kind == 0:
-            a64_lslv(&g.a, 9, 9, 10)
+            a64_lslv(&g.a, d, 9, rb)
         elif kind == 1:
-            a64_lsrv(&g.a, 9, 9, 10)
+            a64_lsrv(&g.a, d, 9, rb)
         else:
-            a64_asrv(&g.a, 9, 9, 10)
-        ga_st(g, i, 9)
+            a64_asrv(&g.a, d, 9, rb)
+        ga_st(g, i, d)
         return
     if op == int(Op.FnAddr):
-        a64_adr_sym(&g.a, 9, g_callee(g, sy, f.aux[i]), 0)
-        ga_st(g, i, 9)
+        let d = ga_dst(g, i, 9)
+        a64_adr_sym(&g.a, d, g_callee(g, sy, f.aux[i]), 0)
+        ga_st(g, i, d)
         return
     if op == int(Op.Neg) || op == int(Op.Not):
-        ga_ld(g, 9, f, f.a[i])
+        let ra = ga_src(g, f, f.a[i], 9)
+        let d = ga_dst(g, i, 9)
         if op == int(Op.Neg):
-            a64_neg(&g.a, 9, 9)
+            a64_neg(&g.a, d, ra)
         else:
-            a64_mvn(&g.a, 9, 9)
-        ga_st(g, i, 9)
+            a64_mvn(&g.a, d, ra)
+        ga_st(g, i, d)
         return
     if op == int(Op.FNeg):
         let single = r == int(Rp.F32)
@@ -174,8 +176,9 @@ fn ga_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => vo
         if g_fused(g, f, i):
             return
         ga_cmp_flags(g, f, i)
-        a64_cset(&g.a, 9, ta_cc_int(f.aux[i]))
-        ga_st(g, i, 9)
+        let d = ga_dst(g, i, 9)
+        a64_cset(&g.a, d, ta_cc_int(f.aux[i]))
+        ga_st(g, i, d)
         return
     if op == int(Op.FCmp):
         let p = f.aux[i]
@@ -191,12 +194,14 @@ fn ga_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => vo
         ga_st(g, i, 9)
         return
     if op == int(Op.Trunc) || op == int(Op.Bitcast) || op == int(Op.PtrToInt) || op == int(Op.IntToPtr):
-        ga_ld(g, 9, f, f.a[i])
-        ga_st(g, i, 9)
+        let d = ga_dst(g, i, 9)
+        ga_ld(g, d, f, f.a[i])
+        ga_st(g, i, d)
         return
     if op == int(Op.SExt) || op == int(Op.ZExt):
-        ga_ld_ext(g, 9, f, f.a[i], op == int(Op.SExt))
-        ga_st(g, i, 9)
+        let d = ga_dst(g, i, 9)
+        ga_ld_ext(g, d, f, f.a[i], op == int(Op.SExt))
+        ga_st(g, i, d)
         return
     if op == int(Op.SiToFp) || op == int(Op.UiToFp):
         let single = r == int(Rp.F32)
@@ -224,23 +229,25 @@ fn ga_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => vo
     if (op == int(Op.Field) || op == int(Op.Index)) && g_folds(g, f, i):
         return
     if op == int(Op.Field):
-        ga_ld(g, 9, f, f.a[i])
-        a64_addsub_ri(&g.a, false, 9, 9, f.aux[i])
-        ga_st(g, i, 9)
+        let ra = ga_src(g, f, f.a[i], 9)
+        let d = ga_dst(g, i, 9)
+        a64_addsub_ri(&g.a, false, d, ra, f.aux[i])
+        ga_st(g, i, d)
         return
     if op == int(Op.Index):
         let sz = f.aux[i]
-        ga_ld(g, 9, f, f.a[i])
+        let ra = ga_src(g, f, f.a[i], 9)
+        let d = ga_dst(g, i, 9)
         if g_near_const(g, f, f.b[i]):
-            a64_addsub_ri(&g.a, false, 9, 9, f.aux[g_res(g, f, f.b[i])] * sz)
+            a64_addsub_ri(&g.a, false, d, ra, f.aux[g_res(g, f, f.b[i])] * sz)
         else:
-            ga_ld(g, 10, f, f.b[i])
+            let rb = ga_src(g, f, f.b[i], 10)
             if sz == 1 || sz == 2 || sz == 4 || sz == 8:
-                a64_add_rr_lsl(&g.a, 9, 9, 10, a64_log2(sz))
+                a64_add_rr_lsl(&g.a, d, ra, rb, a64_log2(sz))
             else:
                 a64_mov_ri(&g.a, 11, sz)
-                a64_madd(&g.a, 9, 10, 11, 9)
-        ga_st(g, i, 9)
+                a64_madd(&g.a, d, rb, 11, ra)
+        ga_st(g, i, d)
         return
     if op == int(Op.Extract):
         let ar = f.rep[g_res(g, f, f.a[i])]
@@ -250,8 +257,9 @@ fn ga_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => vo
         if r >= rp_first_agg():
             ga_copy_mem(g, ta_fp(), g.voff[i], sb, sd, rsize(rs, r))
         else:
-            a64_ld(&g.a, 9, sb, sd, rsize(rs, r))
-            ga_st(g, i, 9)
+            let d = ga_dst(g, i, 9)
+            a64_ld(&g.a, d, sb, sd, rsize(rs, r))
+            ga_st(g, i, d)
         return
     if op == int(Op.Insert):
         let eo = elem_off(rs, r, f.aux[i])
@@ -262,8 +270,8 @@ fn ga_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => vo
             let eb = ga_ab_reg(g, f, f.b[i])
             ga_copy_mem(g, ta_fp(), g.voff[i] + eo, eb, ga_ab_disp(g, f, f.b[i]), rsize(rs, er))
         else:
-            ga_ld(g, 9, f, f.b[i])
-            a64_st(&g.a, ta_fp(), g.voff[i] + eo, 9, rsize(rs, er))
+            let rv = ga_src(g, f, f.b[i], 9)
+            a64_st(&g.a, ta_fp(), g.voff[i] + eo, rv, rsize(rs, er))
         return
     if op == int(Op.Load):
         if r >= rp_first_agg():
@@ -271,13 +279,14 @@ fn ga_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => vo
             ga_copy_mem(g, ta_fp(), g.voff[i], ta_a0(), 0, rsize(rs, r))
             return
         let x = g_res(g, f, f.a[i])
+        let d = ga_dst(g, i, 9)
         if g_folds(g, f, x):
             ga_addr_of(g, f, x, ta_a0(), ta_a1())
-            ga_mem(g, true, 9, rsize(rs, r))
+            ga_mem(g, true, d, rsize(rs, r))
         else:
-            ga_ld(g, ta_a0(), f, f.a[i])
-            a64_ld(&g.a, 9, ta_a0(), 0, rsize(rs, r))
-        ga_st(g, i, 9)
+            let rb = ga_src(g, f, f.a[i], ta_a0())
+            a64_ld(&g.a, d, rb, 0, rsize(rs, r))
+        ga_st(g, i, d)
         return
     if op == int(Op.Store):
         let vr = f.rep[g_res(g, f, f.b[i])]
@@ -286,14 +295,14 @@ fn ga_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => vo
             let sb = ga_ab_reg(g, f, f.b[i])
             ga_copy_mem(g, ta_a1(), 0, sb, ga_ab_disp(g, f, f.b[i]), rsize(rs, vr))
             return
-        ga_ld(g, 9, f, f.b[i])
+        let rv = ga_src(g, f, f.b[i], 9)
         let x = g_res(g, f, f.a[i])
         if g_folds(g, f, x):
             ga_addr_of(g, f, x, ta_a0(), ta_a1())
-            ga_mem(g, false, 9, rsize(rs, vr))
+            ga_mem(g, false, rv, rsize(rs, vr))
         else:
-            ga_ld(g, ta_a0(), f, f.a[i])
-            a64_st(&g.a, ta_a0(), 0, 9, rsize(rs, vr))
+            let rb = ga_src(g, f, f.a[i], ta_a0())
+            a64_st(&g.a, rb, 0, rv, rsize(rs, vr))
         return
     if op == int(Op.Drop) || op == int(Op.Clone):
         g.nav = 0

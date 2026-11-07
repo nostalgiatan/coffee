@@ -131,6 +131,11 @@ class Gen:
     vtxt: Txt
     vr_s: buf<int>
     vr_e: buf<int>
+    /#/ the live ranges' by-products: the instruction of each dense value, the value a loop parameter may share a register with, the weights, the end position
+    dv: buf<int>
+    coal: buf<int>
+    dn: buf<int>
+    ptop: int
 
 
 fn g_add_str(g: &Gen, off: int) => void:
@@ -150,7 +155,7 @@ fn g_bad(g: &Gen) => void:
     g.err = g.err + 1
 
 fn new_gen() => Gen:
-    return Gen { a: new_asm(), o: new_obj(), voff: new_buf(int, 64), sh: new_buf(int, 64), sframe: 0, tmp: 0, frame: 0, err: 0, av: new_buf(int, 16), nav: 0, sbase: 256, soff: new_buf(int, 16), nstr: 0, home: new_buf(int, 64), xhome: new_buf(int, 64), ord: new_buf(int, 16), emit: new_buf(int, 16), xsg: new_buf(int, 64), did: new_buf(int, 64), nsaved: 0, rbase: 0, saved: new_buf(int, 8), ed: new_buf(int, 16), ned: 0, ra_lo: new_buf(int, 1), ra_hi: new_buf(int, 1), ra_wt: new_buf(int, 1), uq_d: new_buf(int, 16), uq_b: new_buf(int, 16), nuq: 0, ra_dblk: new_buf(int, 1), ra_dset: new_buf(int, 1), ra_cp: new_buf(int, 16), ra_ncp: 0, ra_cm: new_buf(int, 16), cur: -1, msk: new_buf(int, 16), fmask: 0, nuse: new_buf(int, 64), am_base: 0, am_idx: -1, am_scale: 1, am_disp: 0, epi: 0, epi_jump: false, hc: new_buf(int, 16), nhc: 0, fk_bits: new_buf(int, 8), fk_lab: new_buf(int, 8), nfk: 0, fu_rl: new_buf(int, 16), fu_k: new_buf(int, 16), nfu: 0, fsym: 0, lm_at: new_buf(int, 64), lm_ln: new_buf(int, 64), lm_n: 0, mk_l: new_buf(int, 64), mk_ln: new_buf(int, 64), mk_n: 0, lf_sym: new_buf(int, 64), lf_start: new_buf(int, 64), lf_m0: new_buf(int, 64), lf_n: 0, dt: new_dbg_types(), vtxt: new_txt(), vr_s: new_buf(int, 64), vr_e: new_buf(int, 64) }
+    return Gen { a: new_asm(), o: new_obj(), voff: new_buf(int, 64), sh: new_buf(int, 64), sframe: 0, tmp: 0, frame: 0, err: 0, av: new_buf(int, 16), nav: 0, sbase: 256, soff: new_buf(int, 16), nstr: 0, home: new_buf(int, 64), xhome: new_buf(int, 64), ord: new_buf(int, 16), emit: new_buf(int, 16), xsg: new_buf(int, 64), did: new_buf(int, 64), nsaved: 0, rbase: 0, saved: new_buf(int, 8), ed: new_buf(int, 16), ned: 0, ra_lo: new_buf(int, 1), ra_hi: new_buf(int, 1), ra_wt: new_buf(int, 1), uq_d: new_buf(int, 16), uq_b: new_buf(int, 16), nuq: 0, ra_dblk: new_buf(int, 1), ra_dset: new_buf(int, 1), ra_cp: new_buf(int, 16), ra_ncp: 0, ra_cm: new_buf(int, 16), cur: -1, msk: new_buf(int, 16), fmask: 0, nuse: new_buf(int, 64), am_base: 0, am_idx: -1, am_scale: 1, am_disp: 0, epi: 0, epi_jump: false, hc: new_buf(int, 16), nhc: 0, fk_bits: new_buf(int, 8), fk_lab: new_buf(int, 8), nfk: 0, fu_rl: new_buf(int, 16), fu_k: new_buf(int, 16), nfu: 0, fsym: 0, lm_at: new_buf(int, 64), lm_ln: new_buf(int, 64), lm_n: 0, mk_l: new_buf(int, 64), mk_ln: new_buf(int, 64), mk_n: 0, lf_sym: new_buf(int, 64), lf_start: new_buf(int, 64), lf_m0: new_buf(int, 64), lf_n: 0, dt: new_dbg_types(), vtxt: new_txt(), vr_s: new_buf(int, 64), vr_e: new_buf(int, 64), dv: new_buf(int, 1), coal: new_buf(int, 1), dn: new_buf(int, 1), ptop: 0 }
 
 fn rsize_scalar(r: int) => int:
     if r == int(Rp.I8):

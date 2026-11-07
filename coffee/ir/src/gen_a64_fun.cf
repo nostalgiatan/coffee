@@ -15,6 +15,8 @@ use * in dbgtype
 
 /#/ Frees the frame and returns.
 fn ga_epilogue(g: &Gen) => void:
+    for k in 0..g.nsaved:
+        a64_ld(&g.a, g.saved[k], ta_fp(), 16 + g.rbase + 8 * k, 8)
     a64_load_fp_lr(&g.a)
     a64_addsub_ri(&g.a, false, 31, 31, g.frame)
     a64_ret(&g.a)
@@ -33,8 +35,11 @@ fn ga_gen_fun(g: &Gen, f: &Fun, rs: &Reps, sy: &Names) => bool:
     if len(g.emit) < f.nb + 1:
         g.ord = new_buf(int, f.nb + 1)
         g.emit = new_buf(int, f.nb + 1)
+    /#/ the registers are given along the plain order, the code is written in the rotated one
+    block_order(f, &g.ord, false)
     block_order(f, &g.emit, true)
     g_count_uses(g, f)
+    ga_alloc_regs(g, f, rs)
     ga_layout(g, f, rs)
     let start = g.a.pos()
     for b in 0..f.nb:
@@ -45,6 +50,8 @@ fn ga_gen_fun(g: &Gen, f: &Fun, rs: &Reps, sy: &Names) => bool:
     a64_mov_rr(&g.a, ta_fp(), 31)
     if g.rbase > 0:
         a64_st(&g.a, ta_fp(), 16, ta_sret(), 8)
+    for k in 0..g.nsaved:
+        a64_st(&g.a, ta_fp(), 16 + g.rbase + 8 * k, g.saved[k], 8)
     /#/ the parameters of the entry block
     let ci = 0
     let cx = 0
