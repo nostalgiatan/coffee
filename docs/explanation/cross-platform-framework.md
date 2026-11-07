@@ -1,5 +1,8 @@
 # 跨平台框架:分层、接口和实施顺序
 
+> 总体架构和路线以 `architecture.md` 为准;这份文档保留目标表字段和各系统要点的细节。
+
+
 这份文档把已经做的(`ir-lowering-design.md`、`target-runtime.md`、`backend-sharing.md`、`sandbox-design.md`、`sandbox-pointers.md`)收成一个框架,并定出剩下的步骤。原则只有一条:**一个目标 = 一份数据 + 一小组函数;其余代码不知道目标是谁。**
 
 ## 1. 范围

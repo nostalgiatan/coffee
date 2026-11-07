@@ -1,5 +1,8 @@
 # 沙盒的设计
 
+> 总体架构见 `architecture.md`;指针模型和寄存器的最新决定在其中第 6.3 节。
+
+
 状态:阶段 S1 已实现(访存封闭、影子帧、堆、陷阱),S2 已按下面的简化做完(`read`/`write` 经宿主存根,按描述符授权),S3 的验证器和 S4 的配额已实现;掩码模式、`CAPS` 节、句柄表是设计。它取代 `docs/superpowers/specs/2026-11-04-embedded-vm-direction.md` 的 D1(解释器优先)和 D6,以及 `2026-11-04-memory-system-and-bytecode.md` 的字节码部分。那两份文档为第一代 Rust 编译器和解释器写成,线性内存、带大小释放、陷阱这些想法保留,其余按本文为准。上层的 JIT 见 [JIT 后端的设计](jit-design.md)。
 
 ## 前提
