@@ -10,6 +10,7 @@ for d in $incs; do inc="$inc -I $dir/$d"; done
 tmp=$(mktemp -d)
 sbx=""
 [ "$SANDBOX" = 1 ] && sbx="--sandbox"
+[ "$SANDBOX" = base ] && sbx="--sandbox=base"
 files="$@"
 [ -z "$files" ] && files=$(ls $dir/tests/test_*.cf)
 pass=0; fail=0

@@ -15,7 +15,7 @@ fn page_up(n: int) => int:
     return (n + 4095) // 4096 * 4096
 
 /#/ The code of the three stubs goes to the host; `at` is where each one will be.
-fn stub_enter(ss_top: int, entry: int) => Txt:
+fn stub_enter(ss_top: int, entry: int, region: int, bm: bool) => Txt:
     let a = new_asm()
     a.begin_fun()
     a.push(5)
@@ -29,6 +29,10 @@ fn stub_enter(ss_top: int, entry: int) => Txt:
     a.push(7)
     a.sub_ri(4, 8)
     a.mov_ri(14, ss_top)
+    if bm:
+        /#/ the start of the linear memory, and an address register that is a 32-bit number from the start
+        a.mov_ri(15, region)
+        a.mov_ri(13, 0)
     a.mov_ri(0, entry)
     a.call_reg(0)
     a.add_ri(4, 8)
@@ -196,7 +200,7 @@ fn catch_signal(sig: int, handler: int, restorer: int, act: int) => int:
 
 /#/ Runs `main` (at `main_at` in the code of `im`) in the sandbox. `allow` says which standard streams it may use (see below). Returns its result, or -1 when
 /#/ the sandbox could not be made, or -2 when it trapped (the signal is in `trap_signal()`).
-fn sandbox_run(im: &Image, main_at: int, allow: int, mem_mb: int, cpu_ms: int) => int:
+fn sandbox_run(im: &Image, main_at: int, allow: int, mem_mb: int, cpu_ms: int, bm: bool) => int:
     let region = sys_mmap(4294967296 + 131072, 0, 16418)
     if !mapped(region):
         return 0 - 1
@@ -213,7 +217,7 @@ fn sandbox_run(im: &Image, main_at: int, allow: int, mem_mb: int, cpu_ms: int) =
     if mem_mb > 0 && im.ss_top + mem_mb * 1048576 < heap_end:
         heap_end = im.ss_top + mem_mb * 1048576
     poke64(region + im.lin_at + 8, heap_end)
-    if syscall(158, 4097, region, 0, 0, 0, 0) != 0:
+    if !bm && syscall(158, 4097, region, 0, 0, 0, 0) != 0:
         return 0 - 1
     /#/ the code, the stubs, the control block, the stack the code runs on and the one for signals
     let code = sys_mmap(page_up(im.b.n + 1), 7, 34)
@@ -229,7 +233,7 @@ fn sandbox_run(im: &Image, main_at: int, allow: int, mem_mb: int, cpu_ms: int) =
         copy_in(code + im.exit_at, &stub_exit(ctrl))
     poke64(ctrl + 8, stack + 1048576 + 65536)
     poke64(ctrl + 16, 0)
-    copy_in(stubs, &stub_enter(im.ss_top, code + main_at))
+    copy_in(stubs, &stub_enter(im.ss_top, code + main_at, region, bm))
     copy_in(stubs + 256, &stub_trap(ctrl))
     copy_in(stubs + 512, &stub_handler(code, code + im.b.n, stubs + 256, ctrl))
     copy_in(stubs + 768, &stub_restorer())

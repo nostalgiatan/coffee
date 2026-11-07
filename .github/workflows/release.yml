@@ -18,7 +18,7 @@ jobs:
       - name: Test every stage
         run: |
           export PATH="$RUNNER_TEMP/w:$PATH"
-          for d in lexer parser sema types own ir rt ld driver tea compat; do
+          for d in lexer parser sema types own ir rt ld jit driver tea compat; do
             (cd coffee/$d && tea test --compiler "$RUNNER_TEMP/w/coffee2" -j 4)
           done
       - name: Package

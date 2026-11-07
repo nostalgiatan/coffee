@@ -1,0 +1,97 @@
+/#/ Sandbox code in the base-register form (`cfjit --sandbox=base`; the same cases as test_sandbox.cf) on small programs written to a scratch directory. `coffee2` and
+/#/ `cfjit` are found through PATH. Programs that work give the result they give natively; programs
+/#/ that reach outside the sandbox, divide by zero or run out of stack end in a trap (exit 139 and
+/#/ the signal on stderr); an address with high bits set is the same address as without them.
+use * in say
+use * in txt
+use * in cstr
+use * in files
+use system, fflush in libc of c
+
+fn expect(what: int, got: int, want: int) => int:
+    if got != want:
+        say(f"MISS #{what}: got {got}, want {want}\n")
+        fflush(0)
+        return 1
+    return 0
+
+/#/ Writes `src` as a program and runs it in the sandbox: its exit code. The stderr is left in `sbb.err`.
+fn run_sbx_with(src: str, opts: str) => int:
+    write_file(&txt_of("sbb.cf"), &txt_of(&src))
+    if system("coffee2 sbb.cf --emit-cir -o sbb.cir > sbb.log 2>&1") != 0:
+        return -1
+    let c = txt_of("cfjit sbb.cir --sandbox=base ")
+    c.put(&opts)
+    c.put(" > sbb.out 2>&1")
+    let st = system(txt_str(&c))
+    return (st >> 8) & 255
+
+fn run_sbx(src: str) => int:
+    return run_sbx_with(src, "")
+
+fn out_is(want: str) => int:
+    let c = txt_of("test \"$(cat sbb.out)\" = '")
+    c.put(&want)
+    c.put("'")
+    return system(txt_str(&c))
+
+fn trapped(sig: str) => int:
+    let c = txt_of("grep -q 'trapped (signal ")
+    c.put(&sig)
+    c.put(")' sbb.out")
+    return system(txt_str(&c))
+
+fn main() => int:
+    let m = 0
+    m = m + expect(1, run_sbx("fn fib(n: int) => int:\n    if n < 2:\n        return n\n    return fib(n - 1) + fib(n - 2)\n\nfn main() => int:\n    return fib(10)\n"), 55)
+    m = m + expect(2, run_sbx("let counter = 0\n\nfn bump() => void:\n    counter = counter + 1\n\nfn main() => int:\n    bump()\n    bump()\n    bump()\n    return counter\n"), 3)
+    /#/ the heap: an array
+    m = m + expect(3, run_sbx("fn main() => int:\n    let a = [3, 4, 5, 6]\n    let t = 0\n    for i in 0..4:\n        t = t + a[i]\n    return t\n"), 18)
+    /#/ a value the code borrows mutably
+    m = m + expect(4, run_sbx("fn inc(x: &mut int) => void:\n    *x = *x + 5\n\nfn main() => int:\n    let v = 10\n    inc(&mut v)\n    inc(&mut v)\n    return v\n"), 20)
+    /#/ a string literal
+    m = m + expect(5, run_sbx("fn pick(s: &str, i: int) => int:\n    return int(s[i])\n\nfn main() => int:\n    return pick(\"hello\", 1)\n"), 101)
+    /#/ exit, here from a failed bounds check
+    m = m + expect(6, run_sbx("fn main() => int:\n    let a = [1, 2]\n    let i = 5\n    return a[i]\n"), 1)
+    /#/ the null page, an address far away, a division by zero, an endless recursion
+    m = m + expect(7, run_sbx("fn main() => int:\n    return peek8(16)\n"), 139)
+    m = m + expect(8, trapped("11"), 0)
+    m = m + expect(9, run_sbx("fn main() => int:\n    return peek8(1048576 * 1024 * 1024 * 8)\n"), 139)
+    m = m + expect(10, run_sbx("fn zero() => int:\n    return 0\n\nfn main() => int:\n    return 10 // zero()\n"), 139)
+    m = m + expect(11, trapped("8"), 0)
+    m = m + expect(12, run_sbx("fn deep(n: int) => int:\n    return deep(n + 1) * 3\n\nfn main() => int:\n    return deep(0)\n"), 139)
+    m = m + expect(13, trapped("11"), 0)
+    /#/ a recursion that is a loop uses no stack: it ends at the CPU limit like any endless loop
+    m = m + expect(61, run_sbx_with("fn deep(n: int) => int:\n    return deep(n + 1) + 1\n\nfn main() => int:\n    return deep(0)\n", "--cpu=100"), 139)
+    /#/ the high bits of an address do not matter: 4294967296 + 65600 is 65600
+    m = m + expect(14, run_sbx("fn main() => int:\n    poke8(65600, 7)\n    poke8(4294967296 + 65600, 9)\n    return peek8(65600)\n"), 9)
+    /#/ a system call other than exit and mmap fails, and the module is not stopped
+    m = m + expect(15, run_sbx("fn main() => int:\n    let r = syscall(39, 0, 0, 0, 0, 0, 0)\n    if r < 0:\n        return 4\n    return 5\n"), 4)
+    /#/ write: the bytes arrive; a stream that is not allowed, and a buffer outside the memory, fail
+    let w = "fn main() => int:\n    let s = \"hi\\n\"\n    return syscall(1, 1, int(s as object), 3)\n"
+    m = m + expect(16, run_sbx(clone w), 3)
+    m = m + expect(17, out_is("hi"), 0)
+    m = m + expect(18, run_sbx_with(clone w, "--allow=stderr"), 247)
+    m = m + expect(19, run_sbx_with(clone w, "--allow=stdout,stderr"), 3)
+    m = m + expect(20, run_sbx("fn main() => int:\n    return syscall(1, 1, 65600, 4294967296, 0, 0) + 100\n"), 86)
+    m = m + expect(21, run_sbx("fn main() => int:\n    return syscall(1, 1, 4294967290, 100, 0, 0) + 100\n"), 86)
+    m = m + expect(22, run_sbx("fn main() => int:\n    return syscall(1, 77, 65600, 1, 0, 0) + 100\n"), 91)
+    /#/ the quotas: an endless loop ends at the CPU limit (SIGALRM, 14), a big array needs more heap than --mem gives
+    m = m + expect(23, run_sbx_with("fn main() => int:\n    let i = 0\n    while true:\n        i = i + 1\n    return i\n", "--cpu=100"), 139)
+    m = m + expect(24, trapped("14"), 0)
+    let big = "fn main() => int:\n    let a = new_buf(int, 400000)\n    a[399999] = 7\n    return a[399999]\n"
+    m = m + expect(25, run_sbx_with(clone big, "--mem=8"), 7)
+    m = m + expect(26, run_sbx_with(clone big, "--mem=1"), 139)
+    m = m + expect(27, trapped("11"), 0)
+    /#/ the image cache: the second run uses the file, a damaged file is not used
+    let fib = "fn fib(n: int) => int:\n    if n < 2:\n        return n\n    return fib(n - 1) + fib(n - 2)\n\nfn main() => int:\n    return fib(12)\n"
+    system("rm -f sbb.cir.sbxb.cim")
+    m = m + expect(29, run_sbx_with(clone fib, "--cache"), 144)
+    m = m + expect(30, system("test -s sbb.cir.sbxb.cim"), 0)
+    m = m + expect(31, run_sbx_with(clone fib, "--cache"), 144)
+    system("printf X | dd of=sbb.cir.sbxb.cim bs=1 seek=200 conv=notrunc 2>/dev/null")
+    m = m + expect(32, run_sbx_with(clone fib, "--cache"), 144)
+    /#/ a cache made for other code is not used
+    m = m + expect(33, run_sbx_with("fn main() => int:\n    return 7\n", "--cache"), 7)
+    system("rm -f sbb.cf sbb.cir sbb.cir.sbxb.cim sbb.log sbb.out")
+    return m

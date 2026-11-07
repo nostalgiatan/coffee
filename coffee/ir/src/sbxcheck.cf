@@ -27,6 +27,14 @@ class Dec:
 fn new_dec() => Dec:
     return Dec { tgt: -1, kind: 0, why: 0, ends: false }
 
+/#/ Is the code of the base-register kind (`Asm.bm`)? Then a memory operand is `[r15 + r13]` and nothing else
+/#/ writes r13 and r15 but `lea r13d, [..]`, so every address is the start of the linear memory plus a
+/#/ 32-bit number; no `gs` prefixes are taken.
+let sbx_bm = false
+
+fn sbx_set_base(on: bool) => void:
+    sbx_bm = on
+
 /#/ Why the last instruction was refused (a number from `dec_no`), for the message of the loader.
 let sbx_why = 0
 
@@ -198,6 +206,8 @@ fn sbx_decode(code: &Txt, at: int, n: int, d: &Dec) => int:
     if p67 != p65:
         return dec_no(d, 6)
     let guest = p67 && p65
+    if sbx_bm && (p67 || p65):
+        return dec_no(d, 14)
     let immv = 0
     if modrm:
         if i >= n:
@@ -238,7 +248,8 @@ fn sbx_decode(code: &Txt, at: int, n: int, d: &Dec) => int:
                 disp = dec_s32(code, i)
             i = i + dsz
             /#/ a memory operand: through gs, or [rbp + disp] outside the two words at rbp
-            if op != 141 && !guest:
+            let based = sbx_bm && md == 0 && rmf == 4 && sib == 47 && rb == 1 && rx == 1
+            if op != 141 && !guest && !based:
                 if has_sib || rmf != 5 || rb == 1 || md == 0:
                     return dec_no(d, 9)
                 if disp <= 0 - 32768 || disp >= 32768 || (disp >= 0 && disp < 16):
@@ -256,6 +267,11 @@ fn sbx_decode(code: &Txt, at: int, n: int, d: &Dec) => int:
         elif dsel == 2 && md == 3:
             if !(isext && ((nowr >> reg) & 1) == 1):
                 dst = rmf | (rb << 3)
+        if sbx_bm:
+            if dst == 15:
+                return dec_no(d, 15)
+            if dst == 13 && !(op == 141 && md != 3 && rexw == 0 && rr == 1 && reg == 5):
+                return dec_no(d, 15)
         /#/ rsp and rbp: only the moves of a function frame
         if dst == 4:
             let frame = (op == 129 || op == 131) && (reg == 0 || reg == 5) && md == 3 && immv >= 0 && immv <= 32768
@@ -273,6 +289,8 @@ fn sbx_decode(code: &Txt, at: int, n: int, d: &Dec) => int:
             i = i + imm
         if dst == 4 || (dst == 5 && !popbp):
             return dec_no(d, 13)
+        if sbx_bm && (dst == 13 || dst == 15):
+            return dec_no(d, 15)
     d.ends = op == 195 || op == 233 || op == 235 || op == 204 || (op == 15 && op2 == 11)
     if rel > 0:
         if i + rel > n:

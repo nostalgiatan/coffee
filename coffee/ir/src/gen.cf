@@ -406,6 +406,9 @@ class Gen:
     fn reg_ok(self, r: int, cm: int, restr: bool) => bool:
         if self.a.sbx && r == 8:
             return false
+        /#/ base-register sandbox code keeps the start of the linear memory in r15 and an address in r13
+        if self.a.bm && (r == 7 || r == 9):
+            return false
         if r >= 5:
             return true
         if ((cm >> r) & 1) == 1:

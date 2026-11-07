@@ -102,6 +102,11 @@ class Asm:
     /#/ sandbox code: a memory operand (but for `lea`, and rbp/rsp as the base: the host stack) is
     /#/ addressed through `gs` in 32 bits, and a reference to rodata or data is an absolute 32-bit number
     sbx: bool
+    /#/ with `sbx`: a memory operand is not given the `gs` prefixes; its address is computed into r13 as a
+    /#/ 32-bit number (`lea r13d, [..]`) and used as `[r15 + r13]`, r15 being the start of the linear memory
+    bm: bool
+    /#/ a mandatory prefix (66, F2, F3) for the next memory operand, which puts it in the right place; -1 for none
+    pfx: int
 
     fn dump(self, t: &Txt) => void:
         t.put_all(&self.c)
@@ -263,7 +268,18 @@ class Asm:
 
     /#/ `opc` with a register and the memory operand `[base + disp]`.
     fn rmem(self, w: int, opc: int, opc2: int, reg: int, base: int, disp: int, force: bool) => void:
-        if self.sbx && opc != 141 && base != 4 && base != 5:
+        if self.bm && opc != 141 && base != 4 && base != 5:
+            /#/ the address as a 32-bit number in r13, then the access relative to r15
+            let held = self.pfx
+            self.pfx = 0 - 1
+            self.rmem(0, 141, 0 - 1, 13, base, disp, false)
+            self.pfx = held
+            self.rmem_idx(w, opc, opc2, reg, 15, 13, 1, 0, force)
+            return
+        if self.pfx >= 0:
+            self.byte(self.pfx)
+            self.pfx = 0 - 1
+        if self.sbx && !self.bm && opc != 141 && base != 4 && base != 5:
             self.byte(103)
             self.byte(101)
         self.rex(w, reg, base, force)
@@ -284,6 +300,16 @@ class Asm:
 
     /#/ `opc` with a register and the memory operand `[base + idx * scale + disp]`.
     fn rmem_idx(self, w: int, opc: int, opc2: int, reg: int, base: int, idx: int, scale: int, disp: int, force: bool) => void:
+        if self.bm && opc != 141 && base != 4 && base != 5 && !(base == 15 && idx == 13):
+            let held = self.pfx
+            self.pfx = 0 - 1
+            self.rmem_idx(0, 141, 0 - 1, 13, base, idx, scale, disp, false)
+            self.pfx = held
+            self.rmem_idx(w, opc, opc2, reg, 15, 13, 1, 0, force)
+            return
+        if self.pfx >= 0:
+            self.byte(self.pfx)
+            self.pfx = 0 - 1
         let ss = 0
         if scale == 2:
             ss = 1
@@ -292,7 +318,7 @@ class Asm:
         elif scale == 8:
             ss = 3
         let v = 64 | (w << 3) | ((reg >> 3) << 2) | ((idx >> 3) << 1) | (base >> 3)
-        if self.sbx && base != 4 && base != 5:
+        if self.sbx && !self.bm && opc != 141 && base != 4 && base != 5:
             self.byte(103)
             self.byte(101)
         if v != 64 || force:
@@ -328,7 +354,7 @@ class Asm:
         if n == 1:
             self.rmem_idx(0, 136, 0 - 1, src, base, idx, scale, disp, true)
         elif n == 2:
-            self.byte(102)
+            self.pfx = 102
             self.rmem_idx(0, 137, 0 - 1, src, base, idx, scale, disp, false)
         elif n == 4:
             self.rmem_idx(0, 137, 0 - 1, src, base, idx, scale, disp, false)
@@ -425,7 +451,7 @@ class Asm:
         if n == 1:
             self.rmem(0, 136, 0 - 1, src, base, disp, true)
         elif n == 2:
-            self.byte(102)
+            self.pfx = 102
             self.rmem(0, 137, 0 - 1, src, base, disp, false)
         elif n == 4:
             self.rmem(0, 137, 0 - 1, src, base, disp, false)
@@ -673,31 +699,31 @@ class Asm:
     /#/ xmm = the float or double at [base + disp]
     fn load_x(self, x: int, base: int, disp: int, single: bool) => void:
         if single:
-            self.byte(243)
+            self.pfx = 243
         else:
-            self.byte(242)
+            self.pfx = 242
         self.rmem(0, 15, 16, x, base, disp, false)
 
     /#/ [base + disp] = the float or double in xmm
     fn store_x(self, base: int, disp: int, x: int, single: bool) => void:
         if single:
-            self.byte(243)
+            self.pfx = 243
         else:
-            self.byte(242)
+            self.pfx = 242
         self.rmem(0, 15, 17, x, base, disp, false)
 
     fn load_x_idx(self, x: int, base: int, idx: int, scale: int, disp: int, single: bool) => void:
         if single:
-            self.byte(243)
+            self.pfx = 243
         else:
-            self.byte(242)
+            self.pfx = 242
         self.rmem_idx(0, 15, 16, x, base, idx, scale, disp, false)
 
     fn store_x_idx(self, base: int, idx: int, scale: int, disp: int, x: int, single: bool) => void:
         if single:
-            self.byte(243)
+            self.pfx = 243
         else:
-            self.byte(242)
+            self.pfx = 242
         self.rmem_idx(0, 15, 17, x, base, idx, scale, disp, false)
 
     /#/ the arithmetic ops: add 88, mul 89, sub 92, div 94 on xmm registers
@@ -739,4 +765,4 @@ class Asm:
         self.rr(0, 15, 90, dst, src, false)
 
 fn new_asm() => Asm:
-    return Asm { c: new_txt(), lab: new_buf(int, 64), nlab: 0, fx_at: new_buf(int, 64), fx_lab: new_buf(int, 64), fx_kind: new_buf(int, 64), nfx: 0, fs: 0, rl0: 0, rl_at: new_buf(int, 64), rl_sym: new_buf(int, 64), rl_ty: new_buf(int, 64), rl_add: new_buf(int, 64), nrl: 0, lm_end: -1, lm_d: 0, lm_s: 0, ls_end: -1, ls_base: 0, ls_disp: 0, ls_reg: 0, sbx: false }
+    return Asm { c: new_txt(), lab: new_buf(int, 64), nlab: 0, fx_at: new_buf(int, 64), fx_lab: new_buf(int, 64), fx_kind: new_buf(int, 64), nfx: 0, fs: 0, rl0: 0, rl_at: new_buf(int, 64), rl_sym: new_buf(int, 64), rl_ty: new_buf(int, 64), rl_add: new_buf(int, 64), nrl: 0, lm_end: -1, lm_d: 0, lm_s: 0, ls_end: -1, ls_base: 0, ls_disp: 0, ls_reg: 0, sbx: false, bm: false, pfx: 0 - 1 }

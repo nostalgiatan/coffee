@@ -154,7 +154,9 @@ fn lap(on: bool, what: &str, t0: int) => int:
 fn main() => int:
     /#/ the IR checker is on (7 ms of a 109 ms start for the compiler's module); `--no-verify` turns it off
     set_verify(!flag_arg("--no-verify"))
-    let sbx = flag_arg("--sandbox")
+    /#/ `--sandbox=base` keeps the start of the linear memory in a register instead of `gs`: the form that other processors can have
+    let bm = flag_arg("--sandbox=base")
+    let sbx = flag_arg("--sandbox") || bm
     let path = path_arg()
     if path.n == 0:
         say("usage: cfjit program.cir\n")
@@ -175,6 +177,9 @@ fn main() => int:
     if sbx:
         mode = 1
         cache_path.put(".sbx")
+        if bm:
+            mode = 2
+            cache_path.put("b")
     cache_path.put(".cim")
     let key = 0
     if use_cache:
@@ -190,6 +195,7 @@ fn main() => int:
     if at < 0:
         let lw = new_lower()
         lw.mc.a.sbx = sbx
+        lw.mc.a.bm = bm
         let want_lines = flag_arg("--lines")
         let gdb_map = new_txt()
         if want_gdb || want_lines:
@@ -269,11 +275,12 @@ fn main() => int:
     if flag_arg("--no-run"):
         return 0
     if sbx:
+        sbx_set_base(bm)
         let bad = sbx_verify(&im.b, im.text_n, im.sys_at)
         if bad >= 0:
             say(f"cfjit: the code is not safe to run in the sandbox (offset {bad}, reason {sbx_why}, bytes {int(im.b.b[bad])} {int(im.b.b[bad + 1])} {int(im.b.b[bad + 2])} {int(im.b.b[bad + 3])} {int(im.b.b[bad + 4])})\n")
             return 2
-        let rs = sandbox_run(&im, at, allow_arg(), num_arg("mem"), num_arg("cpu"))
+        let rs = sandbox_run(&im, at, allow_arg(), num_arg("mem"), num_arg("cpu"), bm)
         if rs == 0 - 1:
             say("cfjit: the sandbox could not be made\n")
             return 2
