@@ -25,7 +25,7 @@ fn g_is_clobber(g: &Gen, f: &Fun, i: int) => bool:
     let op = f.op[i]
     if g_uses_rdi(g, f, i):
         return true
-    return op == int(Op.Call) || op == int(Op.CCall) || op == int(Op.CallI) || op == int(Op.Drop) || op == int(Op.Clone) || op == int(Op.Alloc) || op == int(Op.Free) || op == int(Op.FRem) || op == int(Op.VLoop)
+    return op == int(Op.Call) || op == int(Op.CCall) || op == int(Op.CallI) || op == int(Op.Drop) || op == int(Op.Clone) || op == int(Op.VLoop)
 
 /#/ Does instruction `i` use rdi as a scratch register (the aggregate store and return)?
 fn g_uses_rdi(g: &Gen, f: &Fun, i: int) => bool:

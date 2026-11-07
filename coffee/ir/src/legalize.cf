@@ -1,0 +1,48 @@
+/#/ The last rewrite of a function before the machine code is made, on the function itself: what
+/#/ every target would otherwise do the same way becomes the ordinary form (see
+/#/ docs/explanation/ir-lowering-design.md). `.cir` files hold the function before this runs, so
+/#/ one file serves every target.
+use * in fun
+use * in names
+use * in rep
+use * in txt
+
+/#/ Turns the instruction `i` into a C call of `name` with the operands `x`, `y` (-1: none).
+fn lz_to_ccall(f: &Fun, sy: &Names, i: int, name: &str, x: int, y: int) => void:
+    let w = new_txt()
+    w.put(name)
+    let id = sy.intern(&w)
+    f.bump_uses(i, 0 - 1)
+    let n = 0
+    let start = f.np
+    if x >= 0:
+        f.pool_put(x)
+        n = n + 1
+    if y >= 0:
+        f.pool_put(y)
+        n = n + 1
+    f.op[i] = int(Op.CCall)
+    f.ty[i] = n
+    f.a[i] = start
+    f.b[i] = n
+    f.c[i] = 0
+    f.aux[i] = id
+    f.bump_uses(i, 1)
+
+/#/ `Alloc`, `Free` and `FRem` become calls of `malloc`, `free` and `fmod`.
+fn legalize(f: &Fun, sy: &Names) => void:
+    for b in 0..f.nb:
+        let i = f.bfirst[b]
+        while i >= 0:
+            let o = f.op[i]
+            if o == int(Op.Alloc):
+                let sz = f.cint(int(Rp.I64), f.ty[i])
+                lz_to_ccall(f, sy, i, "malloc", sz, -1)
+            elif o == int(Op.Free):
+                lz_to_ccall(f, sy, i, "free", f.a[i], -1)
+            elif o == int(Op.FRem):
+                if f.rep[i] == int(Rp.F32):
+                    lz_to_ccall(f, sy, i, "fmodf", f.a[i], f.b[i])
+                else:
+                    lz_to_ccall(f, sy, i, "fmod", f.a[i], f.b[i])
+            i = f.nx[i]
