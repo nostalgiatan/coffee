@@ -265,7 +265,7 @@ aarch64 的寻址模式不带位移,所以那里比 x86 多一条 `add`;不过 `
 
 ### 步骤
 
-1. **整理 x86 的关口**:`rmem`/`rmem_idx` 改成接收 `Access`,三种模式(普通、`gs`、基址)都在一个函数里选。门槛:语料的 x86 输出逐字节不变,`gs`/基址的沙盒测试照旧。
+1. **整理 x86 的关口**(已做:`Asm.mem` 是唯一的口,`rmem`/`rmem_idx` 是它的薄包装,字节编码在 `enc_mem`/`enc_mem_idx`;`frame_base` 判断是否宿主栈帧;语料输出逐字节不变。`Access` 描述类还没引,等第二个目标需要时再引):`rmem`/`rmem_idx` 改成接收 `Access`,三种模式(普通、`gs`、基址)都在一个函数里选。门槛:语料的 x86 输出逐字节不变,`gs`/基址的沙盒测试照旧。
 2. **规则成数据**:`tg_sbx_reserved`、`tg_frame_base`、验证器的允许表从 `sbxcheck.cf` 和 `target_x86.cf` 里的常数改成目标描述表的字段。
 3. **aarch64 实现 `tg_sbx_access`**(aarch64 会话,等它的寄存器分配和浮点做完),同时写它的验证器,用上面的反例集。
 4. **cfjit 的 aarch64**:加载器进入沙盒时设 x28,陷阱用信号处理器(`sigaction` 的 aarch64 版)。
