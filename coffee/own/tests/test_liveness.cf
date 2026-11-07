@@ -1,0 +1,49 @@
+/#/ What decides a borrow: whether the variable that holds it is still read later, on some path. These
+/#/ cases are about that (branches, loops, many variables) and about moves that reach a join or loop.
+use * in own_probe
+
+fn prog(body: str) => str:
+    return "fn take(s: str) => void:\n    return\n\nfn main() => int:\n" + body + "    return 0\n"
+
+/#/ `n` integer variables, then `rest`.
+fn with_vars(n: int, rest: str) => str:
+    let s = ""
+    for i in 0..n:
+        s = s + f"    let v{i} = {i}\n"
+    return prog(s + rest)
+
+fn main() => int:
+    let m = 0
+    let moved = int(Oe.UseAfterMove)
+    let viol = int(Oe.BorrowViolation)
+    let conf = int(Oe.BorrowConflict)
+    /#/ the reference is read in one branch only: a write in the other branch is fine, a write in the branch
+    /#/ that reads it, before the read, is not
+    m = m + miss_clean(prog("    let a = 1\n    let r = &mut a\n    if 1 < 2:\n        a = 2\n    else:\n        let n = *r\n"))
+    m = m + miss_o(prog("    let a = 1\n    let r = &mut a\n    if 1 < 2:\n        a = 2\n        let n = *r\n    else:\n        let k = 0\n"), viol, 1)
+    /#/ read after the join: live out of both branches
+    m = m + miss_o(prog("    let a = 1\n    let r = &mut a\n    if 1 < 2:\n        a = 2\n    let n = *r\n"), viol, 1)
+    /#/ in a loop the read at the top of the next turn keeps the reference alive over the write below it
+    m = m + miss_o(prog("    let a = 1\n    let r = &mut a\n    let i = 0\n    while i < 3:\n        let n = *r\n        a = 2\n        i = i + 1\n"), viol, 1)
+    /#/ a reference made again each turn is not alive across the write
+    m = m + miss_clean(prog("    let a = 1\n    let i = 0\n    while i < 3:\n        let r = &mut a\n        let n = *r\n        a = 2\n        i = i + 1\n"))
+    /#/ a loop that writes after the last read, then leaves
+    m = m + miss_clean(prog("    let a = 1\n    let r = &mut a\n    let i = 0\n    while i < 3:\n        i = i + 1\n    let n = *r\n    a = 2\n"))
+    /#/ nested loops: the read in the inner loop keeps it alive over the write in the outer one
+    m = m + miss_o(prog("    let a = 1\n    let r = &mut a\n    let i = 0\n    while i < 2:\n        let j = 0\n        while j < 2:\n            let n = *r\n            j = j + 1\n        a = 3\n        i = i + 1\n"), viol, 1)
+    /#/ a shared borrow and a second one while the first is still read
+    m = m + miss_o(prog("    let a = 1\n    let r = &a\n    if 1 < 2:\n        let q = &mut a\n    let n = *r\n"), conf, 1)
+    /#/ (a new borrow is checked against every loan whose holder is still in scope, read later or not)
+    m = m + miss_o(prog("    let a = 1\n    let r = &a\n    let n = *r\n    if 1 < 2:\n        let q = &mut a\n"), conf, 1)
+    m = m + miss_clean(prog("    let a = 1\n    if 1 < 2:\n        let r = &a\n        let n = *r\n    let q = &mut a\n"))
+    /#/ more variables than fit one word of the live sets: a borrow of a late one
+    m = m + miss_o(with_vars(70, "    let r = &mut v65\n    v65 = 2\n    let n = *r\n"), viol, 1)
+    m = m + miss_clean(with_vars(70, "    let r = &mut v65\n    let n = *r\n    v65 = 2\n"))
+    m = m + miss_o(with_vars(130, "    let r = &mut v125\n    if 1 < 2:\n        v125 = 2\n    let n = *r\n"), viol, 1)
+    /#/ moves through branches and loops (the forward pass reaches a fixed point)
+    m = m + miss_o(prog("    let s = \"a\" + \"b\"\n    let i = 0\n    while i < 2:\n        let j = 0\n        while j < 2:\n            mv s t\n            j = j + 1\n        i = i + 1\n"), moved, 1)
+    m = m + miss_clean(prog("    let s = \"a\" + \"b\"\n    let i = 0\n    while i < 2:\n        let j = 0\n        while j < 2:\n            mv s t\n            s = \"c\" + \"d\"\n            j = j + 1\n        i = i + 1\n"))
+    /#/ moved in a branch of a loop: the next turn's move and the use after the loop are both findings
+    m = m + miss_o(prog("    let s = \"a\" + \"b\"\n    let i = 0\n    while i < 3:\n        if i == 1:\n            mv s t\n        i = i + 1\n    take(s)\n"), moved, 2)
+    m = m + miss_clean(prog("    let s = \"a\" + \"b\"\n    if 1 < 2:\n        mv s t\n        s = \"c\" + \"d\"\n    take(s)\n"))
+    return m
