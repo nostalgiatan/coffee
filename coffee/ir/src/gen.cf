@@ -91,6 +91,9 @@ class Gen:
     /#/ the shared exit of a function that saves registers: its label, and whether a return jumps there
     epi: int
     epi_jump: bool
+    /#/ float constants kept in an xmm register from the entry on (they are used in loops)
+    hc: buf<int>
+    nhc: int
 
     fn add_str(self, off: int) => void:
         if self.nstr >= len(self.soff):
@@ -475,6 +478,21 @@ class Gen:
         self.nsaved = 0
         self.ra_ncp = 0
         self.fmask = 31
+        let bs: buf<int> = new_buf(int, f.nb + 1)
+        let be: buf<int> = new_buf(int, f.nb + 1)
+        let depth: buf<int> = new_buf(int, f.nb + 1)
+        /#/ loop depth: a back edge (to a block not after its source in the order of the code) wraps the
+        /#/ blocks between
+        let at: buf<int> = new_buf(int, f.nb + 1)
+        for oi in 0..f.nb:
+            at[self.ord[oi]] = oi
+        for b in 0..f.nb:
+            self.term_edges(f, b)
+            for k in 0..self.ned:
+                let t = f.eto[self.ed[k]]
+                if t >= 0 && at[t] <= at[b]:
+                    for q in at[t]..at[b] + 1:
+                        depth[self.ord[q]] = depth[self.ord[q]] + 1
         /#/ dense numbers, positions: uses at even numbers, definitions after them
         let nd = 0
         for b in 0..f.nb:
@@ -490,6 +508,28 @@ class Gen:
                     self.did[i] = nd
                     nd = nd + 1
                 i = f.nx[i]
+        self.nhc = 0
+        /#/ a float constant used inside a loop is loaded once, at the entry (when the entry is no loop)
+        let entry_ok = self.ord[0] == 0
+        for b in 0..f.nb:
+            self.term_edges(f, b)
+            for k in 0..self.ned:
+                if f.eto[self.ed[k]] == 0:
+                    entry_ok = false
+        if entry_ok:
+            for b in 0..f.nb:
+                if depth[b] == 0:
+                    continue
+                let i = f.bfirst[b]
+                while i >= 0:
+                    for k in 0..f.nval(i):
+                        nd = self.hoist_const(f, f.val_at(i, k), nd)
+                    i = f.nx[i]
+                self.term_edges(f, b)
+                for k in 0..self.ned:
+                    let e = self.ed[k]
+                    for j in 0..f.eargn[e]:
+                        nd = self.hoist_const(f, f.pool[f.eargs[e] + j], nd)
         if nd == 0:
             return
         let dv: buf<int> = new_buf(int, nd + 1)
@@ -499,24 +539,9 @@ class Gen:
         self.ra_dblk = new_buf(int, nd + 1)
         self.ra_dset = new_buf(int, nd + 1)
         self.nuq = 0
-        let bs: buf<int> = new_buf(int, f.nb + 1)
-        let be: buf<int> = new_buf(int, f.nb + 1)
-        let depth: buf<int> = new_buf(int, f.nb + 1)
         for d in 0..nd:
             self.ra_lo[d] = 1000000000
             self.ra_hi[d] = -1
-        /#/ loop depth: a back edge (to a block not after its source in the order of the code) wraps the
-        /#/ blocks between
-        let at: buf<int> = new_buf(int, f.nb + 1)
-        for oi in 0..f.nb:
-            at[self.ord[oi]] = oi
-        for b in 0..f.nb:
-            self.term_edges(f, b)
-            for k in 0..self.ned:
-                let t = f.eto[self.ed[k]]
-                if t >= 0 && at[t] <= at[b]:
-                    for q in at[t]..at[b] + 1:
-                        depth[self.ord[q]] = depth[self.ord[q]] + 1
         self.fmask = 0
         let pos = 0
         for oi in 0..f.nb:
@@ -559,6 +584,14 @@ class Gen:
                     self.ra_wt[d] = self.ra_wt[d] + w
                 i = f.nx[i]
                 pos = pos + 2
+        for k in 0..self.nhc:
+            let c = self.hc[k]
+            let d = self.did[c]
+            dv[d] = c
+            self.ra_dblk[d] = 0
+            self.ra_lo[d] = bs[0]
+            self.ra_hi[d] = bs[0]
+            self.ra_dset[d] = 1
         /#/ the uses: those of a value not defined (yet) in the block they are in make it live into the block
         for b in 0..f.nb:
             let w = 1
@@ -728,6 +761,8 @@ class Gen:
             if self.did[ep] >= 0:
                 ent[self.did[ep]] = 1
             ep = f.nx[ep]
+        for k in 0..self.nhc:
+            ent[self.did[self.hc[k]]] = 1
         let occ: buf<int> = new_buf(int, 10)
         for r in 0..10:
             occ[r] = -1
@@ -851,6 +886,22 @@ class Gen:
             if f.a[v] >= 0:
                 return self.home[self.res(f, f.a[v])]
         return -1
+
+    /#/ Give the float constant `v` a number as a value to keep in a register, once; returns the new count.
+    fn hoist_const(self, f: &Fun, v: int, nd: int) => int:
+        if v < 0:
+            return nd
+        let x = self.res(f, v)
+        if f.op[x] != int(Op.Const) || self.did[x] >= 0:
+            return nd
+        if f.rep[x] != int(Rp.F64) && f.rep[x] != int(Rp.F32):
+            return nd
+        if self.nhc >= len(self.hc):
+            self.hc = buf_resize(self.hc, (self.nhc + 1) * 2)
+        self.hc[self.nhc] = x
+        self.nhc = self.nhc + 1
+        self.did[x] = nd
+        return nd + 1
 
     fn note_use(self, f: &Fun, v: int, b: int, p: int, w: int) => void:
         if v < 0:
@@ -1987,6 +2038,11 @@ class Gen:
                     cs = cs + 1
                 cx = cx + 1
             p = f.nx[p]
+        for k in 0..self.nhc:
+            let c = self.hc[k]
+            if self.xhome[c] >= 0:
+                self.ld(0, f, c)
+                self.a.movq_x(self.xhome[c], 0, f.rep[c] == int(Rp.F32))
         for oi in 0..f.nb:
             let b = self.emit[oi]
             self.a.bind(b)
@@ -2016,7 +2072,7 @@ class Gen:
         return ok && self.err == 0
 
 fn new_gen() => Gen:
-    return Gen { a: new_asm(), o: new_obj(), voff: new_buf(int, 64), sh: new_buf(int, 64), sframe: 0, tmp: 0, frame: 0, err: 0, av: new_buf(int, 16), nav: 0, sbase: 256, soff: new_buf(int, 16), nstr: 0, home: new_buf(int, 64), xhome: new_buf(int, 64), ord: new_buf(int, 16), emit: new_buf(int, 16), xsg: new_buf(int, 64), did: new_buf(int, 64), nsaved: 0, saved: new_buf(int, 8), ed: new_buf(int, 16), ned: 0, ra_lo: new_buf(int, 1), ra_hi: new_buf(int, 1), ra_wt: new_buf(int, 1), uq_d: new_buf(int, 16), uq_b: new_buf(int, 16), nuq: 0, ra_dblk: new_buf(int, 1), ra_dset: new_buf(int, 1), ra_cp: new_buf(int, 16), ra_ncp: 0, ra_cm: new_buf(int, 16), cur: -1, msk: new_buf(int, 16), fmask: 0, nuse: new_buf(int, 64), am_base: 0, am_idx: -1, am_scale: 1, am_disp: 0, epi: 0, epi_jump: false }
+    return Gen { a: new_asm(), o: new_obj(), voff: new_buf(int, 64), sh: new_buf(int, 64), sframe: 0, tmp: 0, frame: 0, err: 0, av: new_buf(int, 16), nav: 0, sbase: 256, soff: new_buf(int, 16), nstr: 0, home: new_buf(int, 64), xhome: new_buf(int, 64), ord: new_buf(int, 16), emit: new_buf(int, 16), xsg: new_buf(int, 64), did: new_buf(int, 64), nsaved: 0, saved: new_buf(int, 8), ed: new_buf(int, 16), ned: 0, ra_lo: new_buf(int, 1), ra_hi: new_buf(int, 1), ra_wt: new_buf(int, 1), uq_d: new_buf(int, 16), uq_b: new_buf(int, 16), nuq: 0, ra_dblk: new_buf(int, 1), ra_dset: new_buf(int, 1), ra_cp: new_buf(int, 16), ra_ncp: 0, ra_cm: new_buf(int, 16), cur: -1, msk: new_buf(int, 16), fmask: 0, nuse: new_buf(int, 64), am_base: 0, am_idx: -1, am_scale: 1, am_disp: 0, epi: 0, epi_jump: false, hc: new_buf(int, 16), nhc: 0 }
 
 /#/ The multiplier that divides by `d` (not a power of two; `l` is the log2 of `d` rounded up):
 /#/ 1 + floor(2^(63 + l) / d), taken as a 64-bit pattern, by long division one bit at a time.

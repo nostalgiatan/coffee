@@ -168,5 +168,11 @@
 A float `<`, `<=`, `>`, `>=` whose only use is the branch right after it now sets the flags once
 (`ucomisd`) and jumps on `ja`/`jbe`-style conditions; the `setcc`/`movzx`/`test` sequence is gone.
 An unordered operand sets CF, so `a` and `ae` are false for NaN, as the compare requires. `==` and
-`!=` still go through `setcc` pairs (they need the parity flag too). Constants such as `2.0` are still
-loaded with `movabs`+`movq` at each use; hoisting them out of loops is not done yet.
+`!=` still go through `setcc` pairs (they need the parity flag too). 
+
+## Float constants in loops
+
+A float constant used inside a loop is a value of its own for the register allocator, defined at the
+entry of the function (when no edge leads back to the entry) and loaded there once with `movabs`+`movq`.
+It takes one of xmm8 to xmm15 when it is not alive across a call; otherwise it is loaded at each use as
+before. mandel now runs in 0.11 s against 0.10 s for gcc -O2. Test: `ir/tests/test_floathoist.cf`.

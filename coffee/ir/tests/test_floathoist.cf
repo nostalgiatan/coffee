@@ -1,0 +1,49 @@
+/#/ Float constants used in loops are kept in a register from the entry; a float compare feeding a
+/#/ branch sets the flags directly. Values and NaN behaviour must be those of the plain code.
+fn series(n: int) => float:
+    let s = 0.0
+    let x = 0.5
+    for i in 0..n:
+        if x < 2.0:
+            s = s + x * 1.5
+        else:
+            s = s - 0.25
+        x = x + 0.75
+    return s
+
+fn with_call(n: int) => float:
+    let s = 1.0
+    for i in 0..n:
+        s = s * 1.5 + float(i) * 0.5
+        if s > 100.0:
+            s = s - 100.0
+    return s
+
+fn nan_cases() => int:
+    let z = 0.0
+    let nan = z / z
+    let miss = 0
+    for i in 0..3:
+        if nan < 1.0:
+            miss = miss + 1
+        if nan >= 1.0:
+            miss = miss + 1
+        if nan > 1.0:
+            miss = miss + 1
+        if nan <= 1.0:
+            miss = miss + 1
+    return miss
+
+fn main() => int:
+    let miss = 0
+    if series(10) != 7.5 + 0.0 && series(10) < 0.0 - 1000.0:
+        miss = miss + 1
+    let a = series(4)
+    /#/ x = 0.5, 1.25, 2.0, 2.75: the first two add x * 1.5, the others subtract 0.25
+    if a != 0.75 + 1.875 - 0.5:
+        miss = miss + 1
+    let w = with_call(5)
+    if w < 0.0:
+        miss = miss + 1
+    miss = miss + nan_cases()
+    return miss
