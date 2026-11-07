@@ -1,0 +1,48 @@
+/#/ Loops entered through their test (the test is copied in front of the loop and at each jump back): values used after
+/#/ the loop, a test of several parts, a loop that runs zero times; what they compute does not change.
+use * in say
+use * in files
+use * in cstr
+use * in txt
+use system, fflush in libc of c
+
+/#/ Where `w` is in `t` at or after `from`, -1 if it is not.
+fn find_at(t: &Txt, w: &str, from: int) => int:
+    for i in from..t.n:
+        let k = 0
+        while k < len(w) && i + k < t.n && t.b[i + k] == int(w[k]):
+            k = k + 1
+        if k == len(w):
+            return i
+    return -1
+
+/#/ Does the function `name` of the listing hold `w`?
+fn fn_has(t: &Txt, name: str, w: &str) => bool:
+    let head = f"fn {name}("
+    let s = find_at(t, &head, 0)
+    if s < 0:
+        return false
+    let e = find_at(t, "\nfn ", s + 1)
+    if e < 0:
+        e = t.n
+    let at = find_at(t, w, s)
+    return at >= 0 && at < e
+
+fn main() => int:
+    let m = 0
+    system("rm -rf invert && mkdir invert")
+    let src = "class Acc:\n    data: buf<int>\n    n: int\n\nfn total(a: &Acc) => int:\n    let s = 0\n    for r in 0..3:\n        for i in 0..a.n:\n            s = s + a.data[i]\n    return s\n\nfn after(a: &Acc) => int:\n    let i = 0\n    let s = 0\n    while i < a.n && a.data[i] != 7:\n        s = s + a.data[i] * 2\n        i = i + 1\n    return i * 1000 + s\n\nfn none(a: &Acc, m: int) => int:\n    let s = 5\n    for i in 0..m:\n        s = s + a.data[i % a.n]\n    return s\n\nfn main() => int:\n    let a = Acc { data: new_buf(int, 20), n: 20 }\n    for i in 0..20:\n        a.data[i] = (i * 3) % 11\n    let r = total(&a) + after(&a) + none(&a, 0) + none(&a, 45)\n    return r % 251\n"
+    let sp = txt_of("invert/i.cf")
+    let st = txt_of(&src)
+    write_file(&sp, &st)
+    if system("cd invert && coffee2 i.cf --emit-ir > i.ir 2>&1 && coffee2 i.cf -o i > build.log 2>&1") != 0:
+        say("MISS: build failed\n")
+        return 1
+    let ip = txt_of("invert/i.ir")
+    let ir = read_file(&ip)
+    let r = system("cd invert && ./i")
+    if r != 34 * 256:
+        say(f"MISS: the program exits with {r}, not 34\n")
+        m = m + 1
+    fflush(0)
+    return m

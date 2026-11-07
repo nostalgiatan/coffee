@@ -1527,6 +1527,294 @@ fn hoist_invariants(f: &Fun) => bool:
         changed = true
     return changed
 
+/#/ ---- loop inversion ----------------------------------------------------------
+
+/#/ The value `v` as seen from the end of a block that jumps to the loop header along edge `e`: a header
+/#/ parameter is the edge's argument, a header instruction already copied is its copy.
+fn inv_val(f: &Fun, v0: int, hpv: &buf<int>, nh: int, e: int, ks: &buf<int>, kd: &buf<int>, nk: int) => int:
+    if v0 < 0:
+        return v0
+    let v = f.follow(v0)
+    for q in 0..nh:
+        if hpv[q] == v:
+            return f.follow(f.pool[f.eargs[e] + q])
+    for q in 0..nk:
+        if ks[q] == v:
+            return kd[q]
+    return v
+
+/#/ Replaces the jump `t` (along `e`) to a loop header by the header's test: copies of the header's
+/#/ instructions, then a branch to the header along `e` when the test holds, else to `x` with `xa` as
+/#/ the arguments of the exit (those of the old exit edge, then the header parameters used after the loop).
+fn inv_site(f: &Fun, t: int, e: int, hterm: int, hpv: &buf<int>, nh: int, hi: &buf<int>, nhi: int, x: int, xa: &buf<int>, nxa: int, xp: &buf<int>, nxp: int, body_true: bool) => void:
+    let blk = f.blk[t]
+    let ks: buf<int> = new_buf(int, nhi + 1)
+    let kd: buf<int> = new_buf(int, nhi + 1)
+    for q in 0..nhi:
+        let ins = hi[q]
+        let a = inv_val(f, f.a[ins], hpv, nh, e, &ks, &kd, q)
+        let b = inv_val(f, f.b[ins], hpv, nh, e, &ks, &kd, q)
+        let c = inv_val(f, f.c[ins], hpv, nh, e, &ks, &kd, q)
+        f.set_block(blk)
+        let nw = f.raw(f.op[ins], f.rep[ins], f.ty[ins], a, b, c, f.aux[ins])
+        link_before(f, nw, t)
+        ks[q] = ins
+        kd[q] = nw
+    let cond = inv_val(f, f.a[hterm], hpv, nh, e, &ks, &kd, nhi)
+    unlink(f, t)
+    f.set_block(blk)
+    for q in 0..nxa:
+        f.arg(inv_val(f, xa[q], hpv, nh, e, &ks, &kd, nhi))
+    for q in 0..nxp:
+        f.arg(inv_val(f, hpv[xp[q]], hpv, nh, e, &ks, &kd, nhi))
+    let e2 = f.mk_edge(x)
+    if body_true:
+        f.condbr(cond, e, e2)
+    else:
+        f.condbr(cond, e2, e)
+
+/#/ A loop whose test is at the top (`while c` / `for`) is entered through the test and its body runs
+/#/ only when the test held, so nothing in the body can be moved in front of the loop. Copying the test
+/#/ in front of the loop and at each jump back makes the body the loop proper: its loads of what the loop
+/#/ does not change can then be hoisted. Done for one loop that has such a load (and whose test is a
+/#/ few plain instructions, with a single exit that nothing else enters); returns whether it did.
+fn invert_loops(f: &Fun) => bool:
+    if f.nb < 3:
+        return false
+    let nb = f.nb
+    let rpo: buf<int> = new_buf(int, nb + 1)
+    let idom: buf<int> = new_buf(int, nb + 1)
+    let pc: buf<int> = new_buf(int, nb + 2)
+    let pl: buf<int> = new_buf(int, f.ne + 1)
+    let np = dominators(f, &rpo, &idom, &pc, &pl)
+    let inl: buf<int> = new_buf(int, nb + 1)
+    let work: buf<int> = new_buf(int, nb + 1)
+    for k in 1..np:
+        let h = rpo[k]
+        let hterm = f.blast[h]
+        if hterm < 0 || f.op[hterm] != int(Op.CondBr):
+            continue
+        /#/ the loop: the header and what reaches a jump back to it
+        let nw = 0
+        for q in 0..nb:
+            inl[q] = 0
+        inl[h] = 1
+        for q in pc[h]..pc[h + 1]:
+            let t = pl[q]
+            let y = t
+            while y != h && y != 0 && idom[y] >= 0 && idom[y] != y:
+                y = idom[y]
+            if y == h && inl[t] == 0:
+                inl[t] = 1
+                work[nw] = t
+                nw = nw + 1
+        if nw == 0:
+            continue
+        while nw > 0:
+            nw = nw - 1
+            let b = work[nw]
+            for q in pc[b]..pc[b + 1]:
+                let t = pl[q]
+                if inl[t] == 0 && idom[t] >= 0:
+                    inl[t] = 1
+                    work[nw] = t
+                    nw = nw + 1
+        /#/ one way stays in the loop, the other leaves it to a block nothing else enters
+        let et = f.b[hterm]
+        let ef = f.c[hterm]
+        if f.eto[et] < 0 || f.eto[ef] < 0:
+            continue
+        let in_t = inl[f.eto[et]] == 1
+        let in_f = inl[f.eto[ef]] == 1
+        if in_t == in_f:
+            continue
+        let ex = ef
+        if !in_t:
+            ex = et
+        let x = f.eto[ex]
+        if x == h || x == 0 || f.eargn[ex] != f.npar[x]:
+            continue
+        let nin = 0
+        for e in 0..f.ne:
+            if f.eto[e] == x:
+                nin = nin + 1
+        if nin != 1:
+            continue
+        /#/ the test: plain instructions only, a few
+        let hi: buf<int> = new_buf(int, 8)
+        let nhi = 0
+        let ok = true
+        let i = f.bfirst[h]
+        while i >= 0 && ok:
+            if i != hterm:
+                if f.fwd[i] < 0:
+                    if !pure_op(f.op[i]) || f.c[i] >= 0 && f.nval(i) > 3 || nhi >= 6:
+                        ok = false
+                    else:
+                        hi[nhi] = i
+                        nhi = nhi + 1
+            i = f.nx[i]
+        if !ok:
+            continue
+        /#/ the entries: one from outside ending in a plain jump, the jumps back plain too
+        let e0 = -1
+        let n0 = 0
+        let nlatch = 0
+        for e in 0..f.ne:
+            if f.eto[e] == h && f.efrom[e] >= 0 && f.efrom[e] < nb:
+                let fb = f.efrom[e]
+                let tt = f.blast[fb]
+                if inl[fb] == 1:
+                    nlatch = nlatch + 1
+                    if tt < 0 || f.op[tt] != int(Op.Br) || f.aux[tt] != e:
+                        ok = false
+                elif idom[fb] >= 0:
+                    n0 = n0 + 1
+                    e0 = e
+                    if tt < 0 || f.op[tt] != int(Op.Br) || f.aux[tt] != e:
+                        ok = false
+        if !ok || n0 != 1 || nlatch == 0 || f.eargn[e0] != f.npar[h]:
+            continue
+        /#/ other ways out of the loop lead to a failed check only, which uses nothing the loop makes
+        for b in 0..nb:
+            if inl[b] == 1 && b != h && ok:
+                for s in 0..f.nsucc(b):
+                    let to = f.eto[f.succ_edge(b, s)]
+                    if to >= 0 && inl[to] == 0:
+                        let tb = f.blast[to]
+                        if tb < 0 || f.op[tb] != int(Op.Unreachable):
+                            ok = false
+                        let j = f.bfirst[to]
+                        while j >= 0:
+                            for q in 0..f.nval(j):
+                                let v = f.val_at(j, q)
+                                if v >= 0 && f.blk[f.follow(v)] >= 0 && inl[f.blk[f.follow(v)]] == 1:
+                                    ok = false
+                            j = f.nx[j]
+        if !ok:
+            continue
+        /#/ worth it: a load of something the loop does not change, in the body, that is not yet hoistable
+        let mem = false
+        let memf = false
+        for b in 0..nb:
+            if inl[b] == 1:
+                let j = f.bfirst[b]
+                while j >= 0:
+                    if writes_memory(f, j):
+                        if f.op[j] == int(Op.Store) && f.b[j] >= 0 && rp_is_float(f.rep[f.follow(f.b[j])]):
+                            memf = true
+                        else:
+                            mem = true
+                    j = f.nx[j]
+        let gain = false
+        for b in 0..nb:
+            if inl[b] == 1 && b != h && !mem:
+                let j = f.bfirst[b]
+                while j >= 0:
+                    if f.op[j] == int(Op.Load) && f.fwd[j] < 0 && !(memf && rp_is_float(f.rep[j])) && !deref_ok(f, f.a[j]):
+                        let ad = f.follow(f.a[j])
+                        if f.blk[ad] < 0 || inl[f.blk[ad]] == 0:
+                            gain = true
+                    j = f.nx[j]
+        if !gain:
+            continue
+        /#/ what the loop makes that is used after it: header instructions stop the transformation,
+        /#/ header parameters get a parameter of the exit block
+        let hpv: buf<int> = new_buf(int, f.npar[h] + 1)
+        let nh = 0
+        let pp = f.pfirst[h]
+        while pp >= 0:
+            hpv[nh] = pp
+            nh = nh + 1
+            pp = f.nx[pp]
+        let used: buf<int> = new_buf(int, nh + 1)
+        for b in 0..nb:
+            if inl[b] == 0:
+                let j = f.bfirst[b]
+                while j >= 0:
+                    for q in 0..f.nval(j):
+                        let v = f.val_at(j, q)
+                        if v >= 0:
+                            let y = f.follow(v)
+                            for r in 0..nh:
+                                if hpv[r] == y:
+                                    used[r] = 1
+                            for r in 0..nhi:
+                                if hi[r] == y:
+                                    ok = false
+                    j = f.nx[j]
+        for e in 0..f.ne:
+            if f.eto[e] >= 0 && f.efrom[e] >= 0 && f.efrom[e] < nb && inl[f.efrom[e]] == 0:
+                for q in 0..f.eargn[e]:
+                    let y = f.follow(f.pool[f.eargs[e] + q])
+                    for r in 0..nh:
+                        if hpv[r] == y:
+                            used[r] = 1
+                    for r in 0..nhi:
+                        if hi[r] == y:
+                            ok = false
+        if !ok:
+            continue
+        let xp: buf<int> = new_buf(int, nh + 1)
+        let nxp = 0
+        for r in 0..nh:
+            if used[r] == 1:
+                xp[nxp] = r
+                nxp = nxp + 1
+        /#/ the exit's own arguments, as the header passed them
+        let nxa = f.eargn[ex]
+        let xa: buf<int> = new_buf(int, nxa + 1)
+        for q in 0..nxa:
+            xa[q] = f.follow(f.pool[f.eargs[ex] + q])
+        /#/ new parameters of the exit block for the header parameters used after the loop
+        let xnew: buf<int> = new_buf(int, nxp + 1)
+        for q in 0..nxp:
+            xnew[q] = f.param(x, f.rep[hpv[xp[q]]], f.ty[hpv[xp[q]]])
+        /#/ the jumps to the header
+        let sites: buf<int> = new_buf(int, nlatch + 2)
+        let ns = 0
+        for e in 0..f.ne:
+            if f.eto[e] == h && f.efrom[e] >= 0 && f.efrom[e] < nb && (inl[f.efrom[e]] == 1 || e == e0):
+                sites[ns] = e
+                ns = ns + 1
+        for q in 0..ns:
+            let e = sites[q]
+            inv_site(f, f.blast[f.efrom[e]], e, hterm, &hpv, nh, &hi, nhi, x, &xa, nxa, &xp, nxp, in_t)
+        /#/ the header now falls into the body
+        let body = et
+        if !in_t:
+            body = ef
+        unuse(f, hterm)
+        cut_edge(f, ex)
+        f.op[hterm] = int(Op.Br)
+        f.aux[hterm] = body
+        f.a[hterm] = -1
+        f.b[hterm] = -1
+        f.c[hterm] = -1
+        /#/ after the loop, the header parameters are the exit block's
+        for b in 0..nb:
+            if inl[b] == 0:
+                let j = f.bfirst[b]
+                while j >= 0:
+                    for q in 0..f.nval(j):
+                        let v = f.val_at(j, q)
+                        if v >= 0:
+                            let y = f.follow(v)
+                            for r in 0..nxp:
+                                if hpv[xp[r]] == y:
+                                    f.set_val_at(j, q, xnew[r])
+                    j = f.nx[j]
+        for e in 0..f.ne:
+            if f.eto[e] >= 0 && f.efrom[e] >= 0 && f.efrom[e] < nb && inl[f.efrom[e]] == 0 && f.eto[e] != x:
+                for q in 0..f.eargn[e]:
+                    let y = f.follow(f.pool[f.eargs[e] + q])
+                    for r in 0..nxp:
+                        if hpv[xp[r]] == y:
+                            f.pool[f.eargs[e] + q] = xnew[r]
+        recount_uses(f)
+        return true
+    return false
+
 /#/ ---- block order -------------------------------------------------------------
 
 /#/ An order of the blocks, in `ord` (all `nb` blocks): reverse post-order; with `rotate`, a loop's

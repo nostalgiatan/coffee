@@ -760,6 +760,11 @@ fn module_opt(lib: &Lib, f: &Fun, rs: &Reps) => void:
             optimize_rs(f, rs, true)
         if self_inline(f, lib, n):
             optimize_rs(f, rs, true)
+        let inverted = 0
+        while inverted < 8 && invert_loops(f):
+            inverted = inverted + 1
+        if inverted > 0:
+            optimize_rs(f, rs, true)
         let id = lib.f_id[n]
         lib.save(f, n, id)
         lib.f_fx[n] = summarize(f, lib)
