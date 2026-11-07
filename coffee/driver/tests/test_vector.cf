@@ -1,0 +1,50 @@
+/#/ Loops done a vector at a time: the elements a loop would compute one by one (floats, small and large
+/#/ integers, with an invariant, for lengths around the vector size) come out the same, and a loop over more
+/#/ elements than a buffer holds still fails its check.
+use * in say
+use * in files
+use * in cstr
+use * in txt
+use system, fflush in libc of c
+
+/#/ Where `w` is in `t` at or after `from`, -1 if it is not.
+fn find_at(t: &Txt, w: &str, from: int) => int:
+    for i in from..t.n:
+        let k = 0
+        while k < len(w) && i + k < t.n && t.b[i + k] == int(w[k]):
+            k = k + 1
+        if k == len(w):
+            return i
+    return -1
+
+fn run(dir: str, src: &str, want: int, vec: bool) => int:
+    system(f"rm -rf {dir} && mkdir {dir}")
+    let spath = f"{dir}/v.cf"
+    let sp = txt_of(&spath)
+    let st = txt_of(src)
+    write_file(&sp, &st)
+    if system(f"cd {dir} && coffee2 v.cf --emit-ir > v.ir 2>&1 && coffee2 v.cf -o v > build.log 2>&1") != 0:
+        say("MISS: build failed\n")
+        return 1
+    let m = 0
+    let ipath = f"{dir}/v.ir"
+    let ip = txt_of(&ipath)
+    let ir = read_file(&ip)
+    if vec && find_at(&ir, "vloop", 0) < 0:
+        say("MISS: no vector loop\n")
+        m = m + 1
+    let r = system(f"cd {dir} && ./v")
+    if r != want * 256:
+        say(f"MISS: exit {r}, want {want * 256}\n")
+        m = m + 1
+    return m
+
+fn main() => int:
+    let m = 0
+    let s1 = "fn fw(a: &buf<f32>, b: &buf<f32>, n: int) => void:\n    for i in 0..n:\n        a[i] = a[i] * f32(0.5) + b[i] + f32(1.0)\n\nfn dw(a: &buf<float>, b: &buf<float>, n: int) => void:\n    for i in 0..n:\n        a[i] = a[i] - b[i] * 2.0\n\nfn uw(a: &buf<u8>, b: &buf<u8>, n: int) => void:\n    for i in 0..n:\n        a[i] = u8(int(a[i]) + int(b[i]) + 1)\n\nfn iw(a: &buf<int>, b: &buf<int>, n: int, k: int) => void:\n    for i in 0..n:\n        a[i] = (a[i] ^ b[i]) + k\n\nfn hw(a: &buf<i16>, b: &buf<i16>, n: int) => void:\n    for i in 0..n:\n        a[i] = i16(int(a[i]) * int(b[i]) - 3)\n\nfn sum(n: int) => int:\n    let fa: buf<f32> = new_buf(f32, 100)\n    let fb: buf<f32> = new_buf(f32, 100)\n    let da: buf<float> = new_buf(float, 100)\n    let db: buf<float> = new_buf(float, 100)\n    let ua: buf<u8> = new_buf(u8, 100)\n    let ub: buf<u8> = new_buf(u8, 100)\n    let ia: buf<int> = new_buf(int, 100)\n    let ib: buf<int> = new_buf(int, 100)\n    let ha: buf<i16> = new_buf(i16, 100)\n    let hb: buf<i16> = new_buf(i16, 100)\n    for j in 0..100:\n        fa[j] = f32(j % 9) + f32(0.5)\n        fb[j] = f32(j % 4)\n        da[j] = float(j % 11)\n        db[j] = float(j % 3) + 0.25\n        ua[j] = u8(j * 7)\n        ub[j] = u8(j * 13 + 5)\n        ia[j] = j * 31\n        ib[j] = j * 17 + 1\n        ha[j] = i16(j * 300)\n        hb[j] = i16(j + 2)\n    fw(&fa, &fb, n)\n    dw(&da, &db, n)\n    uw(&ua, &ub, n)\n    iw(&ia, &ib, n, 5)\n    hw(&ha, &hb, n)\n    let s = 0\n    for j in 0..100:\n        s = s + int(fa[j] * f32(8.0)) + int(da[j]) + int(ua[j]) + ia[j] + int(ha[j])\n    return s\n\nfn main() => int:\n    let t = 0\n    t = t + sum(0) + sum(1) + sum(3) + sum(15) + sum(16) + sum(17) + sum(33) + sum(100)\n    return t % 251\n"
+    m = m + run("vect1", &s1, 117, true)
+    let s2 = "fn uw(a: &buf<u8>, b: &buf<u8>, n: int) => void:\n    for i in 0..n:\n        a[i] = u8(int(a[i]) + int(b[i]) + 1)\n\nfn main() => int:\n    let a: buf<u8> = new_buf(u8, 40)\n    let b: buf<u8> = new_buf(u8, 40)\n    uw(&a, &b, 41)\n    return 0\n"
+    m = m + run("vect2", &s2, 1, false)
+    system("rm -rf vect1 vect2")
+    fflush(0)
+    return m

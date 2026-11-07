@@ -80,6 +80,8 @@ fn summarize(f: &Fun, lib: &Lib) => int:
                 fx = fx | fx_reads() | fx_allocs()
             elif o == int(Op.Free) || o == int(Op.Drop):
                 fx = fx | fx_writes()
+            elif o == int(Op.VLoop):
+                fx = fx | fx_reads() | fx_writes()
             elif o == int(Op.CCall) || o == int(Op.CallI):
                 fx = fx | fx_reads() | fx_writes() | fx_allocs() | fx_unknown() | fx_loops()
             elif o == int(Op.Call):
@@ -284,7 +286,7 @@ fn inline_call(f: &Fun, lib: &Lib, c: int, n: int) => void:
     for k in 0..ni:
         let d = bi + k
         let o = f.op[d]
-        if o == int(Op.Call) || o == int(Op.CCall) || o == int(Op.CallI):
+        if o == int(Op.Call) || o == int(Op.CCall) || o == int(Op.CallI) || o == int(Op.VLoop):
             f.a[d] = f.a[d] + bp
         if o == int(Op.Br):
             f.aux[d] = f.aux[d] + be
@@ -759,6 +761,11 @@ fn module_opt(lib: &Lib, f: &Fun, rs: &Reps) => void:
         if escape_alloc(f, lib):
             optimize_rs(f, rs, true)
         if self_inline(f, lib, n):
+            optimize_rs(f, rs, true)
+        let vectorized = 0
+        while vectorized < 4 && vectorize(f):
+            vectorized = vectorized + 1
+        if vectorized > 0:
             optimize_rs(f, rs, true)
         let inverted = 0
         while inverted < 8 && invert_loops(f):

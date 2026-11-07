@@ -265,7 +265,7 @@ fn removable(f: &Fun, i: int) => bool:
     let o = f.op[i]
     if f.tab.has(o, f_term()) || f.tab.has(o, f_writes()) || f.tab.has(o, f_consumes()):
         return false
-    if o == int(Op.Param) || o == int(Op.Call) || o == int(Op.CCall) || o == int(Op.CallI) || o == int(Op.Clone):
+    if o == int(Op.Param) || o == int(Op.Call) || o == int(Op.CCall) || o == int(Op.CallI) || o == int(Op.Clone) || o == int(Op.VLoop):
         return false
     return true
 
@@ -1331,6 +1331,30 @@ fn deref_ok(f: &Fun, v: int) => bool:
         x = f.follow(f.a[x])
     return x >= 0 && f.op[x] == int(Op.Param) && f.blk[x] == 0 && f.ty[x] == 0 && f.rep[x] == int(Rp.Ptr)
 
+/#/ What kind of memory the write `i` changes: 1 for a store of a float, 2 for a store of a small integer,
+/#/ 0 for anything else. A float or a small integer is never part of the pointer or length of a buffer
+/#/ (nor of the other 8-byte things), so such a store leaves those as they were; a load of a float is
+/#/ changed by a store of a float only, a load of a small integer by a store of a small integer.
+fn store_class(f: &Fun, i: int) => int:
+    if f.op[i] != int(Op.Store) || f.b[i] < 0:
+        return 0
+    let r = f.rep[f.follow(f.b[i])]
+    if rp_is_float(r):
+        return 1
+    if r == int(Rp.I8) || r == int(Rp.I16) || r == int(Rp.I32):
+        return 2
+    return 0
+
+/#/ May the load `i` read something that the writes of a loop (`mem`: of any kind, `memf`: only floats,
+/#/ `memn`: only small integers) change?
+fn load_blocked(f: &Fun, i: int, mem: bool, memf: bool, memn: bool) => bool:
+    if mem:
+        return true
+    let r = f.rep[i]
+    if memf && rp_is_float(r):
+        return true
+    return memn && (r == int(Rp.I8) || r == int(Rp.I16) || r == int(Rp.I32))
+
 fn writes_memory(f: &Fun, i: int) => bool:
     let o = f.op[i]
     if o == int(Op.Store) || o == int(Op.Call) || o == int(Op.CCall) || o == int(Op.CallI) || o == int(Op.Alloc) || o == int(Op.Free) || o == int(Op.Drop) || o == int(Op.Clone) || o == int(Op.FRem):
@@ -1394,14 +1418,18 @@ fn hoist_invariants(f: &Fun) => bool:
         /#/ buffer headers it indexes as they were: `memf` blocks only the loads of floats)
         let mem = false
         let memf = false
+        let memn = false
         for r in 0..np:
             let b = rpo[r]
             if inl[b] == 1:
                 let i = f.bfirst[b]
                 while i >= 0:
                     if writes_memory(f, i):
-                        if f.op[i] == int(Op.Store) && f.b[i] >= 0 && rp_is_float(f.rep[f.follow(f.b[i])]):
+                        let sc = store_class(f, i)
+                        if sc == 1:
                             memf = true
+                        elif sc == 2:
+                            memn = true
                         else:
                             mem = true
                     i = f.nx[i]
@@ -1426,7 +1454,7 @@ fn hoist_invariants(f: &Fun) => bool:
                     let o = f.op[i]
                     let nxt = f.nx[i]
                     /#/ a load of what the header loads, in a loop that writes nothing, is that load
-                    if o == int(Op.Load) && !mem && !(memf && rp_is_float(f.rep[i])) && b != h && f.fwd[i] < 0:
+                    if o == int(Op.Load) && !load_blocked(f, i, mem, memf, memn) && b != h && f.fwd[i] < 0:
                         let j = f.bfirst[h]
                         let found = -1
                         while j >= 0 && found < 0:
@@ -1445,7 +1473,7 @@ fn hoist_invariants(f: &Fun) => bool:
                             changed = true
                             i = nxt
                             continue
-                    if o == int(Op.Load) && f.fwd[i] < 0 && !mem && !(memf && rp_is_float(f.rep[i])) && b != h && deref_ok(f, f.a[i]):
+                    if o == int(Op.Load) && f.fwd[i] < 0 && !load_blocked(f, i, mem, memf, memn) && b != h && deref_ok(f, f.a[i]):
                         /#/ a read through a reference parameter cannot fault, so it may run before the loop is known to be entered;
                         /#/ one equal to a load already moved is that load
                         let same = -1
@@ -1464,7 +1492,7 @@ fn hoist_invariants(f: &Fun) => bool:
                             n = n + 1
                             i = nxt
                             continue
-                    if f.fwd[i] < 0 && (pure_op(o) || (o == int(Op.Load) && !mem && !(memf && rp_is_float(f.rep[i])) && b == h)):
+                    if f.fwd[i] < 0 && (pure_op(o) || (o == int(Op.Load) && !load_blocked(f, i, mem, memf, memn) && b == h)):
                         let ok = true
                         for u in 0..f.nval(i):
                             let v = f.val_at(i, u)
@@ -1526,6 +1554,389 @@ fn hoist_invariants(f: &Fun) => bool:
             f.pv[t] = i
         changed = true
     return changed
+
+/#/ ---- vectorization ----------------------------------------------------------
+
+/#/ What a loop that can be done a vector at a time was found to be made of.
+class VCtx:
+    ok: bool
+    /#/ the element kind: 0 f32, 1 f64, 2 i8, 3 i16, 4 i32, 5 i64
+    lane: int
+    /#/ the program: postfix tokens `code | arg << 8` (1 load of buffer arg, 2 invariant arg, 3 operation arg, 4 store to buffer arg)
+    prog: buf<int>
+    np: int
+    ptrs: buf<int>
+    nptr: int
+    invs: buf<int>
+    ninv: int
+    depth: int
+    stores: int
+
+fn new_vctx(lane: int) => VCtx:
+    return VCtx { ok: true, lane: lane, prog: new_buf(int, 32), np: 0, ptrs: new_buf(int, 8), nptr: 0, invs: new_buf(int, 8), ninv: 0, depth: 0, stores: 0 }
+
+/#/ The element kind of a value of representation `r`, -1 for none.
+fn v_lane_of(r: int) => int:
+    if r == int(Rp.F32):
+        return 0
+    if r == int(Rp.F64):
+        return 1
+    if r == int(Rp.I8):
+        return 2
+    if r == int(Rp.I16):
+        return 3
+    if r == int(Rp.I32):
+        return 4
+    if r == int(Rp.I64):
+        return 5
+    return -1
+
+fn v_elem_rep(lane: int) => int:
+    if lane == 0:
+        return int(Rp.F32)
+    if lane == 1:
+        return int(Rp.F64)
+    if lane == 2:
+        return int(Rp.I8)
+    if lane == 3:
+        return int(Rp.I16)
+    if lane == 4:
+        return int(Rp.I32)
+    return int(Rp.I64)
+
+fn v_elem_size(lane: int) => int:
+    if lane == 0 || lane == 4:
+        return 4
+    if lane == 1 || lane == 5:
+        return 8
+    if lane == 2:
+        return 1
+    return 2
+
+fn v_push(c: &VCtx, code: int, arg: int) => void:
+    if c.np >= len(c.prog):
+        c.prog = buf_resize(c.prog, c.np * 2)
+    c.prog[c.np] = code | (arg << 8)
+    c.np = c.np + 1
+
+fn v_outside(f: &Fun, inl: &buf<int>, v: int) => bool:
+    return f.blk[v] < 0 || inl[f.blk[v]] == 0
+
+/#/ Adds the program of the value `v0`.
+fn v_emit(c: &VCtx, f: &Fun, inl: &buf<int>, iv: int, v0: int) => void:
+    if !c.ok:
+        return
+    let v = f.follow(v0)
+    let o = f.op[v]
+    if v_outside(f, inl, v):
+        let r = f.rep[v]
+        let good = false
+        if c.lane <= 1:
+            good = r == v_elem_rep(c.lane)
+        else:
+            good = rp_is_int(r)
+        if !good:
+            c.ok = false
+            return
+        let j = 0
+        while j < c.ninv && c.invs[j] != v:
+            j = j + 1
+        if j == c.ninv:
+            if j >= 8:
+                c.ok = false
+                return
+            c.invs[j] = v
+            c.ninv = j + 1
+        v_push(c, 2, j)
+        c.depth = c.depth + 1
+    elif o == int(Op.Load):
+        let a = f.follow(f.a[v])
+        if f.op[a] != int(Op.Index) || f.follow(f.b[a]) != iv || f.aux[a] != v_elem_size(c.lane) || f.rep[v] != v_elem_rep(c.lane):
+            c.ok = false
+            return
+        let base = f.follow(f.a[a])
+        if !v_outside(f, inl, base):
+            c.ok = false
+            return
+        let k = 0
+        while k < c.nptr && c.ptrs[k] != base:
+            k = k + 1
+        if k == c.nptr:
+            if k >= 7:
+                c.ok = false
+                return
+            c.ptrs[k] = base
+            c.nptr = k + 1
+        v_push(c, 1, k)
+        c.depth = c.depth + 1
+    elif (o == int(Op.ZExt) || o == int(Op.SExt)) && c.lane >= 2 && c.lane <= 4:
+        let x = f.follow(f.a[v])
+        if f.op[x] != int(Op.Load) || v_outside(f, inl, x):
+            c.ok = false
+            return
+        v_emit(c, f, inl, iv, x)
+    else:
+        let op = -1
+        if c.lane <= 1:
+            if f.rep[v] == v_elem_rep(c.lane):
+                if o == int(Op.FAdd):
+                    op = 0
+                elif o == int(Op.FSub):
+                    op = 1
+                elif o == int(Op.FMul):
+                    op = 2
+                elif o == int(Op.FDiv):
+                    op = 3
+        elif f.rep[v] == int(Rp.I64):
+            if o == int(Op.Add):
+                op = 0
+            elif o == int(Op.Sub):
+                op = 1
+            elif o == int(Op.Mul) && c.lane == 3:
+                op = 2
+            elif o == int(Op.And):
+                op = 4
+            elif o == int(Op.Or):
+                op = 5
+            elif o == int(Op.Xor):
+                op = 6
+        if op < 0:
+            c.ok = false
+            return
+        v_emit(c, f, inl, iv, f.a[v])
+        v_emit(c, f, inl, iv, f.b[v])
+        v_push(c, 3, op)
+        c.depth = c.depth - 1
+    if c.depth > 6:
+        c.ok = false
+
+/#/ Is the loop headed by `h` one that can be done a vector at a time? A loop `for i in a..n` of one store to
+/#/ `buf[i]` whose value is made of loads `buf[i]`, loop invariants and plain arithmetic, entered by a plain
+/#/ jump. Then a vector loop goes in front of it: when `n` is within the length of every buffer checked, it
+/#/ does as many elements as it can, a vector at a time, and the loop goes on with the rest (and fails the
+/#/ check where it would have). Returns whether it changed anything; the loop is looked at once.
+fn vectorize(f: &Fun) => bool:
+    if f.nb < 3:
+        return false
+    let nb = f.nb
+    let rpo: buf<int> = new_buf(int, nb + 1)
+    let idom: buf<int> = new_buf(int, nb + 1)
+    let pc: buf<int> = new_buf(int, nb + 2)
+    let pl: buf<int> = new_buf(int, f.ne + 1)
+    let np = dominators(f, &rpo, &idom, &pc, &pl)
+    let inl: buf<int> = new_buf(int, nb + 1)
+    let work: buf<int> = new_buf(int, nb + 1)
+    for k in 1..np:
+        let h = rpo[k]
+        let hterm = f.blast[h]
+        if hterm < 0 || f.op[hterm] != int(Op.CondBr) || f.npar[h] != 1:
+            continue
+        let iv = f.pfirst[h]
+        if f.rep[iv] != int(Rp.I64):
+            continue
+        /#/ the loop
+        let nw = 0
+        for q in 0..nb:
+            inl[q] = 0
+        inl[h] = 1
+        for q in pc[h]..pc[h + 1]:
+            let t = pl[q]
+            let y = t
+            while y != h && y != 0 && idom[y] >= 0 && idom[y] != y:
+                y = idom[y]
+            if y == h && inl[t] == 0:
+                inl[t] = 1
+                work[nw] = t
+                nw = nw + 1
+        if nw == 0:
+            continue
+        while nw > 0:
+            nw = nw - 1
+            let b = work[nw]
+            for q in pc[b]..pc[b + 1]:
+                let t = pl[q]
+                if inl[t] == 0 && idom[t] >= 0:
+                    inl[t] = 1
+                    work[nw] = t
+                    nw = nw + 1
+        /#/ the test `i < n` with the body on the true side
+        let et = f.b[hterm]
+        let ef = f.c[hterm]
+        if f.eto[et] < 0 || f.eto[ef] < 0 || inl[f.eto[et]] == 0 || inl[f.eto[ef]] == 1:
+            continue
+        let cmpv = f.follow(f.a[hterm])
+        if f.op[cmpv] != int(Op.Cmp) || f.aux[cmpv] != int(Pr.SLt) || f.follow(f.a[cmpv]) != iv:
+            continue
+        let n = f.follow(f.b[cmpv])
+        if !v_outside(f, &inl, n):
+            continue
+        let ok = true
+        let i = f.bfirst[h]
+        while i >= 0:
+            if i != hterm && i != cmpv:
+                ok = false
+            i = f.nx[i]
+        if !ok:
+            continue
+        /#/ one entry from outside, a plain jump; one jump back, with i + 1
+        let e0 = -1
+        let n0 = 0
+        let nlatch = 0
+        let inext = -1
+        for e in 0..f.ne:
+            if f.eto[e] == h && f.efrom[e] >= 0 && f.efrom[e] < nb:
+                let fb = f.efrom[e]
+                let tt = f.blast[fb]
+                if inl[fb] == 1:
+                    nlatch = nlatch + 1
+                    if tt < 0 || f.op[tt] != int(Op.Br) || f.aux[tt] != e || f.eargn[e] != 1:
+                        ok = false
+                    else:
+                        inext = f.follow(f.pool[f.eargs[e]])
+                elif idom[fb] >= 0:
+                    n0 = n0 + 1
+                    e0 = e
+                    if tt < 0 || f.op[tt] != int(Op.Br) || f.aux[tt] != e || f.eargn[e] != 1:
+                        ok = false
+        if !ok || n0 != 1 || nlatch != 1:
+            continue
+        if f.op[inext] != int(Op.Add) || f.follow(f.a[inext]) != iv || !f.is_const(f.follow(f.b[inext])) || f.cval(f.follow(f.b[inext])) != 1:
+            continue
+        /#/ the body: plain instructions, checks of i against a length outside, one store
+        let store = -1
+        let nstore = 0
+        let checks: buf<int> = new_buf(int, 8)
+        let nchk = 0
+        for b in 0..nb:
+            if inl[b] == 1 && b != h && ok:
+                let j = f.bfirst[b]
+                while j >= 0 && ok:
+                    let o = f.op[j]
+                    if o == int(Op.Store):
+                        store = j
+                        nstore = nstore + 1
+                    elif o == int(Op.CondBr):
+                        let cc = f.follow(f.a[j])
+                        if f.op[cc] != int(Op.Cmp) || f.aux[cc] != int(Pr.ULt) || f.follow(f.a[cc]) != iv:
+                            ok = false
+                        else:
+                            let l = f.follow(f.b[cc])
+                            if !v_outside(f, &inl, l) || nchk >= 4:
+                                ok = false
+                            else:
+                                let q = 0
+                                while q < nchk && checks[q] != l:
+                                    q = q + 1
+                                if q == nchk:
+                                    checks[q] = l
+                                    nchk = nchk + 1
+                        /#/ the other way is a failed check, which makes nothing the loop could be asked for
+                        for s in 0..2:
+                            let to = f.eto[f.succ_edge(b, s)]
+                            if to >= 0 && inl[to] == 0:
+                                let tb = f.blast[to]
+                                if tb < 0 || f.op[tb] != int(Op.Unreachable):
+                                    ok = false
+                                let u = f.bfirst[to]
+                                while u >= 0:
+                                    for q in 0..f.nval(u):
+                                        let x = f.val_at(u, q)
+                                        if x >= 0 && !v_outside(f, &inl, f.follow(x)):
+                                            ok = false
+                                    u = f.nx[u]
+                    elif o == int(Op.Br):
+                        let nothing = 0
+                    elif !(o == int(Op.Cmp) || o == int(Op.Index) || o == int(Op.Load) || o == int(Op.ZExt) || o == int(Op.SExt) || o == int(Op.Trunc) || o == int(Op.Add) || o == int(Op.Sub) || o == int(Op.Mul) || o == int(Op.And) || o == int(Op.Or) || o == int(Op.Xor) || o == int(Op.FAdd) || o == int(Op.FSub) || o == int(Op.FMul) || o == int(Op.FDiv)):
+                        ok = false
+                    j = f.nx[j]
+        if !ok || nstore != 1:
+            continue
+        /#/ the program of the stored value
+        let sa = f.follow(f.a[store])
+        let sv = f.follow(f.b[store])
+        let lane = v_lane_of(f.rep[sv])
+        if lane < 0 || f.op[sa] != int(Op.Index) || f.follow(f.b[sa]) != iv || f.aux[sa] != v_elem_size(lane):
+            continue
+        let sbase = f.follow(f.a[sa])
+        if !v_outside(f, &inl, sbase):
+            continue
+        let c = new_vctx(lane)
+        if lane >= 2 && lane <= 4:
+            if f.op[sv] != int(Op.Trunc):
+                continue
+            v_emit(&c, f, &inl, iv, f.a[sv])
+        else:
+            v_emit(&c, f, &inl, iv, sv)
+        if !c.ok || c.depth != 1:
+            continue
+        let ks = 0
+        while ks < c.nptr && c.ptrs[ks] != sbase:
+            ks = ks + 1
+        if ks == c.nptr:
+            if ks >= 7:
+                continue
+            c.ptrs[ks] = sbase
+            c.nptr = ks + 1
+        v_push(&c, 4, ks)
+        /#/ nothing the loop makes is used after it (but i)
+        for b in 0..nb:
+            if inl[b] == 0:
+                let j = f.bfirst[b]
+                while j >= 0:
+                    for q in 0..f.nval(j):
+                        let x = f.val_at(j, q)
+                        if x >= 0 && !v_outside(f, &inl, f.follow(x)) && f.follow(x) != iv:
+                            ok = false
+                    j = f.nx[j]
+        for e in 0..f.ne:
+            if f.eto[e] >= 0 && f.efrom[e] >= 0 && f.efrom[e] < nb:
+                for q in 0..f.eargn[e]:
+                    let x = f.follow(f.pool[f.eargs[e] + q])
+                    if inl[f.efrom[e]] == 0 || inl[f.eto[e]] == 0:
+                        if !v_outside(f, &inl, x) && x != iv && !(inl[f.efrom[e]] == 1 && inl[f.eto[e]] == 1):
+                            ok = false
+        if !ok:
+            continue
+        /#/ the entry: the checks, then the vector loop or the scalar one
+        let pre = f.efrom[e0]
+        let t = f.blast[pre]
+        let i0 = f.follow(f.pool[f.eargs[e0]])
+        let okv = -1
+        for q in 0..nchk:
+            f.set_block(pre)
+            let cm = f.raw(int(Op.Cmp), int(Rp.I8), -1, n, checks[q], -1, int(Pr.SLe))
+            link_before(f, cm, t)
+            if okv < 0:
+                okv = cm
+            else:
+                f.set_block(pre)
+                let an = f.raw(int(Op.And), int(Rp.I8), -1, okv, cm, -1, 0)
+                link_before(f, an, t)
+                okv = an
+        let vb = f.new_block()
+        f.set_block(vb)
+        f.arg(i0)
+        f.arg(n)
+        for q in 0..c.nptr:
+            f.arg(c.ptrs[q])
+        for q in 0..c.ninv:
+            f.arg(c.invs[q])
+        for q in 0..c.np:
+            f.arg(f.cint(int(Rp.I64), c.prog[q]))
+        let vl = f.vloop(lane, c.nptr | (c.ninv << 8) | (c.np << 16))
+        f.arg(vl)
+        f.br(h)
+        unlink(f, t)
+        f.set_block(pre)
+        if okv < 0:
+            cut_edge(f, e0)
+            f.br(vb)
+        else:
+            let e1 = f.mk_edge(vb)
+            f.condbr(okv, e1, e0)
+        recount_uses(f)
+        return true
+    return false
 
 /#/ ---- loop inversion ----------------------------------------------------------
 
@@ -1696,22 +2107,26 @@ fn invert_loops(f: &Fun) => bool:
         /#/ worth it: a load of something the loop does not change, in the body, that is not yet hoistable
         let mem = false
         let memf = false
+        let memn = false
         for b in 0..nb:
             if inl[b] == 1:
                 let j = f.bfirst[b]
                 while j >= 0:
                     if writes_memory(f, j):
-                        if f.op[j] == int(Op.Store) && f.b[j] >= 0 && rp_is_float(f.rep[f.follow(f.b[j])]):
+                        let sc = store_class(f, j)
+                        if sc == 1:
                             memf = true
+                        elif sc == 2:
+                            memn = true
                         else:
                             mem = true
                     j = f.nx[j]
         let gain = false
         for b in 0..nb:
-            if inl[b] == 1 && b != h && !mem:
+            if inl[b] == 1 && b != h:
                 let j = f.bfirst[b]
                 while j >= 0:
-                    if f.op[j] == int(Op.Load) && f.fwd[j] < 0 && !(memf && rp_is_float(f.rep[j])) && !deref_ok(f, f.a[j]):
+                    if f.op[j] == int(Op.Load) && f.fwd[j] < 0 && !load_blocked(f, j, mem, memf, memn) && !deref_ok(f, f.a[j]):
                         let ad = f.follow(f.a[j])
                         if f.blk[ad] < 0 || inl[f.blk[ad]] == 0:
                             gain = true

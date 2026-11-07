@@ -207,7 +207,7 @@ class Fun:
     /#/ Sets operand `k` of instruction `i`, the inverse of `val_at`.
     fn set_val_at(self, i: int, k: int, v: int) => void:
         let o = self.op[i]
-        if o == int(Op.Call) || o == int(Op.CCall):
+        if o == int(Op.Call) || o == int(Op.CCall) || o == int(Op.VLoop):
             self.pool[self.a[i] + k] = v
         elif o == int(Op.CallI):
             if k == 0:
@@ -256,7 +256,7 @@ class Fun:
     /#/ How many value operands instruction `i` has, not counting what its edges pass.
     fn nval(self, i: int) => int:
         let o = self.op[i]
-        if o == int(Op.Call) || o == int(Op.CCall):
+        if o == int(Op.Call) || o == int(Op.CCall) || o == int(Op.VLoop):
             return self.b[i]
         if o == int(Op.CallI):
             return self.b[i] + 1
@@ -271,7 +271,7 @@ class Fun:
 
     fn val_at(self, i: int, k: int) => int:
         let o = self.op[i]
-        if o == int(Op.Call) || o == int(Op.CCall):
+        if o == int(Op.Call) || o == int(Op.CCall) || o == int(Op.VLoop):
             return self.pool[self.a[i] + k]
         if o == int(Op.CallI):
             if k == 0:
@@ -708,6 +708,13 @@ class Fun:
         let start = self.take_pending()
         self.pn = 0
         return self.raw(int(Op.CCall), rep, ty, start, n, variadic, callee)
+
+    /#/ A vector loop (see `gen_vloop`): the queued arguments, `lane` the element kind, `shape` the counts.
+    fn vloop(self, lane: int, shape: int) => int:
+        let n = self.pn
+        let start = self.take_pending()
+        self.pn = 0
+        return self.raw(int(Op.VLoop), int(Rp.I64), -1, start, n, lane, shape)
 
     fn calli(self, rep: int, ty: int, f: int) => int:
         let n = self.pn

@@ -354,7 +354,7 @@ class Gen:
         let op = f.op[i]
         if self.uses_rdi(f, i):
             return true
-        return op == int(Op.Call) || op == int(Op.CCall) || op == int(Op.CallI) || op == int(Op.Drop) || op == int(Op.Clone) || op == int(Op.Alloc) || op == int(Op.Free) || op == int(Op.FRem)
+        return op == int(Op.Call) || op == int(Op.CCall) || op == int(Op.CallI) || op == int(Op.Drop) || op == int(Op.Clone) || op == int(Op.Alloc) || op == int(Op.Free) || op == int(Op.FRem) || op == int(Op.VLoop)
 
     /#/ Does instruction `i` use rdi as a scratch register (the aggregate store and return)?
     fn uses_rdi(self, f: &Fun, i: int) => bool:
@@ -1934,6 +1934,9 @@ class Gen:
             self.push_arg(f.a[i])
             self.do_call(f, rs, i, self.callee(sy, f.aux[i]), false)
             return
+        if op == int(Op.VLoop):
+            self.gen_vloop(f, i)
+            return
         if op == int(Op.Call) || op == int(Op.CCall) || op == int(Op.CallI):
             self.nav = 0
             for k in 0..f.b[i]:
@@ -2043,6 +2046,149 @@ class Gen:
     /#/ ---- functions ---------------------------------------------------------
 
     /#/ Generates function `f`; returns false if something could not be translated.
+    /#/ The vector loop `i`: while a whole vector of elements is left (`i0 + W <= n`), it computes `W` elements
+    /#/ at once and steps `W`; its value is where it stopped, from where the scalar loop that follows goes on.
+    /#/ The arguments are the start and the end, the base address of each buffer, the loop invariants (kept
+    /#/ in xmm8..), then the program (see `vectorize`): a postfix list of loads, invariants, operations and
+    /#/ stores. It writes rax, rcx, rdx, rsi, rdi, r8..r11 and every xmm register, like a call.
+    fn gen_vloop(self, f: &Fun, i: int) => void:
+        let base = f.a[i]
+        let lane = f.c[i]
+        let np = f.aux[i] & 255
+        let ni = (f.aux[i] >> 8) & 255
+        let plen = f.aux[i] >> 16
+        if self.a.sbx:
+            /#/ the scalar loop does it all
+            self.ld(0, f, f.pool[base])
+            self.st(i, 0)
+            return
+        let eb = 4
+        let w = 4
+        let fl = true
+        let dbl = false
+        if lane == 1:
+            eb = 8
+            w = 2
+            dbl = true
+        elif lane == 2:
+            eb = 1
+            w = 16
+            fl = false
+        elif lane == 3:
+            eb = 2
+            w = 8
+            fl = false
+        elif lane == 4:
+            fl = false
+        elif lane == 5:
+            eb = 8
+            w = 2
+            fl = false
+        let nops = 2 + np + ni
+        for k in 0..nops:
+            self.ld(0, f, f.pool[base + k])
+            self.a.push(0)
+        /#/ the invariants, from the last
+        for q in 0..ni:
+            let j = ni - 1 - q
+            self.a.pop(0)
+            if eb == 4:
+                self.a.extend(0, 0, 4, false)
+                self.a.mov_ri(2, 4294967297)
+                self.a.imul_rr(0, 2)
+            elif eb == 2:
+                self.a.extend(0, 0, 2, false)
+                self.a.mov_ri(2, 281479271743489)
+                self.a.imul_rr(0, 2)
+            elif eb == 1:
+                self.a.extend(0, 0, 1, false)
+                self.a.mov_ri(2, 72340172838076673)
+                self.a.imul_rr(0, 2)
+            self.a.movq_x(8 + j, 0, false)
+            self.a.splat_q(8 + j)
+        /#/ the buffers: rdx, rsi, r8, r9, r10, r11, rdi
+        let preg = self.vl_reg(0)
+        for q in 0..np:
+            let k = np - 1 - q
+            self.a.pop(self.vl_reg(k))
+        self.a.pop(1)
+        self.a.pop(0)
+        self.a.add_ri(1, 1 - w)
+        let top = self.a.new_label()
+        let done = self.a.new_label()
+        self.a.cmp_rr(0, 1)
+        self.a.jcc(13, done)
+        self.a.bind(top)
+        let sp = 0
+        for q in 0..plen:
+            let tk = f.cval(self.res(f, f.pool[base + nops + q]))
+            let code = tk & 255
+            let arg = tk >> 8
+            if code == 1:
+                self.a.vload(sp, self.vl_reg(arg), 0, eb)
+                sp = sp + 1
+            elif code == 2:
+                self.a.movaps(sp, 8 + arg)
+                sp = sp + 1
+            elif code == 3:
+                sp = sp - 1
+                self.vl_bin(arg, lane, fl, dbl, sp - 1, sp)
+            else:
+                self.a.vstore(self.vl_reg(arg), 0, eb, sp - 1)
+                sp = sp - 1
+        self.a.add_ri(0, w)
+        self.a.cmp_rr(0, 1)
+        self.a.jcc(12, top)
+        self.a.bind(done)
+        self.st(i, 0)
+
+    /#/ The register of buffer `k` of a vector loop.
+    fn vl_reg(self, k: int) => int:
+        if k == 0:
+            return 2
+        if k == 1:
+            return 6
+        if k == 2:
+            return 8
+        if k == 3:
+            return 9
+        if k == 4:
+            return 10
+        if k == 5:
+            return 11
+        return 7
+
+    /#/ `x[a] = x[a] op x[b]` for the vector operation `op` (add 0, sub 1, mul 2, div 3, and 4, or 5, xor 6).
+    fn vl_bin(self, op: int, lane: int, fl: bool, dbl: bool, a: int, b: int) => void:
+        if fl:
+            let opc = 88
+            if op == 1:
+                opc = 92
+            elif op == 2:
+                opc = 89
+            elif op == 3:
+                opc = 94
+            self.a.vec_op(dbl, opc, a, b)
+            return
+        let opc = 0
+        if op == 4:
+            opc = 219
+        elif op == 5:
+            opc = 235
+        elif op == 6:
+            opc = 239
+        elif op == 0:
+            opc = 252 + (lane - 2)
+            if lane == 5:
+                opc = 212
+        elif op == 1:
+            opc = 248 + (lane - 2)
+            if lane == 5:
+                opc = 251
+        else:
+            opc = 213
+        self.a.vec_op(true, opc, a, b)
+
     fn gen_fun(self, f: &Fun, rs: &Reps, sy: &Names) => bool:
         self.err = 0
         self.rbase = 0

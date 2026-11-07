@@ -134,6 +134,10 @@ fn put_inst(o: &Txt, f: &Fun, rs: &Reps, i: int) => void:
         put_args(o, f, f.a[i], f.b[i])
         if op == int(Op.CCall) && f.c[i] != 0:
             o.put(" variadic")
+    elif op == int(Op.VLoop):
+        o.put(" lane ")
+        o.put_int(f.c[i])
+        put_args(o, f, f.a[i], f.b[i])
     elif op == int(Op.CallI):
         o.put(" ")
         put_val(o, f, f.c[i])

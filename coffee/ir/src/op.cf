@@ -62,6 +62,7 @@ enum Op:
     Switch
     Ret
     Unreachable
+    VLoop
 
 /#/ Comparison predicates; the signedness of an integer compare is in the predicate.
 enum Pr:
@@ -213,4 +214,6 @@ fn new_optab() => OpTab:
     t.def("switch", 1, f_term())
     t.def("ret", 1, f_term())
     t.def("unreachable", 0, f_term())
+    /#/ The vector loop of `vectorize`: arguments as for a call; see `gen_vloop`.
+    t.def("vloop", var_args(), f_reads() | f_writes())
     return t

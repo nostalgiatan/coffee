@@ -38,6 +38,7 @@
 | 调用 | `Call`(Coffee 函数) `CCall`(C 函数) `CallI`(间接) |
 | 所有权 | `Alloc` `Free` `Drop` `Clone` `OwnMove` |
 | 终结 | `Br` `CondBr` `Switch` `Ret` `Unreachable` |
+| 向量循环 | `VLoop`:一次做一个向量的循环,由 `vectorize` 产生,参数见 `gen_vloop`;值是它停下的位置,从那里起标量循环接着做 |
 
 操作的性质(纯、可交换、读、写、终结、消耗、陷阱、分配)存在 `OpTab` 里。打印、验证、折叠都查这张表。
 
