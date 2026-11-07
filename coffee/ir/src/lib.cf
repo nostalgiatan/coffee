@@ -100,6 +100,26 @@ class Lib:
         if self.nmn + extra_n > len(self.nm):
             self.nm = buf_resize(self.nm, (self.nmn + extra_n) * 2)
 
+    /#/ Room for `n` instructions before any function is kept (an estimate from the size of the program), so
+    /#/ the columns are not grown and copied again and again as the functions come in.
+    fn reserve(self, n: int) => void:
+        if self.ni > 0 || len(self.op) >= n:
+            return
+        self.op = new_buf(int, n)
+        self.rep = new_buf(int, n)
+        self.ty = new_buf(int, n)
+        self.a = new_buf(int, n)
+        self.b = new_buf(int, n)
+        self.c = new_buf(int, n)
+        self.aux = new_buf(int, n)
+        self.nx = new_buf(int, n)
+        self.pv = new_buf(int, n)
+        self.uses = new_buf(int, n)
+        self.ln = new_buf(int, n)
+        self.fwd = new_buf(int, n)
+        self.blk = new_buf(int, n)
+        self.pool = new_buf(int, n * 5)
+
     fn grow_table(self) => void:
         if self.nf >= len(self.f_i0):
             let cap = (self.nf + 1) * 2

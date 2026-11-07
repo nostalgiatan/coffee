@@ -168,6 +168,7 @@ fn prepare_ast(a: Ast, cfc: str, t: &Tys, g: &Syms) => Prep:
 fn lower_prepared(p: &Prep, t: &Tys, g: &Syms, opt: int, only: int, unit: &buf<int>, tag: &str, ext: &buf<int>) => Lower:
     let lw = new_lower()
     lw.opt = opt
+    lw.lib.reserve(p.a.toks.count * 4)
     lw.tag.put(tag)
     let body = new_txt()
     let it = p.a.child[p.a.root]
