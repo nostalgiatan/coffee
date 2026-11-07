@@ -55,8 +55,9 @@ V1 的目标:只要 x86-64,系统 `cc` 做链接器,不用 LLVM,不用 Rust 也�
 
 第一代已归档(标签 `rust-stage0-final`,说明在 `docs/explanation/stage0.md`)。要不要补回来,各自决定:
 
-- [ ] 从 `.h` / `.c` 生成 `.cfc`(`-c`),`[dependencies.c_libraries]` 的依赖图
-- [ ] 从 `c fn` 导出生成 `.h`(`--have-c`)
+- [x] 从 `.h` 生成 `.cfc`(`coffee2 -c header.h`):`coffee/driver/src/cheader.cf`,自己读头文件的文本,不用 libclang;结构体当不透明的 `type X: object`,按值的结构体、`long double` 写成注释跳过,不读 `.c`,不展开宏、不跟 `#include`
+- [ ] `[dependencies.c_libraries]` 的依赖图
+- [x] 从 `c fn` 导出生成 `.h`(`--have-c`):只看输入文件里带函数体的 `c fn`,不导出类
 - [ ] 包依赖和 `fetch`、`std install`(`library/std` 还在仓库里)
 - [x] `--static`:驱动用 `ld/` 的链接器和 `rt/src/min.cf` 的 C 库,链出不依赖 libc 的可执行文件
 - [x] 编译器自己可以 `--static` 构建(2.4 MB,不依赖任何共享库,再编自己得到逐字节相同的结果;编译自己约 2.1 秒,动态版 1.75 秒):源码不再用 `printf`/`fopen` 系列,改用 `say` 和 `open`/`read`/`write`;`min.cf` 补了 `open read close remove access chmod clock_gettime fork waitpid _exit execve system fflush`

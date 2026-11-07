@@ -29,5 +29,5 @@ Run the whole suite with `coffee/compat` (1023 cases ported from the Rust tests)
 ## Not done
 
 - x86-64 Linux only (aarch64 backend, other platforms are future work).
-- No package manager, no `.h` → `.cfc` generator, no static linking flags (see the stage0 note above).
+- No package manager, no `[dependencies.c_libraries]` graph (`coffee2 -c header.h` writes a `.cfc` and `--have-c` a `.h`) (see the stage0 note above).
 - No vtable / dynamic dispatch; anonymous `fn` does not capture; no `try`/`catch`.

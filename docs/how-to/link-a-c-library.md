@@ -4,7 +4,7 @@
 
 ## 写 `.cfc` 文件
 
-编译器不读 C 头文件,它读 `.cfc` 文件。每个导出的函数一行,写成 Coffee 的 `c fn` 形式,类型用 Coffee 的写法。库叫 `greet`,文件就叫 `greet.cfc`:
+编译器读 `.cfc` 文件,不直接读 C 头文件。每个导出的函数一行,写成 Coffee 的 `c fn` 形式,类型用 Coffee 的写法。库叫 `greet`,文件就叫 `greet.cfc`:
 
 ```
 c fn twice(x: int(4)+) => int(4)+:
@@ -12,7 +12,15 @@ c fn twice(x: int(4)+) => int(4)+:
 
 `int(4)+` 是 4 字节有符号整数,对应 C 的 `int`。
 
-自举编译器不能从头文件生成 `.cfc`,要手写(格式见 `library/cfc/libc.cfc`)。第一代有 `coffee -c header.h`,在标签 `rust-stage0-final` 里。
+有头文件时让编译器生成:
+
+```bash
+coffee2 -c greet.h
+```
+
+写出 `greet.cfc`。生成器把头文件当文本读(不预处理,不跟 `#include`),结构体变成不透明的 `type 名: object`,写不出的函数留成 `/#/ skipped` 注释,生成后看一眼再用。没有头文件就手写(格式见 `library/cfc/libc.cfc`)。
+
+反过来,Coffee 写的库要给 C 调用:`coffee2 --have-c lib.cf --emit-obj` 写出 `lib.h`(只含带函数体的 `c fn`),再 `cc main.c lib.cf.o`。
 
 ## 放在编译器找得到的位置
 

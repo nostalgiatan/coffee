@@ -1,0 +1,945 @@
+/#/ `coffee2 -c header.h`: a `.cfc` of `c fn` declarations read from a C header.
+/#/ `coffee2 --have-c file.cf`: a `.h` for the `c fn` the file defines.
+/#/ This is not a C compiler: no preprocessing (`#` lines are dropped, `#include` is not followed, macros are not
+/#/ expanded), and only declarations are read. What the `.cfc` cannot say is left out with a comment line saying so:
+/#/ structs by value, `long double`, unions and enums as such (an enum is an `int(4)+`, a struct is opaque).
+
+fn hg_alpha(c: int) => bool:
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
+
+fn hg_digit(c: int) => bool:
+    return c >= '0' && c <= '9'
+
+/#/ Is `w` one of the words of `list` (separated by spaces)?
+fn hg_word_in(list: &str, w: &Txt) => bool:
+    let i = 0
+    let n = len(list)
+    while i < n:
+        let j = i
+        while j < n && ch(list, j) != 32:
+            j = j + 1
+        if j - i == w.n && w.n > 0:
+            let same = true
+            for k in 0..w.n:
+                if ch(list, i + k) != w.b[k]:
+                    same = false
+            if same:
+                return true
+        i = j + 1
+    return false
+
+/#/ A parameter named like a Coffee keyword gets a `_` after it.
+fn hg_safe(name: &Txt) => Txt:
+    let r = copy_txt(name)
+    if hg_word_in(" fn let if else elif for while in return use class copy clone mv rm type as c true false nil and or not match enum pub self ", name):
+        r.put("_")
+    return r
+
+class CHdr:
+    src: Txt
+    ts: buf<int>
+    te: buf<int>
+    nt: int
+    p: int
+    /#/ the `type X: object` lines and the `c fn` lines
+    types: Txt
+    fns: Txt
+    nfn: int
+    nskip: int
+    /#/ the type names known: `name=text=kind` per line (kind 0 a plain type, 1 a char type, 2 a handle, 3 void, 9 unknown)
+    aliases: Txt
+    /#/ the struct and union tags: `tag=name` per line
+    tags: Txt
+    /#/ the declaration specifiers last read
+    sp_text: Txt
+    sp_kind: int
+    sp_static: bool
+    sp_typedef: bool
+    sp_anon: bool
+    /#/ the declarator last read
+    d_name: Txt
+    d_depth: int
+    d_fn: bool
+    d_fnptr: bool
+    d_params: Txt
+    d_bad: bool
+    p_bad: bool
+    /#/ the result of the last `find_alias` / `find_tag`
+    f_text: Txt
+    f_kind: int
+
+    fn add_tok(self, s: int, e: int) => void:
+        if self.nt >= len(self.ts):
+            self.ts = buf_resize(self.ts, self.nt * 2 + 16)
+            self.te = buf_resize(self.te, self.nt * 2 + 16)
+        self.ts[self.nt] = s
+        self.te[self.nt] = e
+        self.nt = self.nt + 1
+
+    /#/ Splits the text into tokens: words, numbers, strings and single characters (`...` is one token).
+    fn lex(self) => void:
+        let n = self.src.n
+        let i = 0
+        let bol = true
+        while i < n:
+            let c = self.src.b[i]
+            if c == 10:
+                bol = true
+                i = i + 1
+            elif c == 32 || c == 9 || c == 13 || c == 12 || c == 11:
+                i = i + 1
+            elif c == '#' && bol:
+                while i < n && self.src.b[i] != 10:
+                    if self.src.b[i] == 92 && i + 1 < n && self.src.b[i + 1] == 10:
+                        i = i + 1
+                    i = i + 1
+            elif c == '/' && i + 1 < n && self.src.b[i + 1] == '/':
+                while i < n && self.src.b[i] != 10:
+                    i = i + 1
+            elif c == '/' && i + 1 < n && self.src.b[i + 1] == '*':
+                i = i + 2
+                while i + 1 < n && !(self.src.b[i] == '*' && self.src.b[i + 1] == '/'):
+                    i = i + 1
+                i = i + 2
+            elif hg_alpha(c):
+                let s = i
+                while i < n && (hg_alpha(self.src.b[i]) || hg_digit(self.src.b[i])):
+                    i = i + 1
+                self.add_tok(s, i)
+                bol = false
+            elif hg_digit(c):
+                let s = i
+                while i < n && (hg_alpha(self.src.b[i]) || hg_digit(self.src.b[i]) || self.src.b[i] == '.'):
+                    i = i + 1
+                self.add_tok(s, i)
+                bol = false
+            elif c == '"' || c == 39:
+                let s = i
+                i = i + 1
+                while i < n && self.src.b[i] != c:
+                    if self.src.b[i] == 92:
+                        i = i + 1
+                    i = i + 1
+                i = i + 1
+                self.add_tok(s, i)
+                bol = false
+            elif c == '.' && i + 2 < n && self.src.b[i + 1] == '.' && self.src.b[i + 2] == '.':
+                self.add_tok(i, i + 3)
+                i = i + 3
+                bol = false
+            else:
+                self.add_tok(i, i + 1)
+                i = i + 1
+                bol = false
+
+    /#/ Is token `i` the word `w`?
+    fn eq(self, i: int, w: &str) => bool:
+        if i >= self.nt:
+            return false
+        let s = self.ts[i]
+        if self.te[i] - s != len(w):
+            return false
+        for k in 0..len(w):
+            if self.src.b[s + k] != ch(w, k):
+                return false
+        return true
+
+    fn ident_at(self, i: int) => bool:
+        if i >= self.nt:
+            return false
+        return hg_alpha(self.src.b[self.ts[i]])
+
+    fn str_at(self, i: int) => bool:
+        if i >= self.nt:
+            return false
+        return self.src.b[self.ts[i]] == '"'
+
+    fn text(self, i: int) => Txt:
+        return slice(&self.src, self.ts[i], self.te[i])
+
+    fn is_qual(self, i: int) => bool:
+        return self.eq(i, "const") || self.eq(i, "volatile") || self.eq(i, "restrict") || self.eq(i, "__restrict") || self.eq(i, "__restrict__") || self.eq(i, "register") || self.eq(i, "inline") || self.eq(i, "__inline") || self.eq(i, "__inline__") || self.eq(i, "_Noreturn") || self.eq(i, "__extension__") || self.eq(i, "extern") || self.eq(i, "auto") || self.eq(i, "_Thread_local") || self.eq(i, "_Atomic")
+
+    fn is_attr(self, i: int) => bool:
+        return self.eq(i, "__attribute__") || self.eq(i, "__declspec") || self.eq(i, "__asm__") || self.eq(i, "__asm") || self.eq(i, "asm")
+
+    /#/ `p` is at an opening bracket: the index after its match.
+    fn skip_pair(self, p: int) => int:
+        let d = 0
+        let i = p
+        while i < self.nt:
+            if self.eq(i, "(") || self.eq(i, "{") || self.eq(i, "["):
+                d = d + 1
+            elif self.eq(i, ")") || self.eq(i, "}") || self.eq(i, "]"):
+                d = d - 1
+                if d == 0:
+                    return i + 1
+            i = i + 1
+        return self.nt
+
+    /#/ After `p`, the index past the next `;` outside brackets (or `,` when `comma`).
+    fn skip_decl(self, p: int, comma: bool) => int:
+        let i = p
+        while i < self.nt:
+            if self.eq(i, "(") || self.eq(i, "{") || self.eq(i, "["):
+                i = self.skip_pair(i)
+            elif self.eq(i, ";") || (comma && self.eq(i, ",")):
+                return i
+            else:
+                i = i + 1
+        return i
+
+    fn add_alias(self, name: &Txt, text: &Txt, kind: int) => void:
+        self.aliases.put_all(name)
+        self.aliases.put_byte('=')
+        self.aliases.put_all(text)
+        self.aliases.put_byte('=')
+        self.aliases.put_byte('0' + kind)
+        self.aliases.put_byte(10)
+
+    /#/ Looks `name` up in the list of lines `name=text=kind`; the last match wins.
+    fn find_in(self, list: &Txt, name: &Txt, kinded: bool) => bool:
+        let found = false
+        let i = 0
+        while i < list.n:
+            let j = i
+            while j < list.n && list.b[j] != 10:
+                j = j + 1
+            let k = i
+            while k < j && list.b[k] != '=':
+                k = k + 1
+            if k - i == name.n:
+                let same = true
+                for m in 0..name.n:
+                    if list.b[i + m] != name.b[m]:
+                        same = false
+                if same:
+                    found = true
+                    if kinded:
+                        self.f_text = slice(list, k + 1, j - 2)
+                        self.f_kind = list.b[j - 1] - '0'
+                    else:
+                        self.f_text = slice(list, k + 1, j)
+            i = j + 1
+        return found
+
+    fn find_alias(self, name: &Txt) => bool:
+        return self.find_in(&self.aliases, name, true)
+
+    fn find_tag(self, name: &Txt) => bool:
+        return self.find_in(&self.tags, name, false)
+
+    /#/ A new opaque type `name`.
+    fn add_handle(self, name: &Txt) => void:
+        self.types.put("type ")
+        self.types.put_all(name)
+        self.types.put(": object\n")
+        self.add_alias(name, name, 2)
+
+    fn seed(self) => void:
+        self.aliases.put("size_t=int=0\nssize_t=int=0\nptrdiff_t=int=0\nintptr_t=int=0\nuintptr_t=int=0\ntime_t=int=0\noff_t=int=0\n")
+        self.aliases.put("int8_t=int(1)+=1\nuint8_t=int(1)-=1\nint16_t=int(2)+=0\nuint16_t=int(2)-=0\nint32_t=int(4)+=0\nuint32_t=int(4)-=0\nint64_t=int=0\nuint64_t=int(8)-=0\n")
+        self.aliases.put("pid_t=int(4)+=0\nwchar_t=int(4)+=0\nbool=bool=0\nFILE=FILE=2\n")
+
+    /#/ Reads declaration specifiers at `p` into `sp_*`.
+    fn specs(self) => void:
+        self.sp_static = false
+        self.sp_typedef = false
+        self.sp_anon = false
+        let uns = 0
+        let sig = 0
+        let sh = 0
+        let lg = 0
+        let has_c = false
+        let has_i = false
+        let has_f = false
+        let has_d = false
+        let has_v = false
+        let has_b = false
+        let any = false
+        let named = false
+        let tname = new_txt()
+        let tkind = 0
+        let p = self.p
+        while p < self.nt:
+            if self.is_qual(p):
+                p = p + 1
+            elif self.eq(p, "static"):
+                self.sp_static = true
+                p = p + 1
+            elif self.eq(p, "typedef"):
+                self.sp_typedef = true
+                p = p + 1
+            elif self.is_attr(p):
+                p = p + 1
+                if self.eq(p, "("):
+                    p = self.skip_pair(p)
+            elif self.eq(p, "unsigned"):
+                uns = uns + 1
+                any = true
+                p = p + 1
+            elif self.eq(p, "signed"):
+                sig = sig + 1
+                any = true
+                p = p + 1
+            elif self.eq(p, "short"):
+                sh = sh + 1
+                any = true
+                p = p + 1
+            elif self.eq(p, "long"):
+                lg = lg + 1
+                any = true
+                p = p + 1
+            elif self.eq(p, "int"):
+                has_i = true
+                any = true
+                p = p + 1
+            elif self.eq(p, "char"):
+                has_c = true
+                any = true
+                p = p + 1
+            elif self.eq(p, "float"):
+                has_f = true
+                any = true
+                p = p + 1
+            elif self.eq(p, "double"):
+                has_d = true
+                any = true
+                p = p + 1
+            elif self.eq(p, "void"):
+                has_v = true
+                any = true
+                p = p + 1
+            elif self.eq(p, "_Bool"):
+                has_b = true
+                any = true
+                p = p + 1
+            elif self.eq(p, "struct") || self.eq(p, "union"):
+                p = p + 1
+                while self.is_attr(p) || self.is_qual(p):
+                    p = p + 1
+                    if self.eq(p, "("):
+                        p = self.skip_pair(p)
+                if self.ident_at(p):
+                    let tag = self.text(p)
+                    p = p + 1
+                    if self.find_tag(&tag):
+                        tname.clear()
+                        tname.put_all(&self.f_text)
+                    else:
+                        self.tags.put_all(&tag)
+                        self.tags.put_byte('=')
+                        self.tags.put_all(&tag)
+                        self.tags.put_byte(10)
+                        self.add_handle(&tag)
+                        tname.clear()
+                        tname.put_all(&tag)
+                else:
+                    self.sp_anon = true
+                if self.eq(p, "{"):
+                    p = self.skip_pair(p)
+                named = true
+                tkind = 2
+            elif self.eq(p, "enum"):
+                p = p + 1
+                if self.ident_at(p):
+                    p = p + 1
+                if self.eq(p, "{"):
+                    p = self.skip_pair(p)
+                named = true
+                tname.clear()
+                tname.put("int(4)+")
+                tkind = 0
+            elif self.ident_at(p) && !named && !any:
+                let nm = self.text(p)
+                if self.find_alias(&nm):
+                    tname.clear()
+                    tname.put_all(&self.f_text)
+                    tkind = self.f_kind
+                else:
+                    tname.clear()
+                    tkind = 9
+                named = true
+                p = p + 1
+            else:
+                break
+        self.p = p
+        self.sp_text.clear()
+        if named && (tkind != 9 || !any):
+            self.sp_text.put_all(&tname)
+            self.sp_kind = tkind
+        elif has_v:
+            self.sp_text.put("void")
+            self.sp_kind = 3
+        elif has_b:
+            self.sp_text.put("bool")
+            self.sp_kind = 0
+        elif has_f:
+            self.sp_text.put("float(4)")
+            self.sp_kind = 0
+        elif has_d:
+            if lg > 0:
+                self.sp_kind = 9
+            else:
+                self.sp_text.put("float")
+                self.sp_kind = 0
+        elif has_c:
+            if uns > 0:
+                self.sp_text.put("int(1)-")
+            else:
+                self.sp_text.put("int(1)+")
+            self.sp_kind = 1
+        elif sh > 0:
+            if uns > 0:
+                self.sp_text.put("int(2)-")
+            else:
+                self.sp_text.put("int(2)+")
+            self.sp_kind = 0
+        elif lg > 0:
+            if uns > 0:
+                self.sp_text.put("int(8)-")
+            else:
+                self.sp_text.put("int")
+            self.sp_kind = 0
+        elif has_i || uns > 0 || sig > 0:
+            if uns > 0:
+                self.sp_text.put("int(4)-")
+            else:
+                self.sp_text.put("int(4)+")
+            self.sp_kind = 0
+        else:
+            self.sp_kind = 9
+
+    /#/ The Coffee type for a base type behind `depth` stars; false when it has none.
+    fn render(self, base: &Txt, kind: int, depth: int, fnptr: bool, result: bool, out: &Txt) => bool:
+        if fnptr:
+            out.put("object")
+            return true
+        if depth == 0:
+            if kind == 0 || kind == 1:
+                out.put_all(base)
+                return true
+            if kind == 3:
+                out.put("void")
+                return true
+            return false
+        if depth == 1:
+            if kind == 1 && base.is("int(1)+") && !result:
+                out.put("string")
+                return true
+            if kind == 2:
+                out.put_all(base)
+                return true
+        out.put("object")
+        return true
+
+    /#/ The parameters after `(` at `p0`, as `name: type, ...` in `out`; the index after the `)`.
+    fn params_into(self, p0: int, out: &Txt) => int:
+        let p = p0
+        if self.eq(p, "void") && self.eq(p + 1, ")"):
+            return p + 2
+        if self.eq(p, ")"):
+            return p + 1
+        let idx = 0
+        while p < self.nt:
+            if idx > 0:
+                out.put(", ")
+            if self.eq(p, "..."):
+                out.put("args: object")
+                p = p + 1
+            else:
+                self.p = p
+                self.specs()
+                let btext = copy_txt(&self.sp_text)
+                let bk = self.sp_kind
+                self.declarator()
+                p = self.p
+                let ty = new_txt()
+                let ok = self.render(&btext, bk, self.d_depth, self.d_fnptr || self.d_fn, false, &ty)
+                if self.d_name.n == 0:
+                    let an = f"a{idx}"
+                    out.put(&an)
+                else:
+                    let nm = hg_safe(&self.d_name)
+                    out.put_all(&nm)
+                out.put(": ")
+                out.put_all(&ty)
+                if !ok:
+                    self.p_bad = true
+            idx = idx + 1
+            if self.eq(p, ","):
+                p = p + 1
+            elif self.eq(p, ")"):
+                return p + 1
+            else:
+                self.p_bad = true
+                while p < self.nt && !self.eq(p, ")"):
+                    if self.eq(p, "(") || self.eq(p, "["):
+                        p = self.skip_pair(p)
+                    else:
+                        p = p + 1
+                return p + 1
+        return p
+
+    /#/ Reads one declarator at `p` into `d_*`: stars, a name, a parameter list or array brackets.
+    fn declarator(self) => void:
+        let p = self.p
+        let depth = 0
+        let name = new_txt()
+        let params = new_txt()
+        let is_fn = false
+        let fnptr = false
+        let bad = false
+        while self.eq(p, "*") || self.is_qual(p):
+            if self.eq(p, "*"):
+                depth = depth + 1
+            p = p + 1
+        if self.eq(p, "(") && self.eq(p + 1, "*"):
+            p = p + 2
+            while self.eq(p, "*") || self.is_qual(p):
+                p = p + 1
+            if self.ident_at(p):
+                name = self.text(p)
+                p = p + 1
+            while self.eq(p, "["):
+                p = self.skip_pair(p)
+            if self.eq(p, ")"):
+                p = p + 1
+            if self.eq(p, "("):
+                p = self.skip_pair(p)
+            fnptr = true
+        else:
+            if self.ident_at(p) && !self.is_attr(p):
+                name = self.text(p)
+                p = p + 1
+            if self.eq(p, "("):
+                self.p_bad = false
+                p = self.params_into(p + 1, &params)
+                bad = self.p_bad
+                is_fn = true
+            while self.eq(p, "["):
+                p = self.skip_pair(p)
+                depth = depth + 1
+        while self.is_attr(p):
+            p = p + 1
+            if self.eq(p, "("):
+                p = self.skip_pair(p)
+        self.p = p
+        self.d_name = name
+        self.d_params = params
+        self.d_depth = depth
+        self.d_fn = is_fn
+        self.d_fnptr = fnptr
+        self.d_bad = bad
+
+    /#/ One top-level declaration.
+    fn top(self) => void:
+        let p = self.p
+        if self.eq(p, ";") || self.eq(p, "}"):
+            self.p = p + 1
+            return
+        if self.eq(p, "extern") && self.str_at(p + 1):
+            /#/ `extern "C" {` opens a block of declarations; its `}` is dropped above
+            p = p + 2
+            if self.eq(p, "{"):
+                p = p + 1
+            self.p = p
+            return
+        self.p = p
+        self.specs()
+        let btext = copy_txt(&self.sp_text)
+        let bk = self.sp_kind
+        let is_static = self.sp_static
+        let is_typedef = self.sp_typedef
+        let anon = self.sp_anon
+        if self.eq(self.p, ";"):
+            self.p = self.p + 1
+            return
+        let first = true
+        while self.p < self.nt:
+            self.declarator()
+            let p2 = self.p
+            if self.d_name.n == 0 && !self.d_fnptr:
+                self.p = self.skip_decl(p2, false)
+                if self.eq(self.p, ";"):
+                    self.p = self.p + 1
+                return
+            if is_typedef:
+                self.typedef_one(&btext, bk, anon && first)
+            elif self.d_fn && !self.d_fnptr && !is_static:
+                self.emit_fn(&btext, bk)
+            first = false
+            p2 = self.p
+            if self.eq(p2, "{"):
+                self.p = self.skip_pair(p2)
+                return
+            if self.eq(p2, "="):
+                self.p = self.skip_decl(p2, true)
+                p2 = self.p
+            if self.eq(p2, ","):
+                self.p = p2 + 1
+            elif self.eq(p2, ";"):
+                self.p = p2 + 1
+                return
+            else:
+                self.p = self.skip_decl(p2, false)
+                if self.eq(self.p, ";"):
+                    self.p = self.p + 1
+                return
+
+    fn typedef_one(self, btext: &Txt, bk: int, anon: bool) => void:
+        if self.d_fn:
+            return
+        if anon && self.d_depth == 0 && !self.d_fnptr:
+            /#/ `typedef struct { ... } Name;`
+            let nm = copy_txt(&self.d_name)
+            self.add_handle(&nm)
+            return
+        if self.d_depth == 0 && !self.d_fnptr:
+            self.add_alias(&self.d_name, btext, bk)
+            return
+        let ty = new_txt()
+        if self.render(btext, bk, self.d_depth, self.d_fnptr, false, &ty):
+            self.add_alias(&self.d_name, &ty, 0)
+
+    fn emit_fn(self, btext: &Txt, bk: int) => void:
+        let ret = new_txt()
+        let ok = self.render(btext, bk, self.d_depth, false, true, &ret)
+        if !ok || self.d_bad:
+            self.nskip = self.nskip + 1
+            self.fns.put("/#/ skipped ")
+            self.fns.put_all(&self.d_name)
+            self.fns.put(": a type with no Coffee spelling\n")
+            return
+        self.nfn = self.nfn + 1
+        self.fns.put("c fn ")
+        self.fns.put_all(&self.d_name)
+        self.fns.put_byte('(')
+        self.fns.put_all(&self.d_params)
+        self.fns.put(") => ")
+        self.fns.put_all(&ret)
+        self.fns.put(":\n")
+
+fn new_chdr(src: Txt) => CHdr:
+    let g = CHdr { src: src, ts: new_buf(int, 256), te: new_buf(int, 256), nt: 0, p: 0, types: new_txt(), fns: new_txt(), nfn: 0, nskip: 0, aliases: new_txt(), tags: new_txt(), sp_text: new_txt(), sp_kind: 9, sp_static: false, sp_typedef: false, sp_anon: false, d_name: new_txt(), d_depth: 0, d_fn: false, d_fnptr: false, d_params: new_txt(), d_bad: false, p_bad: false, f_text: new_txt(), f_kind: 0 }
+    g.seed()
+    return g
+
+/#/ The `.cfc` text for the C header `src`; `name` is the file named in the first comment line.
+fn header_to_cfc(src: &Txt, name: &str) => Txt:
+    let g = new_chdr(copy_txt(src))
+    g.lex()
+    while g.p < g.nt:
+        let before = g.p
+        g.top()
+        if g.p == before:
+            g.p = before + 1
+    let out = new_txt()
+    let note = f"/#/ Generated by `coffee2 -c {name}`: the C declarations of the header as `c fn`.\n"
+    out.put(&note)
+    out.put_all(&g.types)
+    out.put_all(&g.fns)
+    if g.nfn == 0:
+        say(f"warning: no function declarations found in '{name}'\n")
+    return out
+
+/#/ The path with its last extension (after the last `.` of the last name) replaced by `ext`.
+fn with_ext(path: &Txt, ext: &str) => Txt:
+    let cut = path.n
+    let i = path.n - 1
+    while i >= 0 && path.b[i] != 47:
+        if path.b[i] == '.':
+            cut = i
+            i = 0 - 1
+        else:
+            i = i - 1
+    let r = slice(path, 0, cut)
+    r.put(ext)
+    return r
+
+/#/ `-c`: reads the header named as input and writes the `.cfc` (to `-o`, else beside it).
+fn gen_cfc_main(input: &Txt, output: &Txt) => int:
+    let src = read_file(input)
+    if src.n < 0:
+        say(f"error: cannot read '{txt_str(input)}' (-c wants a C header, .h or .c)\n")
+        return 1
+    let shown = txt_str(input)
+    let cfc = header_to_cfc(&src, &shown)
+    let path = copy_txt(output)
+    if path.n == 0:
+        path = with_ext(input, ".cfc")
+    write_file(&path, &cfc)
+    return 0
+
+/#/ ---- --have-c ----
+
+/#/ Does the line starting at `i` of `t` start with `w`?
+fn hg_starts(t: &Txt, i: int, w: &str) => bool:
+    if i + len(w) > t.n:
+        return false
+    for k in 0..len(w):
+        if t.b[i + k] != ch(w, k):
+            return false
+    return true
+
+fn hg_trim(t: &Txt) => Txt:
+    let s = 0
+    let e = t.n
+    while s < e && (t.b[s] == 32 || t.b[s] == 9):
+        s = s + 1
+    while e > s && (t.b[e - 1] == 32 || t.b[e - 1] == 9 || t.b[e - 1] == 13):
+        e = e - 1
+    return slice(t, s, e)
+
+/#/ Is the line `name` in the list of lines `list`?
+fn hg_has_line(list: &Txt, name: &Txt) => bool:
+    let i = 0
+    while i < list.n:
+        let j = i
+        while j < list.n && list.b[j] != 10:
+            j = j + 1
+        if j - i == name.n:
+            let same = true
+            for k in 0..name.n:
+                if list.b[i + k] != name.b[k]:
+                    same = false
+            if same:
+                return true
+        i = j + 1
+    return false
+
+/#/ The C spelling of the Coffee type `t`; false when there is none.
+fn hg_ctype(t: &Txt, handles: &Txt, out: &Txt) => bool:
+    if t.is("int"):
+        out.put("long long")
+    elif t.is("float"):
+        out.put("double")
+    elif t.is("bool"):
+        out.put("bool")
+    elif t.is("void"):
+        out.put("void")
+    elif t.is("str") || t.is("string"):
+        out.put("const char*")
+    elif t.is("object") || t.is("buf"):
+        out.put("void*")
+    elif hg_starts(t, 0, "int("):
+        let size = 0
+        let i = 4
+        while i < t.n && hg_digit(t.b[i]):
+            size = size * 10 + t.b[i] - '0'
+            i = i + 1
+        if i < t.n && t.b[i] == ')':
+            i = i + 1
+        if i < t.n && t.b[i] == '-':
+            out.put("unsigned ")
+        if size == 1:
+            if i < t.n && t.b[i] == '-':
+                out.put("char")
+            else:
+                out.put("signed char")
+        elif size == 2:
+            out.put("short")
+        elif size == 4:
+            out.put("int")
+        elif size == 8:
+            out.put("long long")
+        else:
+            return false
+    elif hg_starts(t, 0, "float("):
+        if t.n > 6 && t.b[6] == '4':
+            out.put("float")
+        elif t.n > 6 && t.b[6] == '8':
+            out.put("double")
+        else:
+            return false
+    elif hg_has_line(handles, t):
+        out.put_all(t)
+        out.put("*")
+    else:
+        return false
+    return true
+
+/#/ The C header for the `c fn` that have a body in the Coffee text `src`; empty when there are none.
+fn have_c_header(src: &Txt, guard: &Txt) => Txt:
+    let handles = new_txt()
+    let i = 0
+    while i < src.n:
+        let j = i
+        while j < src.n && src.b[j] != 10:
+            j = j + 1
+        if hg_starts(src, i, "type "):
+            /#/ `type Name: object`
+            let ln = slice(src, i + 5, j)
+            let colon = 0 - 1
+            for k in 0..ln.n:
+                if ln.b[k] == ':' && colon < 0:
+                    colon = k
+            if colon > 0:
+                let nm = slice(&ln, 0, colon)
+                let nm2 = hg_trim(&nm)
+                let rest = slice(&ln, colon + 1, ln.n)
+                let rest2 = hg_trim(&rest)
+                if rest2.is("object"):
+                    handles.put_all(&nm2)
+                    handles.put_byte(10)
+        i = j + 1
+    let decls = new_txt()
+    let count = 0
+    i = 0
+    while i < src.n:
+        let j = i
+        while j < src.n && src.b[j] != 10:
+            j = j + 1
+        if hg_starts(src, i, "c fn "):
+            /#/ a definition when the next line that is not blank is indented
+            let q = j + 1
+            let indented = false
+            let looking = true
+            while looking && q < src.n:
+                let r = q
+                while r < src.n && (src.b[r] == 32 || src.b[r] == 9 || src.b[r] == 13):
+                    r = r + 1
+                if r < src.n && src.b[r] == 10:
+                    q = r + 1
+                else:
+                    looking = false
+                    if r < src.n && r > q:
+                        indented = true
+            if indented:
+                if c_export(src, i + 5, j, &handles, &decls):
+                    count = count + 1
+        i = j + 1
+    let out = new_txt()
+    if count == 0:
+        return out
+    out.put("/* Generated by `coffee2 --have-c`: the `c fn` this program defines. */\n")
+    let top = f"#ifndef {txt_str(guard)}\n#define {txt_str(guard)}\n\n#include <stdbool.h>\n\n"
+    out.put(&top)
+    let k = 0
+    while k < handles.n:
+        let e = k
+        while e < handles.n && handles.b[e] != 10:
+            e = e + 1
+        let nm = slice(&handles, k, e)
+        out.put("typedef struct ")
+        out.put_all(&nm)
+        out.put_byte(' ')
+        out.put_all(&nm)
+        out.put(";\n")
+        k = e + 1
+    out.put("\n#ifdef __cplusplus\nextern \"C\" {\n#endif\n\n")
+    out.put_all(&decls)
+    out.put("\n#ifdef __cplusplus\n}\n#endif\n\n#endif\n")
+    return out
+
+/#/ Adds the C prototype of the `c fn` line `[lo, hi)` of `src` (after `c fn `) to `decls`; false when a type has no C spelling.
+fn c_export(src: &Txt, lo: int, hi: int, handles: &Txt, decls: &Txt) => bool:
+    let paren = lo
+    while paren < hi && src.b[paren] != '(':
+        paren = paren + 1
+    if paren >= hi:
+        return false
+    let name = slice(src, lo, paren)
+    let close = paren
+    let d = 0
+    while close < hi:
+        if src.b[close] == '(':
+            d = d + 1
+        elif src.b[close] == ')':
+            d = d - 1
+            if d == 0:
+                break
+        close = close + 1
+    if close >= hi:
+        return false
+    let ret = new_txt()
+    ret.put("void")
+    let arrow = close + 1
+    while arrow + 1 < hi && !(src.b[arrow] == '=' && src.b[arrow + 1] == '>'):
+        arrow = arrow + 1
+    if arrow + 1 < hi:
+        let rt = slice(src, arrow + 2, hi)
+        let rt2 = hg_trim(&rt)
+        if rt2.n > 0 && rt2.b[rt2.n - 1] == ':':
+            rt2.n = rt2.n - 1
+        let rt3 = hg_trim(&rt2)
+        ret.clear()
+        if !hg_ctype(&rt3, handles, &ret):
+            say(f"warning: --have-c: '{txt_str(&name)}' skipped, its result type has no C spelling\n")
+            return false
+    let line = new_txt()
+    line.put_all(&ret)
+    line.put_byte(' ')
+    line.put_all(&name)
+    line.put_byte('(')
+    /#/ the parameters, split at the commas outside parentheses
+    let s = paren + 1
+    let n_par = 0
+    let depth = 0
+    let k = paren + 1
+    while k <= close:
+        let at_end = k == close
+        if !at_end && src.b[k] == '(':
+            depth = depth + 1
+        elif !at_end && src.b[k] == ')':
+            depth = depth - 1
+        if at_end || (src.b[k] == ',' && depth == 0):
+            let par = slice(src, s, k)
+            let par2 = hg_trim(&par)
+            if par2.n > 0:
+                let colon = 0 - 1
+                for m in 0..par2.n:
+                    if par2.b[m] == ':' && colon < 0:
+                        colon = m
+                if colon < 0:
+                    return false
+                let pn = slice(&par2, 0, colon)
+                let pn2 = hg_trim(&pn)
+                let pt = slice(&par2, colon + 1, par2.n)
+                let pt2 = hg_trim(&pt)
+                let cty = new_txt()
+                if !hg_ctype(&pt2, handles, &cty):
+                    say(f"warning: --have-c: '{txt_str(&name)}' skipped, the type of '{txt_str(&pn2)}' has no C spelling\n")
+                    return false
+                if n_par > 0:
+                    line.put(", ")
+                line.put_all(&cty)
+                line.put_byte(' ')
+                line.put_all(&pn2)
+                if hg_word_in(" int long char short double float void default register auto static struct union enum switch case goto signed unsigned volatile const sizeof typedef extern do break continue ", &pn2):
+                    line.put_byte('_')
+                n_par = n_par + 1
+            s = k + 1
+        k = k + 1
+    if n_par == 0:
+        line.put("void")
+    line.put(");\n")
+    decls.put_all(&line)
+    return true
+
+/#/ The header guard for the file `path`: `NAME_H`, in upper case.
+fn guard_of(path: &Txt) => Txt:
+    let s = 0
+    for i in 0..path.n:
+        if path.b[i] == 47:
+            s = i + 1
+    let g = new_txt()
+    for i in s..path.n:
+        let c = path.b[i]
+        if c >= 'a' && c <= 'z':
+            g.put_byte(c - 32)
+        elif hg_alpha(c) || hg_digit(c):
+            g.put_byte(c)
+        else:
+            g.put_byte('_')
+    return g
+
+/#/ `--have-c`: writes `<input without .cf>.h`, unless the file defines no `c fn`.
+fn have_c_main(input: &Txt, src: &Txt) => void:
+    let path = with_ext(input, ".h")
+    let guard = guard_of(&path)
+    let h = have_c_header(src, &guard)
+    if h.n == 0:
+        say(f"warning: --have-c: no `c fn` with a body in '{txt_str(input)}', no header written\n")
+        return
+    write_file(&path, &h)

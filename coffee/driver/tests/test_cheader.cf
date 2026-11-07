@@ -1,0 +1,89 @@
+/#/ `-c header.h` (a `.cfc` from a C header) and `--have-c` (a `.h` from the `c fn` a program defines), as functions and
+/#/ through the command line. The round trip needs `cc` and `coffee2` on the path; without them that part passes.
+use * in say
+use * in drive
+use * in cstr
+use * in files
+use * in flat
+use * in nested
+use * in alias
+use * in cheader
+use system, fflush in libc of c
+
+fn has(t: &Txt, w: &str) => bool:
+    for i in 0..t.n:
+        let k = 0
+        while k < len(w) && i + k < t.n && t.b[i + k] == int(w[k]):
+            k = k + 1
+        if k == len(w):
+            return true
+    return false
+
+fn want(m: int, t: &Txt, w: &str) => int:
+    if !has(t, w):
+        say(f"MISS #{m}: no '{w}' in:\n{txt_str(t)}\n")
+        fflush(0)
+        return 1
+    return 0
+
+fn unwanted(m: int, t: &Txt, w: &str) => int:
+    if has(t, w):
+        say(f"MISS #{m}: '{w}' in:\n{txt_str(t)}\n")
+        fflush(0)
+        return 1
+    return 0
+
+fn put_file(path: &str, text: &str) => void:
+    let p = txt_of(path)
+    let t = txt_of(text)
+    write_file(&p, &t)
+
+fn main() => int:
+    let m = 0
+    let h = txt_of("#ifndef X_H\n#define X_H\n#include <stddef.h>\n/* c */ // d\ntypedef struct Counter Counter;\ntypedef struct { int x; } Pt;\ntypedef unsigned int u32;\ntypedef enum { A, B } Color;\ntypedef int (*cb_t)(int);\nextern \"C\" {\nCounter *counter_new(int start);\nvoid counter_free(Counter *c);\ndouble scale(double x, float f, long n, unsigned long u, size_t sz);\nconst char *greeting(const char *who);\nPt *pt_new(void);\nPt by_value(Pt p);\nu32 hash(const unsigned char *d, size_t len, Color c);\nint say2(const char *fmt, ...);\nvoid on(cb_t cb, int (*f)(int, int), int a[]);\nstatic inline int hidden(int a) { return a; }\nlong double ld(long double x);\nshort sh(unsigned char a, signed char b, char c, _Bool d);\n}\n#endif\n")
+    let cfc = header_to_cfc(&h, "x.h")
+    m = m + want(1, &cfc, "type Counter: object\n")
+    m = m + want(2, &cfc, "type Pt: object\n")
+    m = m + want(3, &cfc, "c fn counter_new(start: int(4)+) => Counter:\n")
+    m = m + want(4, &cfc, "c fn counter_free(c_: Counter) => void:\n")
+    m = m + want(5, &cfc, "c fn scale(x: float, f: float(4), n: int, u: int(8)-, sz: int) => float:\n")
+    m = m + want(6, &cfc, "c fn greeting(who: string) => object:\n")
+    m = m + want(7, &cfc, "c fn pt_new() => Pt:\n")
+    m = m + want(8, &cfc, "skipped by_value")
+    m = m + want(9, &cfc, "c fn hash(d: object, len: int, c_: int(4)+) => int(4)-:\n")
+    m = m + want(10, &cfc, "c fn say2(fmt: string, args: object) => int(4)+:\n")
+    m = m + want(11, &cfc, "c fn on(cb: object, f: object, a: object) => void:\n")
+    m = m + unwanted(12, &cfc, "hidden")
+    m = m + want(13, &cfc, "skipped ld")
+    m = m + want(14, &cfc, "c fn sh(a: int(1)-, b: int(1)+, c_: int(1)+, d: bool) => int(2)+:\n")
+    /#/ the other direction
+    let cf = txt_of("type Box: object\n\nc fn add(a: int, b: int(4)+) => int:\n    return a + int(b)\n\nc fn name(box: Box, s: str, f: float(4), u: int(2)-) => str:\n    return s\n\nc fn proto(x: int) => int:\n\nfn helper() => int:\n    return 1\n")
+    let guard = guard_of(&txt_of("dir/my-lib.h"))
+    if !guard.is("MY_LIB_H"):
+        say("MISS #15: guard\n")
+        m = m + 1
+    let hh = have_c_header(&cf, &guard)
+    m = m + want(16, &hh, "long long add(long long a, int b);\n")
+    m = m + want(17, &hh, "const char* name(Box* box, const char* s, float f, unsigned short u);\n")
+    m = m + want(18, &hh, "typedef struct Box Box;\n")
+    m = m + unwanted(19, &hh, "proto")
+    m = m + unwanted(20, &hh, "helper")
+    m = m + want(21, &hh, "#ifndef MY_LIB_H\n")
+    if system("command -v cc > /dev/null 2>&1 && command -v coffee2 > /dev/null 2>&1") != 0:
+        return m
+    system("rm -rf chdt && mkdir chdt")
+    /#/ -c: the C library's header, its .cfc, a program that calls it
+    put_file("chdt/demo.h", "typedef struct Counter Counter;\nCounter *counter_new(int start);\nvoid counter_free(Counter *c);\nint counter_add(Counter *c, int n);\ndouble scale(double x, float f, long n, unsigned long u, size_t sz);\nconst char *greeting(const char *who);\n")
+    put_file("chdt/demo.c", "#include <stdlib.h>\n#include \"demo.h\"\nstruct Counter { int n; };\nCounter *counter_new(int s){ Counter *c = malloc(sizeof *c); c->n = s; return c; }\nvoid counter_free(Counter *c){ free(c); }\nint counter_add(Counter *c, int n){ c->n += n; return c->n; }\ndouble scale(double x, float f, long n, unsigned long u, size_t sz){ return x*f+n+u+sz; }\nconst char *greeting(const char *w){ return w; }\n")
+    put_file("chdt/use.cf", "use counter_new, counter_add, counter_free, scale, greeting in demo of c\n\nfn main() => int:\n    let c = counter_new(40)\n    let r = counter_add(c, 2)\n    counter_free(c)\n    if scale(1.0, 2.0, 3, 4, 5) != 14.0:\n        return 2\n    return r - 42\n")
+    if system("cd chdt && cc -include stddef.h -shared -fPIC -o libdemo.so demo.c && coffee2 -c demo.h && coffee2 use.cf -o use && LD_LIBRARY_PATH=. ./use") != 0:
+        say("MISS #30: -c round trip\n")
+        m = m + 1
+    /#/ --have-c: the header of a Coffee library, a C program that calls it
+    put_file("chdt/lib.cf", "type Box: object\n\nc fn add(a: int, b: int(4)+) => int:\n    return a + int(b)\n\nc fn twice(x: int(4)+) => int(4)+:\n    return x * 2\n")
+    put_file("chdt/main.c", "#include \"lib.h\"\nint main(void){ return (int)add(40, 2) - 42 + twice(3) - 6; }\n")
+    if system("cd chdt && coffee2 --have-c lib.cf --emit-obj && cc main.c lib.cf.o -o main && ./main") != 0:
+        say("MISS #31: --have-c round trip\n")
+        m = m + 1
+    system("rm -rf chdt")
+    return m
