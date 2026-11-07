@@ -261,7 +261,9 @@ fn make_image_sbx(o: &Obj, a: &Asm) => Image:
             im.nsym = im.nsym + 1
     im.b.put_all(&a.c)
     let sys_at = -1
-    if sys_sym >= 0:
+    if sys_sym >= 0 && target_arch == arch_aarch64():
+        sys_at = sbx_sys_a64(&im)
+    elif sys_sym >= 0:
         while im.b.n % 16 != 0:
             im.b.put_byte(0)
         sys_at = im.b.n
@@ -356,7 +358,7 @@ fn make_image_sbx(o: &Obj, a: &Asm) => Image:
             im.err = 1
             return im
         let d = 0
-        if ty == r_abs32():
+        if ty == r_abs32() || ty == 264 || ty == 266:
             let target = 0 - 1
             if sym == 1:
                 target = ro_lin
@@ -371,6 +373,15 @@ fn make_image_sbx(o: &Obj, a: &Asm) => Image:
                 im.err = 2
                 return im
             d = target + a.rl_add[r]
+            if ty == 264 || ty == 266:
+                /#/ movz / movk of aarch64: 16 bits of the offset in bits 5 to 20
+                let w = im.b.b[at] | (im.b.b[at + 1] << 8) | (im.b.b[at + 2] << 16) | (im.b.b[at + 3] << 24)
+                if ty == 266:
+                    d = d >> 16
+                w = w | ((d & 65535) << 5)
+                for q in 0..4:
+                    im.b.b[at + q] = (w >> (8 * q)) & 255
+                continue
         else:
             if sym < 2 || sym - 2 >= o.ns:
                 im.err = 1
@@ -383,9 +394,97 @@ fn make_image_sbx(o: &Obj, a: &Asm) => Image:
                 return im
             else:
                 d = o.s_def[tk] + a.rl_add[r] - at
+            if target_arch == arch_aarch64():
+                if ty != 283 && ty != 282:
+                    im.err = 1
+                    return im
+                if !apply_a64(&im.b, at, ty, at + d):
+                    im.err = 1
+                    return im
+                continue
         for q in 0..4:
             im.b.b[at + q] = (d >> (8 * q)) & 255
     return im
+
+/#/ The system function of aarch64 sandbox code, appended to the image (`im.b`); returns where it starts and sets
+/#/ `im.sys_at`, `im.hc_at` and `im.exit_at`. It is called as `cf_syscall(n, a, b, c, ..)` (n in x0, the arguments in
+/#/ x1 to x6) and does what the sandbox may: `exit` and `exit_group` go to the exit stub, `mmap` takes the next bytes
+/#/ of the heap, `write` and `read` jump through slots the loader fills with the host stubs; the rest fail (ENOSYS).
+/#/ The code is the loader's, not the sandbox's: it is not verified.
+fn sbx_sys_a64(im: &Image) => int:
+    while im.b.n % 16 != 0:
+        im.b.put_byte(0)
+    let sys_at = im.b.n
+    let sa = new_asm()
+    sa.acc.sbx = false
+    let ex = sa.new_label()
+    let mm = sa.new_label()
+    let nomem = sa.new_label()
+    let wr = sa.new_label()
+    let rd = sa.new_label()
+    for k in 0..4:
+        let nr = 0
+        let lab = ex
+        if k == 0:
+            nr = 93
+        elif k == 1:
+            nr = 94
+        elif k == 2:
+            nr = 222
+            lab = mm
+        elif k == 3:
+            nr = 64
+            lab = wr
+        a64_cmp_ri(&sa, 0, nr)
+        a64_bcc(&sa, ac_eq(), lab)
+    a64_cmp_ri(&sa, 0, 63)
+    a64_bcc(&sa, ac_eq(), rd)
+    a64_mov_ri(&sa, 0, 0 - 38)
+    a64_ret(&sa)
+    /#/ mmap(0, len, ..): the next len bytes of the heap, rounded up to a page, or ENOMEM; the header is at x28 + sbx_lin_at()
+    sa.bind(mm)
+    a64_mov_ri(&sa, 9, sbx_lin_at())
+    a64_add_rr(&sa, 9, 9, 28)
+    a64_ld(&sa, 10, 9, 0, 8)
+    a64_ld(&sa, 11, 9, 8, 8)
+    a64_addsub_ri(&sa, false, 2, 2, 4095)
+    a64_mov_ri(&sa, 12, 0 - 4096)
+    a64_and_rr(&sa, 2, 2, 12)
+    a64_mov_rr(&sa, 13, 10)
+    a64_cmp_rr(&sa, 2, 11)
+    a64_bcc(&sa, ac_hi(), nomem)
+    a64_add_rr(&sa, 10, 10, 2)
+    a64_cmp_rr(&sa, 10, 11)
+    a64_bcc(&sa, ac_hi(), nomem)
+    a64_st(&sa, 9, 0, 10, 8)
+    a64_mov_rr(&sa, 0, 13)
+    a64_ret(&sa)
+    sa.bind(nomem)
+    a64_mov_ri(&sa, 0, 0 - 12)
+    a64_ret(&sa)
+    /#/ read and write: `ldr x16, [pc, 8]; br x16` and the slot
+    for t in 0..2:
+        if t == 0:
+            sa.bind(wr)
+        else:
+            sa.bind(rd)
+        a64_w(&sa, 1476395088)
+        a64_w(&sa, 3592356352 | (16 << 5))
+        a64_w(&sa, 0)
+        a64_w(&sa, 0)
+    sa.bind(ex)
+    a64_mov_rr(&sa, 0, 1)
+    if !a64_end_fun(&sa):
+        im.err = 1
+        return sys_at
+    im.b.put_all(&sa.c)
+    im.sys_at = sys_at
+    im.hc_at = sys_at + sa.lab[wr] + 8
+    /#/ the exit stub follows at once: the code above falls into it
+    im.exit_at = im.b.n
+    while im.b.n < im.exit_at + 128:
+        im.b.put_byte(0)
+    return sys_at
 
 /#/ The sandbox image of the module in `lw`, whose code was generated with `Asm.sbx` set.
 fn image_sbx_of(lw: &Lower) => Image:

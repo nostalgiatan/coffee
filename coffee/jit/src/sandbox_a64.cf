@@ -1,0 +1,276 @@
+/#/ Runs aarch64 sandbox code (the counterpart of sandbox.cf; design: docs/explanation/sandbox-design.md and
+/#/ docs/reference/aarch64-backend.md). The code reaches the linear memory only through `[x28, w, uxtw]`, x28 being the
+/#/ start of a 4 GB reservation and the offset a 32-bit register, so whatever it computes lands inside. Anything else
+/#/ that goes wrong (an access past what is mapped, a division by zero is not one on aarch64, the end of the stack) is a
+/#/ signal, and the handler turns it into a return from `sandbox_run_a64`.
+/#/
+/#/ The host keeps a control block that the sandbox cannot name, as on x86-64: [0] the host stack pointer to return
+/#/ to, [8] the top of the stack of the code, [16] the signal of a trap (0 when the run ended by itself). The stubs
+/#/ are hand-made words: nothing here is sandbox code.
+use * in image
+use * in asm
+use * in loader
+use * in sandbox
+
+fn w32a(t: &Txt, w: int) => void:
+    for b in 0..4:
+        t.put_byte((w >> (8 * b)) & 255)
+
+/#/ `mov xd, #v` (64-bit, any value), through the assembler.
+fn put_mov(a: &Asm, rd: int, v: int) => void:
+    a64_mov_ri(a, rd, v)
+
+/#/ stp / ldp of two registers at [sp, #off]: signed offset form, then the pre-index store and post-index load.
+fn a64_stp_sp(a: &Asm, r1: int, r2: int, off: int) => void:
+    a64_w(a, 2835349504 | (((off // 8) & 127) << 15) | (r2 << 10) | (31 << 5) | r1)
+
+fn a64_ldp_sp(a: &Asm, r1: int, r2: int, off: int) => void:
+    a64_w(a, 2839543808 | (((off // 8) & 127) << 15) | (r2 << 10) | (31 << 5) | r1)
+
+/#/ sp = xn, and xd = sp (`add .., #0`)
+fn a64_sp_from(a: &Asm, rn: int) => void:
+    a64_w(a, 2432696351 | (rn << 5))
+
+fn a64_from_sp(a: &Asm, rd: int) => void:
+    a64_w(a, 2432696320 | (31 << 5) | rd)
+
+/#/ Saves x19 to x30 below sp (96 bytes).
+fn save_host(a: &Asm) => void:
+    a64_addsub_ri(a, true, 31, 31, 96)
+    a64_stp_sp(a, 29, 30, 0)
+    for k in 0..5:
+        a64_stp_sp(a, 19 + 2 * k, 20 + 2 * k, 16 + 16 * k)
+    a64_stp_sp(a, 27, 28, 80)
+
+/#/ Back to the host: sp from the control block, the saved registers, return with x0 as it is.
+fn leave_host(a: &Asm, ctrl: int) => void:
+    put_mov(a, 9, ctrl)
+    a64_ld(a, 10, 9, 0, 8)
+    a64_sp_from(a, 10)
+    for k in 0..5:
+        a64_ldp_sp(a, 19 + 2 * k, 20 + 2 * k, 16 + 16 * k)
+    a64_ldp_sp(a, 27, 28, 80)
+    a64_ldp_sp(a, 29, 30, 0)
+    a64_addsub_ri(a, false, 31, 31, 96)
+    a64_ret(a)
+
+/#/ Called with x0 the control block: saves the host registers, moves to the stack of the code, sets x28 (the region) and
+/#/ x27 (the shadow frame pointer; the shadow stack of aarch64 grows up from the bottom of its part of the linear memory),
+/#/ calls `main`.
+fn stub_enter_a64(ss_base: int, entry: int, region: int, ctrl: int) => Txt:
+    let a = new_asm()
+    save_host(&a)
+    a64_from_sp(&a, 9)
+    a64_st(&a, 0, 0, 9, 8)
+    a64_ld(&a, 9, 0, 8, 8)
+    a64_sp_from(&a, 9)
+    put_mov(&a, 28, region)
+    put_mov(&a, 27, ss_base)
+    put_mov(&a, 9, entry)
+    a64_blr(&a, 9)
+    leave_host(&a, ctrl)
+    return clone a.c
+
+/#/ Reached after the handler moved the faulting instruction here: back to the host with x0 0.
+fn stub_trap_a64(ctrl: int) => Txt:
+    let a = new_asm()
+    a64_mov_ri(&a, 0, 0)
+    leave_host(&a, ctrl)
+    return clone a.c
+
+/#/ Where the exit of the sandbox code goes (x0 holds the status): back to the host with it.
+fn stub_exit_a64(ctrl: int) => Txt:
+    let a = new_asm()
+    leave_host(&a, ctrl)
+    return clone a.c
+
+/#/ The signal handler (x0 the signal, x2 the saved state; the pc is at 440 in it): when the instruction that faulted is in
+/#/ the code of the sandbox, it is replaced by the trap stub and the signal is noted; else exit.
+fn stub_handler_a64(code_lo: int, code_hi: int, trap: int, ctrl: int) => Txt:
+    let a = new_asm()
+    let out = a.new_label()
+    a64_ld(&a, 3, 2, 440, 8)
+    put_mov(&a, 4, code_lo)
+    a64_cmp_rr(&a, 3, 4)
+    a64_bcc(&a, ac_lo(), out)
+    put_mov(&a, 4, code_hi)
+    a64_cmp_rr(&a, 3, 4)
+    a64_bcc(&a, ac_hs(), out)
+    put_mov(&a, 4, ctrl)
+    a64_st(&a, 4, 24, 3, 8)
+    a64_ld(&a, 5, 2, 176, 8)
+    a64_st(&a, 4, 32, 5, 8)
+    put_mov(&a, 3, trap)
+    a64_st(&a, 2, 440, 3, 8)
+    a64_st(&a, 4, 16, 0, 8)
+    a64_ret(&a)
+    a.bind(out)
+    put_mov(&a, 0, 134)
+    put_mov(&a, 8, 94)
+    a64_w(&a, 3556769793)
+    a64_end_fun(&a)
+    return clone a.c
+
+/#/ The host side of `read` (n 0) and `write` (n 1), reached from the sandbox with x0 the number, x1 the descriptor,
+/#/ x2 the offset of the buffer and x3 its length. The descriptor must be marked in the table of the control block
+/#/ (ctrl + 512 + 64 * n + fd) and the buffer must lie inside the linear memory, else the call fails (EBADF, EFAULT)
+/#/ and nothing reaches the kernel. This is the only place with an `svc`. It runs on the stack of the sandbox.
+fn stub_io_a64(n: int, ctrl: int, limit: int) => Txt:
+    let a = new_asm()
+    let badfd = a.new_label()
+    let efault = a.new_label()
+    a64_cmp_ri(&a, 1, 63)
+    a64_bcc(&a, ac_hi(), badfd)
+    put_mov(&a, 9, ctrl + 512 + 64 * n)
+    a64_add_rr(&a, 9, 9, 1)
+    a64_ld(&a, 9, 9, 0, 1)
+    a64_cbz(&a, 9, badfd)
+    put_mov(&a, 10, limit)
+    a64_cmp_rr(&a, 3, 10)
+    a64_bcc(&a, ac_hi(), efault)
+    put_mov(&a, 11, 4294967295)
+    a64_and_rr(&a, 2, 2, 11)
+    a64_add_rr(&a, 12, 2, 3)
+    a64_cmp_rr(&a, 12, 10)
+    a64_bcc(&a, ac_hi(), efault)
+    a64_mov_rr(&a, 0, 1)
+    a64_add_rr(&a, 1, 28, 2)
+    a64_mov_rr(&a, 2, 3)
+    if n == 1:
+        put_mov(&a, 8, 64)
+    else:
+        put_mov(&a, 8, 63)
+    a64_w(&a, 3556769793)
+    a64_ret(&a)
+    a.bind(badfd)
+    a64_mov_ri(&a, 0, 0 - 9)
+    a64_ret(&a)
+    a.bind(efault)
+    a64_mov_ri(&a, 0, 0 - 14)
+    a64_ret(&a)
+    a64_end_fun(&a)
+    return clone a.c
+
+/#/ The handler of the CPU quota (SIGALRM): when the code of the sandbox was running, it is stopped like on a fault; when
+/#/ a host stub was (a read that waits, say), the timer is armed again for a millisecond and the next alarm ends it.
+fn stub_alarm_a64(code_lo: int, code_hi: int, trap: int, ctrl: int) => Txt:
+    let a = new_asm()
+    let out = a.new_label()
+    a64_ld(&a, 3, 2, 440, 8)
+    put_mov(&a, 4, code_lo)
+    a64_cmp_rr(&a, 3, 4)
+    a64_bcc(&a, ac_lo(), out)
+    put_mov(&a, 4, code_hi)
+    a64_cmp_rr(&a, 3, 4)
+    a64_bcc(&a, ac_hs(), out)
+    put_mov(&a, 3, trap)
+    a64_st(&a, 2, 440, 3, 8)
+    put_mov(&a, 4, ctrl)
+    a64_st(&a, 4, 16, 0, 8)
+    a64_ret(&a)
+    a.bind(out)
+    put_mov(&a, 0, 0)
+    put_mov(&a, 1, ctrl + 352)
+    put_mov(&a, 2, 0)
+    put_mov(&a, 8, 103)
+    a64_w(&a, 3556769793)
+    a64_ret(&a)
+    a64_end_fun(&a)
+    return clone a.c
+
+/#/ Makes the signal `sig` run the handler (kernel sigaction of arm64: handler, flags, mask; the kernel supplies the return).
+fn catch_signal_a64(sig: int, handler: int, act: int) => int:
+    poke64(act, handler)
+    poke64(act + 8, 134217732)
+    poke64(act + 16, 0)
+    return syscall(134, sig, act, 0, 8, 0, 0)
+
+/#/ Runs `main` (at `main_at` in the code of `im`) in the sandbox; the same contract as `sandbox_run`.
+fn sandbox_run_a64(im: &Image, main_at: int, allow: int, mem_mb: int, cpu_ms: int) => int:
+    let region = sys_mmap(4294967296 + 131072, 0, 16418)
+    if !mapped(region):
+        return 0 - 1
+    let lin_len = page_up(im.lin.n)
+    if sys_mprotect(region + im.lin_at, lin_len, 3) != 0:
+        return 0 - 1
+    /#/ the shadow stack grows up: a guard above it keeps it out of the heap, which starts after the guard
+    let heap_at = im.ss_top + 65536
+    if sys_mprotect(region + im.ss_base, im.ss_top - im.ss_base, 3) != 0:
+        return 0 - 1
+    if sys_mprotect(region + heap_at, im.limit - heap_at, 3) != 0:
+        return 0 - 1
+    copy_in(region + im.lin_at, &im.lin)
+    poke64(region + im.lin_at, heap_at)
+    let heap_end = im.limit
+    if mem_mb > 0 && heap_at + mem_mb * 1048576 < heap_end:
+        heap_end = heap_at + mem_mb * 1048576
+    poke64(region + im.lin_at + 8, heap_end)
+    let code = sys_mmap(page_up(im.b.n + 1), 3, 34)
+    let stubs = sys_mmap(4096, 3, 34)
+    let ctrl = sys_mmap(4096, 3, 34)
+    let stack = sys_mmap(1048576 + 65536, 3, 34)
+    let alt = sys_mmap(65536, 3, 34)
+    if !mapped(code) || !mapped(stubs) || !mapped(ctrl) || !mapped(stack) || !mapped(alt):
+        return 0 - 1
+    sys_mprotect(stack, 65536, 0)
+    copy_in(code, &im.b)
+    if im.exit_at > 0:
+        copy_in(code + im.exit_at, &stub_exit_a64(ctrl))
+    poke64(ctrl + 8, stack + 1048576 + 65536)
+    poke64(ctrl + 16, 0)
+    copy_in(stubs, &stub_enter_a64(im.ss_base, code + main_at, region, ctrl))
+    copy_in(stubs + 512, &stub_trap_a64(ctrl))
+    copy_in(stubs + 768, &stub_handler_a64(code, code + im.b.n, stubs + 512, ctrl))
+    copy_in(stubs + 1024, &stub_io_a64(1, ctrl, im.limit))
+    copy_in(stubs + 1536, &stub_io_a64(0, ctrl, im.limit))
+    copy_in(stubs + 2048, &stub_alarm_a64(code, code + im.b.n, stubs + 512, ctrl))
+    if im.hc_at > 0:
+        poke64(code + im.hc_at, stubs + 1024)
+        poke64(code + im.hc_at + 16, stubs + 1536)
+    /#/ the code and the stubs are made executable once written (the kernel makes the instruction cache see them)
+    if sys_mprotect(code, page_up(im.b.n + 1), 5) != 0 || sys_mprotect(stubs, 4096, 5) != 0:
+        return 0 - 1
+    if (allow & 1) != 0:
+        poke8(ctrl + 512, 1)
+    if (allow & 2) != 0:
+        poke8(ctrl + 576 + 1, 1)
+    if (allow & 4) != 0:
+        poke8(ctrl + 576 + 2, 1)
+    poke64(ctrl + 320, alt)
+    poke64(ctrl + 328, 0)
+    poke64(ctrl + 336, 65536)
+    if syscall(132, ctrl + 320, 0, 0, 0, 0, 0) != 0:
+        return 0 - 1
+    for k in 0..4:
+        let sg = 11
+        if k == 1:
+            sg = 7
+        elif k == 2:
+            sg = 8
+        elif k == 3:
+            sg = 4
+        if catch_signal_a64(sg, stubs + 768, ctrl + 256) != 0:
+            return 0 - 1
+    poke64(ctrl + 352, 0)
+    poke64(ctrl + 360, 0)
+    poke64(ctrl + 368, 0)
+    poke64(ctrl + 376, 1000)
+    poke64(ctrl + 384, 0)
+    poke64(ctrl + 392, 0)
+    poke64(ctrl + 400, cpu_ms // 1000)
+    poke64(ctrl + 408, cpu_ms % 1000 * 1000)
+    if cpu_ms > 0:
+        if catch_signal_a64(14, stubs + 2048, ctrl + 256) != 0:
+            return 0 - 1
+        if syscall(103, 0, ctrl + 384, 0, 0, 0, 0) != 0:
+            return 0 - 1
+    let rc = call_addr(stubs, ctrl)
+    if cpu_ms > 0:
+        poke64(ctrl + 400, 0)
+        poke64(ctrl + 408, 0)
+        syscall(103, 0, ctrl + 384, 0, 0, 0, 0)
+    let t = peek64(ctrl + 16)
+    if t != 0:
+        say(f"cfjit: the sandbox trapped (signal {t}) at code offset {peek64(ctrl + 24) - code}, address {peek64(ctrl + 32)}\n")
+        return 0 - 2
+    return rc

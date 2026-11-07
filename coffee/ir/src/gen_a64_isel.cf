@@ -159,9 +159,8 @@ fn ga_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => vo
         ga_st(g, i, d)
         return
     if op == int(Op.FnAddr):
-        if g.a.acc.sbx:
-            a64_err = true
-            return
+        /#/ in sandbox code this is the offset of a global in the linear memory (movz, movk); the address of a function is
+        /#/ refused when the image is made, as on x86-64
         let d = ga_dst(g, i, 9)
         a64_adr_sym(&g.a, d, g_callee(g, sy, f.aux[i]), 0)
         ga_st(g, i, d)

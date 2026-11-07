@@ -4,6 +4,8 @@ use * in cir
 use * in image
 use * in loader
 use * in sandbox
+use * in sandbox_a64
+use * in sbxcheck_a64
 use * in sbxcheck
 use * in sbxrules
 use * in imgfile
@@ -331,6 +333,21 @@ fn main() => int:
         say("cfjit: the module has no main\n")
         return 2
     if sbx:
+        if flag_arg("--perf-map"):
+            /#/ the code of the sandbox is mapped by `sandbox_run`: the addresses in the map are offsets from its start
+            write_perf_map(&im, 0)
+        if a64:
+            let bad64 = sbx_verify_a64(&im.b, im.text_n, im.sys_at)
+            if bad64 >= 0:
+                say(f"cfjit: the code is not safe to run in the sandbox (offset {bad64}, rule {sbr_name(sbx_rule)}, reason {sbx_a64_why})\n")
+                return 2
+            let r64 = sandbox_run_a64(&im, at, allow_arg(), num_arg("mem"), num_arg("cpu"))
+            if r64 == 0 - 1:
+                say("cfjit: the sandbox could not be made\n")
+                return 2
+            if r64 == 0 - 2:
+                return 139
+            return r64
         sbx_set_base(bm)
         let bad = sbx_verify(&im.b, im.text_n, im.sys_at)
         if bad >= 0:

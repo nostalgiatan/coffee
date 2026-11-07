@@ -120,5 +120,12 @@ tea jit --target aarch64 --runner qemu-aarch64 --jit ./cfjit_a64 --compiler coff
 - 向量循环一轮只做一个向量(x86 做两个)。
 - 静态运行时的 `printf` 只做整数、字符、字符串(`%d %i %u %x %X %o %c %s %p %%`,标志 `-` `0`、宽度、长度字母),最多 5 个参数,没有 `%f`;`sprintf`、`fprintf`、`strtod`、`qsort` 等其余 libc 函数没有,用到它们的程序要 `cc`,而 `cc` 不是交叉编译器。
 - 动态链接(`cc`)和 TLS、IFUNC 等 glibc 的东西。
-- aarch64 上的沙箱加载器:`cfjit` 的沙箱模式(`jit/src/sandbox.cf`)用 x86 的信号帧、`arch_prctl`、`gs`,没有移植;`--sandbox` 生成的 aarch64 代码目前只能过验证器,不能由 `cfjit` 运行。
 - `cfjit` 的 `--gdb`、`--perf-map`、`--cache` 以外的调试功能只在 x86 上试过(`--gdb` 的 ELF 文件写的是 x86 机器号)。
+
+## 沙箱(`cfjit --target=aarch64 --sandbox`)
+
+加载器是 `jit/src/sandbox_a64.cf`(`sandbox_run_a64`),与 x86 的 `sandbox.cf` 并列,由 `jit/src/main.cf` 按目标选。布局:4 GB 线性区加 128 KB 保护,整块先映射为 `PROT_NONE`;代码区、数据、影子栈 `[ss_base, ss_top)`、堆 `[ss_top+65536, 上限)` 再按需 `mprotect`。x28 是区域基址,访问用 `[x28, w, uxtw]`;x27 是影子帧指针,**向上**长(入口 `add x27, x27, #sframe`,出口 `sub`),影子位置在 `[x27 - sframe, x27)` 内(`regalloc.cf` 的 `shadow_off`),影子栈底下留 64 KB 保护。x29 照旧是宿主栈的帧指针。
+
+陷阱:SIGSEGV、SIGBUS、SIGFPE、SIGILL 和 SIGALRM(`--cpu`)的处理程序是区域里的机器码桩(没有 `SA_RESTORER`),在备用栈上把 `pc`(ucontext+440)和出错地址(+176)记下,然后回到宿主。系统调用走 `cf_syscall` 的桩(x0 是号码,x1..x6 是参数,aarch64 的号码),只放行读、写、退出和 `mmap` 一类;读写的文件号按 `--read`/`--write` 的表检查。验证器是 `sbxcheck_a64.cf`。
+
+测试:`jit/tests/test_sandbox_a64.cf`(自己构建一个 aarch64 的 `cfjit`,用 `qemu-aarch64` 跑 `test_sandbox_base.cf` 的那些例子;没有 qemu 就通过),以及 `SANDBOX=base JITRUN=qemu-aarch64 CIRARGS=--target=aarch64 JITARGS=--target=aarch64 sh jit/tests/compare.sh <coffee2> <aarch64 的 cfjit> <阶段目录>`(lexer、parser、sema、types、own、ir 都过)。

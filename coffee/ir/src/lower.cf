@@ -3669,6 +3669,15 @@ class Lower:
         let code0 = self.mc.a.pos()
         if !gen_function(&self.mc, &self.f, &self.rs, &self.names):
             self.mc_err = self.mc_err + 1
+            let bad_name = new_txt()
+            let bad_id = self.mc.cur
+            if bad_id < 0:
+                bad_id = self.cur_id
+            self.names.put(&bad_name, bad_id)
+            say("error: no machine code for function ")
+            for k in 0..bad_name.n:
+                say_byte(bad_name.b[k])
+            say("\n")
         if stats_on || lint_on:
             let fname = new_txt()
             let fid = self.mc.cur

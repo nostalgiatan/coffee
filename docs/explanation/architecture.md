@@ -137,7 +137,7 @@ IR 之后的两个变换:
 | D | x86 访存口;共用分配服务(`regalloc.cf`、`layout_frame`、`edge_hazard`) | 完成 |
 | E | **沙盒减压**:r13、r14 已释放(基址 1.75 → 1.61) | 完成 |
 | F | 线性扫描骨架合一(`lscan_order`、`lscan_int`);`Access` 类(`access.cf`);验证规则成数据(`sbxrules.cf`)与共用反例集(`sbxcases.cf`) | 完成 |
-| G | aarch64 沙盒加载器(x28、陷阱) | 待做 |
+| G | aarch64 沙盒加载器(x28、陷阱;`sandbox_a64.cf`,在 `qemu-aarch64` 下过各阶段测试) | 完成 |
 | H | 宿主调用跳板 | 待做 |
 | I | 删除 `gs`(满足第 6.3 节的条件之后) | 待做 |
 | J | PE 对象写入器、Win64 调用约定、`os_windows_*.cf`、Windows 加载器 | 待做 |

@@ -204,9 +204,9 @@ fn layout_frame(g: &Gen, f: &Fun, rs: &Reps, hdr: int, down: bool, frame_cap: in
         while p >= 0:
             if g.home[p] < 0 && g.xhome[p] < 0:
                 if sbx && f.rep[p] >= rp_first_agg():
-                    g.voff[p] = 0 - scur
-                    g.sh[p] = 1
                     scur = scur + g_place_size(g, rs, f.rep[p])
+                    g.voff[p] = shadow_off(down, scur, g_place_size(g, rs, f.rep[p]))
+                    g.sh[p] = 1
                 else:
                     cur = layout_place(g, p, cur, g_place_size(g, rs, f.rep[p]), down)
             p = f.nx[p]
@@ -218,16 +218,16 @@ fn layout_frame(g: &Gen, f: &Fun, rs: &Reps, hdr: int, down: bool, frame_cap: in
                 if f.ty[i] < 1:
                     sz = sz + 8
                 if sbx:
-                    g.voff[i] = 0 - scur
-                    g.sh[i] = 1
                     scur = scur + sz
+                    g.voff[i] = shadow_off(down, scur, sz)
+                    g.sh[i] = 1
                 else:
                     cur = layout_place(g, i, cur, sz, down)
             elif f.rep[i] != int(Rp.Void) && op != int(Op.OwnMove) && g.home[i] < 0 && g.xhome[i] < 0:
                 if sbx && f.rep[i] >= rp_first_agg():
-                    g.voff[i] = 0 - scur
-                    g.sh[i] = 1
                     scur = scur + g_place_size(g, rs, f.rep[i])
+                    g.voff[i] = shadow_off(down, scur, g_place_size(g, rs, f.rep[i]))
+                    g.sh[i] = 1
                 else:
                     cur = layout_place(g, i, cur, g_place_size(g, rs, f.rep[i]), down)
             i = f.nx[i]
@@ -255,6 +255,14 @@ fn layout_frame(g: &Gen, f: &Fun, rs: &Reps, hdr: int, down: bool, frame_cap: in
     /#/ a frame larger than the guard below the shadow stack could be stepped over
     if g.sframe > 32768 || (sbx && frame_cap > 0 && g.frame > frame_cap):
         g.err = 1
+
+/#/ The offset of a shadow place of `sz` bytes whose end is `scur` bytes into the shadow frame: from the
+/#/ register that moves down (x86) the frame starts at -(its start); from the one that is bumped up
+/#/ at entry (aarch64) the frame lies below it.
+fn shadow_off(down: bool, scur: int, sz: int) => int:
+    if down:
+        return 0 - (scur - sz)
+    return 0 - scur
 
 /#/ Puts value `v` of `sz` bytes at `cur` (the offset after it when `down`); the new end of the frame.
 fn layout_place(g: &Gen, v: int, cur: int, sz: int, down: bool) => int:
