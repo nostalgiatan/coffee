@@ -108,11 +108,13 @@ class Asm:
     /#/ sandbox code: a memory operand (but for `lea`, and rbp/rsp as the base: the host stack) is
     /#/ addressed through `gs` in 32 bits, and a reference to rodata or data is an absolute 32-bit number
     sbx: bool
-    /#/ with `sbx`: a memory operand is not given the `gs` prefixes; its address is computed into r13 as a
-    /#/ 32-bit number (`lea r13d, [..]`) and used as `[r15 + r13]`, r15 being the start of the linear memory
+    /#/ with `sbx`: a memory operand is not given the `gs` prefixes; its address is computed into a register as a
+    /#/ 32-bit number (`lea e<s>, [..]`) and used as `[r15 + s]` at once, r15 being the start of the linear memory
     bm: bool
     /#/ a mandatory prefix (66, F2, F3) for the next memory operand, which puts it in the right place; -1 for none
     pfx: int
+    /#/ guarded accesses of base mode that found no register for their address (the function fails)
+    badacc: int
 
     fn dump(self, t: &Txt) => void:
         t.put_all(&self.c)
@@ -176,6 +178,9 @@ class Asm:
     /#/ is within reach (and gone when it targets the next instruction), the rest are patched.
     /#/ False if a label was never bound.
     fn end_fun(self) => bool:
+        if self.badacc > 0:
+            self.badacc = 0
+            return false
         let n = self.nfx
         for k in 0..n:
             if self.lab[self.fx_lab[k]] < 0:
@@ -277,21 +282,39 @@ class Asm:
     fn frame_base(self, base: int) => bool:
         return base == 4 || base == 5
 
+    /#/ The register that holds the address of a guarded access in base mode: the destination of a load, else one
+    /#/ of rax, rcx, rdx the access does not use (the value of a store is in `reg`; of a float access, in an xmm
+    /#/ register, which is not one of them); -1 when the three are taken.
+    fn addr_scratch(self, opc: int, opc2: int, reg: int, base: int, idx: int) => int:
+        let loadg = opc == 139 || opc == 99 || (opc == 15 && (opc2 == 182 || opc2 == 183 || opc2 == 190 || opc2 == 191))
+        if loadg:
+            return reg
+        let xmm = opc == 15 && (opc2 == 16 || opc2 == 17 || opc2 == 110 || opc2 == 126 || opc2 == 214 || opc2 == 40 || opc2 == 41)
+        for sc in 0..3:
+            if sc != base && sc != idx && (xmm || sc != reg):
+                return sc
+        return 0 - 1
+
     /#/ The one place a memory operand is made (design: docs/explanation/sandbox-design.md, "the memory-access
     /#/ funnel"): `opc` with a register and `[base + idx * scale + disp]`, `idx` -1 for none. `lea` (141) only
     /#/ computes and is never guarded. In sandbox code a guarded access is
     /#/   - `gs` mode (`sbx`): the operand with the prefixes 0x67 0x65, so the hardware takes the address as 32 bits
     /#/     and adds the start of the linear memory;
-    /#/   - base mode (`bm`): the address as a 32-bit number in r13 (`lea r13d, [..]`) and the access as [r15 + r13].
+    /#/   - base mode (`bm`): the address as a 32-bit number in a register (`lea e<s>, [..]`, see `addr_scratch`) and the access
+    /#/     as [r15 + s] right after it; the verifier takes no other form.
     fn mem(self, w: int, opc: int, opc2: int, reg: int, base: int, idx: int, scale: int, disp: int, force: bool) => void:
         let guarded = opc != 141 && !self.frame_base(base)
         let gs = false
-        if guarded && self.bm && !(base == tg_sbx_base() && idx == tg_sbx_addr()):
+        if guarded && self.bm && base != tg_sbx_base():
+            let sc = self.addr_scratch(opc, opc2, reg, base, idx)
+            if sc < 0:
+                self.badacc = self.badacc + 1
+                return
             let held = self.pfx
             self.pfx = 0 - 1
-            self.mem(0, 141, 0 - 1, tg_sbx_addr(), base, idx, scale, disp, false)
+            self.mem(0, 141, 0 - 1, sc, base, idx, scale, disp, false)
             self.pfx = held
-            self.mem(w, opc, opc2, reg, tg_sbx_base(), tg_sbx_addr(), 1, 0, force)
+            self.mem(w, opc, opc2, reg, tg_sbx_base(), sc, 1, 0, force)
             return
         if guarded && self.sbx && !self.bm:
             gs = true
@@ -786,4 +809,4 @@ class Asm:
         self.rr(0, 15, 90, dst, src, false)
 
 fn new_asm() => Asm:
-    return Asm { c: new_txt(), lab: new_buf(int, 64), nlab: 0, fx_at: new_buf(int, 64), fx_lab: new_buf(int, 64), fx_kind: new_buf(int, 64), nfx: 0, fs: 0, rl0: 0, rl_at: new_buf(int, 64), rl_sym: new_buf(int, 64), rl_ty: new_buf(int, 64), rl_add: new_buf(int, 64), nrl: 0, lm_end: -1, lm_d: 0, lm_s: 0, ls_end: -1, ls_base: 0, ls_disp: 0, ls_reg: 0, sbx: false, bm: false, pfx: 0 - 1 }
+    return Asm { c: new_txt(), lab: new_buf(int, 64), nlab: 0, fx_at: new_buf(int, 64), fx_lab: new_buf(int, 64), fx_kind: new_buf(int, 64), nfx: 0, fs: 0, rl0: 0, rl_at: new_buf(int, 64), rl_sym: new_buf(int, 64), rl_ty: new_buf(int, 64), rl_add: new_buf(int, 64), nrl: 0, lm_end: -1, lm_d: 0, lm_s: 0, ls_end: -1, ls_base: 0, ls_disp: 0, ls_reg: 0, sbx: false, bm: false, pfx: 0 - 1, badacc: 0 }

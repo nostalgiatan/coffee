@@ -26,25 +26,23 @@ fn tg_ncaller() => int:
     return 5
 
 /#/ The roles registers have in sandbox code. The code generator, the assembler and the verifier all read these.
-/#/ Base-register form (`bm`): `tg_sbx_base` holds the start of the linear memory and nothing writes it;
-/#/ `tg_sbx_addr` holds an address as a 32-bit number and only the address computation writes it.
+/#/ Base-register form (`bm`): `tg_sbx_base` holds the start of the linear memory and nothing writes it. An
+/#/ address is made in a register of the instruction's own (the destination of a load, or one of rax, rcx and
+/#/ rdx that the access does not use) by a 32-bit `lea` just before the access, so no register is kept for it.
 /#/ `tg_sbx_shadow` holds the base of the shadow frame (the bytes of locals whose address is taken).
 fn tg_sbx_base() => int:
     return 15
-
-fn tg_sbx_addr() => int:
-    return 13
 
 fn tg_sbx_shadow() => int:
     return 14
 
 /#/ Is pool slot `s` kept for something else in sandboxed code (`sbx`: the shadow frame register; `bm`, the
-/#/ base-register form: the memory base and the address register)?
+/#/ base-register form: the memory base)?
 fn tg_reserved(sbx: bool, bm: bool, s: int) => bool:
     let r = tg_pool_reg(s)
     if sbx && r == tg_sbx_shadow():
         return true
-    return bm && (r == tg_sbx_base() || r == tg_sbx_addr())
+    return bm && r == tg_sbx_base()
 
 /#/ The bit that register `r` has in a call's write mask; the pool register of slot 0 (r10) has bit 0.
 fn tg_call_bit(r: int) => int:

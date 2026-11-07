@@ -75,19 +75,29 @@ fn main() => int:
     m = m + expect(31, check("72 3 193 195 72 3 193"), 4)
     /#/ cut short
     m = m + expect(29, check("72 139"), 0)
-    /#/ the base-register form: an address is made in r13 as a 32-bit number and used as [r15 + r13]
+    /#/ the base-register form: an address is made in a register as a 32-bit number by a lea and used at once as [r15 + s]
     sbx_set_base(true)
     m = m + expect(40, check("68 141 104 8 75 139 4 47 195"), -1)
     m = m + expect(41, check("68 141 104 8 75 137 4 47 195"), -1)
     m = m + expect(42, check("73 3 197 195"), -1)
     m = m + expect(43, check("72 139 69 248 195"), -1)
-    /#/ refused: another index or base, writes to r13 or r15, a 64-bit lea into r13, the gs prefixes
+    /#/ refused: an access with no lea before it, a write to r15, the gs prefixes
     m = m + expect(44, check("73 139 4 15 195"), 0)
-    m = m + expect(45, check("76 139 232 195"), 0)
     m = m + expect(46, check("76 139 248 195"), 0)
-    m = m + expect(47, check("76 141 104 8 195"), 0)
-    m = m + expect(48, check("69 51 237 195"), 0)
     m = m + expect(49, check("103 101 72 139 8 195"), 0)
+    /#/ r13 is a register like the others now
+    m = m + expect(45, check("76 139 232 195"), -1)
+    m = m + expect(48, check("69 51 237 195"), -1)
+    /#/ any register may hold the address when a lea made it just before: rcx here
+    m = m + expect(52, check("141 72 8 73 139 4 15 195"), -1)
+    /#/ refused: a 64-bit lea (its upper half may be set), another register than the one the lea wrote, an
+    /#/ instruction between the lea and the access, r15 as the index
+    m = m + expect(53, check("72 141 72 8 73 139 4 15 195"), 4)
+    m = m + expect(54, check("141 80 8 73 139 4 15 195"), 3)
+    m = m + expect(55, check("141 72 8 72 139 210 73 139 4 15 195"), 6)
+    m = m + expect(56, check("141 72 8 79 139 4 63 195"), 3)
+    /#/ refused: a jump that lands on the access skips the lea
+    m = m + expect(57, check("235 3 141 72 8 73 139 4 15 195"), 5)
     /#/ [r15 + r13] is refused when the code is not of that form
     sbx_set_base(false)
     m = m + expect(50, check("75 139 4 47 195"), 0)

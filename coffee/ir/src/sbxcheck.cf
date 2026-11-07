@@ -24,12 +24,15 @@ class Dec:
     why: int
     /#/ the instruction never goes on to the next one (ret, jmp, ud2, int3)
     ends: bool
+    /#/ base mode: the index register of an access [r15 + s], else -1; and the register a 32-bit `lea` writes, else -1
+    acc: int
+    wr: int
 
 fn new_dec() => Dec:
-    return Dec { tgt: -1, kind: 0, why: 0, ends: false }
+    return Dec { tgt: -1, kind: 0, why: 0, ends: false, acc: -1, wr: -1 }
 
-/#/ Is the code of the base-register kind (`Asm.bm`)? Then a memory operand is `[r15 + r13]` and nothing else
-/#/ writes r13 and r15 but `lea r13d, [..]`, so every address is the start of the linear memory plus a
+/#/ Is the code of the base-register kind (`Asm.bm`)? Then a memory operand is `[r15 + s]` right after a 32-bit
+/#/ `lea` of s that no jump bypasses, and nothing writes r15, so every address is the start of the linear memory plus a
 /#/ 32-bit number; no `gs` prefixes are taken.
 let sbx_bm = false
 
@@ -62,6 +65,8 @@ fn sbx_decode(code: &Txt, at: int, n: int, d: &Dec) => int:
     d.tgt = -1
     d.kind = 0
     d.ends = false
+    d.acc = -1
+    d.wr = -1
     let i = at
     let p66 = false
     let p67 = false
@@ -249,7 +254,13 @@ fn sbx_decode(code: &Txt, at: int, n: int, d: &Dec) => int:
                 disp = dec_s32(code, i)
             i = i + dsz
             /#/ a memory operand: through gs, or [rbp + disp] outside the two words at rbp
-            let based = sbx_bm && md == 0 && rmf == 4 && sib == 47 && rb == 1 && rx == 1
+            let based = false
+            if sbx_bm && md == 0 && rmf == 4 && rb == 1 && (sib >> 6) == 0 && (sib & 7) == 7:
+                let ib = (sib >> 3) & 7
+                if !(ib == 4 && rx == 0) && !(ib == 7 && rx == 1):
+                    based = true
+                    if op != 141:
+                        d.acc = ib | (rx << 3)
             if op != 141 && !guest && !based:
                 if has_sib || rmf != 5 || rb == 1 || md == 0:
                     return dec_no(d, 9)
@@ -268,11 +279,10 @@ fn sbx_decode(code: &Txt, at: int, n: int, d: &Dec) => int:
         elif dsel == 2 && md == 3:
             if !(isext && ((nowr >> reg) & 1) == 1):
                 dst = rmf | (rb << 3)
-        if sbx_bm:
-            if dst == tg_sbx_base():
-                return dec_no(d, 15)
-            if dst == tg_sbx_addr() && !(op == 141 && md != 3 && rexw == 0 && rr == (tg_sbx_addr() >> 3) && reg == (tg_sbx_addr() & 7)):
-                return dec_no(d, 15)
+        if sbx_bm && dst == tg_sbx_base():
+            return dec_no(d, 15)
+        if op == 141 && md != 3 && rexw == 0 && !p66 && dst >= 0:
+            d.wr = dst
         /#/ rsp and rbp: only the moves of a function frame
         if dst == 4:
             let frame = (op == 129 || op == 131) && (reg == 0 || reg == 5) && md == 3 && immv >= 0 && immv <= 32768
@@ -290,7 +300,7 @@ fn sbx_decode(code: &Txt, at: int, n: int, d: &Dec) => int:
             i = i + imm
         if dst == 4 || (dst == 5 && !popbp):
             return dec_no(d, 13)
-        if sbx_bm && (dst == tg_sbx_addr() || dst == tg_sbx_base()):
+        if sbx_bm && dst == tg_sbx_base():
             return dec_no(d, 15)
     d.ends = op == 195 || op == 233 || op == 235 || op == 204 || (op == 15 && op2 == 11)
     if rel > 0:
@@ -327,6 +337,9 @@ fn sbx_verify(code: &Txt, n: int, entry: int) => int:
     /#/ the code after the last instruction is not the code's: it must not run on into it
     if falls:
         return last
+    let tg = new_buf(int, n + 1)
+    for k in 0..n + 1:
+        tg[k] = 0
     i = 0
     while i < n:
         let l = sbx_decode(code, i, n, &d)
@@ -335,5 +348,17 @@ fn sbx_verify(code: &Txt, n: int, entry: int) => int:
             if !(d.kind == 2 && t == entry):
                 if t < 0 || t >= n || bnd[t] == 0:
                     return i
+                tg[t] = 1
+        i = i + l
+    /#/ base mode: an access [r15 + s] stands right after the 32-bit `lea` that wrote s, and no jump lands on it
+    /#/ (so s was made by that lea and is a number below 2^32 whatever the path)
+    i = 0
+    let prev = 0 - 1
+    while i < n:
+        let l = sbx_decode(code, i, n, &d)
+        if d.acc >= 0:
+            if prev != d.acc || tg[i] == 1:
+                return i
+        prev = d.wr
         i = i + l
     return -1
