@@ -183,7 +183,7 @@ limit    之后            PROT_NONE,到 4 GB
 - **mandatory prefix**(`66`、`F2`、`F3`)要放在被 `lea` 隔开的访存指令前面,所以 `Asm` 用 `pfx` 字段传给 `rmem`,由它在正确的位置写出。
 - **验证器**(`sbx_set_base(true)`):内存操作数只能是 `[rbp + disp]` 或恰好 `[r15 + r13]`(SIB 字节 0x2F,REX.X 和 REX.B 都置位);不接受 `67`/`65` 前缀;除了 32 位的 `lea r13d, [..]`,任何指令都不能写 r13 或 r15。所以 r13 恒是 32 位数,访存恒在区域起点之后 4 GB 之内,不需要知道前面的指令是什么。
 - **测试**:`jit/tests/test_sandbox_base.cf` 是 `test_sandbox.cf` 的同一批用例(陷阱、配额、授权、映像缓存);`ir/tests/test_sbxcheck.cf` 加了 12 个字节序列;`compare.sh` 的 `SANDBOX=base` 对前端 5 个目录的 32 个文件,输出和退出码与原生相同;compat 的结果和 `gs` 模式相同(36 个相同,另 27 个要 `fork`/`exec`)。
-- **没做的**:r14 影子帧的访问也走 `lea` 再 `[r15 + r13]`,可以直接用 `[r15 + r14 + disp]` 省一条指令;映像尾部(`cf_syscall`)在基址模式下也用同一个关口生成,仍不经验证器。aarch64 的实现还没开始,这里只是它的前提。
+- **没做的**:r14 影子帧的访问也走 `lea` 再 `[r15 + r13]`,可以直接用 `[r15 + r14 + disp]` 省一条指令;映像尾部(`cf_syscall`)在基址模式下也用同一个关口生成,仍不经验证器。aarch64 的代码生成和验证器见 [aarch64 后端](../reference/aarch64-backend.md)(基址 x28,影子帧 x27)。
 
 ## 可信范围和检查边界
 

@@ -1,0 +1,46 @@
+/#/ Unsigned 64-bit division and remainder by constants (multiply-high instead of a divide), values
+/#/ across the whole range including the top bit.
+use write in libc of c
+
+fn out(s: str) => void:
+    write(1, s, len(s))
+
+fn mix(h: u64, v: u64) => u64:
+    return h * u64(1099511628211) + v
+
+fn run(x: u64) => u64:
+    let h: u64 = 14695981039346656037
+    h = mix(h, x // 3)
+    h = mix(h, x % 3)
+    h = mix(h, x // 5)
+    h = mix(h, x % 5)
+    h = mix(h, x // 7)
+    h = mix(h, x % 7)
+    h = mix(h, x // 10)
+    h = mix(h, x % 10)
+    h = mix(h, x // 100)
+    h = mix(h, x % 100)
+    h = mix(h, x // 641)
+    h = mix(h, x % 641)
+    h = mix(h, x // 1000000007)
+    h = mix(h, x % 1000000007)
+    h = mix(h, x // 2147483647)
+    h = mix(h, x % 2147483647)
+    h = mix(h, x // 6)
+    h = mix(h, x // 4096)
+    h = mix(h, x % 4096)
+    return h
+
+fn main() => int:
+    let h: u64 = 0
+    let x: u64 = 1
+    for i in 0..4000:
+        h = mix(h, run(x))
+        x = x * 6364136223846793005 + 1442695040888963407
+    h = mix(h, run(0))
+    h = mix(h, run(1))
+    h = mix(h, run(18446744073709551615))
+    h = mix(h, run(9223372036854775808))
+    h = mix(h, run(9223372036854775807))
+    out(f"{h}\n")
+    return int(h % 251)

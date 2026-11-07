@@ -1,0 +1,165 @@
+/#/ aarch64: one function (prologue, blocks, epilogue), and the object file.
+use * in gen
+use * in asm
+use * in asm_a64
+use * in target_a64
+use * in gen_x86_regs
+use * in gen_x86_call
+use * in gen_x86_isel
+use * in gen_a64_regs
+use * in gen_a64_call
+use * in gen_a64_isel
+use * in gen_dbg
+use * in elf
+use * in dbgtype
+
+/#/ Frees the frame and returns.
+fn ga_epilogue(g: &Gen) => void:
+    for k in 0..g.nsaved:
+        if g.saved[k] >= 32:
+            a64_fldst(&g.a, true, g.saved[k] - 32, ta_fp(), 16 + g.rbase + 8 * k, 8)
+        else:
+            a64_ld(&g.a, g.saved[k], ta_fp(), 16 + g.rbase + 8 * k, 8)
+    a64_load_fp_lr(&g.a)
+    if g.sframe > 0:
+        a64_addsub_ri(&g.a, true, 27, 27, g.sframe)
+    a64_addsub_ri(&g.a, false, 31, 31, g.frame)
+    a64_ret(&g.a)
+
+/#/ Generates function `f`; returns false if something could not be translated.
+/#/ The code of `f`; if a conditional branch is out of reach (a function of more than about 1 MB) it is
+/#/ made again with every such branch as a short one over a long one.
+fn ga_gen_fun(g: &Gen, f: &Fun, rs: &Reps, sy: &Names) => bool:
+    a64_err = false
+    a64_far = false
+    a64_range_miss = false
+    let ok = ga_gen_fun1(g, f, rs, sy)
+    if !ok && a64_range_miss && g.err == 0:
+        g.a.c.n = g.a.fs
+        g.a.nrl = g.a.rl0
+        a64_far = true
+        a64_range_miss = false
+        ok = ga_gen_fun1(g, f, rs, sy)
+        a64_far = false
+    return ok
+
+fn ga_gen_fun1(g: &Gen, f: &Fun, rs: &Reps, sy: &Names) => bool:
+    g.err = 0
+    g.rbase = 0
+    if f.ret >= rp_first_agg():
+        g.rbase = 8
+    g.a.begin_fun()
+    let nm = new_txt()
+    for k in 0..len(f.nm):
+        nm.put_byte(f.nm[k])
+    g.fsym = g.o.sym(&nm)
+    if len(g.emit) < f.nb + 1:
+        g.ord = new_buf(int, f.nb + 1)
+        g.emit = new_buf(int, f.nb + 1)
+    /#/ the registers are given along the plain order, the code is written in the rotated one
+    block_order(f, &g.ord, false)
+    block_order(f, &g.emit, true)
+    g_count_uses(g, f)
+    ga_alloc_regs(g, f, rs)
+    ga_layout(g, f, rs)
+    let start = g.a.pos()
+    for b in 0..f.nb:
+        g.a.new_label()
+    /#/ x29 = sp = the bottom of the frame, where the caller's x29 and x30 are saved
+    a64_addsub_ri(&g.a, true, 31, 31, g.frame)
+    a64_save_fp_lr(&g.a)
+    a64_mov_rr(&g.a, ta_fp(), 31)
+    if g.sframe > 0:
+        a64_addsub_ri(&g.a, false, 27, 27, g.sframe)
+    if g.rbase > 0:
+        a64_st(&g.a, ta_fp(), 16, ta_sret(), 8)
+    for k in 0..g.nsaved:
+        if g.saved[k] >= 32:
+            a64_fldst(&g.a, false, g.saved[k] - 32, ta_fp(), 16 + g.rbase + 8 * k, 8)
+        else:
+            a64_st(&g.a, ta_fp(), 16 + g.rbase + 8 * k, g.saved[k], 8)
+    /#/ the parameters of the entry block
+    let ci = 0
+    let cx = 0
+    let cs = 0
+    let p = f.pfirst[0]
+    while p >= 0:
+        let r = f.rep[p]
+        if r >= rp_first_agg() || g_is_int_class(g, r):
+            if ci < ta_nint_args():
+                if r >= rp_first_agg():
+                    ga_copy_mem(g, ga_sb(g, p), g.voff[p], ta_int_arg(ci), 0, rsize(rs, r))
+                else:
+                    ga_st(g, p, ta_int_arg(ci))
+                ci = ci + 1
+            else:
+                a64_ld(&g.a, ta_a0(), ta_fp(), g.frame + 8 * cs, 8)
+                if r >= rp_first_agg():
+                    ga_copy_mem(g, ga_sb(g, p), g.voff[p], ta_a0(), 0, rsize(rs, r))
+                else:
+                    ga_st(g, p, ta_a0())
+                cs = cs + 1
+        else:
+            if cx < ta_nfloat_args():
+                if g.xhome[p] >= 0:
+                    a64_fmov_vv(&g.a, false, g.xhome[p], cx)
+                else:
+                    a64_fldst(&g.a, false, cx, ga_sb(g, p), g.voff[p], rsize_scalar(r))
+                cx = cx + 1
+            else:
+                a64_ld(&g.a, 9, ta_fp(), g.frame + 8 * cs, 8)
+                ga_st(g, p, 9)
+                cs = cs + 1
+        p = f.nx[p]
+    g.mk_n = 0
+    let last_ln = 0
+    for oi in 0..f.nb:
+        let b = g.emit[oi]
+        g.a.bind(b)
+        let i = f.bfirst[b]
+        while i >= 0:
+            if f.ln[i] > 0 && f.ln[i] != last_ln:
+                last_ln = f.ln[i]
+                if g.mk_n >= len(g.mk_l):
+                    g.mk_l = buf_resize(g.mk_l, (g.mk_n + 1) * 2)
+                    g.mk_ln = buf_resize(g.mk_ln, (g.mk_n + 1) * 2)
+                let ml = g.a.mark()
+                g.mk_l[g.mk_n] = ml
+                g.mk_ln[g.mk_n] = last_ln
+                g.mk_n = g.mk_n + 1
+            let nxt = 0 - 1
+            if f.nx[i] < 0 && oi + 1 < f.nb:
+                nxt = g.emit[oi + 1]
+            ga_gen_inst(g, f, rs, sy, i, nxt)
+            i = f.nx[i]
+    let ok = a64_end_fun(&g.a)
+    let w = new_txt()
+    for k in 0..len(f.nm):
+        w.put_byte(f.nm[k])
+    let sym = g.o.sym(&w)
+    g.o.define(sym, start, g.a.pos() - start)
+    if ok && g.err == 0 && g.mk_n > 0:
+        if g.lf_n >= len(g.lf_sym):
+            g.lf_sym = buf_resize(g.lf_sym, (g.lf_n + 1) * 2)
+            g.lf_start = buf_resize(g.lf_start, (g.lf_n + 1) * 2)
+            g.lf_m0 = buf_resize(g.lf_m0, (g.lf_n + 1) * 2)
+        g.lf_sym[g.lf_n] = sym
+        g.lf_start[g.lf_n] = start
+        g.lf_m0[g.lf_n] = g.lm_n
+        g.lf_n = g.lf_n + 1
+        for k in 0..g.mk_n:
+            if g.lm_n >= len(g.lm_at):
+                g.lm_at = buf_resize(g.lm_at, (g.lm_n + 1) * 2)
+                g.lm_ln = buf_resize(g.lm_ln, (g.lm_n + 1) * 2)
+            g.lm_at[g.lm_n] = g.a.lab[g.mk_l[k]]
+            g.lm_ln[g.lm_n] = g.mk_ln[k]
+            g.lm_n = g.lm_n + 1
+    return ok && g.err == 0 && !a64_err
+
+/#/ The object file of aarch64 code: the ELF writer's, with the machine number of aarch64 (183).
+fn ga_elf(g: &Gen) => Txt:
+    let t = g_elf(g)
+    if t.n > 19:
+        t.b[18] = 183
+        t.b[19] = 0
+    return t

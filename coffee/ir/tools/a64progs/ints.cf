@@ -1,0 +1,97 @@
+/#/ Integer arithmetic of every width and signedness, division by constants, shifts.
+use write in libc of c
+
+fn out(s: str) => void:
+    write(1, s, len(s))
+
+fn mix(h: int, v: int) => int:
+    return h * 31 + v
+
+fn narrow() => int:
+    let h = 7
+    let a: int(1)+ = 100
+    let b: int(1)+ = 60
+    let c: int(1)+ = a + b
+    h = mix(h, int(c))
+    let d: int(1)- = 200
+    let e: int(1)- = 100
+    let f: int(1)- = d + e
+    h = mix(h, int(f))
+    let g: int(2)+ = 30000
+    let k: int(2)+ = g + g
+    h = mix(h, int(k))
+    let m: int(4)- = 4000000000
+    let n: int(4)- = m + m
+    h = mix(h, int(n))
+    let p: int(4)+ = 2000000000
+    let q: int(4)+ = p * 3
+    h = mix(h, int(q))
+    h = mix(h, int(m // 7))
+    h = mix(h, int(m % 1000))
+    h = mix(h, int(a // 7 + b % 9))
+    return h
+
+fn consts(x: int) => int:
+    let h = 1
+    h = mix(h, x // 7)
+    h = mix(h, x % 7)
+    h = mix(h, x // 10)
+    h = mix(h, x % 10)
+    h = mix(h, x // 1000)
+    h = mix(h, x // 3)
+    h = mix(h, x % 3)
+    h = mix(h, x // 8)
+    h = mix(h, x % 8)
+    h = mix(h, x // 1)
+    h = mix(h, x // 100000007)
+    return h
+
+fn vars(x: int, y: int) => int:
+    let h = 3
+    h = mix(h, x // y)
+    h = mix(h, x % y)
+    h = mix(h, x * y)
+    h = mix(h, x - y)
+    h = mix(h, x & y)
+    h = mix(h, x | y)
+    h = mix(h, x ^ y)
+    h = mix(h, x << (y & 15))
+    h = mix(h, x >> (y & 15))
+    h = mix(h, -x)
+    h = mix(h, ~y)
+    if x < y:
+        h = mix(h, 1)
+    if x <= y:
+        h = mix(h, 2)
+    if x > y:
+        h = mix(h, 3)
+    if x >= y:
+        h = mix(h, 4)
+    if x == y:
+        h = mix(h, 5)
+    if x != y:
+        h = mix(h, 6)
+    return h
+
+fn loop(n: int) => int:
+    let h = 0
+    for i in 0..n:
+        if i % 3 == 0:
+            h = mix(h, i)
+        elif i % 5 == 0:
+            h = h - i
+        else:
+            h = h + (i << 2)
+    return h
+
+fn main() => int:
+    let h = narrow()
+    for x in [0, 1, -1, 7, -7, 100, -100, 123456789, -987654321, 9223372036854775807]:
+        h = mix(h, consts(x))
+    h = mix(h, vars(1000, 7))
+    h = mix(h, vars(-1000, 7))
+    h = mix(h, vars(1000, -7))
+    h = mix(h, vars(5, 5))
+    h = mix(h, loop(1000))
+    out(f"{h}\n")
+    return h % 251

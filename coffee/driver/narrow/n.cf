@@ -1,0 +1,14 @@
+fn main() => int:
+    let a: buf<int(1)-> = new_buf(int(1)-, 100)
+    let b: buf<float(4)> = new_buf(float(4), 100)
+    let c = new_buf(int(4)+, 100)
+    for i in 0..100:
+        a[i] = u8(i * 3)
+        b[i] = f32(i) * f32(0.5)
+        c[i] = i32(i - 50)
+    let s = 0
+    for i in 0..100:
+        s = s + int(a[i]) + int(c[i])
+    if b[10] > f32(4.0):
+        s = s + 1
+    return s % 251

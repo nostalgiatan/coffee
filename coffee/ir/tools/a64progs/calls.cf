@@ -1,0 +1,44 @@
+/#/ Calls: more integer arguments than registers, recursion, function values, mutual recursion.
+use write in libc of c
+
+fn out(s: str) => void:
+    write(1, s, len(s))
+
+fn ten(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: int, i: int, j: int, k: int, l: int) => int:
+    return a + b * 2 + c * 3 + d * 4 + e * 5 + f * 6 + g * 7 + h * 8 + i * 9 + j * 10 + k * 11 + l * 12
+
+fn narrow_args(a: int(1)+, b: int(2)-, c: int(4)+, d: int(4)-, e: int(1)-, f: int(2)+, g: int(1)+, h: int(1)+, i: int(2)+, j: int(1)-) => int:
+    return int(a) + int(b) * 2 + int(c) * 3 + int(d) * 4 + int(e) * 5 + int(f) * 6 + int(g) * 7 + int(h) * 8 + int(i) * 9 + int(j) * 10
+
+fn is_even(n: int) => int:
+    if n == 0:
+        return 1
+    return is_odd(n - 1)
+
+fn is_odd(n: int) => int:
+    if n == 0:
+        return 0
+    return is_even(n - 1)
+
+fn ack(m: int, n: int) => int:
+    if m == 0:
+        return n + 1
+    if n == 0:
+        return ack(m - 1, 1)
+    return ack(m - 1, ack(m, n - 1))
+
+fn apply(f: fn(int) => int, x: int) => int:
+    return f(x) + f(x + 1)
+
+fn main() => int:
+    let h = 0
+    h = h * 31 + ten(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+    h = h * 31 + narrow_args(-3, 60000, -100000, 4000000000, 200, -300, 5, -6, 7, 250)
+    h = h * 31 + is_even(101) + is_odd(101) * 2
+    h = h * 31 + ack(2, 3)
+    let sq: fn(int) => int = fn(x: int) => int:
+        return x * x
+    let k = 5
+    h = h * 31 + apply(sq, 7)
+    out(f"{h}\n")
+    return h % 251

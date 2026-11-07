@@ -46,6 +46,19 @@ fn magic_mult(d: int, l: int) => int:
         bit = bit - 1
     return q + 1
 
+/#/ The multiplier of the unsigned division by `d` (not a power of two; `l` is the log2 of `d` rounded
+/#/ up) without its 65th bit: floor(2^64 * (2^l - d) / d) + 1, by long division one bit at a time.
+fn magic_umult(d: int, l: int) => int:
+    let q = 0
+    let r = (1 << l) - d
+    for bit in 0..64:
+        r = r * 2
+        q = q * 2
+        if r >= d:
+            r = r - d
+            q = q + 1
+    return q + 1
+
 /#/ A new instruction of the integer operation `op` just before `i`, in the block of `i`.
 fn lz_before(f: &Fun, i: int, op: int, x: int, y: int) => int:
     let n = f.mk(op, int(Rp.I64), 0 - 1, x, y, 0 - 1, 0)
@@ -72,14 +85,13 @@ fn lz_become(f: &Fun, i: int, op: int, x: int, y: int) => void:
 /#/ A 64-bit division or remainder `i` by the constant `d` >= 2, without a divide instruction.
 /#/ Signed: x + (d - 1 when x is negative), shifted, for a power of two; else
 /#/ q = (mulhi(m, x) + x >> (l - 1)) - (x >> 63) with m = 1 + floor(2^(63 + l) / d). Unsigned:
-/#/ a shift or a mask for a power of two. The rest stays a divide.
+/#/ a shift or a mask for a power of two; else q = (t + ((x - t) >> 1)) >> (l - 1) with t = the high
+/#/ half of x * m.
 fn lz_divconst(f: &Fun, i: int, d: int) => void:
     let o = f.op[i]
     let signed = o == int(Op.SDiv) || o == int(Op.SRem)
     let rem = o == int(Op.SRem) || o == int(Op.URem)
     let pow2 = (d & (d - 1)) == 0
-    if !signed && !pow2:
-        return
     let k = 0
     while (1 << k) < d:
         k = k + 1
@@ -87,11 +99,24 @@ fn lz_divconst(f: &Fun, i: int, d: int) => void:
     let i64 = int(Rp.I64)
     f.bump_uses(i, 0 - 1)
     f.line = f.ln[i]
-    if !signed:
+    if !signed && pow2:
         if rem:
             lz_become(f, i, int(Op.And), x, f.cint(i64, d - 1))
         else:
             lz_become(f, i, int(Op.LShr), x, f.cint(i64, k))
+        return
+    if !signed && !pow2:
+        /#/ q = (t + ((x - t) >> 1)) >> (k - 1) with t = mulhu(x, m) and m = 2^64 * (2^k - d) / d + 1
+        let t = lz_before(f, i, int(Op.UMulHi), x, f.cint(i64, magic_umult(d, k)))
+        let df = lz_before(f, i, int(Op.Sub), x, t)
+        let hf = lz_before(f, i, int(Op.LShr), df, f.cint(i64, 1))
+        let sm = lz_before(f, i, int(Op.Add), t, hf)
+        if rem:
+            let q1 = lz_before(f, i, int(Op.LShr), sm, f.cint(i64, k - 1))
+            let p1 = lz_before(f, i, int(Op.Mul), q1, f.cint(i64, d))
+            lz_become(f, i, int(Op.Sub), x, p1)
+        else:
+            lz_become(f, i, int(Op.LShr), sm, f.cint(i64, k - 1))
         return
     let q = 0
     if pow2:

@@ -340,6 +340,12 @@ fn g_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => voi
         g.a.grp3(5, 1)
         g_st(g, i, 2)
         return
+    if op == int(Op.UMulHi):
+        g_ld(g, 1, f, f.a[i])
+        g_ld(g, 0, f, f.b[i])
+        g.a.grp3(4, 1)
+        g_st(g, i, 2)
+        return
     if op == int(Op.SDiv) || op == int(Op.SRem) || op == int(Op.UDiv) || op == int(Op.URem):
         let signed = op == int(Op.SDiv) || op == int(Op.SRem)
         g_ld_ext(g, 0, f, f.a[i], signed)

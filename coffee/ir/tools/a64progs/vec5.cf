@@ -1,0 +1,62 @@
+/#/ Vector loops of 32-bit and 16-bit integers with invariants, and reductions by - & |, for lengths around the vector size.
+fn add32(a: &buf<i32>, b: &buf<i32>, n: int, k: i32) => void:
+    for i in 0..n:
+        a[i] = a[i] + b[i] - k
+
+fn bits16(a: &buf<u16>, b: &buf<u16>, n: int, k: u16) => void:
+    for i in 0..n:
+        a[i] = (a[i] ^ b[i]) | k
+
+fn mul16(a: &buf<u16>, b: &buf<u16>, n: int) => void:
+    for i in 0..n:
+        a[i] = a[i] * b[i] + u16(3)
+
+fn dsum(a: &buf<float>, b: &buf<float>, n: int, k: float) => void:
+    for i in 0..n:
+        a[i] = a[i] * k + b[i] / k
+
+fn rsub(a: &buf<int>, n: int) => int:
+    let s = 1000
+    for i in 0..n:
+        s = s - a[i]
+    return s
+
+fn rand(a: &buf<int>, n: int) => int:
+    let s = 0 - 1
+    for i in 0..n:
+        s = s & a[i]
+    return s
+
+fn ror(a: &buf<int>, n: int) => int:
+    let s = 0
+    for i in 0..n:
+        s = s | (a[i] << 2)
+    return s
+
+fn main() => int:
+    let h = 0
+    for n in 0..70:
+        let a: buf<i32> = new_buf(i32, 70)
+        let b: buf<i32> = new_buf(i32, 70)
+        let c: buf<u16> = new_buf(u16, 70)
+        let d: buf<u16> = new_buf(u16, 70)
+        let x: buf<float> = new_buf(float, 70)
+        let y: buf<float> = new_buf(float, 70)
+        let r: buf<int> = new_buf(int, 70)
+        for i in 0..70:
+            a[i] = i32(i * 977 - 5000)
+            b[i] = i32(i * 31 + 7)
+            c[i] = u16(i * 4001)
+            d[i] = u16(i * 17 + 5)
+            x[i] = float(i) * 0.25
+            y[i] = float(i % 9) + 1.5
+            r[i] = i * 12345 + 1
+        add32(&a, &b, n, i32(11))
+        bits16(&c, &d, n, u16(256))
+        mul16(&c, &d, n)
+        dsum(&x, &y, n, 1.5)
+        for i in 0..70:
+            h = h * 31 + int(a[i]) + int(c[i]) + int(x[i] * 100.0)
+        h = h * 31 + rsub(&r, n) + rand(&r, n) + ror(&r, n)
+        h = h % 1000000007
+    return h % 251

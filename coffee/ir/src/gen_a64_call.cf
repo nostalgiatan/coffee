@@ -1,0 +1,93 @@
+/#/ aarch64: the calling convention (AAPCS64), passing arguments and taking results.
+use * in gen
+use * in asm
+use * in asm_a64
+use * in target_a64
+use * in gen_x86_regs
+use * in gen_x86_call
+use * in gen_x86_isel
+use * in gen_a64_regs
+use * in gen_a64_isel
+use * in gen_a64_fun
+
+/#/ The address of aggregate `x` (a place in the frame, or an undefined value) into `reg`.
+fn ga_agg_addr(g: &Gen, f: &Fun, reg: int, x: int) => void:
+    if f.op[x] == int(Op.Undef):
+        a64_adr_sym(&g.a, reg, 1, 0)
+    else:
+        a64_addsub_ri(&g.a, false, reg, ga_sb(g, x), g.voff[x])
+
+/#/ The call to the symbol `sym` (or to the function value in the `c` operand of `i` when `sym` < 0, through x16) with the values queued in
+/#/ `av`; the result of instruction `i` is stored. An aggregate goes as a pointer to its place in
+/#/ the caller's frame; one that is returned is written through the pointer in x8.
+fn ga_do_call(g: &Gen, f: &Fun, rs: &Reps, i: int, sym: int, variadic: bool) => void:
+    let ret = f.rep[i]
+    let sret = ret >= rp_first_agg()
+    /#/ where each argument goes: 0 an integer register, 1 a float register, 2 the stack
+    let cls: buf<int> = new_buf(int, g.nav + 1)
+    let ni = 0
+    let nx = 0
+    let on_stack = 0
+    for k in 0..g.nav:
+        let r = f.rep[g_res(g, f, g.av[k])]
+        if r >= rp_first_agg() || g_is_int_class(g, r):
+            if ni < ta_nint_args():
+                ni = ni + 1
+                cls[k] = 0
+            else:
+                cls[k] = 2
+                on_stack = on_stack + 1
+        elif nx < ta_nfloat_args():
+            nx = nx + 1
+            cls[k] = 1
+        else:
+            cls[k] = 2
+            on_stack = on_stack + 1
+    let sbytes = (on_stack * 8 + 15) // 16 * 16
+    if g.a.sbx && (sbytes > 0 || sym < 0):
+        /#/ sandbox code passes at most 8 integer and 8 float arguments, and calls no function value
+        a64_err = true
+        return
+    if sbytes > 0:
+        a64_addsub_ri(&g.a, true, 31, 31, sbytes)
+    let j = 0
+    for k in 0..g.nav:
+        if cls[k] == 2:
+            let x = g_res(g, f, g.av[k])
+            if f.rep[x] >= rp_first_agg():
+                ga_agg_addr(g, f, 9, x)
+            else:
+                ga_ld(g, 9, f, g.av[k])
+            a64_st(&g.a, 31, 8 * j, 9, 8)
+            j = j + 1
+    if sret:
+        a64_addsub_ri(&g.a, false, ta_sret(), ga_sb(g, i), g.voff[i])
+    let ci = 0
+    let cx = 0
+    for k in 0..g.nav:
+        let v = g.av[k]
+        let x = g_res(g, f, v)
+        let r = f.rep[x]
+        if cls[k] == 0:
+            if r >= rp_first_agg():
+                ga_agg_addr(g, f, ta_int_arg(ci), x)
+            else:
+                ga_ld(g, ta_int_arg(ci), f, v)
+            ci = ci + 1
+        elif cls[k] == 1:
+            ga_fmove(g, f, cx, v)
+            cx = cx + 1
+    if sym < 0:
+        ga_ld(g, ta_ind(), f, f.c[i])
+        a64_blr(&g.a, ta_ind())
+    else:
+        a64_bl_sym(&g.a, sym)
+    if sbytes > 0:
+        a64_addsub_ri(&g.a, false, 31, 31, sbytes)
+    if ret == int(Rp.Void) || sret || f.uses[i] == 0:
+        return
+    if g_is_int_class(g, ret):
+        ga_st(g, i, 0)
+    else:
+        ga_ffin(g, f, i, 0)
+

@@ -1,0 +1,88 @@
+/#/ Aggregates: tuples passed and returned, classes, buffers of several widths, strings.
+use write in libc of c
+
+fn out(s: str) => void:
+    write(1, s, len(s))
+
+class P:
+    x: int
+    y: int
+    tag: int(1)+
+    w: float
+
+fn pair(a: int, b: int) => (int, int):
+    return (a + b, a - b)
+
+fn triple(a: int, b: float, c: int(2)+) => (int, float, int(2)+):
+    return (a * 2, b * 2.0, c + c)
+
+fn pass3(t: (int, float, int(2)+)) => (int, float, int(2)+):
+    return t
+
+fn tsum(p: (int, int)) => int:
+    let s = 0
+    for v in p:
+        s = s * 100 + v
+    return s
+
+fn big(p: (int, int, int, int, int, int)) => int:
+    let s = 0
+    for v in p:
+        s = s * 3 + v
+    return s
+
+fn mk6(a: int) => (int, int, int, int, int, int):
+    return (a, a + 1, a + 2, a + 3, a + 4, a + 5)
+
+fn mk(i: int) => P:
+    return P { x: i, y: i * 2, tag: 5, w: 1.5 }
+
+fn sum_p(p: &P) => int:
+    return p.x + p.y + int(p.tag) + int(p.w * 10.0)
+
+fn fill(b: &buf<int(2)->, n: int) => void:
+    for i in 0..n:
+        b[i] = u16(i * 3)
+
+fn main() => int:
+    let h = 0
+    let a = pair(10, 3)
+    h = h * 31 + tsum(a)
+    let t = pass3(pass3(triple(4, 2.5, 300)))
+    let t2 = pass3(t)
+    h = h * 31 + tsum(pair(8, 2))
+    h = h * 31 + big(mk6(4)) + big(mk6(9))
+    let p = mk(9)
+    h = h * 31 + sum_p(&p)
+    p.y = 77
+    p.tag = 100
+    h = h * 31 + sum_p(&p)
+    let q = clone p
+    q.x = 1000
+    h = h * 31 + p.x + q.x
+    let b: buf<int(2)-> = new_buf(int(2)-, 200)
+    fill(&b, 200)
+    let s = 0
+    for i in 0..200:
+        s = s + int(b[i])
+    h = h * 31 + s
+    let c: buf<int(1)+> = new_buf(int(1)+, 100)
+    for i in 0..100:
+        c[i] = i8(i * 3)
+    let u = 0
+    for i in 0..100:
+        u = u + int(c[i])
+    h = h * 31 + u
+    let f: buf<float> = new_buf(float, 50)
+    for i in 0..50:
+        f[i] = float(i) * 1.5
+    let fs = 0.0
+    for i in 0..50:
+        fs = fs + f[i]
+    out(f"{fs}\n")
+    let str1 = "hello"
+    let str2 = str1 + " world " + "again"
+    out(f"{str2} {len(str2)}\n")
+    h = h * 31 + len(str2) + int(str2[4])
+    out(f"{h}\n")
+    return h % 251

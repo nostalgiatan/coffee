@@ -9,9 +9,20 @@ use * in fun
 use * in names
 use * in rep
 use * in gen_x86_fun
+use * in gen_a64_fun
+use * in opt
+use * in asm
 use * in minrt
+use * in sbxcheck_a64
+use * in txt
 use * in elf
 use * in stub
+
+/#/ Set by `--sandbox`: the code is made for the sandbox (`Asm.sbx`): all memory through the linear memory.
+let target_sandbox = false
+
+fn set_sandbox(on: bool) => void:
+    target_sandbox = on
 
 /#/ The architectures and systems a target name may use.
 fn arch_x86_64() => int:
@@ -37,27 +48,43 @@ fn has_prefix(t: &Txt, p: &str) => bool:
 
 /#/ The names accepted by `--target=`, for the error message.
 fn target_names() => str:
-    return "x86_64-linux"
+    return "x86_64-linux, aarch64-linux"
 
 /#/ Chooses the target by its name; 0 when it was set, 1 when the name is unknown, 2 when it is known
-/#/ but there is no code generator for it yet.
+/#/ but there is no code generator for it yet (none now: both known ones have one).
 fn set_target(name: &Txt) => int:
     if name.is("x86_64-linux") || name.is("x86_64"):
         target_arch = arch_x86_64()
         target_os = os_linux()
+        set_vector_loops(true)
         return 0
     if name.is("aarch64-linux") || name.is("aarch64"):
-        /#/ chosen all the same, so that what depends on the target can be looked at; the driver stops
         target_arch = arch_aarch64()
         target_os = os_linux()
-        return 2
+        /#/ fixed 4-byte instructions: every function starts on one
+        fn_align_at_least(4)
+        set_vector_loops(true)
+        return 0
     return 1
 
 /#/ The code of function `f` for the target; false when it could not be made.
 fn gen_function(g: &Gen, f: &Fun, rs: &Reps, sy: &Names) => bool:
     if target_arch == arch_x86_64():
         return g_gen_fun(g, f, rs, sy)
+    if target_arch == arch_aarch64():
+        return ga_gen_fun(g, f, rs, sy)
     return false
+
+/#/ The object file for the target.
+fn target_object(g: &Gen) => Txt:
+    if target_arch == arch_aarch64():
+        if g.a.sbx:
+            let bad = sbx_verify_a64(&g.a.c, g.a.c.n, -1)
+            if bad >= 0:
+                say(f"error: the sandbox code is not safe (offset {bad}, reason {sbx_a64_why})\n")
+                return new_txt()
+        return ga_elf(g)
+    return g_elf(g)
 
 /#/ The C library a `--static` program gets for the target: `rt/src/min.cf`, which every system shares,
 /#/ with the system's part (`rt/src/os_*.cf`) in two places: after min.cf's state variables and at the end.

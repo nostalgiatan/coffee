@@ -73,6 +73,11 @@ let fn_align = 1
 fn set_fn_align() => void:
     fn_align = 16
 
+/#/ Functions start at a multiple of at least `n` bytes (a target with a wider instruction word).
+fn fn_align_at_least(n: int) => void:
+    if fn_align < n:
+        fn_align = n
+
 class Asm:
     c: Txt
     /#/ labels of the function being assembled: absolute positions in `c`, -1 while unbound

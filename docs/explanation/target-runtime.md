@@ -20,7 +20,7 @@ aarch64 Linux 用的是通用的系统调用表,没有 `open`、`fork`、`unlink
 
 ## 还没有的
 
-- aarch64:`cfld` 还不会写 aarch64 的 ELF(机器编号、重定位类型),所以文本和桩已经分好,但还不能链接。这件事跟着后端走。
+- aarch64:已经可以链接和运行(`cfld` 认机器号 183 和 `R_AARCH64_*` 重定位,补 aarch64 的 `_start`),见 [aarch64 后端参考](../reference/aarch64-backend.md)。
 - 沙箱镜像里的 `cf_syscall`(`ir/src/image.cf`)只有 x86-64 的版本。
 
 ## Windows

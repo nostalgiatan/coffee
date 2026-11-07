@@ -90,7 +90,7 @@ fn link_image(im: &Image, syms: &Exports, want: int, missing: &Txt) => int:
         /#/ MAP_FIXED_NOREPLACE
         flags = flags + 1048576
     let size = page_round(im.total + 1)
-    let base = syscall(9, want, size, load_prot(), flags, 0 - 1, 0)
+    let base = syscall(sc_mmap(), want, size, load_prot(), flags, 0 - 1, 0)
     if !mapped(base) || (want != 0 && base != want):
         return 0
     copy_in(base, &im.b)
@@ -99,12 +99,12 @@ fn link_image(im: &Image, syms: &Exports, want: int, missing: &Txt) => int:
         let a = syms.find(&w)
         if a == 0:
             missing.put_all(&w)
-            syscall(11, base, size, 0, 0, 0, 0)
+            syscall(sc_munmap(), base, size, 0, 0, 0, 0)
             return 0
         poke64(base + im.imp_slot[k], a)
     /#/ the code and the stubs: read and execute; the rodata: read; the data and the slots stay read and write
     if sys_mprotect(base, im.rx_end, 5) != 0:
-        syscall(11, base, size, 0, 0, 0, 0)
+        syscall(sc_munmap(), base, size, 0, 0, 0, 0)
         return 0
     if im.ro_end > im.ro_at:
         sys_mprotect(base + im.ro_at, im.ro_end - im.ro_at, 1)
@@ -136,7 +136,40 @@ fn copy_in(base: int, t: &Txt) => void:
         k = k + 1
 
 fn sys_mmap(n: int, prot: int, flags: int) => int:
-    return syscall(9, 0, n, prot, flags, 0 - 1, 0)
+    return syscall(sc_mmap(), 0, n, prot, flags, 0 - 1, 0)
 
 fn sys_mprotect(addr: int, n: int, prot: int) => int:
-    return syscall(10, addr, n, prot, 0, 0, 0)
+    return syscall(sc_mprotect(), addr, n, prot, 0, 0, 0)
+
+/#/ The numbers of the system calls the loader makes, by the machine the code is made for (which is the
+/#/ machine `cfjit` runs on: it loads what it generates). The kernel makes the instruction cache see
+/#/ the new code when a page becomes executable, so there is no flush.
+fn sc_mmap() => int:
+    if target_arch == arch_aarch64():
+        return 222
+    return 9
+
+fn sc_munmap() => int:
+    if target_arch == arch_aarch64():
+        return 215
+    return 11
+
+fn sc_mprotect() => int:
+    if target_arch == arch_aarch64():
+        return 226
+    return 10
+
+fn sc_clock_gettime() => int:
+    if target_arch == arch_aarch64():
+        return 113
+    return 228
+
+fn sc_getpid() => int:
+    if target_arch == arch_aarch64():
+        return 172
+    return 39
+
+fn sc_kill() => int:
+    if target_arch == arch_aarch64():
+        return 129
+    return 62

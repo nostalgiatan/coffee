@@ -97,9 +97,9 @@ fn num_arg(key: &str) => int:
 /#/ Microseconds on the monotonic clock.
 fn now_us() => int:
     let ts = sys_mmap(4096, 3, 34)
-    syscall(228, 1, ts, 0, 0, 0, 0)
+    syscall(sc_clock_gettime(), 1, ts, 0, 0, 0, 0)
     let us = peek64(ts) * 1000000 + peek64(ts + 8) // 1000
-    syscall(11, ts, 4096, 0, 0, 0, 0)
+    syscall(sc_munmap(), ts, 4096, 0, 0, 0, 0)
     return us
 
 /#/ With `--perf-map`: `/tmp/perf-PID.map`, the functions of the loaded image (`perf` reads it to name
@@ -125,7 +125,7 @@ fn write_perf_map(im: &Image, base: int) => void:
             p = p + 1
         out.put_byte(10)
     let path = txt_of("/tmp/perf-")
-    path.put_int(syscall(39, 0, 0, 0, 0, 0, 0))
+    path.put_int(syscall(sc_getpid(), 0, 0, 0, 0, 0, 0))
     path.put(".map")
     write_file(&path, &out)
 
@@ -204,6 +204,10 @@ fn main() => int:
     set_verify(!flag_arg("--no-verify"))
     /#/ `--sandbox=base` keeps the start of the linear memory in a register instead of `gs`: the form that other processors can have
     let bm = flag_arg("--sandbox=base")
+    /#/ `--target=aarch64`: generate (and load) aarch64 code, for a `cfjit` built for aarch64; the default is x86-64
+    let a64 = flag_arg("--target=aarch64") || flag_arg("--target=aarch64-linux")
+    if a64:
+        set_target(&txt_of("aarch64-linux"))
     let sbx = flag_arg("--sandbox") || bm
     let path = path_arg()
     if path.n == 0:
@@ -228,6 +232,9 @@ fn main() => int:
         if bm:
             mode = 2
             cache_path.put("b")
+    if a64:
+        mode = mode + 16
+        cache_path.put(".a64")
     cache_path.put(".cim")
     let key = 0
     if use_cache:
@@ -362,5 +369,5 @@ fn main() => int:
         write_perf_map(&im, base)
     if want_gdb && traced():
         /#/ stop for the debugger now that the code is in memory: SIGTRAP; `continue` runs the program
-        syscall(62, syscall(39, 0, 0, 0, 0, 0, 0), 5, 0, 0, 0, 0)
+        syscall(sc_kill(), syscall(sc_getpid(), 0, 0, 0, 0, 0, 0), 5, 0, 0, 0, 0)
     return call_addr(base + at)

@@ -164,6 +164,8 @@ fn parse_cli(fl: &Flat) => Cli:
                 cli.static_link = true
             elif w.is("--dynamic"):
                 cli.dynamic = true
+            elif w.is("--sandbox"):
+                set_sandbox(true)
             elif w.is("--verify"):
                 set_verify(true)
             elif w.is("--emit-ir"):

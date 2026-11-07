@@ -1,0 +1,5 @@
+use * in other
+use * in util
+
+fn main() => int:
+    return bump(1) + standalone()

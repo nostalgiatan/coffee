@@ -15,7 +15,8 @@ coffee2 -c header.h [-o output.cfc]
 | `-o output` | 输出路径。省略时见下表。 |
 | `-I dir` | 增加一个模块搜索目录和 `.cfc` 搜索目录,可重复。 |
 | `--pic` | 目标文件给共享库用:不是 `c fn` 的符号都是隐藏可见性,链接器因此可以在共享对象里解析对它们的引用。默认不开,开了才改目标文件。 |
-| `--target=名字` | 为哪台机器生成代码。现在只有 `x86_64-linux`(也是默认,可写成 `x86_64`)。`aarch64-linux` 认得但还没有代码生成器,会报错;别的名字报未知目标。 |
+| `--target=名字` | 为哪台机器生成代码。`x86_64-linux`(默认,可写成 `x86_64`),或 `aarch64-linux`(可写成 `aarch64`,见 [aarch64 后端](aarch64-backend.md):`--emit-obj` 得到目标文件,`--static` 链接出可执行文件,在 qemu-aarch64 下运行);别的名字报未知目标。 |
+| `--sandbox` | (仅 `aarch64-linux`)生成沙箱代码:访存只经 `[x28, w, uxtw]`,代码过 aarch64 验证器,见 [aarch64 后端](aarch64-backend.md)。 |
 | `-O0` | 关闭 IR 优化器。 |
 | `-O1` `-O2` `-O3` | 打开 IR 优化器。默认 `-O1`。 |
 | `--emit-obj` | 写出 `.o` 后停止,不链接。 |

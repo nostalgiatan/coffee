@@ -1,0 +1,419 @@
+/#/ aarch64: the frame (every value lives in it, at an offset from x29), the loads and stores of
+/#/ operands, memory copies and the copies on the edges between blocks.
+/#/
+/#/ Frame, x29-relative and upwards: [x29] the saved x29, [x29+8] the saved x30, [x29+16] the
+/#/ pointer a function returning an aggregate was given (only then), then one 8-byte-aligned place
+/#/ per value (the memory layout for an aggregate, 8 bytes for a scalar, whose upper bytes are not
+/#/ meaningful), the `slot` areas, and a scratch area for edge copies. A float is kept as its bits in
+/#/ such a place and moved to a float register for each operation. x9 to x11 hold operands, x12 and
+/#/ x13 addresses (see target_a64.cf).
+use * in gen
+use * in asm
+use * in asm_a64
+use * in target_a64
+use * in gen_x86_regs
+use * in gen_x86_call
+use * in gen_x86_isel
+use * in gen_a64_call
+use * in gen_a64_isel
+use * in gen_a64_fun
+
+/#/ The base register of the bytes of value `x`: x29, or x27 (the shadow frame in the linear memory) for the
+/#/ aggregates and slots of sandbox code.
+fn ga_sb(g: &Gen, x: int) => int:
+    if g.a.sbx && g.sh[x] == 1:
+        return 27
+    return ta_fp()
+
+/#/ reg = the value (a scalar, 8 bytes; narrower ones have meaningful low bytes only)
+fn ga_ld(g: &Gen, reg: int, f: &Fun, v: int) => void:
+    let x = g_res(g, f, v)
+    let k = f.op[x]
+    if g.home[x] >= 0:
+        if g.home[x] != reg:
+            a64_mov_rr(&g.a, reg, g.home[x])
+    elif g.xhome[x] >= 0:
+        a64_fmov_from(&g.a, reg, g.xhome[x], f.rep[x] == int(Rp.F32))
+    elif k == int(Op.Const):
+        if f.rep[x] == int(Rp.F32):
+            a64_mov_ri(&g.a, reg, f.aux[x] & 4294967295)
+        else:
+            a64_mov_ri(&g.a, reg, f.aux[x])
+    elif k == int(Op.Undef):
+        a64_mov_ri(&g.a, reg, 0)
+    elif k == int(Op.StrLit):
+        a64_adr_sym(&g.a, reg, 1, g.sbase + g_so(g, f.aux[x]))
+    elif k == int(Op.Slot):
+        a64_addsub_ri(&g.a, false, reg, ga_sb(g, x), g.voff[x])
+    else:
+        a64_ld(&g.a, reg, ga_sb(g, x), g.voff[x], 8)
+
+/#/ reg = the value extended from its width
+fn ga_ld_ext(g: &Gen, reg: int, f: &Fun, v: int, signed: bool) => void:
+    ga_ld(g, reg, f, v)
+    let x = g_res(g, f, v)
+    let r = f.rep[x]
+    if f.op[x] == int(Op.Cmp):
+        return
+    if r == int(Rp.I8) || r == int(Rp.I16) || r == int(Rp.I32):
+        a64_extend(&g.a, reg, reg, rsize_scalar(r), signed)
+
+/#/ The register that holds `v`: its own when it has one, else `scratch`, loaded with it.
+fn ga_src(g: &Gen, f: &Fun, v: int, scratch: int) => int:
+    let h = g.home[g_res(g, f, v)]
+    if h >= 0:
+        return h
+    ga_ld(g, scratch, f, v)
+    return scratch
+
+/#/ The float register of float `v`: its own when it has one, else `scratch`, loaded with it.
+fn ga_fsrc(g: &Gen, f: &Fun, v: int, scratch: int) => int:
+    let x = g_res(g, f, v)
+    if g.xhome[x] >= 0:
+        return g.xhome[x]
+    let single = f.rep[x] == int(Rp.F32)
+    let k = f.op[x]
+    if k == int(Op.Const) && f.aux[x] == 0:
+        a64_fmov_to(&g.a, scratch, 31, single)
+    elif k == int(Op.Const) || k == int(Op.Undef) || k == int(Op.StrLit) || k == int(Op.Slot) || g.home[x] >= 0:
+        ga_ld(g, 9, f, x)
+        a64_fmov_to(&g.a, scratch, 9, single)
+    else:
+        a64_fldst(&g.a, true, scratch, ga_sb(g, x), g.voff[x], rsize_scalar(f.rep[x]))
+    return scratch
+
+/#/ Where the float instruction `i` makes its result: its own register, else `scratch`.
+fn ga_fdst(g: &Gen, i: int, scratch: int) => int:
+    if g.xhome[i] >= 0:
+        return g.xhome[i]
+    return scratch
+
+/#/ The result of float instruction `i` is in float register `v`: kept there, or stored.
+fn ga_ffin(g: &Gen, f: &Fun, i: int, v: int) => void:
+    if g.xhome[i] >= 0:
+        if g.xhome[i] != v:
+            a64_fmov_vv(&g.a, false, g.xhome[i], v)
+    else:
+        a64_fldst(&g.a, false, v, ga_sb(g, i), g.voff[i], rsize_scalar(f.rep[i]))
+
+/#/ Float register `d` = the float value `v`.
+fn ga_fmove(g: &Gen, f: &Fun, d: int, v: int) => void:
+    let r = ga_fsrc(g, f, v, d)
+    if r != d:
+        a64_fmov_vv(&g.a, false, d, r)
+
+/#/ Where instruction `i` makes its result: its own register, else `scratch`.
+fn ga_dst(g: &Gen, i: int, scratch: int) => int:
+    if g.home[i] >= 0:
+        return g.home[i]
+    return scratch
+
+/#/ The result of instruction `i` is in `reg`: kept in its register or stored in its place.
+fn ga_st(g: &Gen, i: int, reg: int) => void:
+    if g.home[i] >= 0:
+        if g.home[i] != reg:
+            a64_mov_rr(&g.a, g.home[i], reg)
+    elif g.xhome[i] >= 0:
+        a64_fmov_to(&g.a, g.xhome[i], reg, g.xsg[i] == 1)
+    else:
+        a64_st(&g.a, ga_sb(g, i), g.voff[i], reg, 8)
+
+/#/ For an aggregate value: the base register and displacement of its bytes (an undefined one
+/#/ reads from the start of the read-only data).
+fn ga_ab_reg(g: &Gen, f: &Fun, v: int) => int:
+    let x = g_res(g, f, v)
+    if f.op[x] == int(Op.Undef):
+        a64_adr_sym(&g.a, ta_ind(), 1, 0)
+        return ta_ind()
+    return ga_sb(g, x)
+
+fn ga_ab_disp(g: &Gen, f: &Fun, v: int) => int:
+    let x = g_res(g, f, v)
+    if f.op[x] == int(Op.Undef):
+        return 0
+    return g.voff[x]
+
+/#/ n bytes from [sb + sd] to [db + dd], through x9.
+fn ga_copy_mem(g: &Gen, db: int, dd: int, sb: int, sd: int, n: int) => void:
+    let k = 0
+    while k + 8 <= n:
+        a64_ld(&g.a, 9, sb, sd + k, 8)
+        a64_st(&g.a, db, dd + k, 9, 8)
+        k = k + 8
+    if k + 4 <= n:
+        a64_ld(&g.a, 9, sb, sd + k, 4)
+        a64_st(&g.a, db, dd + k, 9, 4)
+        k = k + 4
+    if k + 2 <= n:
+        a64_ld(&g.a, 9, sb, sd + k, 2)
+        a64_st(&g.a, db, dd + k, 9, 2)
+        k = k + 2
+    if k < n:
+        a64_ld(&g.a, 9, sb, sd + k, 1)
+        a64_st(&g.a, db, dd + k, 9, 1)
+
+/#/ Value `v` to [db + dd], in full: a scalar as 8 bytes, an aggregate as its layout.
+fn ga_val_to(g: &Gen, f: &Fun, rs: &Reps, db: int, dd: int, v: int) => void:
+    let x = g_res(g, f, v)
+    let r = f.rep[x]
+    if r >= rp_first_agg():
+        let sb = ga_ab_reg(g, f, x)
+        ga_copy_mem(g, db, dd, sb, ga_ab_disp(g, f, x), rsize(rs, r))
+    elif g.xhome[x] >= 0:
+        a64_fldst(&g.a, false, g.xhome[x], db, dd, rsize_scalar(r))
+    else:
+        let rv = ga_src(g, f, x, 9)
+        a64_st(&g.a, db, dd, rv, 8)
+
+/#/ Gives every value its place; the size of the frame.
+fn ga_layout(g: &Gen, f: &Fun, rs: &Reps) => void:
+    if len(g.voff) < f.ni + 1:
+        g.voff = new_buf(int, f.ni + 1)
+        g.sh = new_buf(int, f.ni + 1)
+    for v in 0..f.ni:
+        g.sh[v] = 0
+    let sbx = g.a.sbx
+    /#/ sandbox code keeps aggregates and the slots in the shadow frame in the linear memory (x27), below x27
+    let scur = 0
+    let cur = 16 + g.rbase + 8 * g.nsaved
+    let tmp = 0
+    for b in 0..f.nb:
+        let p = f.pfirst[b]
+        while p >= 0:
+            if g.home[p] < 0 && g.xhome[p] < 0:
+                if sbx && f.rep[p] >= rp_first_agg():
+                    g.voff[p] = 0 - scur
+                    g.sh[p] = 1
+                    scur = scur + g_place_size(g, rs, f.rep[p])
+                else:
+                    g.voff[p] = cur
+                    cur = cur + g_place_size(g, rs, f.rep[p])
+            p = f.nx[p]
+        let i = f.bfirst[b]
+        while i >= 0:
+            let op = f.op[i]
+            if op == int(Op.Slot):
+                let sz = round8(f.ty[i])
+                if f.ty[i] < 1:
+                    sz = sz + 8
+                if sbx:
+                    g.voff[i] = 0 - scur
+                    g.sh[i] = 1
+                    scur = scur + sz
+                else:
+                    g.voff[i] = cur
+                    cur = cur + sz
+            elif f.rep[i] != int(Rp.Void) && op != int(Op.OwnMove) && g.home[i] < 0 && g.xhome[i] < 0:
+                if sbx && f.rep[i] >= rp_first_agg():
+                    g.voff[i] = 0 - scur
+                    g.sh[i] = 1
+                    scur = scur + g_place_size(g, rs, f.rep[i])
+                else:
+                    g.voff[i] = cur
+                    cur = cur + g_place_size(g, rs, f.rep[i])
+            i = f.nx[i]
+    for e in 0..f.ne:
+        if f.eto[e] >= 0:
+            let sum = 0
+            for k in 0..f.eargn[e]:
+                sum = sum + g_place_size(g, rs, f.rep[g_res(g, f, f.pool[f.eargs[e] + k])])
+            if sum > tmp:
+                tmp = sum
+    g.tmp = cur
+    cur = cur + tmp
+    g.frame = (cur + 15) // 16 * 16
+    g.sframe = (scur + 15) // 16 * 16
+    /#/ a frame larger than the guard below the shadow stack could be stepped over
+    if sbx && (g.sframe > 32768 || g.frame > 32000):
+        g.err = 1
+
+/#/ A number for the register of `x`: general ones as they are, float ones from 32; -1 in the frame.
+fn ga_hid(g: &Gen, x: int) => int:
+    if g.home[x] >= 0:
+        return g.home[x]
+    if g.xhome[x] >= 0:
+        return 32 + g.xhome[x]
+    return 0 - 1
+
+/#/ Copies what edge `e` passes into the parameters of the block it enters; through a scratch
+/#/ area when the copies are not independent (an argument is itself a parameter of that block, or lives
+/#/ in the register of a parameter written before it).
+fn ga_edge_copy(g: &Gen, f: &Fun, rs: &Reps, e: int) => void:
+    let to = f.eto[e]
+    let n = f.eargn[e]
+    if n == 0:
+        return
+    let hazard = false
+    for k in 0..n:
+        let x = g_res(g, f, f.pool[f.eargs[e] + k])
+        if f.op[x] == int(Op.Param) && f.blk[x] == to:
+            hazard = true
+        let hx = ga_hid(g, x)
+        if hx >= 0:
+            let q = f.pfirst[to]
+            for j in 0..k:
+                if ga_hid(g, q) == hx:
+                    hazard = true
+                q = f.nx[q]
+    if !hazard:
+        let p = f.pfirst[to]
+        for k in 0..n:
+            if g.home[p] >= 0:
+                ga_ld(g, g.home[p], f, f.pool[f.eargs[e] + k])
+            elif g.xhome[p] >= 0:
+                ga_fmove(g, f, g.xhome[p], f.pool[f.eargs[e] + k])
+            else:
+                ga_val_to(g, f, rs, ga_sb(g, p), g.voff[p], f.pool[f.eargs[e] + k])
+            p = f.nx[p]
+        return
+    let at = 0
+    for k in 0..n:
+        let v = f.pool[f.eargs[e] + k]
+        ga_val_to(g, f, rs, ta_fp(), g.tmp + at, v)
+        at = at + g_place_size(g, rs, f.rep[g_res(g, f, v)])
+    let p = f.pfirst[to]
+    at = 0
+    for k in 0..n:
+        let sz = g_place_size(g, rs, f.rep[p])
+        if g.home[p] >= 0:
+            a64_ld(&g.a, g.home[p], ta_fp(), g.tmp + at, 8)
+        elif g.xhome[p] >= 0:
+            a64_fldst(&g.a, true, g.xhome[p], ta_fp(), g.tmp + at, rsize_scalar(f.rep[p]))
+        else:
+            ga_copy_mem(g, ga_sb(g, p), g.voff[p], ta_fp(), g.tmp + at, sz)
+        at = at + sz
+        p = f.nx[p]
+
+/#/ The register of pool slot `r`: the callee-saved x19 to x27. Every value lives in one for its
+/#/ whole life, across calls too, since a callee keeps them; the function saves the ones it uses.
+fn ga_pool_reg(r: int) => int:
+    return ta_saved_first() + r
+
+/#/ Gives the values that deserve one a register (`home`; -1 for the frame), by linear scan over
+/#/ the live ranges of `g_live_ranges`, the least wanted value going to the frame when there are
+/#/ no more registers. Floats go to v8..v15 (kept by a callee) when they live across a call, else to v16..v31.
+fn ga_alloc_regs(g: &Gen, f: &Fun, rs: &Reps) => void:
+    let nd = g_live_ranges(g, f, rs, false)
+    g.nsaved = 0
+    if nd == 0:
+        return
+    let npool = ta_nsaved_regs()
+    if g.a.sbx:
+        /#/ x27 is the shadow frame pointer of sandbox code
+        npool = npool - 1
+    let top = g.ptop + 4
+    let first: buf<int> = new_buf(int, top + 1)
+    let link: buf<int> = new_buf(int, nd + 1)
+    for q in 0..top + 1:
+        first[q] = 0 - 1
+    let sd = nd - 1
+    while sd >= 0:
+        link[sd] = first[g.ra_lo[sd]]
+        first[g.ra_lo[sd]] = sd
+        sd = sd - 1
+    let occ: buf<int> = new_buf(int, npool)
+    let used: buf<int> = new_buf(int, npool)
+    for r in 0..npool:
+        occ[r] = 0 - 1
+    let occx: buf<int> = new_buf(int, 24)
+    let xused: buf<int> = new_buf(int, 8)
+    for r in 0..24:
+        occx[r] = 0 - 1
+    for q in 0..top + 1:
+        let cd = first[q]
+        while cd >= 0:
+            let d = cd
+            let nxt = link[d]
+            let v = g.dv[d]
+            let rd = f.rep[v]
+            if rd == int(Rp.F32) || rd == int(Rp.F64):
+                /#/ v8..v15 (slots 0 to 7) are kept by a callee, v16..v31 (slots 8 to 23) are not: those take
+                /#/ the values no call is made in the life of
+                for r in 0..24:
+                    if occx[r] >= 0 && g.ra_hi[occx[r]] < g.ra_lo[d]:
+                        occx[r] = 0 - 1
+                let crossing = g_crosses(g, g.ra_lo[d], g.ra_hi[d])
+                let lo = 0
+                let hi = 8
+                if !crossing:
+                    lo = 8
+                    hi = 24
+                let fx = 0 - 1
+                for r in lo..hi:
+                    if occx[r] < 0 && fx < 0:
+                        fx = r
+                if fx < 0 && !crossing:
+                    for r in 0..8:
+                        if occx[r] < 0 && fx < 0:
+                            fx = r
+                if fx >= 0:
+                    occx[fx] = d
+                    g.xhome[v] = 8 + fx
+                    if fx >= 8:
+                        g.xhome[v] = 16 + fx - 8
+                    if rd == int(Rp.F32):
+                        g.xsg[v] = 1
+                    if fx < 8:
+                        xused[fx] = 1
+                else:
+                    let worst = 0 - 1
+                    for r in lo..hi:
+                        if worst < 0 || g.dn[occx[r]] < g.dn[occx[worst]]:
+                            worst = r
+                    if g.dn[occx[worst]] < g.dn[d]:
+                        g.xhome[g.dv[occx[worst]]] = 0 - 1
+                        g.xhome[v] = 8 + worst
+                        if worst >= 8:
+                            g.xhome[v] = 16 + worst - 8
+                        if rd == int(Rp.F32):
+                            g.xsg[v] = 1
+                        occx[worst] = d
+                        if worst < 8:
+                            xused[worst] = 1
+                cd = nxt
+                continue
+            for r in 0..npool:
+                if occ[r] >= 0 && g.ra_hi[occ[r]] < g.ra_lo[d]:
+                    occ[r] = 0 - 1
+            let fr = 0 - 1
+            let shared = 0 - 1
+            if g.coal[d] >= 0 && g.home[g.dv[g.coal[d]]] >= 0 && g.ra_lo[g.coal[d]] < g.ra_lo[d]:
+                for r in 0..npool:
+                    if ga_pool_reg(r) == g.home[g.dv[g.coal[d]]] && occ[r] == g.coal[d]:
+                        shared = r
+            if shared >= 0:
+                fr = shared
+            let hint = g_hint_reg(g, f, v)
+            if hint >= 0 && fr < 0:
+                for r in 0..npool:
+                    if ga_pool_reg(r) == hint && occ[r] < 0:
+                        fr = r
+            for r in 0..npool:
+                if occ[r] < 0 && fr < 0:
+                    fr = r
+            if fr >= 0:
+                if shared < 0 || g.ra_hi[d] > g.ra_hi[occ[fr]]:
+                    occ[fr] = d
+                g.home[v] = ga_pool_reg(fr)
+                used[fr] = 1
+            else:
+                let worst = 0
+                for r in 0..npool:
+                    if g.dn[occ[r]] < g.dn[occ[worst]]:
+                        worst = r
+                if g.dn[occ[worst]] < g.dn[d]:
+                    g.home[g.dv[occ[worst]]] = 0 - 1
+                    g.home[v] = ga_pool_reg(worst)
+                    occ[worst] = d
+            cd = nxt
+    if len(g.saved) < npool + 9:
+        g.saved = new_buf(int, npool + 9)
+    for r in 0..npool:
+        if used[r] == 1:
+            g.saved[g.nsaved] = ga_pool_reg(r)
+            g.nsaved = g.nsaved + 1
+    /#/ the float registers kept: v8 to v15, numbered from 32
+    for r in 0..8:
+        if xused[r] == 1:
+            g.saved[g.nsaved] = 32 + 8 + r
+            g.nsaved = g.nsaved + 1

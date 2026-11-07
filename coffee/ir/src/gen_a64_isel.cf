@@ -1,0 +1,425 @@
+/#/ aarch64: the machine instructions of each IR operation.
+use * in gen
+use * in asm
+use * in asm_a64
+use * in target_a64
+use * in gen_x86_regs
+use * in gen_x86_call
+use * in gen_x86_isel
+use * in gen_a64_regs
+use * in gen_a64_call
+use * in gen_a64_fun
+use * in gen_a64_vec
+
+/#/ Sets the flags for the integer compare `i`.
+fn ga_cmp_flags(g: &Gen, f: &Fun, i: int) => void:
+    let signed = g_is_signed_pred(g, f.aux[i])
+    let wr = f.rep[g_res(g, f, f.a[i])]
+    if wr == int(Rp.I64) || wr == int(Rp.Ptr):
+        let la = ga_src(g, f, f.a[i], 9)
+        if g_small_imm(g, f, f.b[i]):
+            a64_cmp_ri(&g.a, la, f.aux[g_res(g, f, f.b[i])])
+        else:
+            a64_cmp_rr(&g.a, la, ga_src(g, f, f.b[i], 10))
+        return
+    ga_ld_ext(g, 9, f, f.a[i], signed)
+    ga_ld_ext(g, 10, f, f.b[i], signed)
+    a64_cmp_rr(&g.a, 9, 10)
+
+/#/ Loads the operands of the float compare `i` into v0 and v1 and compares them.
+fn ga_fcmp_flags(g: &Gen, f: &Fun, i: int) => void:
+    let single = f.rep[g_res(g, f, f.a[i])] == int(Rp.F32)
+    let va = ga_fsrc(g, f, f.a[i], 0)
+    let vb = ga_fsrc(g, f, f.b[i], 1)
+    a64_fcmp(&g.a, single, va, vb)
+
+/#/ The address of the folded `x` (see `g_folds`) as base, index, scale and displacement in `am_*`;
+/#/ what is not a constant is loaded into `s1` (the base) and `s2` (the index).
+fn ga_addr_of(g: &Gen, f: &Fun, x: int, s1: int, s2: int) => void:
+    g.am_base = ga_src(g, f, f.a[x], s1)
+    if f.op[x] == int(Op.Index) && g_near_const(g, f, f.b[x]):
+        g.am_idx = 0 - 1
+        g.am_scale = 1
+        g.am_disp = f.aux[g_res(g, f, f.b[x])] * f.aux[x]
+    elif f.op[x] == int(Op.Index):
+        g.am_idx = ga_src(g, f, f.b[x], s2)
+        g.am_scale = f.aux[x]
+        g.am_disp = 0
+    else:
+        g.am_idx = 0 - 1
+        g.am_scale = 1
+        g.am_disp = f.aux[x]
+
+/#/ The same for the float register `vt`.
+fn ga_fmem(g: &Gen, load: bool, vt: int, n: int) => void:
+    if g.am_idx < 0:
+        a64_fldst(&g.a, load, vt, g.am_base, g.am_disp, n)
+    elif g.am_scale == n || g.am_scale == 1:
+        a64_fldst_idx(&g.a, load, vt, g.am_base, g.am_idx, g.am_scale == n, n)
+    else:
+        a64_add_rr_lsl(&g.a, 15, g.am_base, g.am_idx, a64_log2(g.am_scale))
+        a64_fldst(&g.a, load, vt, 15, 0, n)
+
+/#/ A load or store of `n` bytes of `rt` at the address `am_*` describes.
+fn ga_mem(g: &Gen, load: bool, rt: int, n: int) => void:
+    if g.am_idx < 0:
+        a64_ldst(&g.a, load, rt, g.am_base, g.am_disp, n)
+    elif g.am_scale == n || g.am_scale == 1:
+        a64_ldst_idx(&g.a, load, rt, g.am_base, g.am_idx, g.am_scale == n, n)
+    else:
+        a64_add_rr_lsl(&g.a, 15, g.am_base, g.am_idx, a64_log2(g.am_scale))
+        a64_ldst(&g.a, load, rt, 15, 0, n)
+
+fn ga_arith(g: &Gen, f: &Fun, i: int, op: int) => void:
+    let single = f.rep[i] == int(Rp.F32)
+    let va = ga_fsrc(g, f, f.a[i], 0)
+    let vb = ga_fsrc(g, f, f.b[i], 1)
+    let d = ga_fdst(g, i, 0)
+    let code = 0
+    if op == int(Op.FSub):
+        code = 1
+    elif op == int(Op.FMul):
+        code = 2
+    elif op == int(Op.FDiv):
+        code = 3
+    a64_farith(&g.a, code, single, d, va, vb)
+    ga_ffin(g, f, i, d)
+
+fn ga_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => void:
+    let op = f.op[i]
+    let r = f.rep[i]
+    if op == int(Op.Param) || op == int(Op.Slot) || op == int(Op.OwnMove) || op == int(Op.Const) || op == int(Op.StrLit) || op == int(Op.Undef):
+        return
+    if op == int(Op.Add) || op == int(Op.Sub) || op == int(Op.Mul) || op == int(Op.And) || op == int(Op.Or) || op == int(Op.Xor):
+        let ra = ga_src(g, f, f.a[i], 9)
+        let d = ga_dst(g, i, 9)
+        if (op == int(Op.Add) || op == int(Op.Sub)) && g_small_imm(g, f, f.b[i]):
+            a64_addsub_ri(&g.a, op == int(Op.Sub), d, ra, f.aux[g_res(g, f, f.b[i])])
+            ga_st(g, i, d)
+            return
+        let rb = ga_src(g, f, f.b[i], 10)
+        if op == int(Op.Add):
+            a64_add_rr(&g.a, d, ra, rb)
+        elif op == int(Op.Sub):
+            a64_sub_rr(&g.a, d, ra, rb)
+        elif op == int(Op.Mul):
+            a64_mul(&g.a, d, ra, rb)
+        elif op == int(Op.And):
+            a64_and_rr(&g.a, d, ra, rb)
+        elif op == int(Op.Or):
+            a64_orr_rr(&g.a, d, ra, rb)
+        else:
+            a64_eor_rr(&g.a, d, ra, rb)
+        ga_st(g, i, d)
+        return
+    if op == int(Op.SMulHi) || op == int(Op.UMulHi):
+        let ra = ga_src(g, f, f.a[i], 9)
+        let rb = ga_src(g, f, f.b[i], 10)
+        let d = ga_dst(g, i, 9)
+        if op == int(Op.SMulHi):
+            a64_smulh(&g.a, d, ra, rb)
+        else:
+            a64_umulh(&g.a, d, ra, rb)
+        ga_st(g, i, d)
+        return
+    if op == int(Op.SDiv) || op == int(Op.SRem) || op == int(Op.UDiv) || op == int(Op.URem):
+        let signed = op == int(Op.SDiv) || op == int(Op.SRem)
+        ga_ld_ext(g, 9, f, f.a[i], signed)
+        ga_ld_ext(g, 10, f, f.b[i], signed)
+        if signed:
+            a64_sdiv(&g.a, 11, 9, 10)
+        else:
+            a64_udiv(&g.a, 11, 9, 10)
+        if op == int(Op.SRem) || op == int(Op.URem):
+            a64_msub(&g.a, 11, 11, 10, 9)
+        ga_st(g, i, 11)
+        return
+    if op == int(Op.Shl) || op == int(Op.AShr) || op == int(Op.LShr):
+        let kind = 0
+        if op == int(Op.LShr):
+            kind = 1
+        elif op == int(Op.AShr):
+            kind = 2
+        let d = ga_dst(g, i, 9)
+        ga_ld_ext(g, 9, f, f.a[i], op == int(Op.AShr))
+        if g_small_imm(g, f, f.b[i]):
+            let k = f.aux[g_res(g, f, f.b[i])]
+            if k >= 0 && k < 64:
+                a64_shift_i(&g.a, kind, d, 9, k)
+                ga_st(g, i, d)
+                return
+        let rb = ga_src(g, f, f.b[i], 10)
+        if kind == 0:
+            a64_lslv(&g.a, d, 9, rb)
+        elif kind == 1:
+            a64_lsrv(&g.a, d, 9, rb)
+        else:
+            a64_asrv(&g.a, d, 9, rb)
+        ga_st(g, i, d)
+        return
+    if op == int(Op.FnAddr):
+        if g.a.sbx:
+            a64_err = true
+            return
+        let d = ga_dst(g, i, 9)
+        a64_adr_sym(&g.a, d, g_callee(g, sy, f.aux[i]), 0)
+        ga_st(g, i, d)
+        return
+    if op == int(Op.Neg) || op == int(Op.Not):
+        let ra = ga_src(g, f, f.a[i], 9)
+        let d = ga_dst(g, i, 9)
+        if op == int(Op.Neg):
+            a64_neg(&g.a, d, ra)
+        else:
+            a64_mvn(&g.a, d, ra)
+        ga_st(g, i, d)
+        return
+    if op == int(Op.FNeg):
+        let single = r == int(Rp.F32)
+        let va = ga_fsrc(g, f, f.a[i], 0)
+        let d = ga_fdst(g, i, 0)
+        a64_fneg(&g.a, single, d, va)
+        ga_ffin(g, f, i, d)
+        return
+    if op == int(Op.FAdd) || op == int(Op.FSub) || op == int(Op.FMul) || op == int(Op.FDiv):
+        ga_arith(g, f, i, op)
+        return
+    if op == int(Op.Cmp):
+        if g_fused(g, f, i):
+            return
+        ga_cmp_flags(g, f, i)
+        let d = ga_dst(g, i, 9)
+        a64_cset(&g.a, d, ta_cc_int(f.aux[i]))
+        ga_st(g, i, d)
+        return
+    if op == int(Op.FCmp):
+        let p = f.aux[i]
+        if ta_fcmp_one_cc(p) && g_fused(g, f, i):
+            return
+        ga_fcmp_flags(g, f, i)
+        if p == int(Pr.ONe):
+            a64_cset(&g.a, 9, ac_mi())
+            a64_cset(&g.a, 10, ac_gt())
+            a64_orr_rr(&g.a, 9, 9, 10)
+        else:
+            a64_cset(&g.a, 9, ta_cc_float(p))
+        ga_st(g, i, 9)
+        return
+    if op == int(Op.Trunc) || op == int(Op.Bitcast) || op == int(Op.PtrToInt) || op == int(Op.IntToPtr):
+        let d = ga_dst(g, i, 9)
+        ga_ld(g, d, f, f.a[i])
+        ga_st(g, i, d)
+        return
+    if op == int(Op.SExt) || op == int(Op.ZExt):
+        let d = ga_dst(g, i, 9)
+        ga_ld_ext(g, d, f, f.a[i], op == int(Op.SExt))
+        ga_st(g, i, d)
+        return
+    if op == int(Op.SiToFp) || op == int(Op.UiToFp):
+        let single = r == int(Rp.F32)
+        let signed = op == int(Op.SiToFp)
+        ga_ld_ext(g, 9, f, f.a[i], signed)
+        let d = ga_fdst(g, i, 0)
+        a64_cvt_i2f(&g.a, d, 9, single, signed)
+        ga_ffin(g, f, i, d)
+        return
+    if op == int(Op.FpToSi) || op == int(Op.FpToUi):
+        let single = f.rep[g_res(g, f, f.a[i])] == int(Rp.F32)
+        let va = ga_fsrc(g, f, f.a[i], 0)
+        let d = ga_dst(g, i, 9)
+        a64_cvt_f2i(&g.a, d, va, single, op == int(Op.FpToSi))
+        ga_st(g, i, d)
+        return
+    if op == int(Op.FpExt) || op == int(Op.FpTrunc):
+        let to_single = op == int(Op.FpTrunc)
+        let va = ga_fsrc(g, f, f.a[i], 0)
+        let d = ga_fdst(g, i, 0)
+        a64_fcvt(&g.a, d, va, to_single)
+        ga_ffin(g, f, i, d)
+        return
+    if (op == int(Op.Field) || op == int(Op.Index)) && g_folds(g, f, i):
+        return
+    if op == int(Op.Field):
+        let ra = ga_src(g, f, f.a[i], 9)
+        let d = ga_dst(g, i, 9)
+        a64_addsub_ri(&g.a, false, d, ra, f.aux[i])
+        ga_st(g, i, d)
+        return
+    if op == int(Op.Index):
+        let sz = f.aux[i]
+        let ra = ga_src(g, f, f.a[i], 9)
+        let d = ga_dst(g, i, 9)
+        if g_near_const(g, f, f.b[i]):
+            a64_addsub_ri(&g.a, false, d, ra, f.aux[g_res(g, f, f.b[i])] * sz)
+        else:
+            let rb = ga_src(g, f, f.b[i], 10)
+            if sz == 1 || sz == 2 || sz == 4 || sz == 8:
+                a64_add_rr_lsl(&g.a, d, ra, rb, a64_log2(sz))
+            else:
+                a64_mov_ri(&g.a, 11, sz)
+                a64_madd(&g.a, d, rb, 11, ra)
+        ga_st(g, i, d)
+        return
+    if op == int(Op.Extract):
+        let ar = f.rep[g_res(g, f, f.a[i])]
+        let eo = elem_off(rs, ar, f.aux[i])
+        let sb = ga_ab_reg(g, f, f.a[i])
+        let sd = ga_ab_disp(g, f, f.a[i]) + eo
+        if r >= rp_first_agg():
+            ga_copy_mem(g, ga_sb(g, i), g.voff[i], sb, sd, rsize(rs, r))
+        elif !g_is_int_class(g, r):
+            let d = ga_fdst(g, i, 0)
+            a64_fldst(&g.a, true, d, sb, sd, rsize(rs, r))
+            ga_ffin(g, f, i, d)
+        else:
+            let d = ga_dst(g, i, 9)
+            a64_ld(&g.a, d, sb, sd, rsize(rs, r))
+            ga_st(g, i, d)
+        return
+    if op == int(Op.Insert):
+        let eo = elem_off(rs, r, f.aux[i])
+        let sb = ga_ab_reg(g, f, f.a[i])
+        ga_copy_mem(g, ga_sb(g, i), g.voff[i], sb, ga_ab_disp(g, f, f.a[i]), rsize(rs, r))
+        let er = f.rep[g_res(g, f, f.b[i])]
+        if er >= rp_first_agg():
+            let eb = ga_ab_reg(g, f, f.b[i])
+            ga_copy_mem(g, ga_sb(g, i), g.voff[i] + eo, eb, ga_ab_disp(g, f, f.b[i]), rsize(rs, er))
+        else:
+            let rv = ga_src(g, f, f.b[i], 9)
+            a64_st(&g.a, ga_sb(g, i), g.voff[i] + eo, rv, rsize(rs, er))
+        return
+    if op == int(Op.Load):
+        if r >= rp_first_agg():
+            ga_ld(g, ta_a0(), f, f.a[i])
+            ga_copy_mem(g, ga_sb(g, i), g.voff[i], ta_a0(), 0, rsize(rs, r))
+            return
+        let x = g_res(g, f, f.a[i])
+        if !g_is_int_class(g, r):
+            let fd = ga_fdst(g, i, 0)
+            if g_folds(g, f, x):
+                ga_addr_of(g, f, x, ta_a0(), ta_a1())
+                ga_fmem(g, true, fd, rsize(rs, r))
+            else:
+                let rb = ga_src(g, f, f.a[i], ta_a0())
+                a64_fldst(&g.a, true, fd, rb, 0, rsize(rs, r))
+            ga_ffin(g, f, i, fd)
+            return
+        let d = ga_dst(g, i, 9)
+        if g_folds(g, f, x):
+            ga_addr_of(g, f, x, ta_a0(), ta_a1())
+            ga_mem(g, true, d, rsize(rs, r))
+        else:
+            let rb = ga_src(g, f, f.a[i], ta_a0())
+            a64_ld(&g.a, d, rb, 0, rsize(rs, r))
+        ga_st(g, i, d)
+        return
+    if op == int(Op.Store):
+        let vr = f.rep[g_res(g, f, f.b[i])]
+        if vr >= rp_first_agg():
+            ga_ld(g, ta_a1(), f, f.a[i])
+            let sb = ga_ab_reg(g, f, f.b[i])
+            ga_copy_mem(g, ta_a1(), 0, sb, ga_ab_disp(g, f, f.b[i]), rsize(rs, vr))
+            return
+        let x = g_res(g, f, f.a[i])
+        if !g_is_int_class(g, vr):
+            let fv = ga_fsrc(g, f, f.b[i], 0)
+            if g_folds(g, f, x):
+                ga_addr_of(g, f, x, ta_a0(), ta_a1())
+                ga_fmem(g, false, fv, rsize(rs, vr))
+            else:
+                let rb = ga_src(g, f, f.a[i], ta_a0())
+                a64_fldst(&g.a, false, fv, rb, 0, rsize(rs, vr))
+            return
+        let rv = ga_src(g, f, f.b[i], 9)
+        if g_folds(g, f, x):
+            ga_addr_of(g, f, x, ta_a0(), ta_a1())
+            ga_mem(g, false, rv, rsize(rs, vr))
+        else:
+            let rb = ga_src(g, f, f.a[i], ta_a0())
+            a64_st(&g.a, rb, 0, rv, rsize(rs, vr))
+        return
+    if op == int(Op.Drop) || op == int(Op.Clone):
+        g.nav = 0
+        g_push_arg(g, f.a[i])
+        ga_do_call(g, f, rs, i, g_callee(g, sy, f.aux[i]), false)
+        return
+    if op == int(Op.VLoop):
+        ga_gen_vloop(g, f, i)
+        return
+    if op == int(Op.Call) || op == int(Op.CCall) || op == int(Op.CallI):
+        g.nav = 0
+        for k in 0..f.b[i]:
+            g_push_arg(g, f.pool[f.a[i] + k])
+        if op == int(Op.CallI):
+            ga_do_call(g, f, rs, i, 0 - 1, false)
+        else:
+            ga_do_call(g, f, rs, i, g_callee(g, sy, f.aux[i]), op == int(Op.CCall) && f.c[i] != 0)
+        return
+    if op == int(Op.Br):
+        let e = f.aux[i]
+        ga_edge_copy(g, f, rs, e)
+        if f.eto[e] != next:
+            a64_b(&g.a, f.eto[e])
+        return
+    if op == int(Op.CondBr):
+        let e1 = f.b[i]
+        let e2 = f.c[i]
+        let c = g_res(g, f, f.a[i])
+        let cc = ac_ne()
+        if f.op[c] == int(Op.Cmp) && g_fused(g, f, c):
+            ga_cmp_flags(g, f, c)
+            cc = ta_cc_int(f.aux[c])
+        elif f.op[c] == int(Op.FCmp) && ta_fcmp_one_cc(f.aux[c]) && g_fused(g, f, c):
+            ga_fcmp_flags(g, f, c)
+            cc = ta_cc_float(f.aux[c])
+        else:
+            ga_ld(g, 9, f, f.a[i])
+            a64_extend(&g.a, 9, 9, 1, false)
+            a64_cmp_ri(&g.a, 9, 0)
+        if f.eargn[e1] == 0 && f.eargn[e2] == 0:
+            if f.eto[e2] == next:
+                a64_bcc(&g.a, cc, f.eto[e1])
+            elif f.eto[e1] == next:
+                a64_bcc(&g.a, cc ^ 1, f.eto[e2])
+            else:
+                a64_bcc(&g.a, cc, f.eto[e1])
+                a64_b(&g.a, f.eto[e2])
+            return
+        if f.eargn[e1] == 0:
+            a64_bcc(&g.a, cc, f.eto[e1])
+            ga_edge_copy(g, f, rs, e2)
+            if f.eto[e2] != next:
+                a64_b(&g.a, f.eto[e2])
+            return
+        if f.eargn[e2] == 0:
+            a64_bcc(&g.a, cc ^ 1, f.eto[e2])
+            ga_edge_copy(g, f, rs, e1)
+            if f.eto[e1] != next:
+                a64_b(&g.a, f.eto[e1])
+            return
+        let yes = g.a.new_label()
+        a64_bcc(&g.a, cc, yes)
+        ga_edge_copy(g, f, rs, e2)
+        a64_b(&g.a, f.eto[e2])
+        g.a.bind(yes)
+        ga_edge_copy(g, f, rs, e1)
+        if f.eto[e1] != next:
+            a64_b(&g.a, f.eto[e1])
+        return
+    if op == int(Op.Ret):
+        if f.a[i] >= 0:
+            let vr = f.rep[g_res(g, f, f.a[i])]
+            if vr >= rp_first_agg():
+                a64_ld(&g.a, ta_a1(), ta_fp(), 16, 8)
+                let sb = ga_ab_reg(g, f, f.a[i])
+                ga_copy_mem(g, ta_a1(), 0, sb, ga_ab_disp(g, f, f.a[i]), rsize(rs, vr))
+            elif g_is_int_class(g, vr):
+                ga_ld(g, 0, f, f.a[i])
+            else:
+                ga_fmove(g, f, 0, f.a[i])
+        ga_epilogue(g)
+        return
+    if op == int(Op.Unreachable):
+        a64_brk(&g.a)
+        return
+    g_bad(g)

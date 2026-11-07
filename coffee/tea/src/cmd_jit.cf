@@ -1,7 +1,10 @@
 /#/ `tea jit`: run a program through the JIT. The front end (`coffee2 --emit-cir`) makes a `.cir`
 /#/ in `target/jit`, and `cfjit` generates the machine code in memory and calls `main`.
 /#/
-/#/     tea jit [file.cf] [-I dir]... [--compiler path] [--jit path] [--no-run] [-- program arguments...]
+/#/     tea jit [file.cf] [-I dir]... [--compiler path] [--jit path] [--target name] [--runner cmd] [--no-run] [-- program arguments...]
+/#/
+/#/ `--target name` makes the `.cir` for that machine and tells `cfjit` (built for it) to load it; `--runner cmd`
+/#/ puts a command in front of `cfjit` (`qemu-aarch64`).
 /#/
 /#/ Without a file the entry of `coffee.toml` is used. The `.cir` is made again only when the
 /#/ compiler or a `.cf` file of the entry's directory or of an include directory is newer than it.
@@ -14,10 +17,13 @@ class Jit:
     /#/ ` -I 'dir'` for each directory given on the command line
     inc: Txt
     run: bool
+    /#/ ` --target=name` for the compiler and the JIT, and the command that runs the JIT
+    target: Txt
+    runner: Txt
     bad: int
 
 fn parse_jit(a: &Args) => Jit:
-    let j = Jit { compiler: txt_of("coffee2"), jit: txt_of("cfjit"), file: new_txt(), inc: new_txt(), run: true, bad: 0 }
+    let j = Jit { compiler: txt_of("coffee2"), jit: txt_of("cfjit"), file: new_txt(), inc: new_txt(), run: true, target: new_txt(), runner: new_txt(), bad: 0 }
     let i = 2
     while i < a.n:
         let w = a.get(i)
@@ -34,6 +40,15 @@ fn parse_jit(a: &Args) => Jit:
             i = i + 1
         elif w.is("--jit") && i + 1 < a.n:
             j.jit = a.get(i + 1)
+            i = i + 1
+        elif w.is("--target") && i + 1 < a.n:
+            let t = a.get(i + 1)
+            j.target.put(" --target='")
+            j.target.put_all(&t)
+            j.target.put("'")
+            i = i + 1
+        elif w.is("--runner") && i + 1 < a.n:
+            j.runner = a.get(i + 1)
             i = i + 1
         elif w.is("--no-run"):
             j.run = false
@@ -107,6 +122,7 @@ fn run_jit(a: &Args) => int:
         c.put_all(&j.file)
         c.put("'")
         c.put_all(&inc)
+        c.put_all(&j.target)
         c.put(" --emit-cir -o '")
         c.put_all(&cir)
         c.put("'")
@@ -116,11 +132,16 @@ fn run_jit(a: &Args) => int:
             return 1
     if !j.run:
         return 0
-    let r = txt_of("'")
+    let r = new_txt()
+    if j.runner.n > 0:
+        r.put_all(&j.runner)
+        r.put(" ")
+    r.put("'")
     r.put_all(&j.jit)
     r.put("' '")
     r.put_all(&cir)
     r.put("' --cache")
+    r.put_all(&j.target)
     let rest = false
     for i in 2..a.n:
         let w = a.get(i)

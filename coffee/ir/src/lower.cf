@@ -59,7 +59,7 @@ fn rep_of(t: &Tys, g: &Syms, x: int) => int:
 /#/ A function of the program named like one the generated code calls in the C library would take
 /#/ its place; its symbol gets a suffix.
 fn keep_off_runtime(w: &Txt) => void:
-    let names = "malloc free calloc strlen strdup memcpy strcmp write exit open read close remove access chmod clock_gettime fork waitpid _exit execve fflush system"
+    let names = "malloc free calloc strlen strdup memcpy strcmp write exit open read close remove access chmod clock_gettime fork waitpid _exit execve fflush system memset memmove memcmp getenv atoi atof printf puts putchar fmod fmodf"
     let lo = 0
     for i in 0..len(names) + 1:
         if i == len(names) || names[i] == ' ':
@@ -3695,7 +3695,7 @@ class Lower:
             let w = new_txt()
             self.names.put(&w, self.gl_name[k])
             g_add_global(&self.mc, &w, self.gl_size[k])
-        return g_elf(&self.mc)
+        return target_object(&self.mc)
 
 fn type_param_count(a: &Ast, f: int) => int:
     let k = 0
@@ -3718,6 +3718,7 @@ fn same_text(a: &Ast, x: int, y: int) => bool:
 
 fn new_lower() => Lower:
     let lw = make_lower()
+    lw.mc.a.sbx = target_sandbox
     lw.rt_exit = lw.names.add("exit")
     lw.rt_calloc = lw.names.add("calloc")
     lw.rt_strlen = lw.names.add("strlen")

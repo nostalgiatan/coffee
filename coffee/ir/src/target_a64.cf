@@ -1,0 +1,101 @@
+/#/ The aarch64 target: the facts the code generator needs about the machine, in one place (the
+/#/ counterpart of target_x86.cf; names start with `ta_`). Register numbers are the machine's:
+/#/ x0 to x30, with 31 standing for sp or xzr.
+/#/
+/#/ AAPCS64: integers and pointers go in x0 to x7, floats in v0 to v7, the rest on the stack in
+/#/ 8-byte places; the result comes back in x0 or v0. x19 to x28 are saved by the function that uses
+/#/ them, x29 is the frame pointer and x30 the link register. A function returning an aggregate gets
+/#/ a pointer to the place for it in x8 (the indirect result register).
+use * in op
+use * in asm_a64
+
+/#/ How many integer and float arguments go in registers.
+fn ta_nint_args() => int:
+    return 8
+
+fn ta_nfloat_args() => int:
+    return 8
+
+/#/ The register of the `k`th integer argument (x0 to x7).
+fn ta_int_arg(k: int) => int:
+    return k
+
+/#/ The register that carries the address of a returned aggregate.
+fn ta_sret() => int:
+    return 8
+
+fn ta_fp() => int:
+    return 29
+
+fn ta_lr() => int:
+    return 30
+
+/#/ The scratch registers of the code generator: x9, x10, x11 hold operands and results, x12 and x13
+/#/ addresses. x16 holds the address of an indirect call and x17 the large immediates the assembler
+/#/ builds; neither lives across an instruction of the generator.
+fn ta_s0() => int:
+    return 9
+
+fn ta_s1() => int:
+    return 10
+
+fn ta_s2() => int:
+    return 11
+
+fn ta_a0() => int:
+    return 12
+
+fn ta_a1() => int:
+    return 13
+
+fn ta_ind() => int:
+    return 16
+
+/#/ The registers a function saves (x19 to x27) before using them: none are used yet, since every
+/#/ value lives in the frame. x28 is kept for the start of the linear memory in sandboxed code.
+fn ta_saved_first() => int:
+    return 19
+
+fn ta_nsaved_regs() => int:
+    return 9
+
+fn ta_sandbox_base() => int:
+    return 28
+
+/#/ The condition code in which the integer compare `p` holds, and its float counterpart (the
+/#/ ordered ones: an unordered result makes all of them false).
+fn ta_cc_int(p: int) => int:
+    if p == int(Pr.Eq):
+        return ac_eq()
+    if p == int(Pr.Ne):
+        return ac_ne()
+    if p == int(Pr.SLt):
+        return ac_lt()
+    if p == int(Pr.SLe):
+        return ac_le()
+    if p == int(Pr.SGt):
+        return ac_gt()
+    if p == int(Pr.SGe):
+        return ac_ge()
+    if p == int(Pr.ULt):
+        return ac_lo()
+    if p == int(Pr.ULe):
+        return ac_ls()
+    if p == int(Pr.UGt):
+        return ac_hi()
+    return ac_hs()
+
+/#/ Is the float compare `p` one condition after `fcmp` (all but !=)?
+fn ta_fcmp_one_cc(p: int) => bool:
+    return p != int(Pr.ONe)
+
+fn ta_cc_float(p: int) => int:
+    if p == int(Pr.OEq):
+        return ac_eq()
+    if p == int(Pr.OLt):
+        return ac_mi()
+    if p == int(Pr.OLe):
+        return ac_ls()
+    if p == int(Pr.OGt):
+        return ac_gt()
+    return ac_ge()

@@ -1,0 +1,47 @@
+/#/ Vector loops (from driver/tests/test_vector.cf).
+fn sum(a: &buf<int>, n: int) => int:
+    let s = 0
+    for i in 0..n:
+        s = s + a[i]
+    return s
+
+fn sum2(a: &buf<int>, b: &buf<int>, n: int, k: int) => int:
+    let s = 7
+    for i in 0..n:
+        s = s + (a[i] ^ b[i]) + k
+    return s
+
+fn dif(a: &buf<int>, n: int) => int:
+    let s = 100
+    for i in 0..n:
+        s = s - a[i]
+    return s
+
+fn xr(a: &buf<int>, n: int) => int:
+    let s = 5
+    for i in 0..n:
+        s = s ^ a[i]
+    return s
+
+fn orr(a: &buf<int>, n: int) => int:
+    let s = 0
+    for i in 0..n:
+        s = s | a[i]
+    return s
+
+fn andd(a: &buf<int>, n: int) => int:
+    let s = -1
+    for i in 0..n:
+        s = s & a[i]
+    return s
+
+fn main() => int:
+    let a: buf<int> = new_buf(int, 50)
+    let b: buf<int> = new_buf(int, 50)
+    for j in 0..50:
+        a[j] = j * 37 + 1000003 * (j % 3) + 255
+        b[j] = j * 11 + 7
+    let r = 0
+    for n in 0..50:
+        r = r * 31 + sum(&a, n) + sum2(&a, &b, n, n) * 3 + dif(&a, n) * 5 + xr(&a, n) * 7 + orr(&a, n) * 9 + andd(&a, n) * 13
+    return (r % 251 + 251) % 251

@@ -1,0 +1,11 @@
+class P:
+    x: int
+    name: str
+
+fn main() => int:
+    let b: buf<int> = new_buf(int, 4)
+    for i in 0..1000:
+        let p = P { x: i, name: f"n{i}" }
+        b[1] = b[1] + len(p.name)
+    let s = f"{b[1]} {2.5}"
+    return len(s)
