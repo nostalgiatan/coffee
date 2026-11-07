@@ -59,6 +59,7 @@
 | `merge_blocks` | 只有一个前驱的块并入前驱 |
 | `own_opt` | 只被紧随其后的 `Free` 使用的 `Alloc` 一起删除;`y = clone x` 后立刻 `drop x` 时 `y` 就是 `x` |
 | `stack_alloc` | 在同一块内分配又释放,中间只有 `Load` `Store` `Field` `Index` 的 `Alloc` 改成 `Slot` |
+| `escape_alloc` | 模块级逃逸分析:指针不逃出函数的 `Alloc`(可跨块释放、可传给不保留它的函数、可由只释放自己的 drop glue 释放)改成 `Slot`,`Free` 去掉 |
 | `dead_code` | 无人使用的指令和块参数 |
 
 `modopt.cf`(整个模块,被调用者先处理):内联、每个函数的效应摘要(读、写、分配、未知、不返回、可能不终止)、删掉结果无人使用且只读会终止的调用、由摘要推出的函数属性。

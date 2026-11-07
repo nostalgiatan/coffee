@@ -289,6 +289,7 @@ fn get_funs(r: &Rd, t: &Txt, lw: &Lower, nnames: int, nreps: int) => int:
         lib.nf = lib.nf + 1
         lib.f_fx[n] = 0
         lib.f_done[n] = 0
+        lib.f_nc[n] = 0
         lib.f_i0[n] = lib.ni
         lib.f_ni[n] = ni
         lib.f_b0[n] = lib.nb

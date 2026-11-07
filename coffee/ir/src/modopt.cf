@@ -134,7 +134,7 @@ fn call_order(lib: &Lib) => buf<int>:
                 while pos[sp - 1] < end && !descended:
                     let k = pos[sp - 1]
                     pos[sp - 1] = k + 1
-                    if lib.op[k] == int(Op.Call):
+                    if lib.op[k] == int(Op.Call) || lib.op[k] == int(Op.Drop):
                         let c = lib.find(lib.aux[k])
                         if c >= 0 && seen[c] == 0:
                             seen[c] = 1
@@ -362,6 +362,186 @@ fn inline_calls(f: &Fun, lib: &Lib, cur: int) => bool:
                 break
     return any
 
+/#/ ---- escape analysis -----------------------------------------------------
+
+/#/ Is `x` (an address) the base of a use that cannot let it outlive the function's frame: a load or store
+/#/ through it, an address derived from it, a comparison, a call whose callee keeps no pointer in
+/#/ parameter `q`? `release` allows the `free` of the root `c` itself and, when `glue` is set, its `drop`
+/#/ by a drop glue that only releases it.
+fn escape_use_ok(f: &Fun, lib: &Lib, i: int, q: int, x: int, c: int, release: bool) => bool:
+    let o = f.op[i]
+    if o == int(Op.Load) || o == int(Op.Field) || o == int(Op.Index) || o == int(Op.Store):
+        return q == 0
+    if o == int(Op.Cmp):
+        return true
+    if o == int(Op.Free):
+        return release && x == c && q == 0
+    if o == int(Op.Drop):
+        if !release || x != c || q != 0:
+            return false
+        let n = lib.find(f.aux[i])
+        return n >= 0 && lib.f_done[n] == 1 && ((lib.f_nc[n] >> 40) & 1) == 1
+    if o == int(Op.Call):
+        let n = lib.find(f.aux[i])
+        if n < 0 || lib.f_done[n] == 0 || q >= 40:
+            return false
+        if lib.f_nb[n] == 0 || lib.npar[lib.f_b0[n]] != f.b[i]:
+            return false
+        return ((lib.f_nc[n] >> q) & 1) == 1
+    return false
+
+/#/ `base[x]` is the root a value derives from (`x` itself for a root), -1 for any other value. Sets `bad[c]`
+/#/ for the roots with a use that may keep the pointer: an edge argument, a returned or stored pointer,
+/#/ a call that may keep it, anything else the list in `escape_use_ok` does not name.
+fn escape_scan(f: &Fun, lib: &Lib, base: &buf<int>, bad: &buf<int>, release: bool) => void:
+    let grown = true
+    while grown:
+        grown = false
+        for b in 0..f.nb:
+            let i = f.bfirst[b]
+            while i >= 0:
+                if (f.op[i] == int(Op.Field) || f.op[i] == int(Op.Index)) && f.fwd[i] < 0 && base[i] < 0:
+                    let r = base[f.follow(f.a[i])]
+                    if r >= 0:
+                        base[i] = r
+                        grown = true
+                i = f.nx[i]
+    for b in 0..f.nb:
+        let i = f.bfirst[b]
+        while i >= 0:
+            if !(f.op[i] == int(Op.Alloc) && base[i] == i):
+                for q in 0..f.nval(i):
+                    let v = f.val_at(i, q)
+                    if v >= 0:
+                        let x = f.follow(v)
+                        let c = base[x]
+                        if c >= 0 && !escape_use_ok(f, lib, i, q, x, c, release):
+                            bad[c] = 1
+            i = f.nx[i]
+    for e in 0..f.ne:
+        if f.eto[e] >= 0:
+            for k in 0..f.eargn[e]:
+                let c = base[f.follow(f.pool[f.eargs[e] + k])]
+                if c >= 0:
+                    bad[c] = 1
+
+/#/ The pointer parameters of `f` it lets escape not at all (bit q set), and bit 40: parameter 0 is
+/#/ only released (the shape of a drop glue).
+fn param_summary(f: &Fun, lib: &Lib) => int:
+    if f.nb == 0:
+        return 0
+    let nptr = 0
+    let pp = f.pfirst[0]
+    while pp >= 0:
+        if f.rep[pp] == int(Rp.Ptr):
+            nptr = nptr + 1
+        pp = f.nx[pp]
+    if nptr == 0:
+        return 0
+    let base: buf<int> = new_buf(int, f.ni + 1)
+    let bad: buf<int> = new_buf(int, f.ni + 1)
+    for k in 0..f.ni:
+        base[k] = -1
+    let p = f.pfirst[0]
+    let q = 0
+    let first = -1
+    while p >= 0:
+        if f.rep[p] == int(Rp.Ptr) && q < 40 && f.fwd[p] < 0:
+            base[p] = p
+            if q == 0:
+                first = p
+        p = f.nx[p]
+        q = q + 1
+    escape_scan(f, lib, &base, &bad, false)
+    let m = 0
+    let p2 = f.pfirst[0]
+    let q2 = 0
+    while p2 >= 0:
+        if q2 < 40 && base[p2] == p2 && bad[p2] == 0:
+            m = m | (1 << q2)
+        p2 = f.nx[p2]
+        q2 = q2 + 1
+    if first >= 0 && bad[first] == 1:
+        let base2: buf<int> = new_buf(int, f.ni + 1)
+        let bad2: buf<int> = new_buf(int, f.ni + 1)
+        for k in 0..f.ni:
+            base2[k] = -1
+        base2[first] = first
+        escape_scan(f, lib, &base2, &bad2, true)
+        if bad2[first] == 0:
+            m = m | (1 << 40)
+    return m
+
+/#/ An `alloc` whose pointer does not escape (see `escape_scan`) lives in the frame: it becomes a `slot` and
+/#/ its `free`s go. A `drop` of it by a glue that only releases it is made a call and inlined first, so
+/#/ the glue's `free` goes too. Any block of the function may hold the alloc and the release.
+fn escape_alloc(f: &Fun, lib: &Lib) => bool:
+    let any = false
+    let budget = 8
+    let again = true
+    while again:
+        again = false
+        let cands = 0
+        for b in 0..f.nb:
+            let i = f.bfirst[b]
+            while i >= 0:
+                if f.op[i] == int(Op.Alloc) && f.fwd[i] < 0 && f.ty[i] > 0 && f.ty[i] <= 512:
+                    cands = cands + 1
+                i = f.nx[i]
+        if cands == 0:
+            return any
+        let base: buf<int> = new_buf(int, f.ni + 1)
+        let bad: buf<int> = new_buf(int, f.ni + 1)
+        let total = 0
+        for k in 0..f.ni:
+            base[k] = -1
+        for b in 0..f.nb:
+            let i = f.bfirst[b]
+            while i >= 0:
+                if f.op[i] == int(Op.Alloc) && f.fwd[i] < 0 && f.ty[i] > 0 && f.ty[i] <= 512 && total + f.ty[i] <= 4096:
+                    base[i] = i
+                    total = total + f.ty[i]
+                i = f.nx[i]
+        escape_scan(f, lib, &base, &bad, true)
+        if budget > 0:
+            for b in 0..f.nb:
+                let i = f.bfirst[b]
+                while i >= 0 && !again:
+                    if f.op[i] == int(Op.Drop) && f.fwd[i] < 0:
+                        let x = f.follow(f.a[i])
+                        let n = lib.find(f.aux[i])
+                        if base[x] == x && bad[x] == 0 && n >= 0 && live_count(lib, n) <= 80:
+                            let start = f.np
+                            f.pool_put(x)
+                            f.op[i] = int(Op.Call)
+                            f.a[i] = start
+                            f.b[i] = 1
+                            f.c[i] = -1
+                            inline_call(f, lib, i, n)
+                            budget = budget - 1
+                            again = true
+                    i = f.nx[i]
+        if !again:
+            /#/ a drop that could not be inlined keeps its alloc on the heap
+            for b in 0..f.nb:
+                let i = f.bfirst[b]
+                while i >= 0:
+                    if f.op[i] == int(Op.Drop) && base[f.follow(f.a[i])] >= 0:
+                        bad[base[f.follow(f.a[i])]] = 1
+                    i = f.nx[i]
+            for c in 0..f.ni:
+                if base[c] == c && bad[c] == 0 && f.op[c] == int(Op.Alloc):
+                    for b in 0..f.nb:
+                        let i = f.bfirst[b]
+                        while i >= 0:
+                            let nxt = f.nx[i]
+                            if f.op[i] == int(Op.Free) && f.follow(f.a[i]) == c:
+                                delete_inst(f, i)
+                            i = nxt
+                    f.op[c] = int(Op.Slot)
+                    any = true
+    return any
+
 /#/ Optimizes every function of `lib`, callees first. `f` is the working function.
 fn module_opt(lib: &Lib, f: &Fun, rs: &Reps) => void:
     let order = call_order(lib)
@@ -372,7 +552,10 @@ fn module_opt(lib: &Lib, f: &Fun, rs: &Reps) => void:
         optimize_rs(f, rs, true)
         if dead_calls(f, lib):
             optimize_rs(f, rs, true)
+        if escape_alloc(f, lib):
+            optimize_rs(f, rs, true)
         let id = lib.f_id[n]
         lib.save(f, n, id)
         lib.f_fx[n] = summarize(f, lib)
+        lib.f_nc[n] = param_summary(f, lib)
         lib.f_done[n] = 1

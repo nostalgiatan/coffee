@@ -62,6 +62,9 @@ class Lib:
     /#/ the effect summary and the order the passes visit it
     f_fx: buf<int>
     f_done: buf<int>
+    /#/ the pointer parameters the function does not let escape (bit q), and bit 40: parameter 0 is
+    /#/ released by the function and otherwise does not escape (a drop glue)
+    f_nc: buf<int>
 
     fn grow_cols(self, extra_i: int, extra_b: int, extra_e: int, extra_p: int, extra_n: int) => void:
         if self.ni + extra_i > len(self.op):
@@ -114,6 +117,7 @@ class Lib:
             self.f_id = buf_resize(self.f_id, cap)
             self.f_fx = buf_resize(self.f_fx, cap)
             self.f_done = buf_resize(self.f_done, cap)
+            self.f_nc = buf_resize(self.f_nc, cap)
 
     /#/ Stores the columns of `f` as function number `at`, a new one when `at` is the count
     /#/ of functions. `id` is its name number. Returns the number.
@@ -130,6 +134,7 @@ class Lib:
             self.nf = self.nf + 1
             self.f_fx[n] = 0
             self.f_done[n] = 0
+            self.f_nc[n] = 0
         if !inplace:
             self.f_i0[n] = self.ni
             self.f_b0[n] = self.nb
@@ -238,4 +243,4 @@ class Lib:
         return -1
 
 fn new_lib() => Lib:
-    return Lib { fx: new_buf(int, 16), fx_n: 0, op: new_buf(int, 65536), rep: new_buf(int, 65536), ty: new_buf(int, 65536), a: new_buf(int, 65536), b: new_buf(int, 65536), c: new_buf(int, 65536), aux: new_buf(int, 65536), nx: new_buf(int, 65536), pv: new_buf(int, 65536), uses: new_buf(int, 65536), ln: new_buf(int, 65536), fwd: new_buf(int, 65536), blk: new_buf(int, 65536), ni: 0, bfirst: new_buf(int, 16), blast: new_buf(int, 16), pfirst: new_buf(int, 16), plast: new_buf(int, 16), npar: new_buf(int, 16), nb: 0, efrom: new_buf(int, 16), eto: new_buf(int, 16), eargs: new_buf(int, 16), eargn: new_buf(int, 16), ne: 0, pool: new_buf(int, 65536), np: 0, nm: new_buf(int, 65536), nmn: 0, nf: 0, f_i0: new_buf(int, 8), f_ni: new_buf(int, 8), f_b0: new_buf(int, 8), f_nb: new_buf(int, 8), f_e0: new_buf(int, 8), f_ne: new_buf(int, 8), f_p0: new_buf(int, 8), f_np: new_buf(int, 8), f_n0: new_buf(int, 8), f_nn: new_buf(int, 8), f_ret: new_buf(int, 8), f_id: new_buf(int, 8), f_fx: new_buf(int, 8), f_done: new_buf(int, 8) }
+    return Lib { fx: new_buf(int, 16), fx_n: 0, op: new_buf(int, 65536), rep: new_buf(int, 65536), ty: new_buf(int, 65536), a: new_buf(int, 65536), b: new_buf(int, 65536), c: new_buf(int, 65536), aux: new_buf(int, 65536), nx: new_buf(int, 65536), pv: new_buf(int, 65536), uses: new_buf(int, 65536), ln: new_buf(int, 65536), fwd: new_buf(int, 65536), blk: new_buf(int, 65536), ni: 0, bfirst: new_buf(int, 16), blast: new_buf(int, 16), pfirst: new_buf(int, 16), plast: new_buf(int, 16), npar: new_buf(int, 16), nb: 0, efrom: new_buf(int, 16), eto: new_buf(int, 16), eargs: new_buf(int, 16), eargn: new_buf(int, 16), ne: 0, pool: new_buf(int, 65536), np: 0, nm: new_buf(int, 65536), nmn: 0, nf: 0, f_i0: new_buf(int, 8), f_ni: new_buf(int, 8), f_b0: new_buf(int, 8), f_nb: new_buf(int, 8), f_e0: new_buf(int, 8), f_ne: new_buf(int, 8), f_p0: new_buf(int, 8), f_np: new_buf(int, 8), f_n0: new_buf(int, 8), f_nn: new_buf(int, 8), f_ret: new_buf(int, 8), f_id: new_buf(int, 8), f_fx: new_buf(int, 8), f_done: new_buf(int, 8), f_nc: new_buf(int, 8) }

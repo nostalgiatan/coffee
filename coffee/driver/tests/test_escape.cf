@@ -1,0 +1,60 @@
+/#/ Escape analysis: an object that no pointer to leaves the function lives in the frame, whatever block
+/#/ frees it and whether it is passed to a call that keeps nothing or released by its drop glue.
+use * in say
+use * in files
+use * in cstr
+use * in txt
+use system, fflush in libc of c
+
+/#/ Where `w` is in `t` at or after `from`, -1 if it is not.
+fn find_at(t: &Txt, w: &str, from: int) => int:
+    for i in from..t.n:
+        let k = 0
+        while k < len(w) && i + k < t.n && t.b[i + k] == int(w[k]):
+            k = k + 1
+        if k == len(w):
+            return i
+    return -1
+
+/#/ Does the function `name` of the listing hold `w`?
+fn fn_has(t: &Txt, name: str, w: &str) => bool:
+    let head = f"fn {name}("
+    let s = find_at(t, &head, 0)
+    if s < 0:
+        return false
+    let e = find_at(t, "\nfn ", s + 1)
+    if e < 0:
+        e = t.n
+    let at = find_at(t, w, s)
+    return at >= 0 && at < e
+
+fn main() => int:
+    let m = 0
+    system("rm -rf esct && mkdir esct")
+    let src = "class P:\n    x: int\n    y: int\n\nclass Q:\n    s: str\n    n: int\n\nfn mk(a: int) => P:\n    return P { x: a, y: a + 1 }\n\nfn sum(p: &P) => int:\n    let t = 0\n    for i in 0..p.x:\n        t = t + i * p.y + (t // 3) + p.x * i - p.y\n    if t > 1000:\n        t = t - 7 * p.x\n    return t + p.y * 2 + p.x * 3 + 5\n\nfn across(n: int) => int:\n    let t = 0\n    for i in 0..n:\n        let p = mk(i)\n        if i > 3:\n            t = t + sum(&p)\n        else:\n            t = t - sum(&p)\n    return t\n\nfn lenq(q: &Q) => int:\n    return len(q.s) + q.n\n\nfn dropped(n: int) => int:\n    let t = 0\n    for i in 0..n:\n        let q = Q { s: \"ab\" + \"cd\", n: i }\n        t = t + lenq(&q)\n    return t\n\nfn kept(n: int) => P:\n    let p = mk(n)\n    return p\n\nfn main() => int:\n    let k = kept(2)\n    return across(10) + dropped(3) - 238 + sum(&k) - 35\n"
+    let sp = txt_of("esct/e.cf")
+    let st = txt_of(&src)
+    write_file(&sp, &st)
+    if system("cd esct && coffee2 e.cf --emit-ir > e.ir 2>&1 && coffee2 e.cf -o e > build.log 2>&1") != 0:
+        say("MISS: build failed\n")
+        return 1
+    let ip = txt_of("esct/e.ir")
+    let ir = read_file(&ip)
+    if fn_has(&ir, "across", "alloc") || fn_has(&ir, "across", "free") || !fn_has(&ir, "across", "slot"):
+        say("MISS: the object freed in another block than its allocation is not in the frame\n")
+        m = m + 1
+    if fn_has(&ir, "dropped", "alloc ptr") || fn_has(&ir, "dropped", "drop "):
+        say("MISS: the dropped object is not in the frame\n")
+        m = m + 1
+    if !fn_has(&ir, "kept", "alloc") && !fn_has(&ir, "mk", "alloc"):
+        say("MISS: an object that is returned must stay on the heap\n")
+        m = m + 1
+    if !fn_has(&ir, "mk", "alloc"):
+        say("MISS: the returned object is not allocated\n")
+        m = m + 1
+    let r = system("cd esct && ./e")
+    if r != 0:
+        say(f"MISS: the program exits with {r}\n")
+        m = m + 1
+    fflush(0)
+    return m
