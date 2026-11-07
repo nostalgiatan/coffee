@@ -18,6 +18,7 @@ class Lib:
     nx: buf<int>
     pv: buf<int>
     uses: buf<int>
+    ln: buf<int>
     fwd: buf<int>
     blk: buf<int>
     ni: int
@@ -68,6 +69,7 @@ class Lib:
             self.nx = buf_resize(self.nx, cap)
             self.pv = buf_resize(self.pv, cap)
             self.uses = buf_resize(self.uses, cap)
+            self.ln = buf_resize(self.ln, cap)
             self.fwd = buf_resize(self.fwd, cap)
             self.blk = buf_resize(self.blk, cap)
         if self.nb + extra_b > len(self.bfirst):
@@ -140,6 +142,7 @@ class Lib:
             self.nx[self.ni + k] = f.nx[k]
             self.pv[self.ni + k] = f.pv[k]
             self.uses[self.ni + k] = f.uses[k]
+            self.ln[self.ni + k] = f.ln[k]
             self.fwd[self.ni + k] = f.fwd[k]
             self.blk[self.ni + k] = f.blk[k]
         for k in 0..f.nb:
@@ -183,6 +186,7 @@ class Lib:
             f.nx[k] = self.nx[i0 + k]
             f.pv[k] = self.pv[i0 + k]
             f.uses[k] = self.uses[i0 + k]
+            f.ln[k] = self.ln[i0 + k]
             f.fwd[k] = self.fwd[i0 + k]
             f.blk[k] = self.blk[i0 + k]
         let b0 = self.f_b0[n]
@@ -223,4 +227,4 @@ class Lib:
         return -1
 
 fn new_lib() => Lib:
-    return Lib { fx: new_buf(int, 16), fx_n: 0, op: new_buf(int, 64), rep: new_buf(int, 64), ty: new_buf(int, 64), a: new_buf(int, 64), b: new_buf(int, 64), c: new_buf(int, 64), aux: new_buf(int, 64), nx: new_buf(int, 64), pv: new_buf(int, 64), uses: new_buf(int, 64), fwd: new_buf(int, 64), blk: new_buf(int, 64), ni: 0, bfirst: new_buf(int, 16), blast: new_buf(int, 16), pfirst: new_buf(int, 16), plast: new_buf(int, 16), npar: new_buf(int, 16), nb: 0, efrom: new_buf(int, 16), eto: new_buf(int, 16), eargs: new_buf(int, 16), eargn: new_buf(int, 16), ne: 0, pool: new_buf(int, 64), np: 0, nm: new_buf(int, 64), nmn: 0, nf: 0, f_i0: new_buf(int, 8), f_ni: new_buf(int, 8), f_b0: new_buf(int, 8), f_nb: new_buf(int, 8), f_e0: new_buf(int, 8), f_ne: new_buf(int, 8), f_p0: new_buf(int, 8), f_np: new_buf(int, 8), f_n0: new_buf(int, 8), f_nn: new_buf(int, 8), f_ret: new_buf(int, 8), f_id: new_buf(int, 8), f_fx: new_buf(int, 8), f_done: new_buf(int, 8) }
+    return Lib { fx: new_buf(int, 16), fx_n: 0, op: new_buf(int, 64), rep: new_buf(int, 64), ty: new_buf(int, 64), a: new_buf(int, 64), b: new_buf(int, 64), c: new_buf(int, 64), aux: new_buf(int, 64), nx: new_buf(int, 64), pv: new_buf(int, 64), uses: new_buf(int, 64), ln: new_buf(int, 64), fwd: new_buf(int, 64), blk: new_buf(int, 64), ni: 0, bfirst: new_buf(int, 16), blast: new_buf(int, 16), pfirst: new_buf(int, 16), plast: new_buf(int, 16), npar: new_buf(int, 16), nb: 0, efrom: new_buf(int, 16), eto: new_buf(int, 16), eargs: new_buf(int, 16), eargn: new_buf(int, 16), ne: 0, pool: new_buf(int, 64), np: 0, nm: new_buf(int, 64), nmn: 0, nf: 0, f_i0: new_buf(int, 8), f_ni: new_buf(int, 8), f_b0: new_buf(int, 8), f_nb: new_buf(int, 8), f_e0: new_buf(int, 8), f_ne: new_buf(int, 8), f_p0: new_buf(int, 8), f_np: new_buf(int, 8), f_n0: new_buf(int, 8), f_nn: new_buf(int, 8), f_ret: new_buf(int, 8), f_id: new_buf(int, 8), f_fx: new_buf(int, 8), f_done: new_buf(int, 8) }

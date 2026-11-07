@@ -137,6 +137,12 @@ class Asm:
         self.nlab = self.nlab + 1
         return self.nlab - 1
 
+    /#/ A label at the current position that does not break the peephole state: for line marks.
+    fn mark(self) => int:
+        let l = self.new_label()
+        self.lab[l] = self.c.n
+        return l
+
     fn bind(self, l: int) => void:
         self.lab[l] = self.c.n
         self.lm_end = 0 - 1

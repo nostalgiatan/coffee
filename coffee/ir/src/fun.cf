@@ -88,6 +88,10 @@ class Fun:
     nx: buf<int>
     pv: buf<int>
     uses: buf<int>
+    /#/ the line (of the flattened text) of the statement an instruction comes from, 0 when unknown
+    ln: buf<int>
+    /#/ the line given to the instructions made from now on
+    line: int
     fwd: buf<int>
     blk: buf<int>
     ni: int
@@ -131,6 +135,7 @@ class Fun:
         self.pn = 0
         self.cn = 0
         self.cur = -1
+        self.line = 0
         self.attrs = 0
         self.clear_vn()
 
@@ -151,6 +156,7 @@ class Fun:
             self.nx = buf_resize(self.nx, cap)
             self.pv = buf_resize(self.pv, cap)
             self.uses = buf_resize(self.uses, cap)
+            self.ln = buf_resize(self.ln, cap)
             self.fwd = buf_resize(self.fwd, cap)
             self.blk = buf_resize(self.blk, cap)
         if nb > len(self.bfirst):
@@ -234,6 +240,7 @@ class Fun:
             self.nx = buf_resize(self.nx, cap)
             self.pv = buf_resize(self.pv, cap)
             self.uses = buf_resize(self.uses, cap)
+            self.ln = buf_resize(self.ln, cap)
             self.fwd = buf_resize(self.fwd, cap)
             self.blk = buf_resize(self.blk, cap)
 
@@ -348,6 +355,7 @@ class Fun:
         self.nx[i] = -1
         self.pv[i] = -1
         self.uses[i] = 0
+        self.ln[i] = self.line
         self.fwd[i] = -1
         self.blk[i] = -1
         self.ni = i + 1
@@ -830,4 +838,4 @@ fn new_fun(name: &str, ret: int) => Fun:
     let vn: buf<int> = new_buf(int, 64)
     for k in 0..64:
         vn[k] = -1
-    return Fun { nm: nm, ret: ret, tab: new_optab(), op: new_buf(int, 32), rep: new_buf(int, 32), ty: new_buf(int, 32), a: new_buf(int, 32), b: new_buf(int, 32), c: new_buf(int, 32), aux: new_buf(int, 32), nx: new_buf(int, 32), pv: new_buf(int, 32), uses: new_buf(int, 32), fwd: new_buf(int, 32), blk: new_buf(int, 32), ni: 0, bfirst: new_buf(int, 8), blast: new_buf(int, 8), pfirst: new_buf(int, 8), plast: new_buf(int, 8), npar: new_buf(int, 8), nb: 0, efrom: new_buf(int, 8), eto: new_buf(int, 8), eargs: new_buf(int, 8), eargn: new_buf(int, 8), ne: 0, pool: new_buf(int, 32), np: 0, pend: new_buf(int, 8), pn: 0, cv: new_buf(int, 8), ce: new_buf(int, 8), cn: 0, cur: -1, vn: vn, vn_n: 0, attrs: 0 }
+    return Fun { nm: nm, ret: ret, tab: new_optab(), op: new_buf(int, 32), rep: new_buf(int, 32), ty: new_buf(int, 32), a: new_buf(int, 32), b: new_buf(int, 32), c: new_buf(int, 32), aux: new_buf(int, 32), nx: new_buf(int, 32), pv: new_buf(int, 32), uses: new_buf(int, 32), ln: new_buf(int, 32), line: 0, fwd: new_buf(int, 32), blk: new_buf(int, 32), ni: 0, bfirst: new_buf(int, 8), blast: new_buf(int, 8), pfirst: new_buf(int, 8), plast: new_buf(int, 8), npar: new_buf(int, 8), nb: 0, efrom: new_buf(int, 8), eto: new_buf(int, 8), eargs: new_buf(int, 8), eargn: new_buf(int, 8), ne: 0, pool: new_buf(int, 32), np: 0, pend: new_buf(int, 8), pn: 0, cv: new_buf(int, 8), ce: new_buf(int, 8), cn: 0, cur: -1, vn: vn, vn_n: 0, attrs: 0 }

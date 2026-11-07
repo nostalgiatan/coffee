@@ -1,0 +1,33 @@
+/#/ The line marks of the code: `F name`, then `L offset line` for each place where the code of another
+/#/ line starts, lines of the program text, offsets rising within a function.
+use * in say
+use * in drive
+use fflush in libc of c
+
+fn has(t: &Txt, w: &str) => bool:
+    for i in 0..t.n:
+        let k = 0
+        while k < len(w) && i + k < t.n && t.b[i + k] == int(w[k]):
+            k = k + 1
+        if k == len(w):
+            return true
+    return false
+
+fn main() => int:
+    let m = 0
+    set_lines()
+    let src = "fn sum(n: int) => int:\n    let s = 0\n    for i in 0..n:\n        if i % 3 == 0:\n            s = s + i\n        else:\n            s = s - 1\n    return s\n\nfn main() => int:\n    return sum(10) - 12\n"
+    let o = build_src(src, 1)
+    if o.n == 0:
+        m = m + 1
+    if !has(&lines_txt, "F sum\n"):
+        m = m + 1
+    if !has(&lines_txt, "F main\n"):
+        m = m + 1
+    /#/ the body lines of `sum` are marked: 5 and 7 are the two branches
+    if !has(&lines_txt, " 5\n") || !has(&lines_txt, " 7\n") || !has(&lines_txt, " 8\n"):
+        m = m + 1
+    if m > 0:
+        say(f"MISS {m}\n")
+        fflush(0)
+    return m

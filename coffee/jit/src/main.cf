@@ -99,6 +99,33 @@ fn now_us() => int:
     syscall(11, ts, 4096, 0, 0, 0, 0)
     return us
 
+/#/ With `--perf-map`: `/tmp/perf-PID.map`, the functions of the loaded image (`perf` reads it to name
+/#/ the addresses of JIT code); the size of a function is the distance to the next symbol of the text.
+fn write_perf_map(im: &Image, base: int) => void:
+    let out = new_txt()
+    for k in 0..im.nsym:
+        let a = im.sym_at[k]
+        if a < 0 || a >= im.text_n:
+            continue
+        let end = im.text_n
+        for q in 0..im.nsym:
+            let b = im.sym_at[q]
+            if b > a && b < end:
+                end = b
+        out.put_hex(base + a)
+        out.put_byte(32)
+        out.put_hex(end - a)
+        out.put_byte(32)
+        let p = im.sym_name[k]
+        while im.names.b[p] != 0:
+            out.put_byte(im.names.b[p])
+            p = p + 1
+        out.put_byte(10)
+    let path = txt_of("/tmp/perf-")
+    path.put_int(syscall(39, 0, 0, 0, 0, 0, 0))
+    path.put(".map")
+    write_file(&path, &out)
+
 /#/ With `--time`: the phases of a start, in milliseconds, on stderr.
 fn lap(on: bool, what: &str, t0: int) => int:
     if !on:
@@ -143,6 +170,7 @@ fn main() => int:
     if at < 0:
         let lw = new_lower()
         lw.mc.a.sbx = sbx
+        let want_lines = flag_arg("--lines")
         lap(timing, "read file + key", t0)
         let e = read_cir(&cir, &lw)
         lap(timing, "read_cir (done at)", t0)
@@ -153,6 +181,13 @@ fn main() => int:
         lap(timing, "prune (done at)", t0)
         lw.generate()
         lap(timing, "generate (done at)", t0)
+        if want_lines:
+            /#/ `F name` and `L offset line` (a line of the flattened text, `coffee2 --emit-flat`) beside the .cir
+            let lp = copy_txt(&path)
+            lp.put(".lines")
+            let raw = new_txt()
+            lines_dump(&lw.mc, &raw)
+            write_file(&lp, &raw)
         if lw.ver_err > 0:
             say(f"cfjit: the IR of {lw.ver_err} functions did not pass the check\n")
             return 2
@@ -194,4 +229,6 @@ fn main() => int:
     if base == 0:
         say("cfjit: out of memory\n")
         return 2
+    if flag_arg("--perf-map"):
+        write_perf_map(&im, base)
     return call_addr(base + at)

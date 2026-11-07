@@ -260,6 +260,7 @@ fn inline_call(f: &Fun, lib: &Lib, c: int, n: int) => void:
         f.nx[d] = shift(lib.nx[i0 + k], bi)
         f.pv[d] = shift(lib.pv[i0 + k], bi)
         f.uses[d] = lib.uses[i0 + k]
+        f.ln[d] = f.ln[c]
         f.fwd[d] = shift(lib.fwd[i0 + k], bi)
         f.blk[d] = shift(lib.blk[i0 + k], bblk)
     let b0 = lib.f_b0[n]

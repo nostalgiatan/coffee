@@ -42,6 +42,16 @@ class Txt:
             self.put_int(v // 10)
             self.put_byte('0' + v % 10)
 
+    /#/ `v` (not negative) in lower-case hexadecimal.
+    fn put_hex(self, v: int) => void:
+        if v >= 16:
+            self.put_hex(v >> 4)
+        let d = v & 15
+        if d < 10:
+            self.put_byte('0' + d)
+        else:
+            self.put_byte('a' + d - 10)
+
     /#/ Is the text the same as `o`?
     fn same(self, o: &Txt) => bool:
         if self.n != o.n:

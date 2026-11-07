@@ -219,6 +219,13 @@ fn hex_val(c: int) => int:
 /#/ `--emit-ir`: the optimized IR of every function is printed before it is translated.
 let ir_dump = false
 
+/#/ With `--emit-lines` the line marks of the code made are put in `lines_txt` (see `lines_dump`).
+let lines_on = false
+let lines_txt = new_txt()
+
+fn set_lines() => void:
+    lines_on = true
+
 fn set_ir_dump() => void:
     ir_dump = true
 
@@ -1640,6 +1647,8 @@ class Lower:
         self.sc.truncate(mark)
 
     fn stmt(self, t: &Tys, g: &Syms, ty: &Typer, a: &Ast, n: int) => void:
+        if a.tok[n] >= 0:
+            self.f.line = a.toks.line[a.tok[n]]
         self.stmt_inner(t, g, ty, a, n)
         self.flush_temps(t, g)
 
@@ -3566,6 +3575,8 @@ class Lower:
 
     /#/ The object file.
     fn object(self) => Txt:
+        if lines_on:
+            lines_dump(&self.mc, &lines_txt)
         self.mc.add_rodata(&self.sbytes)
         for k in 0..self.gl_n:
             let w = new_txt()

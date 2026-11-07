@@ -21,3 +21,12 @@ Before the sandbox code runs, `ir/src/sbxcheck.cf` checks its machine code (only
 `cfjit` runs the IR checker on every function and refuses a module that fails it (`--no-verify` skips it); `--no-run` stops after the image is made. `cfjit prog.cir --time` prints the start-up phases (read_cir, prune, generate, image) in milliseconds on stdout. `coffee2 -O0 --emit-cir` makes the unoptimized module.
 
 Limits of this first version: the image is mapped read-write-execute in one piece; a module may only call system calls (the runtime is lowered into it), anything else is refused; no sandbox yet. See `docs/explanation/jit-design.md`.
+
+## Debugging aids
+
+- `cfjit prog.cir --lines` writes `prog.cir.lines` (`F name`, `L offset line`; the line is a line of
+  `coffee2 --emit-flat` output, the offset is from the start of the function).
+- `cfjit prog.cir --perf-map` writes `/tmp/perf-PID.map` once the image is loaded, so `perf` names JIT addresses.
+- `coffee2 prog.cf --lines file -g` does the same for AOT code, with `file:line` instead of flat lines;
+  `coffee/driver/tools/cfline.sh exe file addr` looks an address up.
+- Not yet: DWARF (`gdb` source lines), line marks in incremental builds and in `--sandbox` code maps.

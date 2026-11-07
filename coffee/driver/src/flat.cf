@@ -19,6 +19,10 @@ class Flat:
     nunit: int
     seg_line: buf<int>
     seg_unit: buf<int>
+    /#/ the line of its file (1-based) that each stretch starts at
+    seg_src: buf<int>
+    /#/ the line of the file being read that the next `enter` stands at
+    src_line: int
     nseg: int
     lines: int
     cur_unit: int
@@ -35,14 +39,32 @@ class Flat:
         if self.nseg >= len(self.seg_line):
             self.seg_line = buf_resize(self.seg_line, (self.nseg + 1) * 2)
             self.seg_unit = buf_resize(self.seg_unit, (self.nseg + 1) * 2)
+            self.seg_src = buf_resize(self.seg_src, (self.nseg + 1) * 2)
         self.seg_line[self.nseg] = self.lines
         self.seg_unit[self.nseg] = u
+        self.seg_src[self.nseg] = self.src_line
         self.nseg = self.nseg + 1
         self.cur_unit = u
 
     fn nl(self) => void:
         self.out.put_byte(10)
         self.lines = self.lines + 1
+
+    /#/ The line of its file that the 1-based line `line` of `out` came from (0 when past the text).
+    fn src_of_line(self, line: int) => int:
+        if line < 1 || line > self.lines || self.nseg == 0:
+            return 0
+        let lo = 0
+        let hi = self.nseg
+        while lo < hi:
+            let mid = (lo + hi) // 2
+            if self.seg_line[mid] <= line - 1:
+                lo = mid + 1
+            else:
+                hi = mid
+        if lo == 0:
+            return line
+        return self.seg_src[lo - 1] + (line - 1 - self.seg_line[lo - 1])
 
     /#/ The file the 1-based line `line` of `out` came from.
     fn unit_of_line(self, line: int) => int:
@@ -170,7 +192,9 @@ class Flat:
     /#/ of its `use f as g in m` lines are applied first.
     fn flatten(self, src: &Txt, dir: &Txt, name: &Txt) => void:
         let parent = self.cur_unit
+        let back = self.src_line
         let u = self.begin_unit(name)
+        self.src_line = 1
         self.enter(u)
         let renamed = renamed_aliases(src)
         if renamed.n > 0:
@@ -178,12 +202,16 @@ class Flat:
         else:
             self.flatten_text(src, dir)
         if parent >= 0:
+            self.src_line = back + 1
             self.enter(parent)
 
     fn flatten_text(self, src: &Txt, dir: &Txt) => void:
         let start = 0
+        let ln = 1
         for i in 0..src.n + 1:
             if i == src.n || src.b[i] == 10:
+                self.src_line = ln
+                ln = ln + 1
                 let module = use_module(src, start, i)
                 if module.n == 0:
                     self.note_c_lib(src, start, i, dir)
@@ -209,7 +237,7 @@ class Flat:
                 start = i + 1
 
 fn new_flat() => Flat:
-    return Flat { out: new_txt(), seen: new_txt(), dirs: new_txt(), errs: 0, libs: new_txt(), cfc: new_txt(), lib_dirs: new_txt(), units: new_txt(), nunit: 0, seg_line: new_buf(int, 16), seg_unit: new_buf(int, 16), nseg: 0, lines: 0, cur_unit: -1 }
+    return Flat { out: new_txt(), seen: new_txt(), dirs: new_txt(), errs: 0, libs: new_txt(), cfc: new_txt(), lib_dirs: new_txt(), units: new_txt(), nunit: 0, seg_line: new_buf(int, 16), seg_unit: new_buf(int, 16), seg_src: new_buf(int, 16), src_line: 1, nseg: 0, lines: 0, cur_unit: -1 }
 
 /#/ Is `w` in the lines of `t` (a line equal to it)?
 fn has_line(t: &Txt, w: &Txt) => bool:
@@ -275,3 +303,40 @@ fn use_module(t: &Txt, lo: int, hi: int) => Txt:
         at = at + 1
     return m
 
+
+/#/ The line marks the code generator made (`F name`, `L offset line`, lines of the flattened text) with
+/#/ each line named as file:line of the source it came from.
+fn lines_mapped(raw: &Txt, fl: &Flat) => Txt:
+    let out = new_txt()
+    let start = 0
+    for i in 0..raw.n + 1:
+        if i == raw.n || raw.b[i] == 10:
+            if i > start + 2 && raw.b[start] == int('L'):
+                let q = start + 2
+                let off = 0
+                while q < i && raw.b[q] != 32:
+                    off = off * 10 + raw.b[q] - 48
+                    q = q + 1
+                let ln = 0
+                q = q + 1
+                while q < i:
+                    ln = ln * 10 + raw.b[q] - 48
+                    q = q + 1
+                let sl = fl.src_of_line(ln)
+                out.put("L ")
+                out.put_int(off)
+                out.put_byte(32)
+                if sl > 0:
+                    let nm = fl.unit_name(fl.unit_of_line(ln))
+                    out.put_all(&nm)
+                    out.put_byte(58)
+                    out.put_int(sl)
+                    out.put_byte(10)
+                else:
+                    out.put("(runtime)\n")
+            elif i > start:
+                for k in start..i:
+                    out.put_byte(raw.b[k])
+                out.put_byte(10)
+            start = i + 1
+    return out

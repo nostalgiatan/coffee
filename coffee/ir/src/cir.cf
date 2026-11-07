@@ -103,6 +103,7 @@ fn put_funs(t: &Txt, lw: &Lower) => void:
         put_col(t, &lib.nx, i0, ni, 1)
         put_col(t, &lib.pv, i0, ni, 1)
         put_col(t, &lib.uses, i0, ni, 0)
+        put_col(t, &lib.ln, i0, ni, 2)
         put_col(t, &lib.fwd, i0, ni, 0)
         put_col(t, &lib.blk, i0, ni, 2)
         let b0 = lib.f_b0[n]
@@ -312,6 +313,7 @@ fn get_funs(r: &Rd, t: &Txt, lw: &Lower, nnames: int, nreps: int) => int:
         get_col(r, t, &lib.nx, i0, ni, 1)
         get_col(r, t, &lib.pv, i0, ni, 1)
         get_col(r, t, &lib.uses, i0, ni, 0)
+        get_col(r, t, &lib.ln, i0, ni, 2)
         get_col(r, t, &lib.fwd, i0, ni, 0)
         get_col(r, t, &lib.blk, i0, ni, 2)
         let b0 = lib.nb

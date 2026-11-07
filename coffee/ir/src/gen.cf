@@ -94,6 +94,19 @@ class Gen:
     /#/ float constants kept in an xmm register from the entry on (they are used in loops)
     hc: buf<int>
     nhc: int
+    /#/ the source lines of the code: the offset in the text of the object where the code of a line
+    /#/ starts, and the line (of the flattened text); `mk_*` are those of the function being made
+    lm_at: buf<int>
+    lm_ln: buf<int>
+    lm_n: int
+    mk_l: buf<int>
+    mk_ln: buf<int>
+    mk_n: int
+    /#/ the functions with line marks: symbol, start in the text, first mark
+    lf_sym: buf<int>
+    lf_start: buf<int>
+    lf_m0: buf<int>
+    lf_n: int
 
     fn add_str(self, off: int) => void:
         if self.nstr >= len(self.soff):
@@ -2043,11 +2056,22 @@ class Gen:
             if self.xhome[c] >= 0:
                 self.ld(0, f, c)
                 self.a.movq_x(self.xhome[c], 0, f.rep[c] == int(Rp.F32))
+        self.mk_n = 0
+        let last_ln = 0
         for oi in 0..f.nb:
             let b = self.emit[oi]
             self.a.bind(b)
             let i = f.bfirst[b]
             while i >= 0:
+                if f.ln[i] > 0 && f.ln[i] != last_ln:
+                    last_ln = f.ln[i]
+                    if self.mk_n >= len(self.mk_l):
+                        self.mk_l = buf_resize(self.mk_l, (self.mk_n + 1) * 2)
+                        self.mk_ln = buf_resize(self.mk_ln, (self.mk_n + 1) * 2)
+                    let ml = self.a.mark()
+                    self.mk_l[self.mk_n] = ml
+                    self.mk_ln[self.mk_n] = last_ln
+                    self.mk_n = self.mk_n + 1
                 let nxt = -1
                 if f.nx[i] < 0 && oi + 1 < f.nb:
                     nxt = self.emit[oi + 1]
@@ -2062,6 +2086,22 @@ class Gen:
             w.put_byte(f.nm[k])
         let sym = self.o.sym(&w)
         self.o.define(sym, start, self.a.pos() - start)
+        if ok && self.err == 0 && self.mk_n > 0:
+            if self.lf_n >= len(self.lf_sym):
+                self.lf_sym = buf_resize(self.lf_sym, (self.lf_n + 1) * 2)
+                self.lf_start = buf_resize(self.lf_start, (self.lf_n + 1) * 2)
+                self.lf_m0 = buf_resize(self.lf_m0, (self.lf_n + 1) * 2)
+            self.lf_sym[self.lf_n] = sym
+            self.lf_start[self.lf_n] = start
+            self.lf_m0[self.lf_n] = self.lm_n
+            self.lf_n = self.lf_n + 1
+            for k in 0..self.mk_n:
+                if self.lm_n >= len(self.lm_at):
+                    self.lm_at = buf_resize(self.lm_at, (self.lm_n + 1) * 2)
+                    self.lm_ln = buf_resize(self.lm_ln, (self.lm_n + 1) * 2)
+                self.lm_at[self.lm_n] = self.a.lab[self.mk_l[k]]
+                self.lm_ln[self.lm_n] = self.mk_ln[k]
+                self.lm_n = self.lm_n + 1
         if self.cur >= 0 && ok && self.err == 0:
             if self.cur >= len(self.msk):
                 let old = len(self.msk)
@@ -2071,8 +2111,33 @@ class Gen:
             self.msk[self.cur] = 8 + self.fmask
         return ok && self.err == 0
 
+/#/ The line marks as text: `F name` for each function, then `L offset line` for each place where
+/#/ the code of another line starts (the offset from the start of the function, the line of the
+/#/ flattened text).
+fn lines_dump(g: &Gen, out: &Txt) => void:
+    for k in 0..g.lf_n:
+        out.put("F ")
+        let s = g.lf_sym[k] - 2
+        for q in g.o.s_name[s]..g.o.s_name[s] + 4096:
+            if g.o.names.b[q] == 0:
+                break
+            out.put_byte(g.o.names.b[q])
+        out.put_byte(10)
+        let hi = g.lm_n
+        if k + 1 < g.lf_n:
+            hi = g.lf_m0[k + 1]
+        for m in g.lf_m0[k]..hi:
+            /#/ a later mark at the same offset replaces an earlier one
+            if m + 1 < hi && g.lm_at[m + 1] == g.lm_at[m]:
+                continue
+            out.put("L ")
+            out.put_int(g.lm_at[m] - g.lf_start[k])
+            out.put_byte(32)
+            out.put_int(g.lm_ln[m])
+            out.put_byte(10)
+
 fn new_gen() => Gen:
-    return Gen { a: new_asm(), o: new_obj(), voff: new_buf(int, 64), sh: new_buf(int, 64), sframe: 0, tmp: 0, frame: 0, err: 0, av: new_buf(int, 16), nav: 0, sbase: 256, soff: new_buf(int, 16), nstr: 0, home: new_buf(int, 64), xhome: new_buf(int, 64), ord: new_buf(int, 16), emit: new_buf(int, 16), xsg: new_buf(int, 64), did: new_buf(int, 64), nsaved: 0, saved: new_buf(int, 8), ed: new_buf(int, 16), ned: 0, ra_lo: new_buf(int, 1), ra_hi: new_buf(int, 1), ra_wt: new_buf(int, 1), uq_d: new_buf(int, 16), uq_b: new_buf(int, 16), nuq: 0, ra_dblk: new_buf(int, 1), ra_dset: new_buf(int, 1), ra_cp: new_buf(int, 16), ra_ncp: 0, ra_cm: new_buf(int, 16), cur: -1, msk: new_buf(int, 16), fmask: 0, nuse: new_buf(int, 64), am_base: 0, am_idx: -1, am_scale: 1, am_disp: 0, epi: 0, epi_jump: false, hc: new_buf(int, 16), nhc: 0 }
+    return Gen { a: new_asm(), o: new_obj(), voff: new_buf(int, 64), sh: new_buf(int, 64), sframe: 0, tmp: 0, frame: 0, err: 0, av: new_buf(int, 16), nav: 0, sbase: 256, soff: new_buf(int, 16), nstr: 0, home: new_buf(int, 64), xhome: new_buf(int, 64), ord: new_buf(int, 16), emit: new_buf(int, 16), xsg: new_buf(int, 64), did: new_buf(int, 64), nsaved: 0, saved: new_buf(int, 8), ed: new_buf(int, 16), ned: 0, ra_lo: new_buf(int, 1), ra_hi: new_buf(int, 1), ra_wt: new_buf(int, 1), uq_d: new_buf(int, 16), uq_b: new_buf(int, 16), nuq: 0, ra_dblk: new_buf(int, 1), ra_dset: new_buf(int, 1), ra_cp: new_buf(int, 16), ra_ncp: 0, ra_cm: new_buf(int, 16), cur: -1, msk: new_buf(int, 16), fmask: 0, nuse: new_buf(int, 64), am_base: 0, am_idx: -1, am_scale: 1, am_disp: 0, epi: 0, epi_jump: false, hc: new_buf(int, 16), nhc: 0, lm_at: new_buf(int, 64), lm_ln: new_buf(int, 64), lm_n: 0, mk_l: new_buf(int, 64), mk_ln: new_buf(int, 64), mk_n: 0, lf_sym: new_buf(int, 64), lf_start: new_buf(int, 64), lf_m0: new_buf(int, 64), lf_n: 0 }
 
 /#/ The multiplier that divides by `d` (not a power of two; `l` is the log2 of `d` rounded up):
 /#/ 1 + floor(2^(63 + l) / d), taken as a 64-bit pattern, by long division one bit at a time.
