@@ -1,5 +1,8 @@
 /#/ Floats of both widths: arithmetic, conversions, comparisons (with NaN), arguments past the register count.
-use printf in libc of c
+use write in libc of c
+
+fn out(s: str) => void:
+    write(1, s, len(s))
 
 fn many(a: float, b: float, c: float, d: float, e: float, f: float, g: float, h: float, i: float, j: float, k: int, l: float(4)) => float:
     return a + b * 2.0 + c * 3.0 + d * 4.0 + e * 5.0 + f * 6.0 + g * 7.0 + h * 8.0 + i * 9.0 + j * 10.0 + float(k) + float(l)
@@ -40,9 +43,9 @@ fn conv(x: float) => int:
 
 fn main() => int:
     let r = many(1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5, 10.5, 11, 0.25)
-    printf("%f\n", r)
+    out(f"{r}\n")
     let m = mixed(1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5, 6, 6.5, 7, 7.5, 8, 8.5, 9, 9.5, 10)
-    printf("%f\n", m)
+    out(f"{m}\n")
     let nan = 0.0 / 0.0
     let inf = 1.0 / 0.0
     let h = 0
@@ -62,9 +65,9 @@ fn main() => int:
     for i in 0..100:
         s = s + float(i) * 0.5 - s / 3.0
         t = t + f32(i) * f32(0.25)
-    printf("%f %f\n", s, float(t))
+    out(f"{s} {float(t)}\n")
     h = h * 31 + int(s * 1000.0) + int(t)
     let neg: float = -s
-    printf("%f\n", neg)
-    printf("%ld\n", h)
+    out(f"{neg}\n")
+    out(f"{h}\n")
     return h % 251

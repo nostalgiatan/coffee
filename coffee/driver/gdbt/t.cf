@@ -1,0 +1,17 @@
+class P:
+    x: int
+    name: str
+
+fn sum(n: int, p: &P) => int:
+    let acc = 0
+    let f = 1.5
+    let ok = true
+    let s = "hi"
+    for i in 0..n:
+        acc = acc + i + p.x
+    return acc
+
+fn main() => int:
+    let p = P { x: 2, name: "bob" }
+    let r = sum(4, &p)
+    return r - 14

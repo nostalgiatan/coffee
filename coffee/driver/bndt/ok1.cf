@@ -1,0 +1,11 @@
+fn main() => int:
+    let n = 20
+    let a = new_buf(int, n * n)
+    let t = 0
+    for i in 0..n:
+        for j in 0..n:
+            a[i * n + j] = i + j
+    for i in 0..n:
+        for j in 0..n:
+            t = t + a[j * n + i]
+    return t % 200

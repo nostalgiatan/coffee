@@ -1,0 +1,2 @@
+fn standalone() => int:
+    return 2

@@ -1,0 +1,14 @@
+fn scale(a: &buf<float>, n: int) => void:
+    for r in 0..3:
+        for i in 0..n:
+            a[i] = a[i] * 0.5 + a[i + n] + 1.0
+
+fn main() => int:
+    let a = new_buf(float, 8)
+    for i in 0..8:
+        a[i] = float(i)
+    scale(&a, 4)
+    let k = 0
+    if a[0] > 8.7 && a[0] < 8.8:
+        k = 1
+    return k

@@ -1,0 +1,6 @@
+[package]
+name = "hello"
+
+[build]
+main = "src/main.cf"
+include = ["lib"]

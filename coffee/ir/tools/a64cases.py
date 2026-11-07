@@ -3,12 +3,16 @@
 the interpreter in a64sim.py: each program is compiled with --target=aarch64-linux --emit-obj and its
 `main` must return n.
 
-Usage: a64cases.py <coffee2> [name-filter] [-j N]
+With qemu-aarch64 each program is linked with --static and run under qemu; otherwise (or with --sim)
+the object is run in the interpreter.
+
+Usage: a64cases.py <coffee2> [name-filter] [-j N] [--sim]
 """
 import concurrent.futures
 import glob
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -42,15 +46,20 @@ def run(args):
     with tempfile.TemporaryDirectory() as d:
         p = os.path.join(d, 'c.cf')
         open(p, 'w').write(src)
-        r = subprocess.run([coffee2, p, '--target=aarch64-linux', '--emit-obj', '-o', os.path.join(d, 'c.o')],
-                           capture_output=True, text=True)
-        if r.returncode != 0 or not os.path.exists(os.path.join(d, 'c.o')):
+        use_qemu = shutil.which('qemu-aarch64') and '--sim' not in sys.argv
+        out = os.path.join(d, 'c' if use_qemu else 'c.o')
+        flag = '--static' if use_qemu else '--emit-obj'
+        r = subprocess.run([coffee2, p, '--target=aarch64-linux', flag, '-o', out], capture_output=True, text=True)
+        if r.returncode != 0 or not os.path.exists(out):
             return name, 'compile', (r.stdout + r.stderr)[:200]
-        r = subprocess.run([sys.executable, os.path.join(HERE, 'a64sim.py'), os.path.join(d, 'c.o'), '--max-steps', '5000000'],
-                           capture_output=True, text=True, timeout=120)
+        if use_qemu:
+            r = subprocess.run(['qemu-aarch64', out], capture_output=True, text=True, timeout=120)
+        else:
+            r = subprocess.run([sys.executable, os.path.join(HERE, 'a64sim.py'), out, '--max-steps', '5000000'],
+                               capture_output=True, text=True, timeout=120)
         if r.returncode == want:
             return name, 'ok', ''
-        return name, 'wrong', 'got %d want %d %s' % (r.returncode, want, r.stderr.strip().splitlines()[-1:] )
+        return name, 'wrong', 'got %d want %d %s' % (r.returncode, want, r.stderr.strip().splitlines()[-1:])
 
 
 def main():

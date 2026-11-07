@@ -1,0 +1,46 @@
+class P:
+    x: int
+    y: int
+
+class Q:
+    s: str
+    n: int
+
+fn mk(a: int) => P:
+    return P { x: a, y: a + 1 }
+
+fn sum(p: &P) => int:
+    let t = 0
+    for i in 0..p.x:
+        t = t + i * p.y + (t // 3) + p.x * i - p.y
+    if t > 1000:
+        t = t - 7 * p.x
+    return t + p.y * 2 + p.x * 3 + 5
+
+fn across(n: int) => int:
+    let t = 0
+    for i in 0..n:
+        let p = mk(i)
+        if i > 3:
+            t = t + sum(&p)
+        else:
+            t = t - sum(&p)
+    return t
+
+fn lenq(q: &Q) => int:
+    return len(q.s) + q.n
+
+fn dropped(n: int) => int:
+    let t = 0
+    for i in 0..n:
+        let q = Q { s: "ab" + "cd", n: i }
+        t = t + lenq(&q)
+    return t
+
+fn kept(n: int) => P:
+    let p = mk(n)
+    return p
+
+fn main() => int:
+    let k = kept(2)
+    return across(10) + dropped(3) - 238 + sum(&k) - 35

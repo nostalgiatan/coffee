@@ -1,6 +1,6 @@
 # aarch64 后端参考
 
-`--target=aarch64-linux`(可写成 `aarch64`)为 aarch64 生成代码。现在能做的是**整数子集加浮点**:函数、调用、循环、算术、内存、聚合、字符串、类、`buf`;还没有的见末尾。输出是 `--emit-obj` 的可重定位 ELF64(机器号 183);链接和运行时(`rt/src/min.cf` 的系统调用)按目标另做,不在这里。
+`--target=aarch64-linux`(可写成 `aarch64`)为 aarch64 生成代码。现在能做的是**整数子集加浮点**:函数、调用、循环、算术、内存、聚合、字符串、类、`buf`;还没有的见末尾。输出是 `--emit-obj` 的可重定位 ELF64(机器号 183);加 `--static` 由 `cfld` 的链接器链进 `rt/src/os_linux_aarch64.cf` 的运行时,得到可以直接运行的 aarch64 Linux 可执行文件(见 [运行时按目标分开](../explanation/target-runtime.md))。
 
 文件:`ir/src/asm_a64.cf`(指令编码,自由函数 `a64_*(a: &Asm, ...)`,写进 x86 汇编器用的同一个 `Asm` 缓冲区,标号、跳转修补表和重定位表共用)、`target_a64.cf`(目标描述,函数名以 `ta_` 开头:参数寄存器、暂存寄存器、条件码对应)、`gen_a64_regs.cf`(帧、操作数的装载、边上的复制)、`gen_a64_call.cf`(调用约定)、`gen_a64_isel.cf`(每个操作的指令)、`gen_a64_fun.cf`(一个函数和目标文件)。`target.cf` 的 `gen_function` 按 `target_arch` 选 `g_gen_fun` 或 `ga_gen_fun`,`target_object` 选目标文件的写法。
 
@@ -58,15 +58,20 @@ AAPCS64:整数和指针放 x0 到 x7,浮点放 v0 到 v7,其余按 8 字节一�
 - 浮点到整数是 `fcvtzs`/`fcvtzu`(饱和,与 x86 的越界结果不同),整数到浮点是 `scvtf`/`ucvtf`(一条指令,无符号 64 位不用 x86 那段序列)。
 - 向量循环(`VLoop`)还没有代码:`set_target` 关掉 `vectorize`,所以不会出现。
 
+## 链接
+
+`ld/src/link.cf` 在 `set_ld_arch(1)`(驱动在 `--target=aarch64-linux` 时设)下:只收机器号 183 的目标文件;没有 `_start` 时补一个(`mov x29,#0; ldr x0,[sp]; add x1,sp,#8; bl main; mov x8,#94; svc #0`);重定位支持 `ABS64`(257)、`ABS32`(258)、`PREL32`(261)、`CALL26`(283)、`JUMP26`(282)、`ADR_PREL_PG_HI21`(275)、`ADD_ABS_LO12_NC`(277)、`LDST8/16/32/64/128_ABS_LO12_NC`(278、284、285、286、299)、`ADR_GOT_PAGE`(311)、`LD64_GOT_LO12_NC`(312)。`exe.cf` 的可执行文件头写 `machine_of(ld_arch)`。
+
 ## 怎样验证
 
-没有 aarch64 机器或 qemu 时:
+装了 `qemu-aarch64` 时,下面的脚本把程序用 `--static` 链接后在 qemu 下运行;没有时 `a64diff.py`、`a64cases.py` 加 `--sim` 用解释器。
 
-- `ir/tests/test_a64.cf`:每个编码函数写出的字,和 LLVM 汇编器(`llvm-mc -triple=aarch64`)对同一条指令的结果比较;分支修补;`--target=aarch64-linux` 编出的目标文件是机器号 183 且有序言、`bl`、`ret`。
-- `ir/tools/a64sim.py`:用 `llvm-objdump` 反汇编目标文件,在 Python 里执行代码生成器会产生的那部分指令,C 库函数(`malloc`、`printf` 等)用 Python 实现。
-- `ir/tools/a64diff.py <coffee2>`:`ir/tools/a64progs/*.cf` 和一个生成的 6000 个值同时活着的大帧程序,各自原生(x86-64)运行一次、再编成 aarch64 在模拟器里运行,退出码和标准输出必须相同。
-- `ir/tools/a64cases.py <coffee2>`:`compat/tests` 里 191 个 `exits(...)` 用例在模拟器里运行;其中 2 个因模拟器没实现 `getenv` 和步数上限而不算(189 个通过)。
-- 整个编译器(`driver/src/main.cf`)编成 aarch64 目标文件,约 2.6 MB,`llvm-objdump` 全部能解码。
+- `ir/tests/test_a64.cf`(`tea test`):每个编码函数写出的字,和 LLVM 汇编器(`llvm-mc -triple=aarch64`)对同一条指令的结果比较;分支修补;`--target=aarch64-linux` 编出的目标文件是机器号 183 且有序言、`bl`、`ret`。
+- `ir/tools/a64diff.py <coffee2>`:`ir/tools/a64progs/*.cf` 和一个生成的 6000 个值同时活着的大帧程序,各自原生(x86-64)运行一次、再编成 aarch64 运行,退出码和标准输出必须相同。
+- `ir/tools/a64cases.py <coffee2>`:`compat/tests` 里 191 个 `exits(...)` 用例。qemu 下 188 个通过,3 个链接失败,因为静态运行时没有 `getenv`、`printf`、`memset`(x86 上这些程序由 `cc` 链接)。
+- `ir/tools/a64suites.py <coffee2> <阶段目录>...`:每个阶段的 `tests/test*.cf` 编成 aarch64 在 qemu 下运行,退出 0 为通过。`lexer parser sema types own` 共 32 个全过,`ld` 9 个里 7 个过(其余 2 个要运行链接出的 x86 程序),`rt/test_fmt` 缺 `atof`。会调用 `cc`、运行 x86 程序或用 `system` 的测试(`ir` 的 `expect_mc` 系列、`compat` 的 harness、`driver`、`tea`)在 qemu 下本来就不能跑,不算失败。
+- 整个编译器(`driver/src/main.cf`)用 `--target=aarch64-linux --static` 编成 aarch64 程序(1.6 MB),在 qemu 下运行它编译同一个程序,x86 目标文件与原生编译器逐字节相同;它用 `--target=aarch64-linux --static` 编译自己得到的文件与第一次逐字节相同(6 秒)。
+- `ir/tools/a64sim.py`:不用 qemu 的解释器,用 `llvm-objdump` 反汇编目标文件执行。
 
 ## 还没有的
 
@@ -74,5 +79,6 @@ AAPCS64:整数和指针放 x0 到 x7,浮点放 v0 到 v7,其余按 8 字节一�
 - **向量循环**(`VLoop`):需要 NEON 的 `gen_a64_vec.cf`。
 - **沙箱**:基址寄存器形式(`cfjit --sandbox=base`)在 aarch64 上是 `[x28, w偏移, uxtw]`,不多花指令;还没做,`Asm.sbx` 在这个目标上不起作用。
 - 按常数的无符号除法(`legalize` 也没有)、跳转表、`CallI` 以外的尾调用;条件分支只能跳 ±1 MB,更大的函数 `a64_end_fun` 返回 false(报告为生成失败)。
-- 链接与运行:`ld/` 和 `elf.cf` 的 aarch64 目标(机器号、重定位、入口桩),`rt/src/min.cf` 的 aarch64 系统调用,`--static`。
+- 静态运行时缺 `getenv`、`printf`、`memset`、`atof` 等(与 x86 一样,用到它们的程序要 `cc`,而 `cc` 不是交叉编译器)。
+- 动态链接(`cc`)和 TLS、IFUNC 等 glibc 的东西。
 - `cfjit`、`tea` 的 `--target` 透传。

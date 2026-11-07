@@ -12,6 +12,7 @@ use * in gen_x86_fun
 use * in gen_a64_fun
 use * in opt
 use * in asm
+use * in minrt
 
 /#/ The architectures and systems a target name may use.
 fn arch_x86_64() => int:
@@ -70,3 +71,10 @@ fn target_object(g: &Gen) => Txt:
     if target_arch == arch_aarch64():
         return ga_elf(g)
     return g_elf(g)
+
+/#/ The C library a `--static` program gets for the target: `rt/src/min.cf`, which every system shares,
+/#/ with the system's part (`rt/src/os_*.cf`) in two places: after min.cf's state variables and at the end.
+fn min_rt_text() => str:
+    if target_arch == arch_x86_64() && target_os == os_linux():
+        return min_rt_common_a() + min_rt_os_linux_x86_64_a() + min_rt_common_b() + min_rt_os_linux_x86_64_b()
+    return min_rt_common_a() + min_rt_os_linux_aarch64_a() + min_rt_common_b() + min_rt_os_linux_aarch64_b()

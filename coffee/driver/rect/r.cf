@@ -1,0 +1,30 @@
+fn fib(n: int) => int:
+    if n < 2:
+        return n
+    return fib(n - 1) + fib(n - 2)
+
+fn sumto(n: int) => int:
+    if n == 0:
+        return 0
+    return n + sumto(n - 1)
+
+fn cnt(n: int, k: int) => int:
+    if n <= 0:
+        return k
+    return cnt(n - 1, k + n % 3)
+
+fn tri(n: int) => int:
+    if n < 3:
+        return 1
+    return tri(n - 1) + 2 + tri(n - 3) - tri(n - 2)
+
+fn ack(m: int, n: int) => int:
+    if m == 0:
+        return n + 1
+    if n == 0:
+        return ack(m - 1, 1)
+    return ack(m - 1, ack(m, n - 1))
+
+fn main() => int:
+    let r = (fib(20) + sumto(1000) + cnt(100000, 0) + tri(15) + ack(2, 3)) % 256
+    return r - 57

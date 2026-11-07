@@ -1,0 +1,31 @@
+class Acc:
+    data: buf<int>
+    n: int
+
+fn total(a: &Acc) => int:
+    let s = 0
+    for r in 0..3:
+        for i in 0..a.n:
+            s = s + a.data[i]
+    return s
+
+fn after(a: &Acc) => int:
+    let i = 0
+    let s = 0
+    while i < a.n && a.data[i] != 7:
+        s = s + a.data[i] * 2
+        i = i + 1
+    return i * 1000 + s
+
+fn none(a: &Acc, m: int) => int:
+    let s = 5
+    for i in 0..m:
+        s = s + a.data[i % a.n]
+    return s
+
+fn main() => int:
+    let a = Acc { data: new_buf(int, 20), n: 20 }
+    for i in 0..20:
+        a.data[i] = (i * 3) % 11
+    let r = total(&a) + after(&a) + none(&a, 0) + none(&a, 45)
+    return r % 251

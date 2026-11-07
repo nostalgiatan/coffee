@@ -1,0 +1,11 @@
+fn main() => int:
+    let s = ""
+    for n in 0..70:
+        if len(s) != n:
+            return 1
+        let t = s + "x"
+        let u = s + "x"
+        if t != u:
+            return 2
+        s = t
+    return 0

@@ -40,6 +40,35 @@ fn abs_sec() => int:
 fn common_sec() => int:
     return 0 - 3
 
+/#/ The architecture of the objects to link (0 x86-64, 1 aarch64); the driver sets it from `--target=`.
+let ld_arch: int = 0
+
+fn set_ld_arch(a: int) => void:
+    ld_arch = a
+
+/#/ The ELF machine number of the architecture (x86-64 62, aarch64 183).
+fn machine_of(arch: int) => int:
+    if arch == 1:
+        return 183
+    return 62
+
+/#/ The machine code of `cf_syscall(n, a, b, c, d, e, f)`: the C calling convention moved into the
+/#/ registers of the system call instruction, then a return.
+fn syscall_stub() => buf<int>:
+    if ld_arch == 1:
+        /#/ mov x8,x0; mov x0,x1; mov x1,x2; mov x2,x3; mov x3,x4; mov x4,x5; mov x5,x6; svc #0; ret
+        let a64 = [232, 3, 0, 170, 224, 3, 1, 170, 225, 3, 2, 170, 226, 3, 3, 170, 227, 3, 4, 170, 228, 3, 5, 170, 229, 3, 6, 170, 1, 0, 0, 212, 192, 3, 95, 214]
+        let out: buf<int> = new_buf(int, 36)
+        for k in 0..36:
+            out[k] = a64[k]
+        return out
+    /#/ mov rax,rdi; mov rdi,rsi; mov rsi,rdx; mov rdx,rcx; mov r10,r8; mov r8,r9; mov r9,[rsp+8]; syscall; ret
+    let x86 = [72, 137, 248, 72, 137, 247, 72, 137, 214, 72, 137, 202, 77, 137, 194, 77, 137, 200, 76, 139, 76, 36, 8, 15, 5, 195]
+    let out: buf<int> = new_buf(int, 26)
+    for k in 0..26:
+        out[k] = x86[k]
+    return out
+
 class Linker:
     /#/ all input files, one after the other
     blob: Txt
@@ -221,8 +250,8 @@ class Linker:
         if b.n < off + 64 || b.b[off] != 127 || b.b[off + 1] != 69 || b.b[off + 2] != 76 || b.b[off + 3] != 70:
             self.err("not an ELF file:", who)
             return
-        if b.b[off + 4] != 2 || b.b[off + 5] != 1 || rd16(b, off + 16) != 1 || rd16(b, off + 18) != 62:
-            self.err("not an x86-64 relocatable object:", who)
+        if b.b[off + 4] != 2 || b.b[off + 5] != 1 || rd16(b, off + 16) != 1 || rd16(b, off + 18) != machine_of(ld_arch):
+            self.err("not a relocatable object of the target machine:", who)
             return
         let shoff = off + rd64(b, off + 40)
         let shnum = rd16(b, off + 60)
@@ -373,9 +402,24 @@ class Linker:
         if self.find_def("main") < 0:
             return
         /#/ xor ebp,ebp; mov rdi,[rsp]; lea rsi,[rsp+8]; call main; mov edi,eax; mov eax,60; syscall
-        let code = [49, 237, 72, 139, 60, 36, 72, 141, 116, 36, 8, 232, 0, 0, 0, 0, 137, 199, 184, 60, 0, 0, 0, 15, 5]
-        let off = self.blob.n
+        let x86 = [49, 237, 72, 139, 60, 36, 72, 141, 116, 36, 8, 232, 0, 0, 0, 0, 137, 199, 184, 60, 0, 0, 0, 15, 5]
+        let code: buf<int> = new_buf(int, 25)
         for k in 0..25:
+            code[k] = x86[k]
+        let call_at = 12
+        let call_ty = 4
+        let call_add = 0 - 4
+        if ld_arch == 1:
+            /#/ mov x29,#0; ldr x0,[sp]; add x1,sp,#8; bl main; mov x8,#94 (exit_group); svc #0
+            let a64 = [29, 0, 128, 210, 224, 3, 64, 249, 225, 35, 0, 145, 0, 0, 0, 148, 200, 11, 128, 210, 1, 0, 0, 212]
+            for k in 0..24:
+                code[k] = a64[k]
+            code = buf_resize(code, 24)
+            call_ty = 283
+            call_add = 0
+        let nstart = len(code)
+        let off = self.blob.n
+        for k in 0..nstart:
             self.blob.put_byte(code[k])
         let sec0 = self.sc_type.n
         let sym0 = self.y_sec.n
@@ -385,7 +429,7 @@ class Linker:
         self.sc_type.push(1)
         self.sc_flags.push(6)
         self.sc_off.push(off)
-        self.sc_size.push(25)
+        self.sc_size.push(nstart)
         self.sc_align.push(16)
         self.sc_grp.push(0 - 1)
         self.sc_goff.push(0)
@@ -406,10 +450,10 @@ class Linker:
         self.declare(sym0)
         self.declare(sym0 + 1)
         self.r_sec.push(sec0)
-        self.r_off.push(12)
-        self.r_type.push(4)
+        self.r_off.push(call_at)
+        self.r_type.push(call_ty)
         self.r_sym.push(sym0 + 1)
-        self.r_add.push(0 - 4)
+        self.r_add.push(call_add)
 
     /#/ When some input needs `cf_syscall(n, a, b, c, d, e, f)` and none defines it, adds the
     /#/ function: the C calling convention moved into the registers of the `syscall` instruction.
@@ -418,10 +462,10 @@ class Linker:
         let id = self.find(&w)
         if id < 0 || self.g_need.b[id] != 1 || self.g_def.b[id] >= 0:
             return
-        /#/ mov rax,rdi; mov rdi,rsi; mov rsi,rdx; mov rdx,rcx; mov r10,r8; mov r8,r9; mov r9,[rsp+8]; syscall; ret
-        let code = [72, 137, 248, 72, 137, 247, 72, 137, 214, 72, 137, 202, 77, 137, 194, 77, 137, 200, 76, 139, 76, 36, 8, 15, 5, 195]
+        let code = syscall_stub()
+        let nstub = len(code)
         let off = self.blob.n
-        for k in 0..26:
+        for k in 0..nstub:
             self.blob.put_byte(code[k])
         let sec0 = self.sc_type.n
         let sym0 = self.y_sec.n
@@ -431,7 +475,7 @@ class Linker:
         self.sc_type.push(1)
         self.sc_flags.push(6)
         self.sc_off.push(off)
-        self.sc_size.push(26)
+        self.sc_size.push(nstub)
         self.sc_align.push(16)
         self.sc_grp.push(0 - 1)
         self.sc_goff.push(0)
@@ -681,6 +725,9 @@ class Linker:
                 let sym = self.r_sym.b[r]
                 if ty == 0:
                     continue
+                if ld_arch == 1:
+                    bad = bad + self.apply_a64(mem, at, p, ty, sym, a, base, r)
+                    continue
                 if ty == 1:
                     wr64(mem, at, self.sym_addr(sym, base) + a)
                 elif ty == 24:
@@ -700,6 +747,52 @@ class Linker:
                 else:
                     bad = bad + self.reloc_err("unsupported relocation type", r)
         return bad
+
+    /#/ One relocation of an aarch64 object: `at` is the place in the image, `p` its address.
+    fn apply_a64(self, mem: &Txt, at: int, p: int, ty: int, sym: int, a: int, base: int, r: int) => int:
+        let s = self.sym_addr(sym, base) + a
+        if ty == 257:
+            wr64(mem, at, s)
+            return 0
+        if ty == 261:
+            return self.put_signed(mem, at, s - p, r)
+        if ty == 258:
+            if s < 0 || s > 4294967295:
+                return self.reloc_err("relocation out of range", r)
+            wr32(mem, at, s)
+            return 0
+        let w = rd32(mem, at)
+        if ty == 283 || ty == 282:
+            let d = s - p
+            if d % 4 != 0 || d < 0 - 134217728 || d >= 134217728:
+                return self.reloc_err("branch out of range", r)
+            wr32(mem, at, w | ((d >> 2) & 67108863))
+            return 0
+        if ty == 275 || ty == 311:
+            let t = s
+            if ty == 311:
+                t = self.got_addr(sym, base)
+            let d = (t >> 12) - (p >> 12)
+            if d < 0 - 1048576 || d >= 1048576:
+                return self.reloc_err("page offset out of range", r)
+            wr32(mem, at, w | ((d & 3) << 29) | (((d >> 2) & 524287) << 5))
+            return 0
+        let lo = s & 4095
+        if ty == 277 || ty == 278:
+            wr32(mem, at, w | (lo << 10))
+        elif ty == 284:
+            wr32(mem, at, w | ((lo >> 1) << 10))
+        elif ty == 285:
+            wr32(mem, at, w | ((lo >> 2) << 10))
+        elif ty == 286:
+            wr32(mem, at, w | ((lo >> 3) << 10))
+        elif ty == 299:
+            wr32(mem, at, w | ((lo >> 4) << 10))
+        elif ty == 312:
+            wr32(mem, at, w | (((self.got_addr(sym, base) & 4095) >> 3) << 10))
+        else:
+            return self.reloc_err("unsupported relocation type", r)
+        return 0
 
     fn put_signed(self, mem: &Txt, at: int, v: int, r: int) => int:
         if v < 0 - 2147483648 || v > 2147483647:

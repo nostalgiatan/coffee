@@ -1,5 +1,8 @@
 /#/ Integer arithmetic of every width and signedness, division by constants, shifts.
-use printf in libc of c
+use write in libc of c
+
+fn out(s: str) => void:
+    write(1, s, len(s))
 
 fn mix(h: int, v: int) => int:
     return h * 31 + v
@@ -90,5 +93,5 @@ fn main() => int:
     h = mix(h, vars(1000, -7))
     h = mix(h, vars(5, 5))
     h = mix(h, loop(1000))
-    printf("%ld\n", h)
+    out(f"{h}\n")
     return h % 251

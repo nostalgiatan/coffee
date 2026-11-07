@@ -253,7 +253,7 @@ fn link_exe(l: &Linker) => Txt:
     h.put_byte(1)
     put_zeros(&h, 9)
     put16(&h, 2)
-    put16(&h, 62)
+    put16(&h, machine_of(ld_arch))
     put32(&h, 1)
     put64(&h, l.sym_addr(entry, base))
     put64(&h, 64)

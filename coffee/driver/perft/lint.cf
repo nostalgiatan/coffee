@@ -1,0 +1,25 @@
+fn work(a: int, d: int) => int:
+    let t = 0
+    let unused = 5
+    for i in 0..a:
+        t = t + i // d
+        let z = i + 0
+        t = t + z * 1
+    return t
+
+fn alloc_loop(n: int) => int:
+    let t = 0
+    for i in 0..n:
+        let s = "ab" + "cd"
+        t = t + len(s)
+    return t
+
+fn after_loop(n: int) => int:
+    let t = 0
+    for i in 0..n:
+        t = t + i
+    let s = "ab" + "cd"
+    return t + len(s)
+
+fn main() => int:
+    return work(10, 3) + alloc_loop(3) - 18

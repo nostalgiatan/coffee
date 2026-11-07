@@ -1,0 +1,26 @@
+/#/ The machine code of `cf_syscall` per architecture: x86-64 ends in `syscall; ret`, aarch64 in
+/#/ `svc #0; ret`, in whole instructions.
+use * in kit
+use * in say
+use fflush in libc of c
+
+fn expect(what: int, got: int, want: int) => int:
+    if got != want:
+        say(f"MISS #{what}: got {got}, want {want}\n")
+        fflush(0)
+        return 1
+    return 0
+
+fn main() => int:
+    let m = 0
+    set_ld_arch(0)
+    let x = syscall_stub()
+    m = m + expect(1, len(x), 26)
+    m = m + expect(2, x[23] * 65536 + x[24] * 256 + x[25], 15 * 65536 + 5 * 256 + 195)
+    set_ld_arch(1)
+    let a = syscall_stub()
+    m = m + expect(3, len(a) % 4, 0)
+    m = m + expect(4, a[len(a) - 1], 214)
+    m = m + expect(5, a[len(a) - 5] * 256 + a[len(a) - 8], 212 * 256 + 1)
+    set_ld_arch(0)
+    return m

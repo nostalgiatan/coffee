@@ -3,10 +3,14 @@
 and, compiled with --target=aarch64-linux, in the interpreter of a64sim.py; the exit status and the
 standard output must be equal.
 
-Usage: a64diff.py <coffee2> [name-filter]
+With qemu-aarch64 installed the aarch64 side is linked with --static and run under qemu; `--sim` (or no
+qemu) uses the interpreter on the object instead.
+
+Usage: a64diff.py <coffee2> [name-filter] [--sim]
 """
 import glob
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -30,7 +34,9 @@ def bigframe(path):
 
 def main():
     coffee2 = sys.argv[1]
-    flt = sys.argv[2] if len(sys.argv) > 2 else ''
+    args = [a for a in sys.argv[1:] if not a.startswith('--')]
+    flt = args[1] if len(args) > 1 else ''
+    qemu = shutil.which('qemu-aarch64') and '--sim' not in sys.argv
     bad = 0
     gen = tempfile.mkdtemp()
     bigframe(os.path.join(gen, 'gen_bigframe.cf'))
@@ -45,12 +51,18 @@ def main():
                 bad += 1
                 continue
             nat = subprocess.run([d + '/x'], capture_output=True)
-            r = subprocess.run([coffee2, p, '--target=aarch64-linux', '--emit-obj', '-o', d + '/a.o'], capture_output=True, text=True)
+            if qemu:
+                r = subprocess.run([coffee2, p, '--target=aarch64-linux', '--static', '-o', d + '/a'], capture_output=True, text=True)
+            else:
+                r = subprocess.run([coffee2, p, '--target=aarch64-linux', '--emit-obj', '-o', d + '/a.o'], capture_output=True, text=True)
             if r.returncode != 0:
                 print(name, 'FAIL aarch64 compile', r.stdout[:300], r.stderr[:300])
                 bad += 1
                 continue
-            sim = subprocess.run([sys.executable, os.path.join(HERE, 'a64sim.py'), d + '/a.o'], capture_output=True)
+            if qemu:
+                sim = subprocess.run(['qemu-aarch64', d + '/a'], capture_output=True)
+            else:
+                sim = subprocess.run([sys.executable, os.path.join(HERE, 'a64sim.py'), d + '/a.o'], capture_output=True)
             if sim.returncode != nat.returncode or sim.stdout != nat.stdout:
                 print(name, 'FAIL native exit %d, simulated %d' % (nat.returncode, sim.returncode))
                 print('  native:', nat.stdout[:300])
