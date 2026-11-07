@@ -30,4 +30,4 @@
 ## 相关
 
 - IR 的格式:[IR 参考](ir.md)
-- 机器码后端:[x86-64 后端参考](x86-backend.md)、[aarch64 后端参考](aarch64-backend.md)、[Windows 目标参考](windows-backend.md)
+- 机器码后端:[x86-64 后端参考](x86-backend.md)、[aarch64 后端参考](aarch64-backend.md)、[Windows 目标参考](windows-backend.md)、[riscv64 后端参考](riscv64-backend.md)

@@ -1,5 +1,5 @@
 /#/ The machine code of `cf_syscall` per architecture: x86-64 ends in `syscall; ret`, aarch64 in
-/#/ `svc #0; ret`, in whole instructions.
+/#/ `svc #0; ret`, riscv64 in `ecall; ret`, in whole instructions.
 use * in kit
 use * in say
 use fflush in libc of c
@@ -22,5 +22,11 @@ fn main() => int:
     m = m + expect(3, len(a) % 4, 0)
     m = m + expect(4, a[len(a) - 1], 214)
     m = m + expect(5, a[len(a) - 5] * 256 + a[len(a) - 8], 212 * 256 + 1)
+    set_ld_arch(2)
+    let r = syscall_stub()
+    m = m + expect(6, len(r) % 4, 0)
+    /#/ ecall = 0x00000073, ret = jalr x0, 0(ra) = 0x00008067, both little-endian
+    m = m + expect(7, r[len(r) - 8] + r[len(r) - 7] * 256, 115)
+    m = m + expect(8, r[len(r) - 4] + r[len(r) - 3] * 256 + r[len(r) - 2] * 65536, 32871)
     set_ld_arch(0)
     return m

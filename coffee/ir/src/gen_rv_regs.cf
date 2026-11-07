@@ -1,0 +1,279 @@
+/#/ riscv64: the frame (every value lives in it, at an offset from s0), the loads and stores of operands, memory copies and the
+/#/ copies on the edges between blocks.
+/#/
+/#/ Frame, s0-relative and upwards: [s0] the saved s0, [s0+8] the saved ra, [s0+16] the pointer a function returning an aggregate
+/#/ was given (only then), the saved registers, then one 8-byte-aligned place per value (the memory layout for an aggregate, 8 bytes
+/#/ for a scalar, whose upper bytes are not meaningful), the `slot` areas, and a scratch area for edge copies. A float is kept as its
+/#/ bits in such a place and moved to a float register for each operation. t0 to t2 hold operands, t3 and t4 addresses (see
+/#/ target_rv.cf).
+use * in gen
+use * in asm
+use * in asm_rv
+use * in target_rv
+use * in gen_x86_regs
+use * in regalloc
+use * in gen_x86_call
+use * in gen_x86_isel
+use * in gen_rv_call
+use * in gen_rv_isel
+use * in gen_rv_fun
+
+/#/ reg = the value (a scalar, 8 bytes; narrower ones have meaningful low bytes only)
+fn gr_ld(g: &Gen, reg: int, f: &Fun, v: int) => void:
+    let x = g_res(g, f, v)
+    let k = f.op[x]
+    if g.home[x] >= 0:
+        if g.home[x] != reg:
+            rv_mov_rr(&g.a, reg, g.home[x])
+    elif g.xhome[x] >= 0:
+        rv_fmv_from(&g.a, reg, g.xhome[x], f.rep[x] == int(Rp.F32))
+    elif k == int(Op.Const):
+        if f.rep[x] == int(Rp.F32):
+            rv_li(&g.a, reg, f.aux[x] & 4294967295)
+        else:
+            rv_li(&g.a, reg, f.aux[x])
+    elif k == int(Op.Undef):
+        rv_li(&g.a, reg, 0)
+    elif k == int(Op.StrLit):
+        rv_adr_sym(&g.a, reg, 1, g.sbase + g_so(g, f.aux[x]))
+    elif k == int(Op.Slot):
+        rv_addi(&g.a, reg, tr_fp(), g.voff[x])
+    else:
+        rv_ld(&g.a, reg, tr_fp(), g.voff[x], 8)
+
+/#/ reg = the value extended from its width
+fn gr_ld_ext(g: &Gen, reg: int, f: &Fun, v: int, signed: bool) => void:
+    gr_ld(g, reg, f, v)
+    let x = g_res(g, f, v)
+    let r = f.rep[x]
+    if f.op[x] == int(Op.Cmp):
+        return
+    if r == int(Rp.I8) || r == int(Rp.I16) || r == int(Rp.I32):
+        rv_extend(&g.a, reg, reg, rsize_scalar(r), signed)
+
+/#/ The register that holds `v`: its own when it has one, else `scratch`, loaded with it.
+fn gr_src(g: &Gen, f: &Fun, v: int, scratch: int) => int:
+    let h = g.home[g_res(g, f, v)]
+    if h >= 0:
+        return h
+    gr_ld(g, scratch, f, v)
+    return scratch
+
+/#/ The float register of float `v`: its own when it has one, else `scratch`, loaded with it.
+fn gr_fsrc(g: &Gen, f: &Fun, v: int, scratch: int) => int:
+    let x = g_res(g, f, v)
+    if g.xhome[x] >= 0:
+        return g.xhome[x]
+    let single = f.rep[x] == int(Rp.F32)
+    let k = f.op[x]
+    if k == int(Op.Const) && f.aux[x] == 0:
+        rv_fmv_to(&g.a, scratch, 0, single)
+    elif k == int(Op.Const) || k == int(Op.Undef) || k == int(Op.StrLit) || k == int(Op.Slot) || g.home[x] >= 0:
+        gr_ld(g, tr_s0(), f, x)
+        rv_fmv_to(&g.a, scratch, tr_s0(), single)
+    else:
+        rv_fldst(&g.a, true, scratch, tr_fp(), g.voff[x], rsize_scalar(f.rep[x]))
+    return scratch
+
+/#/ Where the float instruction `i` makes its result: its own register, else `scratch`.
+fn gr_fdst(g: &Gen, i: int, scratch: int) => int:
+    if g.xhome[i] >= 0:
+        return g.xhome[i]
+    return scratch
+
+/#/ The result of float instruction `i` is in float register `v`: kept there, or stored.
+fn gr_ffin(g: &Gen, f: &Fun, i: int, v: int) => void:
+    if g.xhome[i] >= 0:
+        if g.xhome[i] != v:
+            rv_fmv_ff(&g.a, g.xhome[i], v)
+    else:
+        rv_fldst(&g.a, false, v, tr_fp(), g.voff[i], rsize_scalar(f.rep[i]))
+
+/#/ Float register `d` = the float value `v`.
+fn gr_fmove(g: &Gen, f: &Fun, d: int, v: int) => void:
+    let r = gr_fsrc(g, f, v, d)
+    if r != d:
+        rv_fmv_ff(&g.a, d, r)
+
+/#/ Where instruction `i` makes its result: its own register, else `scratch`.
+fn gr_dst(g: &Gen, i: int, scratch: int) => int:
+    if g.home[i] >= 0:
+        return g.home[i]
+    return scratch
+
+/#/ The result of instruction `i` is in `reg`: kept in its register or stored in its place.
+fn gr_st(g: &Gen, i: int, reg: int) => void:
+    if g.home[i] >= 0:
+        if g.home[i] != reg:
+            rv_mov_rr(&g.a, g.home[i], reg)
+    elif g.xhome[i] >= 0:
+        rv_fmv_to(&g.a, g.xhome[i], reg, g.xsg[i] == 1)
+    else:
+        rv_st(&g.a, tr_fp(), g.voff[i], reg, 8)
+
+/#/ For an aggregate value: the base register and displacement of its bytes (an undefined one
+/#/ reads from the start of the read-only data).
+fn gr_ab_reg(g: &Gen, f: &Fun, v: int) => int:
+    let x = g_res(g, f, v)
+    if f.op[x] == int(Op.Undef):
+        rv_adr_sym(&g.a, tr_ind(), 1, 0)
+        return tr_ind()
+    return tr_fp()
+
+fn gr_ab_disp(g: &Gen, f: &Fun, v: int) => int:
+    let x = g_res(g, f, v)
+    if f.op[x] == int(Op.Undef):
+        return 0
+    return g.voff[x]
+
+/#/ n bytes from [sb + sd] to [db + dd], through t0.
+fn gr_copy_mem(g: &Gen, db: int, dd: int, sb: int, sd: int, n: int) => void:
+    let k = 0
+    while k + 8 <= n:
+        rv_ld(&g.a, tr_s0(), sb, sd + k, 8)
+        rv_st(&g.a, db, dd + k, tr_s0(), 8)
+        k = k + 8
+    if k + 4 <= n:
+        rv_ld(&g.a, tr_s0(), sb, sd + k, 4)
+        rv_st(&g.a, db, dd + k, tr_s0(), 4)
+        k = k + 4
+    if k + 2 <= n:
+        rv_ld(&g.a, tr_s0(), sb, sd + k, 2)
+        rv_st(&g.a, db, dd + k, tr_s0(), 2)
+        k = k + 2
+    if k < n:
+        rv_ld(&g.a, tr_s0(), sb, sd + k, 1)
+        rv_st(&g.a, db, dd + k, tr_s0(), 1)
+
+/#/ Value `v` to [db + dd], in full: a scalar as 8 bytes, an aggregate as its layout.
+fn gr_val_to(g: &Gen, f: &Fun, rs: &Reps, db: int, dd: int, v: int) => void:
+    let x = g_res(g, f, v)
+    let r = f.rep[x]
+    if r >= rp_first_agg():
+        let sb = gr_ab_reg(g, f, x)
+        gr_copy_mem(g, db, dd, sb, gr_ab_disp(g, f, x), rsize(rs, r))
+    elif g.xhome[x] >= 0:
+        rv_fldst(&g.a, false, g.xhome[x], db, dd, rsize_scalar(r))
+    else:
+        let rv = gr_src(g, f, x, tr_s0())
+        rv_st(&g.a, db, dd, rv, 8)
+
+/#/ Gives every value its place; the size of the frame.
+fn gr_layout(g: &Gen, f: &Fun, rs: &Reps) => void:
+    layout_frame(g, f, rs, 16, false, 0)
+
+/#/ Copies what edge `e` passes into the parameters of the block it enters; through a scratch
+/#/ area when the copies are not independent (an argument is itself a parameter of that block, or lives
+/#/ in the register of a parameter written before it).
+fn gr_edge_copy(g: &Gen, f: &Fun, rs: &Reps, e: int) => void:
+    let to = f.eto[e]
+    let n = f.eargn[e]
+    if n == 0:
+        return
+    let hazard = edge_hazard(g, f, e)
+    if !hazard:
+        let p = f.pfirst[to]
+        for k in 0..n:
+            if g.home[p] >= 0:
+                gr_ld(g, g.home[p], f, f.pool[f.eargs[e] + k])
+            elif g.xhome[p] >= 0:
+                gr_fmove(g, f, g.xhome[p], f.pool[f.eargs[e] + k])
+            else:
+                gr_val_to(g, f, rs, tr_fp(), g.voff[p], f.pool[f.eargs[e] + k])
+            p = f.nx[p]
+        return
+    let at = 0
+    for k in 0..n:
+        let v = f.pool[f.eargs[e] + k]
+        gr_val_to(g, f, rs, tr_fp(), g.tmp + at, v)
+        at = at + g_place_size(g, rs, f.rep[g_res(g, f, v)])
+    let p = f.pfirst[to]
+    at = 0
+    for k in 0..n:
+        let sz = g_place_size(g, rs, f.rep[p])
+        if g.home[p] >= 0:
+            rv_ld(&g.a, g.home[p], tr_fp(), g.tmp + at, 8)
+        elif g.xhome[p] >= 0:
+            rv_fldst(&g.a, true, g.xhome[p], tr_fp(), g.tmp + at, rsize_scalar(f.rep[p]))
+        else:
+            gr_copy_mem(g, tr_fp(), g.voff[p], tr_fp(), g.tmp + at, sz)
+        at = at + sz
+        p = f.nx[p]
+
+/#/ Gives the values that deserve one a register (`home`; -1 for the frame), by linear scan over
+/#/ the live ranges of `g_live_ranges`, the least wanted value going to the frame when there are
+/#/ no more registers. Every integer register of the pool is kept by a callee. Floats go to fs0..fs11 when they live across a
+/#/ call, else to ft2..ft11.
+fn gr_alloc_regs(g: &Gen, f: &Fun, rs: &Reps) => void:
+    let nd = g_live_ranges(g, f, rs, false)
+    g.nsaved = 0
+    if nd == 0:
+        return
+    let npool = tr_npool()
+    let order = lscan_order(g, nd)
+    let regs: buf<int> = new_buf(int, npool)
+    for r in 0..npool:
+        regs[r] = tr_pool_reg(r)
+    let skip: buf<int> = new_buf(int, nd + 1)
+    let allow: buf<int> = new_buf(int, nd + 1)
+    let nfp = tr_nfpool()
+    let occx: buf<int> = new_buf(int, nfp)
+    let xused: buf<int> = new_buf(int, tr_nfsaved())
+    for r in 0..nfp:
+        occx[r] = 0 - 1
+    for k in 0..nd:
+        let d = order[k]
+        allow[d] = (1 << npool) - 1
+        let v = g.dv[d]
+        let rd = f.rep[v]
+        if rd == int(Rp.F32) || rd == int(Rp.F64):
+            skip[d] = 1
+            for r in 0..nfp:
+                if occx[r] >= 0 && g.ra_hi[occx[r]] < g.ra_lo[d]:
+                    occx[r] = 0 - 1
+            let crossing = g_crosses(g, g.ra_lo[d], g.ra_hi[d])
+            let lo = 0
+            let hi = tr_nfsaved()
+            if !crossing:
+                lo = tr_nfsaved()
+                hi = nfp
+            let fx = 0 - 1
+            for r in lo..hi:
+                if occx[r] < 0 && fx < 0:
+                    fx = r
+            if fx < 0 && !crossing:
+                for r in 0..tr_nfsaved():
+                    if occx[r] < 0 && fx < 0:
+                        fx = r
+            if fx >= 0:
+                occx[fx] = d
+                g.xhome[v] = tr_fpool_reg(fx)
+                if rd == int(Rp.F32):
+                    g.xsg[v] = 1
+                if fx < tr_nfsaved():
+                    xused[fx] = 1
+            else:
+                let worst = 0 - 1
+                for r in lo..hi:
+                    if worst < 0 || g.dn[occx[r]] < g.dn[occx[worst]]:
+                        worst = r
+                if g.dn[occx[worst]] < g.dn[d]:
+                    g.xhome[g.dv[occx[worst]]] = 0 - 1
+                    g.xhome[v] = tr_fpool_reg(worst)
+                    if rd == int(Rp.F32):
+                        g.xsg[v] = 1
+                    occx[worst] = d
+                    if worst < tr_nfsaved():
+                        xused[worst] = 1
+    let used = lscan_int(g, f, &order, nd, &regs, npool, &allow, &skip)
+    if len(g.saved) < npool + tr_nfsaved() + 1:
+        g.saved = new_buf(int, npool + tr_nfsaved() + 1)
+    for r in 0..npool:
+        if used[r] == 1:
+            g.saved[g.nsaved] = tr_pool_reg(r)
+            g.nsaved = g.nsaved + 1
+    /#/ the float registers kept, numbered from 32
+    for r in 0..tr_nfsaved():
+        if xused[r] == 1:
+            g.saved[g.nsaved] = 32 + tr_fpool_reg(r)
+            g.nsaved = g.nsaved + 1

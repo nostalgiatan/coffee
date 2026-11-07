@@ -41,7 +41,7 @@ fn abs_sec() => int:
 fn common_sec() => int:
     return 0 - 3
 
-/#/ The architecture of the objects to link (0 x86-64, 1 aarch64); the driver sets it from `--target=`.
+/#/ The architecture of the objects to link (0 x86-64, 1 aarch64, 2 riscv64); the driver sets it from `--target=`.
 let ld_arch: int = 0
 
 fn set_ld_arch(a: int) => void:
@@ -51,7 +51,15 @@ fn set_ld_arch(a: int) => void:
 fn machine_of(arch: int) => int:
     if arch == 1:
         return 183
+    if arch == 2:
+        return 243
     return 62
+
+/#/ The ELF flags of the architecture: RISC-V says which float ABI the code follows (double, 4).
+fn eflags_of(arch: int) => int:
+    if arch == 2:
+        return 4
+    return 0
 
 /#/ The program's code follows the Win64 calling convention (`--target=x86_64-linux-ms`; used by the tests of that convention).
 let ld_win64: bool = false
@@ -419,6 +427,14 @@ class Linker:
             code = buf_resize(code, 24)
             call_ty = 283
             call_add = 0
+        if ld_arch == 2:
+            /#/ mv s0,zero; ld a0,[sp]; addi a1,sp,8; auipc ra; jalr ra (call main); li a7,94 (exit_group); ecall
+            let rv = [19, 4, 0, 0, 3, 53, 1, 0, 147, 5, 129, 0, 151, 0, 0, 0, 231, 128, 0, 0, 147, 8, 224, 5, 115, 0, 0, 0]
+            code = new_buf(int, 28)
+            for k in 0..28:
+                code[k] = rv[k]
+            call_ty = 19
+            call_add = 0
         let nstart = len(code)
         let off = self.blob.n
         for k in 0..nstart:
@@ -730,6 +746,9 @@ class Linker:
                 if ld_arch == 1:
                     bad = bad + self.apply_a64(mem, at, p, ty, sym, a, base, r)
                     continue
+                if ld_arch == 2:
+                    bad = bad + self.apply_rv(mem, at, p, ty, sym, a, base, r)
+                    continue
                 if ty == 1:
                     wr64(mem, at, self.sym_addr(sym, base) + a)
                 elif ty == 24:
@@ -795,6 +814,38 @@ class Linker:
         else:
             return self.reloc_err("unsupported relocation type", r)
         return 0
+
+    /#/ One RISC-V relocation: the 32 and 64-bit data words, a call (auipc and jalr, 8 bytes), and the upper and lower parts of an
+    /#/ absolute address (lui and addi, or a load).
+    fn apply_rv(self, mem: &Txt, at: int, p: int, ty: int, sym: int, a: int, base: int, r: int) => int:
+        let s = self.sym_addr(sym, base) + a
+        if ty == 2:
+            wr64(mem, at, s)
+            return 0
+        if ty == 1:
+            wr32(mem, at, s & 4294967295)
+            return 0
+        if ty == 18 || ty == 19:
+            let d = s - p
+            if d < 0 - 2147483648 || d >= 2147483648:
+                return self.reloc_err("call out of range", r)
+            let hi = ((d + 2048) >> 12) & 1048575
+            let lo = d - (((d + 2048) >> 12) << 12)
+            wr32(mem, at, rd32(mem, at) | (hi << 12))
+            wr32(mem, at + 4, rd32(mem, at + 4) | ((lo & 4095) << 20))
+            return 0
+        if ty == 26 || ty == 27 || ty == 28:
+            if s < 0 || s >= 2147481600:
+                return self.reloc_err("address out of range (the program must lie below 2 GiB)", r)
+            if ty == 26:
+                wr32(mem, at, rd32(mem, at) | ((((s + 2048) >> 12) & 1048575) << 12))
+            elif ty == 27:
+                wr32(mem, at, rd32(mem, at) | ((s & 4095) << 20))
+            else:
+                let lo = s & 4095
+                wr32(mem, at, rd32(mem, at) | ((lo >> 5) << 25) | ((lo & 31) << 7))
+            return 0
+        return self.reloc_err("unsupported relocation type", r)
 
     fn put_signed(self, mem: &Txt, at: int, v: int, r: int) => int:
         if v < 0 - 2147483648 || v > 2147483647:

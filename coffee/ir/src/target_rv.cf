@@ -1,0 +1,79 @@
+/#/ The riscv64 target: the facts the code generator needs about the machine, in one place (the counterpart of
+/#/ target_a64.cf; names start with `tr_`). Register numbers are the machine's: x0 (zero), x1 (ra), x2 (sp), x5 to x7 (t0 to t2),
+/#/ x8 (s0, the frame pointer), x9 (s1), x10 to x17 (a0 to a7), x18 to x27 (s2 to s11), x28 to x31 (t3 to t6); floats f0 to f31.
+/#/
+/#/ The LP64D convention: integers and pointers go in a0 to a7, floats in fa0 to fa7 (f10 to f17), the rest on the stack in 8-byte
+/#/ places; the result comes back in a0 or fa0. s0 to s11 and fs0 to fs11 are saved by the function that uses them. A function
+/#/ returning an aggregate gets a pointer to the place for it in a0, before the other arguments. The arguments of a variadic function
+/#/ travel in integer registers, floats too.
+use * in op
+use * in asm_rv
+
+/#/ How many integer and float arguments go in registers.
+fn tr_nint_args() => int:
+    return 8
+
+fn tr_nfloat_args() => int:
+    return 8
+
+/#/ The register of the `k`th integer argument (a0 to a7), and of the `k`th float one (fa0 to fa7).
+fn tr_int_arg(k: int) => int:
+    return 10 + k
+
+fn tr_float_arg(k: int) => int:
+    return 10 + k
+
+fn tr_fp() => int:
+    return 8
+
+fn tr_ra() => int:
+    return 1
+
+/#/ The scratch registers of the code generator: t0, t1, t2 hold operands and results, t3 and t4 addresses. t5 holds the address of an
+/#/ indirect call and t6 the large immediates the assembler builds; neither lives across an instruction of the generator.
+fn tr_s0() => int:
+    return 5
+
+fn tr_s1() => int:
+    return 6
+
+fn tr_s2() => int:
+    return 7
+
+fn tr_a0() => int:
+    return 28
+
+fn tr_a1() => int:
+    return 29
+
+fn tr_ind() => int:
+    return 30
+
+/#/ The registers a function saves before using them: s1 and s2 to s11 (11 of them), and the float ones fs0, fs1 and fs2 to fs11
+/#/ (12 of them). Pool slot `r` is the integer register `tr_pool_reg(r)`.
+fn tr_npool() => int:
+    return 11
+
+fn tr_pool_reg(r: int) => int:
+    if r == 0:
+        return 9
+    return 17 + r
+
+/#/ The float registers, by slot: slots 0 to 11 are kept by a callee (fs0, fs1, fs2..fs11), 12 to 21 are not (ft2..ft7, ft8..ft11);
+/#/ ft0 and ft1 are the scratch registers, fa0 to fa7 carry the arguments.
+fn tr_fpool_reg(s: int) => int:
+    if s == 0:
+        return 8
+    if s == 1:
+        return 9
+    if s < 12:
+        return 16 + s
+    if s < 18:
+        return s - 10
+    return s + 10
+
+fn tr_nfsaved() => int:
+    return 12
+
+fn tr_nfpool() => int:
+    return 22

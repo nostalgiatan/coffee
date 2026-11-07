@@ -1,0 +1,535 @@
+/#/ riscv64: the machine instructions of each IR operation. There are no flags: a compare is made into a 0 or 1 in a register,
+/#/ or, when only the branch right after it reads it, the branch compares the two registers itself.
+use * in gen
+use * in asm
+use * in asm_rv
+use * in target_rv
+use * in gen_x86_regs
+use * in regalloc
+use * in gen_x86_call
+use * in gen_x86_isel
+use * in gen_rv_regs
+use * in gen_rv_call
+use * in gen_rv_fun
+
+/#/ What the branch after a compare tests (`gr_cmp_cond` sets them): the predicate `rv_cp` of the integer registers `rv_ca` and
+/#/ `rv_cb`; -1 for "the register `rv_ca` is not zero".
+let rv_cp: int = 0
+let rv_ca: int = 0
+let rv_cb: int = 0
+
+/#/ The predicate that is true when `p` is false.
+fn gr_inverse(p: int) => int:
+    if p == int(Pr.Eq):
+        return int(Pr.Ne)
+    if p == int(Pr.Ne):
+        return int(Pr.Eq)
+    if p == int(Pr.SLt):
+        return int(Pr.SGe)
+    if p == int(Pr.SGe):
+        return int(Pr.SLt)
+    if p == int(Pr.SLe):
+        return int(Pr.SGt)
+    if p == int(Pr.SGt):
+        return int(Pr.SLe)
+    if p == int(Pr.ULt):
+        return int(Pr.UGe)
+    if p == int(Pr.UGe):
+        return int(Pr.ULt)
+    if p == int(Pr.ULe):
+        return int(Pr.UGt)
+    return int(Pr.ULe)
+
+/#/ Branches to label `l` when integer predicate `p` holds for `ra` and `rb`.
+fn gr_branch_pred(g: &Gen, p: int, ra: int, rb: int, l: int) => void:
+    if p == int(Pr.Eq):
+        rv_bcc(&g.a, 0, ra, rb, l)
+    elif p == int(Pr.Ne):
+        rv_bcc(&g.a, 1, ra, rb, l)
+    elif p == int(Pr.SLt):
+        rv_bcc(&g.a, 4, ra, rb, l)
+    elif p == int(Pr.SGe):
+        rv_bcc(&g.a, 5, ra, rb, l)
+    elif p == int(Pr.SGt):
+        rv_bcc(&g.a, 4, rb, ra, l)
+    elif p == int(Pr.SLe):
+        rv_bcc(&g.a, 5, rb, ra, l)
+    elif p == int(Pr.ULt):
+        rv_bcc(&g.a, 6, ra, rb, l)
+    elif p == int(Pr.UGe):
+        rv_bcc(&g.a, 7, ra, rb, l)
+    elif p == int(Pr.UGt):
+        rv_bcc(&g.a, 6, rb, ra, l)
+    else:
+        rv_bcc(&g.a, 7, rb, ra, l)
+
+/#/ Branches to `l` when the condition last set by `gr_cmp_cond` holds, or, with `inv`, when it does not.
+fn gr_branch_cond(g: &Gen, inv: bool, l: int) => void:
+    if rv_cp < 0:
+        if inv:
+            rv_bcc(&g.a, 0, rv_ca, 0, l)
+        else:
+            rv_bcc(&g.a, 1, rv_ca, 0, l)
+        return
+    let p = rv_cp
+    if inv:
+        p = gr_inverse(p)
+    gr_branch_pred(g, p, rv_ca, rv_cb, l)
+
+/#/ d = 1 if integer predicate `p` holds for `ra` and `rb`, else 0.
+fn gr_set_pred(g: &Gen, d: int, p: int, ra: int, rb: int) => void:
+    if p == int(Pr.Eq):
+        rv_xor(&g.a, d, ra, rb)
+        rv_opi(&g.a, 3, d, d, 1)
+    elif p == int(Pr.Ne):
+        rv_xor(&g.a, d, ra, rb)
+        rv_sltu(&g.a, d, 0, d)
+    elif p == int(Pr.SLt):
+        rv_slt(&g.a, d, ra, rb)
+    elif p == int(Pr.SGt):
+        rv_slt(&g.a, d, rb, ra)
+    elif p == int(Pr.SLe):
+        rv_slt(&g.a, d, rb, ra)
+        rv_opi(&g.a, 4, d, d, 1)
+    elif p == int(Pr.SGe):
+        rv_slt(&g.a, d, ra, rb)
+        rv_opi(&g.a, 4, d, d, 1)
+    elif p == int(Pr.ULt):
+        rv_sltu(&g.a, d, ra, rb)
+    elif p == int(Pr.UGt):
+        rv_sltu(&g.a, d, rb, ra)
+    elif p == int(Pr.ULe):
+        rv_sltu(&g.a, d, rb, ra)
+        rv_opi(&g.a, 4, d, d, 1)
+    else:
+        rv_sltu(&g.a, d, ra, rb)
+        rv_opi(&g.a, 4, d, d, 1)
+
+/#/ Loads the operands of the integer compare `i` and sets `rv_cp`, `rv_ca` and `rv_cb`.
+fn gr_cmp_cond(g: &Gen, f: &Fun, i: int) => void:
+    let signed = g_is_signed_pred(g, f.aux[i])
+    let wr = f.rep[g_res(g, f, f.a[i])]
+    rv_cp = f.aux[i]
+    if wr == int(Rp.I64) || wr == int(Rp.Ptr):
+        rv_ca = gr_src(g, f, f.a[i], tr_s0())
+        let bx = g_res(g, f, f.b[i])
+        if f.op[bx] == int(Op.Const) && f.aux[bx] == 0 && g.home[bx] < 0:
+            rv_cb = 0
+        else:
+            rv_cb = gr_src(g, f, f.b[i], tr_s1())
+        return
+    gr_ld_ext(g, tr_s0(), f, f.a[i], signed)
+    gr_ld_ext(g, tr_s1(), f, f.b[i], signed)
+    rv_ca = tr_s0()
+    rv_cb = tr_s1()
+
+/#/ d = the float compare `i` (0 or 1; false when either operand is NaN).
+fn gr_fcmp_set(g: &Gen, f: &Fun, i: int, d: int) => void:
+    let p = f.aux[i]
+    let single = f.rep[g_res(g, f, f.a[i])] == int(Rp.F32)
+    let va = gr_fsrc(g, f, f.a[i], 0)
+    let vb = gr_fsrc(g, f, f.b[i], 1)
+    if p == int(Pr.OEq):
+        rv_fcmp(&g.a, 0, single, d, va, vb)
+    elif p == int(Pr.OLt):
+        rv_fcmp(&g.a, 1, single, d, va, vb)
+    elif p == int(Pr.OLe):
+        rv_fcmp(&g.a, 2, single, d, va, vb)
+    elif p == int(Pr.OGt):
+        rv_fcmp(&g.a, 1, single, d, vb, va)
+    elif p == int(Pr.OGe):
+        rv_fcmp(&g.a, 2, single, d, vb, va)
+    else:
+        /#/ ordered and different: less than or greater than
+        rv_fcmp(&g.a, 1, single, tr_s0(), va, vb)
+        rv_fcmp(&g.a, 1, single, tr_s1(), vb, va)
+        rv_or(&g.a, d, tr_s0(), tr_s1())
+
+/#/ The address of the folded `x` (see `g_folds`) as base, index, scale and displacement in `am_*`;
+/#/ what is not a constant is loaded into `s1` (the base) and `s2` (the index).
+fn gr_addr_of(g: &Gen, f: &Fun, x: int, s1: int, s2: int) => void:
+    g.am_base = gr_src(g, f, f.a[x], s1)
+    if f.op[x] == int(Op.Index) && g_near_const(g, f, f.b[x]):
+        g.am_idx = 0 - 1
+        g.am_scale = 1
+        g.am_disp = f.aux[g_res(g, f, f.b[x])] * f.aux[x]
+    elif f.op[x] == int(Op.Index):
+        g.am_idx = gr_src(g, f, f.b[x], s2)
+        g.am_scale = f.aux[x]
+        g.am_disp = 0
+    else:
+        g.am_idx = 0 - 1
+        g.am_scale = 1
+        g.am_disp = f.aux[x]
+
+/#/ The base register of the access `am_*` describes, with the index added in (t6 when there is one): the displacement is `am_disp`.
+fn gr_am_base(g: &Gen) => int:
+    if g.am_idx < 0:
+        return g.am_base
+    if g.am_scale > 1:
+        rv_shift_i(&g.a, 0, 31, g.am_idx, rv_log2(g.am_scale))
+        rv_add(&g.a, 31, g.am_base, 31)
+    else:
+        rv_add(&g.a, 31, g.am_base, g.am_idx)
+    return 31
+
+/#/ A load or store of `n` bytes of `rt` at the address `am_*` describes.
+fn gr_mem(g: &Gen, load: bool, rt: int, n: int) => void:
+    let b = gr_am_base(g)
+    rv_ldst(&g.a, load, rt, b, g.am_disp, n)
+
+/#/ The same for the float register `ft`.
+fn gr_fmem(g: &Gen, load: bool, ft: int, n: int) => void:
+    let b = gr_am_base(g)
+    rv_fldst(&g.a, load, ft, b, g.am_disp, n)
+
+fn gr_arith(g: &Gen, f: &Fun, i: int, op: int) => void:
+    let single = f.rep[i] == int(Rp.F32)
+    let va = gr_fsrc(g, f, f.a[i], 0)
+    let vb = gr_fsrc(g, f, f.b[i], 1)
+    let d = gr_fdst(g, i, 0)
+    let code = 0
+    if op == int(Op.FSub):
+        code = 1
+    elif op == int(Op.FMul):
+        code = 2
+    elif op == int(Op.FDiv):
+        code = 3
+    rv_farith(&g.a, code, single, d, va, vb)
+    gr_ffin(g, f, i, d)
+
+fn gr_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => void:
+    let op = f.op[i]
+    let r = f.rep[i]
+    if op == int(Op.Param) || op == int(Op.Slot) || op == int(Op.OwnMove) || op == int(Op.Const) || op == int(Op.StrLit) || op == int(Op.Undef):
+        return
+    if op == int(Op.Add) || op == int(Op.Sub) || op == int(Op.Mul) || op == int(Op.And) || op == int(Op.Or) || op == int(Op.Xor):
+        let ra = gr_src(g, f, f.a[i], tr_s0())
+        let d = gr_dst(g, i, tr_s0())
+        if (op == int(Op.Add) || op == int(Op.Sub)) && g_small_imm(g, f, f.b[i]):
+            let k = f.aux[g_res(g, f, f.b[i])]
+            if op == int(Op.Sub):
+                k = 0 - k
+            rv_addi(&g.a, d, ra, k)
+            gr_st(g, i, d)
+            return
+        let rb = gr_src(g, f, f.b[i], tr_s1())
+        if op == int(Op.Add):
+            rv_add(&g.a, d, ra, rb)
+        elif op == int(Op.Sub):
+            rv_sub(&g.a, d, ra, rb)
+        elif op == int(Op.Mul):
+            rv_mul(&g.a, d, ra, rb)
+        elif op == int(Op.And):
+            rv_and(&g.a, d, ra, rb)
+        elif op == int(Op.Or):
+            rv_or(&g.a, d, ra, rb)
+        else:
+            rv_xor(&g.a, d, ra, rb)
+        gr_st(g, i, d)
+        return
+    if op == int(Op.SMulHi) || op == int(Op.UMulHi):
+        let ra = gr_src(g, f, f.a[i], tr_s0())
+        let rb = gr_src(g, f, f.b[i], tr_s1())
+        let d = gr_dst(g, i, tr_s0())
+        if op == int(Op.SMulHi):
+            rv_mulh(&g.a, d, ra, rb)
+        else:
+            rv_mulhu(&g.a, d, ra, rb)
+        gr_st(g, i, d)
+        return
+    if op == int(Op.SDiv) || op == int(Op.SRem) || op == int(Op.UDiv) || op == int(Op.URem):
+        let signed = op == int(Op.SDiv) || op == int(Op.SRem)
+        gr_ld_ext(g, tr_s0(), f, f.a[i], signed)
+        gr_ld_ext(g, tr_s1(), f, f.b[i], signed)
+        if op == int(Op.SDiv):
+            rv_div(&g.a, tr_s2(), tr_s0(), tr_s1())
+        elif op == int(Op.UDiv):
+            rv_divu(&g.a, tr_s2(), tr_s0(), tr_s1())
+        elif op == int(Op.SRem):
+            rv_rem(&g.a, tr_s2(), tr_s0(), tr_s1())
+        else:
+            rv_remu(&g.a, tr_s2(), tr_s0(), tr_s1())
+        gr_st(g, i, tr_s2())
+        return
+    if op == int(Op.Shl) || op == int(Op.AShr) || op == int(Op.LShr):
+        let kind = 0
+        if op == int(Op.LShr):
+            kind = 1
+        elif op == int(Op.AShr):
+            kind = 2
+        let d = gr_dst(g, i, tr_s0())
+        gr_ld_ext(g, tr_s0(), f, f.a[i], op == int(Op.AShr))
+        if g_small_imm(g, f, f.b[i]):
+            let k = f.aux[g_res(g, f, f.b[i])]
+            if k >= 0 && k < 64:
+                rv_shift_i(&g.a, kind, d, tr_s0(), k)
+                gr_st(g, i, d)
+                return
+        let rb = gr_src(g, f, f.b[i], tr_s1())
+        if kind == 0:
+            rv_sll(&g.a, d, tr_s0(), rb)
+        elif kind == 1:
+            rv_srl(&g.a, d, tr_s0(), rb)
+        else:
+            rv_sra(&g.a, d, tr_s0(), rb)
+        gr_st(g, i, d)
+        return
+    if op == int(Op.FnAddr):
+        let d = gr_dst(g, i, tr_s0())
+        rv_adr_sym(&g.a, d, g_callee(g, sy, f.aux[i]), 0)
+        gr_st(g, i, d)
+        return
+    if op == int(Op.Neg) || op == int(Op.Not):
+        let ra = gr_src(g, f, f.a[i], tr_s0())
+        let d = gr_dst(g, i, tr_s0())
+        if op == int(Op.Neg):
+            rv_neg(&g.a, d, ra)
+        else:
+            rv_not(&g.a, d, ra)
+        gr_st(g, i, d)
+        return
+    if op == int(Op.FNeg):
+        let single = r == int(Rp.F32)
+        let va = gr_fsrc(g, f, f.a[i], 0)
+        let d = gr_fdst(g, i, 0)
+        rv_fneg(&g.a, single, d, va)
+        gr_ffin(g, f, i, d)
+        return
+    if op == int(Op.FAdd) || op == int(Op.FSub) || op == int(Op.FMul) || op == int(Op.FDiv):
+        gr_arith(g, f, i, op)
+        return
+    if op == int(Op.Cmp):
+        if g_fused(g, f, i):
+            return
+        gr_cmp_cond(g, f, i)
+        let d = gr_dst(g, i, tr_s2())
+        gr_set_pred(g, d, rv_cp, rv_ca, rv_cb)
+        gr_st(g, i, d)
+        return
+    if op == int(Op.FCmp):
+        if g_fused(g, f, i):
+            return
+        gr_fcmp_set(g, f, i, tr_s2())
+        gr_st(g, i, tr_s2())
+        return
+    if op == int(Op.Trunc) || op == int(Op.Bitcast) || op == int(Op.PtrToInt) || op == int(Op.IntToPtr):
+        let d = gr_dst(g, i, tr_s0())
+        gr_ld(g, d, f, f.a[i])
+        gr_st(g, i, d)
+        return
+    if op == int(Op.SExt) || op == int(Op.ZExt):
+        let d = gr_dst(g, i, tr_s0())
+        gr_ld_ext(g, d, f, f.a[i], op == int(Op.SExt))
+        gr_st(g, i, d)
+        return
+    if op == int(Op.SiToFp) || op == int(Op.UiToFp):
+        let single = r == int(Rp.F32)
+        let signed = op == int(Op.SiToFp)
+        gr_ld_ext(g, tr_s0(), f, f.a[i], signed)
+        let d = gr_fdst(g, i, 0)
+        rv_cvt_i2f(&g.a, d, tr_s0(), single, signed)
+        gr_ffin(g, f, i, d)
+        return
+    if op == int(Op.FpToSi) || op == int(Op.FpToUi):
+        let single = f.rep[g_res(g, f, f.a[i])] == int(Rp.F32)
+        let va = gr_fsrc(g, f, f.a[i], 0)
+        let d = gr_dst(g, i, tr_s0())
+        rv_cvt_f2i(&g.a, d, va, single, op == int(Op.FpToSi))
+        gr_st(g, i, d)
+        return
+    if op == int(Op.FpExt) || op == int(Op.FpTrunc):
+        let to_single = op == int(Op.FpTrunc)
+        let va = gr_fsrc(g, f, f.a[i], 0)
+        let d = gr_fdst(g, i, 0)
+        rv_fcvt(&g.a, d, va, to_single)
+        gr_ffin(g, f, i, d)
+        return
+    if (op == int(Op.Field) || op == int(Op.Index)) && g_folds(g, f, i):
+        return
+    if op == int(Op.Field):
+        let ra = gr_src(g, f, f.a[i], tr_s0())
+        let d = gr_dst(g, i, tr_s0())
+        rv_addi(&g.a, d, ra, f.aux[i])
+        gr_st(g, i, d)
+        return
+    if op == int(Op.Index):
+        let sz = f.aux[i]
+        let ra = gr_src(g, f, f.a[i], tr_s0())
+        let d = gr_dst(g, i, tr_s0())
+        if g_near_const(g, f, f.b[i]):
+            rv_addi(&g.a, d, ra, f.aux[g_res(g, f, f.b[i])] * sz)
+        else:
+            let rb = gr_src(g, f, f.b[i], tr_s1())
+            if sz == 1 || sz == 2 || sz == 4 || sz == 8:
+                if sz == 1:
+                    rv_add(&g.a, d, ra, rb)
+                else:
+                    rv_shift_i(&g.a, 0, tr_s2(), rb, rv_log2(sz))
+                    rv_add(&g.a, d, ra, tr_s2())
+            else:
+                rv_li(&g.a, tr_s2(), sz)
+                rv_mul(&g.a, tr_s2(), rb, tr_s2())
+                rv_add(&g.a, d, ra, tr_s2())
+        gr_st(g, i, d)
+        return
+    if op == int(Op.Extract):
+        let ar = f.rep[g_res(g, f, f.a[i])]
+        let eo = elem_off(rs, ar, f.aux[i])
+        let sb = gr_ab_reg(g, f, f.a[i])
+        let sd = gr_ab_disp(g, f, f.a[i]) + eo
+        if r >= rp_first_agg():
+            gr_copy_mem(g, tr_fp(), g.voff[i], sb, sd, rsize(rs, r))
+        elif !g_is_int_class(g, r):
+            let d = gr_fdst(g, i, 0)
+            rv_fldst(&g.a, true, d, sb, sd, rsize(rs, r))
+            gr_ffin(g, f, i, d)
+        else:
+            let d = gr_dst(g, i, tr_s0())
+            rv_ld(&g.a, d, sb, sd, rsize(rs, r))
+            gr_st(g, i, d)
+        return
+    if op == int(Op.Insert):
+        let eo = elem_off(rs, r, f.aux[i])
+        let sb = gr_ab_reg(g, f, f.a[i])
+        gr_copy_mem(g, tr_fp(), g.voff[i], sb, gr_ab_disp(g, f, f.a[i]), rsize(rs, r))
+        let er = f.rep[g_res(g, f, f.b[i])]
+        if er >= rp_first_agg():
+            let eb = gr_ab_reg(g, f, f.b[i])
+            gr_copy_mem(g, tr_fp(), g.voff[i] + eo, eb, gr_ab_disp(g, f, f.b[i]), rsize(rs, er))
+        else:
+            let rv = gr_src(g, f, f.b[i], tr_s0())
+            rv_st(&g.a, tr_fp(), g.voff[i] + eo, rv, rsize(rs, er))
+        return
+    if op == int(Op.Load):
+        if r >= rp_first_agg():
+            gr_ld(g, tr_a0(), f, f.a[i])
+            gr_copy_mem(g, tr_fp(), g.voff[i], tr_a0(), 0, rsize(rs, r))
+            return
+        let x = g_res(g, f, f.a[i])
+        if !g_is_int_class(g, r):
+            let fd = gr_fdst(g, i, 0)
+            if g_folds(g, f, x):
+                gr_addr_of(g, f, x, tr_a0(), tr_a1())
+                gr_fmem(g, true, fd, rsize(rs, r))
+            else:
+                let rb = gr_src(g, f, f.a[i], tr_a0())
+                rv_fldst(&g.a, true, fd, rb, 0, rsize(rs, r))
+            gr_ffin(g, f, i, fd)
+            return
+        let d = gr_dst(g, i, tr_s0())
+        if g_folds(g, f, x):
+            gr_addr_of(g, f, x, tr_a0(), tr_a1())
+            gr_mem(g, true, d, rsize(rs, r))
+        else:
+            let rb = gr_src(g, f, f.a[i], tr_a0())
+            rv_ld(&g.a, d, rb, 0, rsize(rs, r))
+        gr_st(g, i, d)
+        return
+    if op == int(Op.Store):
+        let vr = f.rep[g_res(g, f, f.b[i])]
+        if vr >= rp_first_agg():
+            gr_ld(g, tr_a1(), f, f.a[i])
+            let sb = gr_ab_reg(g, f, f.b[i])
+            gr_copy_mem(g, tr_a1(), 0, sb, gr_ab_disp(g, f, f.b[i]), rsize(rs, vr))
+            return
+        let x = g_res(g, f, f.a[i])
+        if !g_is_int_class(g, vr):
+            let fv = gr_fsrc(g, f, f.b[i], 0)
+            if g_folds(g, f, x):
+                gr_addr_of(g, f, x, tr_a0(), tr_a1())
+                gr_fmem(g, false, fv, rsize(rs, vr))
+            else:
+                let rb = gr_src(g, f, f.a[i], tr_a0())
+                rv_fldst(&g.a, false, fv, rb, 0, rsize(rs, vr))
+            return
+        let rv = gr_src(g, f, f.b[i], tr_s0())
+        if g_folds(g, f, x):
+            gr_addr_of(g, f, x, tr_a0(), tr_a1())
+            gr_mem(g, false, rv, rsize(rs, vr))
+        else:
+            let rb = gr_src(g, f, f.a[i], tr_a0())
+            rv_st(&g.a, rb, 0, rv, rsize(rs, vr))
+        return
+    if op == int(Op.Drop) || op == int(Op.Clone):
+        g.nav = 0
+        g_push_arg(g, f.a[i])
+        gr_do_call(g, f, rs, i, g_callee(g, sy, f.aux[i]), false)
+        return
+    if op == int(Op.Call) || op == int(Op.CCall) || op == int(Op.CallI):
+        g.nav = 0
+        for k in 0..f.b[i]:
+            g_push_arg(g, f.pool[f.a[i] + k])
+        if op == int(Op.CallI):
+            gr_do_call(g, f, rs, i, 0 - 1, false)
+        else:
+            gr_do_call(g, f, rs, i, g_callee(g, sy, f.aux[i]), op == int(Op.CCall) && f.c[i] != 0)
+        return
+    if op == int(Op.Br):
+        let e = f.aux[i]
+        gr_edge_copy(g, f, rs, e)
+        if f.eto[e] != next:
+            rv_b(&g.a, f.eto[e])
+        return
+    if op == int(Op.CondBr):
+        let e1 = f.b[i]
+        let e2 = f.c[i]
+        let c = g_res(g, f, f.a[i])
+        if f.op[c] == int(Op.Cmp) && g_fused(g, f, c):
+            gr_cmp_cond(g, f, c)
+        elif f.op[c] == int(Op.FCmp) && g_fused(g, f, c):
+            gr_fcmp_set(g, f, c, tr_s0())
+            rv_cp = 0 - 1
+            rv_ca = tr_s0()
+        else:
+            gr_ld(g, tr_s0(), f, f.a[i])
+            rv_opi(&g.a, 7, tr_s0(), tr_s0(), 255)
+            rv_cp = 0 - 1
+            rv_ca = tr_s0()
+        if f.eargn[e1] == 0 && f.eargn[e2] == 0:
+            if f.eto[e2] == next:
+                gr_branch_cond(g, false, f.eto[e1])
+            elif f.eto[e1] == next:
+                gr_branch_cond(g, true, f.eto[e2])
+            else:
+                gr_branch_cond(g, false, f.eto[e1])
+                rv_b(&g.a, f.eto[e2])
+            return
+        if f.eargn[e1] == 0:
+            gr_branch_cond(g, false, f.eto[e1])
+            gr_edge_copy(g, f, rs, e2)
+            if f.eto[e2] != next:
+                rv_b(&g.a, f.eto[e2])
+            return
+        if f.eargn[e2] == 0:
+            gr_branch_cond(g, true, f.eto[e2])
+            gr_edge_copy(g, f, rs, e1)
+            if f.eto[e1] != next:
+                rv_b(&g.a, f.eto[e1])
+            return
+        let yes = g.a.new_label()
+        gr_branch_cond(g, false, yes)
+        gr_edge_copy(g, f, rs, e2)
+        rv_b(&g.a, f.eto[e2])
+        g.a.bind(yes)
+        gr_edge_copy(g, f, rs, e1)
+        if f.eto[e1] != next:
+            rv_b(&g.a, f.eto[e1])
+        return
+    if op == int(Op.Ret):
+        if f.a[i] >= 0:
+            let vr = f.rep[g_res(g, f, f.a[i])]
+            if vr >= rp_first_agg():
+                rv_ld(&g.a, tr_a1(), tr_fp(), 16, 8)
+                let sb = gr_ab_reg(g, f, f.a[i])
+                gr_copy_mem(g, tr_a1(), 0, sb, gr_ab_disp(g, f, f.a[i]), rsize(rs, vr))
+            elif g_is_int_class(g, vr):
+                gr_ld(g, tr_int_arg(0), f, f.a[i])
+            else:
+                gr_fmove(g, f, tr_float_arg(0), f.a[i])
+        gr_epilogue(g)
+        return
+    if op == int(Op.Unreachable):
+        rv_brk(&g.a)
+        return
+    g_bad(g)

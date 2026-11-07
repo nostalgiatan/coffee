@@ -10,6 +10,8 @@ use * in names
 use * in rep
 use * in gen_x86_fun
 use * in gen_a64_fun
+use * in gen_rv_fun
+use * in asm_rv
 use * in opt
 use * in asm
 use * in minrt
@@ -33,6 +35,9 @@ fn arch_x86_64() => int:
 fn arch_aarch64() => int:
     return 1
 
+fn arch_riscv64() => int:
+    return 2
+
 fn os_linux() => int:
     return 0
 
@@ -53,7 +58,7 @@ fn has_prefix(t: &Txt, p: &str) => bool:
 
 /#/ The names accepted by `--target=`, for the error message.
 fn target_names() => str:
-    return "x86_64-linux, aarch64-linux, x86_64-windows, x86_64-linux-ms"
+    return "x86_64-linux, aarch64-linux, riscv64-linux, x86_64-windows, x86_64-linux-ms"
 
 /#/ Chooses the target by its name; 0 when it was set, 1 when the name is unknown, 2 when it is known
 /#/ but there is no code generator for it yet (none now: both known ones have one).
@@ -85,6 +90,14 @@ fn set_target(name: &Txt) => int:
         fn_align_at_least(4)
         set_vector_loops(true)
         return 0
+    if name.is("riscv64-linux") || name.is("riscv64"):
+        target_arch = arch_riscv64()
+        target_os = os_linux()
+        set_win64(false)
+        /#/ fixed 4-byte instructions (no compressed ones): every function starts on one
+        fn_align_at_least(4)
+        set_vector_loops(false)
+        return 0
     return 1
 
 /#/ The code of function `f` for the target; false when it could not be made.
@@ -93,6 +106,8 @@ fn gen_function(g: &Gen, f: &Fun, rs: &Reps, sy: &Names) => bool:
         return g_gen_fun(g, f, rs, sy)
     if target_arch == arch_aarch64():
         return ga_gen_fun(g, f, rs, sy)
+    if target_arch == arch_riscv64():
+        return gr_gen_fun(g, f, rs, sy)
     return false
 
 /#/ The object file for the target.
@@ -104,6 +119,8 @@ fn target_object(g: &Gen) => Txt:
                 say(f"error: the sandbox code is not safe (offset {bad}, rule {sbr_name(sbx_rule)}, reason {sbx_a64_why})\n")
                 return new_txt()
         return ga_elf(g)
+    if target_arch == arch_riscv64():
+        return gr_elf(g)
     if target_os == os_windows():
         return write_coff(&g.o, &g.a)
     return g_elf(g)

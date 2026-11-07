@@ -258,7 +258,7 @@ fn link_exe(l: &Linker) => Txt:
     put64(&h, l.sym_addr(entry, base))
     put64(&h, 64)
     put64(&h, shoff)
-    put32(&h, 0)
+    put32(&h, eflags_of(ld_arch))
     put16(&h, 64)
     put16(&h, 56)
     put16(&h, nseg + 1)

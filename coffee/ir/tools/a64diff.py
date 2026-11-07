@@ -6,7 +6,8 @@ standard output must be equal.
 With qemu-aarch64 installed the aarch64 side is linked with --static and run under qemu; `--sim` (or no
 qemu) uses the interpreter on the object instead.
 
-Usage: a64diff.py <coffee2> [name-filter] [--sim]
+Usage: a64diff.py <coffee2> [name-filter] [--sim] [--target=aarch64-linux|riscv64-linux]
+(riscv64 runs only under qemu-riscv64)
 """
 import glob
 import os
@@ -16,6 +17,11 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+TARGET = 'aarch64-linux'
+for _a in sys.argv:
+    if _a.startswith('--target='):
+        TARGET = _a[9:]
+QEMU = {'aarch64-linux': 'qemu-aarch64', 'riscv64-linux': 'qemu-riscv64'}[TARGET]
 
 
 def bigframe(path):
@@ -52,7 +58,7 @@ def main():
     coffee2 = sys.argv[1]
     args = [a for a in sys.argv[1:] if not a.startswith('--')]
     flt = args[1] if len(args) > 1 else ''
-    qemu = shutil.which('qemu-aarch64') and '--sim' not in sys.argv
+    qemu = shutil.which(QEMU) and '--sim' not in sys.argv
     bad = 0
     gen = tempfile.mkdtemp()
     bigframe(os.path.join(gen, 'gen_bigframe.cf'))
@@ -69,15 +75,15 @@ def main():
                 continue
             nat = subprocess.run([d + '/x'], capture_output=True)
             if qemu:
-                r = subprocess.run([coffee2, p, '--target=aarch64-linux', '--static', '-o', d + '/a'], capture_output=True, text=True)
+                r = subprocess.run([coffee2, p, '--target=' + TARGET, '--static', '-o', d + '/a'], capture_output=True, text=True)
             else:
-                r = subprocess.run([coffee2, p, '--target=aarch64-linux', '--emit-obj', '-o', d + '/a.o'], capture_output=True, text=True)
+                r = subprocess.run([coffee2, p, '--target=' + TARGET, '--emit-obj', '-o', d + '/a.o'], capture_output=True, text=True)
             if r.returncode != 0:
                 print(name, 'FAIL aarch64 compile', r.stdout[:300], r.stderr[:300])
                 bad += 1
                 continue
             if qemu:
-                sim = subprocess.run(['qemu-aarch64', d + '/a'], capture_output=True)
+                sim = subprocess.run([QEMU, d + '/a'], capture_output=True)
             else:
                 sim = subprocess.run([sys.executable, os.path.join(HERE, 'a64sim.py'), d + '/a.o'], capture_output=True)
             if sim.returncode != nat.returncode or sim.stdout != nat.stdout:

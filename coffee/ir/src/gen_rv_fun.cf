@@ -1,0 +1,164 @@
+/#/ riscv64: one function (prologue, blocks, epilogue), and the object file.
+use * in gen
+use * in asm
+use * in asm_rv
+use * in target_rv
+use * in gen_x86_regs
+use * in regalloc
+use * in gen_x86_call
+use * in gen_x86_isel
+use * in gen_rv_regs
+use * in gen_rv_call
+use * in gen_rv_isel
+use * in gen_dbg
+use * in elf
+use * in dbgtype
+
+/#/ Frees the frame and returns.
+fn gr_epilogue(g: &Gen) => void:
+    for k in 0..g.nsaved:
+        if g.saved[k] >= 32:
+            rv_fldst(&g.a, true, g.saved[k] - 32, tr_fp(), 16 + g.rbase + 8 * k, 8)
+        else:
+            rv_ld(&g.a, g.saved[k], tr_fp(), 16 + g.rbase + 8 * k, 8)
+    rv_ld(&g.a, tr_ra(), tr_fp(), 8, 8)
+    rv_ld(&g.a, tr_fp(), tr_fp(), 0, 8)
+    rv_addi(&g.a, 2, 2, g.frame)
+    rv_ret(&g.a)
+
+/#/ Generates function `f`; returns false if something could not be translated. If a branch is out of reach (a conditional one
+/#/ reaches 4 KiB, a jump 1 MiB) the function is made again with the longer forms.
+fn gr_gen_fun(g: &Gen, f: &Fun, rs: &Reps, sy: &Names) => bool:
+    rv_far = 0
+    rv_range_miss = 0
+    let ok = gr_gen_fun1(g, f, rs, sy)
+    while !ok && g.err == 0 && rv_range_miss > rv_far:
+        g.a.c.n = g.a.fs
+        g.a.nrl = g.a.rl0
+        rv_far = rv_range_miss
+        rv_range_miss = 0
+        ok = gr_gen_fun1(g, f, rs, sy)
+    rv_far = 0
+    return ok
+
+fn gr_gen_fun1(g: &Gen, f: &Fun, rs: &Reps, sy: &Names) => bool:
+    g.err = 0
+    g.rbase = 0
+    if f.ret >= rp_first_agg():
+        g.rbase = 8
+    g.a.begin_fun()
+    let nm = new_txt()
+    for k in 0..len(f.nm):
+        nm.put_byte(f.nm[k])
+    g.fsym = g.o.sym(&nm)
+    if len(g.emit) < f.nb + 1:
+        g.ord = new_buf(int, f.nb + 1)
+        g.emit = new_buf(int, f.nb + 1)
+    /#/ the registers are given along the plain order, the code is written in the rotated one
+    block_order(f, &g.ord, false)
+    block_order(f, &g.emit, true)
+    g_count_uses(g, f)
+    gr_alloc_regs(g, f, rs)
+    gr_layout(g, f, rs)
+    let start = g.a.pos()
+    for b in 0..f.nb:
+        g.a.new_label()
+    /#/ s0 = sp = the bottom of the frame, where the caller's s0 and ra are saved
+    rv_addi(&g.a, 2, 2, 0 - g.frame)
+    rv_st(&g.a, 2, 0, tr_fp(), 8)
+    rv_st(&g.a, 2, 8, tr_ra(), 8)
+    rv_mov_rr(&g.a, tr_fp(), 2)
+    let ci = 0
+    if g.rbase > 0:
+        rv_st(&g.a, tr_fp(), 16, tr_int_arg(0), 8)
+        ci = 1
+    for k in 0..g.nsaved:
+        if g.saved[k] >= 32:
+            rv_fldst(&g.a, false, g.saved[k] - 32, tr_fp(), 16 + g.rbase + 8 * k, 8)
+        else:
+            rv_st(&g.a, tr_fp(), 16 + g.rbase + 8 * k, g.saved[k], 8)
+    /#/ the parameters of the entry block
+    let cx = 0
+    let cs = 0
+    let p = f.pfirst[0]
+    while p >= 0:
+        let r = f.rep[p]
+        if r >= rp_first_agg() || g_is_int_class(g, r):
+            if ci < tr_nint_args():
+                if r >= rp_first_agg():
+                    gr_copy_mem(g, tr_fp(), g.voff[p], tr_int_arg(ci), 0, rsize(rs, r))
+                else:
+                    gr_st(g, p, tr_int_arg(ci))
+                ci = ci + 1
+            else:
+                rv_ld(&g.a, tr_s1(), tr_fp(), g.frame + 8 * cs, 8)
+                if r >= rp_first_agg():
+                    gr_copy_mem(g, tr_fp(), g.voff[p], tr_s1(), 0, rsize(rs, r))
+                else:
+                    gr_st(g, p, tr_s1())
+                cs = cs + 1
+        else:
+            if cx < tr_nfloat_args():
+                if g.xhome[p] >= 0:
+                    rv_fmv_ff(&g.a, g.xhome[p], tr_float_arg(cx))
+                else:
+                    rv_fldst(&g.a, false, tr_float_arg(cx), tr_fp(), g.voff[p], rsize_scalar(r))
+                cx = cx + 1
+            else:
+                rv_ld(&g.a, tr_s1(), tr_fp(), g.frame + 8 * cs, 8)
+                gr_st(g, p, tr_s1())
+                cs = cs + 1
+        p = f.nx[p]
+    g.mk_n = 0
+    let last_ln = 0
+    for oi in 0..f.nb:
+        let b = g.emit[oi]
+        g.a.bind(b)
+        let i = f.bfirst[b]
+        while i >= 0:
+            if f.ln[i] > 0 && f.ln[i] != last_ln:
+                last_ln = f.ln[i]
+                if g.mk_n >= len(g.mk_l):
+                    g.mk_l = buf_resize(g.mk_l, (g.mk_n + 1) * 2)
+                    g.mk_ln = buf_resize(g.mk_ln, (g.mk_n + 1) * 2)
+                let ml = g.a.mark()
+                g.mk_l[g.mk_n] = ml
+                g.mk_ln[g.mk_n] = last_ln
+                g.mk_n = g.mk_n + 1
+            let nxt = 0 - 1
+            if f.nx[i] < 0 && oi + 1 < f.nb:
+                nxt = g.emit[oi + 1]
+            gr_gen_inst(g, f, rs, sy, i, nxt)
+            i = f.nx[i]
+    let ok = rv_end_fun(&g.a)
+    let w = new_txt()
+    for k in 0..len(f.nm):
+        w.put_byte(f.nm[k])
+    let sym = g.o.sym(&w)
+    g.o.define(sym, start, g.a.pos() - start)
+    if ok && g.err == 0 && g.mk_n > 0:
+        if g.lf_n >= len(g.lf_sym):
+            g.lf_sym = buf_resize(g.lf_sym, (g.lf_n + 1) * 2)
+            g.lf_start = buf_resize(g.lf_start, (g.lf_n + 1) * 2)
+            g.lf_m0 = buf_resize(g.lf_m0, (g.lf_n + 1) * 2)
+        g.lf_sym[g.lf_n] = sym
+        g.lf_start[g.lf_n] = start
+        g.lf_m0[g.lf_n] = g.lm_n
+        g.lf_n = g.lf_n + 1
+        for k in 0..g.mk_n:
+            if g.lm_n >= len(g.lm_at):
+                g.lm_at = buf_resize(g.lm_at, (g.lm_n + 1) * 2)
+                g.lm_ln = buf_resize(g.lm_ln, (g.lm_n + 1) * 2)
+            g.lm_at[g.lm_n] = g.a.lab[g.mk_l[k]]
+            g.lm_ln[g.lm_n] = g.mk_ln[k]
+            g.lm_n = g.lm_n + 1
+    return ok && g.err == 0
+
+/#/ The object file of riscv64 code: the ELF writer's, with the machine number of RISC-V (243) and the flags of the double-float ABI.
+fn gr_elf(g: &Gen) => Txt:
+    let t = g_elf(g)
+    if t.n > 51:
+        t.b[18] = 243
+        t.b[19] = 0
+        t.b[48] = 4
+    return t

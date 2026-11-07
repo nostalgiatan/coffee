@@ -16,10 +16,11 @@ aarch64 Linux 用的是通用的系统调用表,没有 `open`、`fork`、`unlink
 
 ## `cf_syscall`
 
-程序里的内置 `syscall(n, a, b, c, d, e, f)` 编成对 `cf_syscall` 的调用,由链接器补上这个函数:把 C 调用约定的参数搬进系统调用指令用的寄存器。机器码按架构不同,放在 `ld/src/link.cf` 的 `syscall_stub()`,由驱动用 `--target=` 通过 `set_ld_arch` 选。x86-64 是 `syscall`,aarch64 是 `svc #0`(`x8` 放号码,`x0`..`x5` 放参数)。
+程序里的内置 `syscall(n, a, b, c, d, e, f)` 编成对 `cf_syscall` 的调用,由链接器补上这个函数:把 C 调用约定的参数搬进系统调用指令用的寄存器。机器码按架构不同,放在 `ld/src/link.cf` 的 `syscall_stub()`,由驱动用 `--target=` 通过 `set_ld_arch` 选。x86-64 是 `syscall`,aarch64 是 `svc #0`(`x8` 放号码,`x0`..`x5` 放参数),riscv64 是 `ecall`(`a7` 放号码,`a0`..`a5` 放参数)。
 
 ## 还没有的
 
+- riscv64:同 aarch64 用通用系统调用表和 `os_linux_aarch64.cf`;`cfld` 认机器号 243 和 `R_RISCV_*` 重定位,补 riscv64 的 `_start`,见 [riscv64 后端参考](../reference/riscv64-backend.md)。
 - aarch64:已经可以链接和运行(`cfld` 认机器号 183 和 `R_AARCH64_*` 重定位,补 aarch64 的 `_start`),见 [aarch64 后端参考](../reference/aarch64-backend.md)。
 - 沙箱镜像里的 `cf_syscall`(`ir/src/image.cf`)只有 x86-64 的版本。
 

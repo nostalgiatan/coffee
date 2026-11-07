@@ -1,0 +1,93 @@
+/#/ riscv64: the calling convention (LP64D), passing arguments and taking results.
+use * in gen
+use * in asm
+use * in asm_rv
+use * in target_rv
+use * in gen_x86_regs
+use * in regalloc
+use * in gen_x86_call
+use * in gen_x86_isel
+use * in gen_rv_regs
+use * in gen_rv_isel
+use * in gen_rv_fun
+
+/#/ The address of aggregate `x` (a place in the frame, or an undefined value) into `reg`.
+fn gr_agg_addr(g: &Gen, f: &Fun, reg: int, x: int) => void:
+    if f.op[x] == int(Op.Undef):
+        rv_adr_sym(&g.a, reg, 1, 0)
+    else:
+        rv_addi(&g.a, reg, tr_fp(), g.voff[x])
+
+/#/ The call to the symbol `sym` (or to the function value in the `c` operand of `i` when `sym` < 0, through t5) with the values queued in
+/#/ `av`; the result of instruction `i` is stored. An aggregate goes as a pointer to its place in
+/#/ the caller's frame; one that is returned is written through the pointer passed as the first argument. In a variadic call the floats travel in
+/#/ integer registers.
+fn gr_do_call(g: &Gen, f: &Fun, rs: &Reps, i: int, sym: int, variadic: bool) => void:
+    let ret = f.rep[i]
+    let sret = ret >= rp_first_agg()
+    /#/ where each argument goes: 0 an integer register, 1 a float register, 2 the stack
+    let cls: buf<int> = new_buf(int, g.nav + 1)
+    let ni = 0
+    let nx = 0
+    if sret:
+        ni = 1
+    let on_stack = 0
+    for k in 0..g.nav:
+        let r = f.rep[g_res(g, f, g.av[k])]
+        if r >= rp_first_agg() || g_is_int_class(g, r) || variadic:
+            if ni < tr_nint_args():
+                ni = ni + 1
+                cls[k] = 0
+            else:
+                cls[k] = 2
+                on_stack = on_stack + 1
+        elif nx < tr_nfloat_args():
+            nx = nx + 1
+            cls[k] = 1
+        else:
+            cls[k] = 2
+            on_stack = on_stack + 1
+    let sbytes = (on_stack * 8 + 15) // 16 * 16
+    if sbytes > 0:
+        rv_addi(&g.a, 2, 2, 0 - sbytes)
+    let j = 0
+    for k in 0..g.nav:
+        if cls[k] == 2:
+            let x = g_res(g, f, g.av[k])
+            if f.rep[x] >= rp_first_agg():
+                gr_agg_addr(g, f, tr_s0(), x)
+            else:
+                gr_ld(g, tr_s0(), f, g.av[k])
+            rv_st(&g.a, 2, 8 * j, tr_s0(), 8)
+            j = j + 1
+    ni = 0
+    if sret:
+        rv_addi(&g.a, tr_int_arg(0), tr_fp(), g.voff[i])
+        ni = 1
+    let cx = 0
+    for k in 0..g.nav:
+        let v = g.av[k]
+        let x = g_res(g, f, v)
+        let r = f.rep[x]
+        if cls[k] == 0:
+            if r >= rp_first_agg():
+                gr_agg_addr(g, f, tr_int_arg(ni), x)
+            else:
+                gr_ld(g, tr_int_arg(ni), f, v)
+            ni = ni + 1
+        elif cls[k] == 1:
+            gr_fmove(g, f, tr_float_arg(cx), v)
+            cx = cx + 1
+    if sym < 0:
+        gr_ld(g, tr_ind(), f, f.c[i])
+        rv_callr(&g.a, tr_ind())
+    else:
+        rv_call_sym(&g.a, sym)
+    if sbytes > 0:
+        rv_addi(&g.a, 2, 2, sbytes)
+    if ret == int(Rp.Void) || sret || f.uses[i] == 0:
+        return
+    if g_is_int_class(g, ret):
+        gr_st(g, i, tr_int_arg(0))
+    else:
+        gr_ffin(g, f, i, tr_float_arg(0))

@@ -13,6 +13,13 @@ import sys
 import tempfile
 
 
+TARGET = 'aarch64-linux'
+for _a in sys.argv:
+    if _a.startswith('--target='):
+        TARGET = _a[9:]
+QEMU = {'aarch64-linux': 'qemu-aarch64', 'riscv64-linux': 'qemu-riscv64'}[TARGET]
+
+
 def includes(d):
     t = open(os.path.join(d, 'coffee.toml')).read()
     inc = []
@@ -27,7 +34,7 @@ def includes(d):
 def run(a):
     coffee2, d, f = a
     with tempfile.TemporaryDirectory() as t:
-        cmd = [coffee2, f, '--target=aarch64-linux', '--static', '-o', t + '/x']
+        cmd = [coffee2, f, '--target=' + TARGET, '--static', '-o', t + '/x']
         for i in includes(d):
             cmd += ['-I', i]
         r = subprocess.run(cmd, capture_output=True, text=True, cwd=d)
@@ -35,7 +42,7 @@ def run(a):
             msg = (r.stdout + r.stderr).strip().splitlines()
             return d, f, 'compile', msg[-1][:150] if msg else ''
         try:
-            r = subprocess.run(['qemu-aarch64', t + '/x'], capture_output=True, text=True, timeout=300, cwd=d)
+            r = subprocess.run([QEMU, t + '/x'], capture_output=True, text=True, timeout=300, cwd=d)
         except subprocess.TimeoutExpired:
             return d, f, 'timeout', ''
         if r.returncode == 0:
