@@ -1,0 +1,231 @@
+/#/ x86-64: the vector loop (`VLoop`) as SSE2.
+use * in gen
+use * in asm
+use * in gen_x86_regs
+use * in gen_x86_call
+use * in gen_x86_isel
+use * in gen_x86_fun
+use * in gen_dbg
+use * in elf
+use * in dbgtype
+
+/#/ The vector loop `i`: while a whole vector of elements is left (`i0 + W <= n`), it computes `W` elements
+/#/ at once and steps `W`; its value is where it stopped, from where the scalar loop that follows goes on.
+/#/ The arguments are the start and the end, the base address of each buffer, the loop invariants (kept
+/#/ in xmm8..), then the program (see `vectorize`): a postfix list of loads, invariants, operations and
+/#/ stores. It writes rax, rcx, rdx, rsi, rdi, r8..r11 and every xmm register, like a call.
+fn g_gen_vloop(g: &Gen, f: &Fun, i: int) => void:
+    let base = f.a[i]
+    let lane = f.c[i] & 15
+    /#/ a reduction: 0 none, else 1 +, 2 -, 3 ^, 4 |, 5 &; the accumulator is in the slot that is the first operand
+    let rk = f.c[i] >> 4
+    let np = f.aux[i] & 255
+    let ni = (f.aux[i] >> 8) & 255
+    let plen = f.aux[i] >> 16
+    if g.a.sbx:
+        /#/ the scalar loop does it all
+        /#/ (with a reduction the slot is the first operand and still holds the accumulator)
+        let k0 = 0
+        if rk > 0:
+            k0 = 1
+        g_ld(g, 0, f, f.pool[base + k0])
+        g_st(g, i, 0)
+        return
+    let eb = 4
+    let w = 4
+    let fl = true
+    let dbl = false
+    if lane == 1:
+        eb = 8
+        w = 2
+        dbl = true
+    elif lane == 2:
+        eb = 1
+        w = 16
+        fl = false
+    elif lane == 3:
+        eb = 2
+        w = 8
+        fl = false
+    elif lane == 4:
+        fl = false
+    elif lane == 5:
+        eb = 8
+        w = 2
+        fl = false
+    let nops = 2 + np + ni
+    if rk > 0:
+        nops = nops + 1
+    for k in 0..nops:
+        g_ld(g, 0, f, f.pool[base + k])
+        g.a.push(0)
+    /#/ the invariants, from the last
+    for q in 0..ni:
+        let j = ni - 1 - q
+        g.a.pop(0)
+        if eb == 4:
+            g.a.extend(0, 0, 4, false)
+            g.a.mov_ri(2, 4294967297)
+            g.a.imul_rr(0, 2)
+        elif eb == 2:
+            g.a.extend(0, 0, 2, false)
+            g.a.mov_ri(2, 281479271743489)
+            g.a.imul_rr(0, 2)
+        elif eb == 1:
+            g.a.extend(0, 0, 1, false)
+            g.a.mov_ri(2, 72340172838076673)
+            g.a.imul_rr(0, 2)
+        g.a.movq_x(8 + j, 0, false)
+        g.a.splat_q(8 + j)
+    /#/ the buffers: rdx, rsi, r8, r9, r10, r11, rdi
+    let preg = g_vl_reg(g, 0)
+    for q in 0..np:
+        let k = np - 1 - q
+        g.a.pop(g_vl_reg(g, k))
+    g.a.pop(1)
+    g.a.pop(0)
+    if rk == 5:
+        g.a.vec_op(true, 118, 7, 7)
+    elif rk > 0:
+        g.a.xorps(7, 7)
+    /#/ two vectors a round while two are left, then one at a time
+    g.a.add_ri(1, 1 - 2 * w)
+    let top2 = g.a.new_label()
+    let done2 = g.a.new_label()
+    g.a.cmp_rr(0, 1)
+    g.a.jcc(13, done2)
+    g.a.bind(top2)
+    g_vl_body(g, f, base + nops, plen, eb, lane, fl, dbl, 0, rk)
+    g_vl_body(g, f, base + nops, plen, eb, lane, fl, dbl, 16, rk)
+    g.a.add_ri(0, 2 * w)
+    g.a.cmp_rr(0, 1)
+    g.a.jcc(12, top2)
+    g.a.bind(done2)
+    g.a.add_ri(1, w)
+    let top = g.a.new_label()
+    let done = g.a.new_label()
+    g.a.cmp_rr(0, 1)
+    g.a.jcc(13, done)
+    g.a.bind(top)
+    g_vl_body(g, f, base + nops, plen, eb, lane, fl, dbl, 0, rk)
+    g.a.add_ri(0, w)
+    g.a.cmp_rr(0, 1)
+    g.a.jcc(12, top)
+    g.a.bind(done)
+    if rk > 0:
+        /#/ the two halves of the accumulator together, then with the value in the slot, which gets the result
+        g.a.pop(2)
+        g.a.movaps(0, 7)
+        g.a.vec_op(true, 109, 0, 0)
+        let cop = 212
+        if rk == 3:
+            cop = 239
+        elif rk == 4:
+            cop = 235
+        elif rk == 5:
+            cop = 219
+        g.a.vec_op(true, cop, 7, 0)
+        g.a.movq_r(1, 7, false)
+        g.a.load(6, 2, 0, 8)
+        if rk == 3:
+            g.a.xor_rr(6, 1)
+        elif rk == 4:
+            g.a.or_rr(6, 1)
+        elif rk == 5:
+            g.a.and_rr(6, 1)
+        else:
+            g.a.add_rr(6, 1)
+        g.a.store(2, 0, 6, 8)
+    g_st(g, i, 0)
+
+/#/ The program of a vector loop for the vector at the index in rax plus `disp` bytes.
+fn g_vl_body(g: &Gen, f: &Fun, pbase: int, plen: int, eb: int, lane: int, fl: bool, dbl: bool, disp: int, rk: int) => void:
+    /#/ `inv[k]` is the invariant a stack slot stands for (it is copied only when something writes to the slot)
+    let inv: buf<int> = new_buf(int, plen + 2)
+    let sp = 0
+    for q in 0..plen:
+        let tk = f.cval(g_res(g, f, f.pool[pbase + q]))
+        let code = tk & 255
+        let arg = tk >> 8
+        if code == 1:
+            g.a.vload(sp, g_vl_reg(g, arg), 0, eb, disp)
+            inv[sp] = -1
+            sp = sp + 1
+        elif code == 2:
+            inv[sp] = arg
+            sp = sp + 1
+        elif code == 3:
+            sp = sp - 1
+            if inv[sp - 1] >= 0:
+                g.a.movaps(sp - 1, 8 + inv[sp - 1])
+                inv[sp - 1] = -1
+            let src = sp
+            if inv[sp] >= 0:
+                src = 8 + inv[sp]
+            g_vl_bin(g, arg, lane, fl, dbl, sp - 1, src)
+        else:
+            if inv[sp - 1] >= 0:
+                g.a.movaps(sp - 1, 8 + inv[sp - 1])
+            g.a.vstore(g_vl_reg(g, arg), 0, eb, sp - 1, disp)
+            sp = sp - 1
+    if rk > 0:
+        /#/ the value of the round goes into the accumulator, xmm7
+        if inv[sp - 1] >= 0:
+            g.a.movaps(sp - 1, 8 + inv[sp - 1])
+        let opc = 212
+        if rk == 2:
+            opc = 251
+        elif rk == 3:
+            opc = 239
+        elif rk == 4:
+            opc = 235
+        elif rk == 5:
+            opc = 219
+        g.a.vec_op(true, opc, 7, sp - 1)
+
+/#/ The register of buffer `k` of a vector loop.
+fn g_vl_reg(g: &Gen, k: int) => int:
+    if k == 0:
+        return 2
+    if k == 1:
+        return 6
+    if k == 2:
+        return 8
+    if k == 3:
+        return 9
+    if k == 4:
+        return 10
+    if k == 5:
+        return 11
+    return 7
+
+/#/ `x[a] = x[a] op x[b]` for the vector operation `op` (add 0, sub 1, mul 2, div 3, and 4, or 5, xor 6).
+fn g_vl_bin(g: &Gen, op: int, lane: int, fl: bool, dbl: bool, a: int, b: int) => void:
+    if fl:
+        let opc = 88
+        if op == 1:
+            opc = 92
+        elif op == 2:
+            opc = 89
+        elif op == 3:
+            opc = 94
+        g.a.vec_op(dbl, opc, a, b)
+        return
+    let opc = 0
+    if op == 4:
+        opc = 219
+    elif op == 5:
+        opc = 235
+    elif op == 6:
+        opc = 239
+    elif op == 0:
+        opc = 252 + (lane - 2)
+        if lane == 5:
+            opc = 212
+    elif op == 1:
+        opc = 248 + (lane - 2)
+        if lane == 5:
+            opc = 251
+    else:
+        opc = 213
+    g.a.vec_op(true, opc, a, b)

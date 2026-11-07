@@ -1,0 +1,179 @@
+/#/ x86-64: one function (prologue, blocks, epilogue), and the object file.
+use * in gen
+use * in asm
+use * in gen_x86_regs
+use * in gen_x86_call
+use * in gen_x86_isel
+use * in gen_x86_vec
+use * in gen_dbg
+use * in elf
+use * in dbgtype
+
+fn g_elf(g: &Gen) => Txt:
+    return write_elf(&g.o, &g.a)
+
+/#/ The saved registers come back by pop, from below the frame's locals.
+fn g_epilogue(g: &Gen) => void:
+    if g.sframe > 0:
+        g.a.add_ri(14, g.sframe)
+    if g.nsaved > 0:
+        if g.frame > g.rbase + 8 * g.nsaved:
+            g.a.lea(4, 5, 0 - g.rbase - 8 * g.nsaved)
+        let k = g.nsaved - 1
+        while k >= 0:
+            g.a.pop(g.saved[k])
+            k = k - 1
+    g.a.leave()
+    g.a.ret()
+
+/#/ Generates function `f`; returns false if something could not be translated.
+fn g_gen_fun(g: &Gen, f: &Fun, rs: &Reps, sy: &Names) => bool:
+    g.err = 0
+    g.rbase = 0
+    if f.ret >= rp_first_agg():
+        g.rbase = 8
+    g.a.begin_fun()
+    g.nfk = 0
+    g.nfu = 0
+    let nm = new_txt()
+    for k in 0..len(f.nm):
+        nm.put_byte(f.nm[k])
+    g.fsym = g.o.sym(&nm)
+    if len(g.ord) < f.nb + 1:
+        g.ord = new_buf(int, f.nb + 1)
+        g.emit = new_buf(int, f.nb + 1)
+    /#/ the registers are given along the plain order (a header before its loop), the code is
+    /#/ written in the rotated one
+    block_order(f, &g.ord, false)
+    block_order(f, &g.emit, true)
+    g_alloc_regs(g, f, rs)
+    g_count_uses(g, f)
+    g_layout(g, f, rs)
+    let start = g.a.pos()
+    for b in 0..f.nb:
+        g.a.new_label()
+    g.a.push(5)
+    g.a.mov_rr(5, 4)
+    /#/ [rbp-8] is the place of the pointer for a returned aggregate (rdi); the saved registers
+    /#/ follow, then the locals
+    if g.rbase > 0:
+        g.a.push(7)
+    for k in 0..g.nsaved:
+        g.a.push(g.saved[k])
+    if g.frame > g.rbase + 8 * g.nsaved:
+        g.a.sub_ri(4, g.frame - g.rbase - 8 * g.nsaved)
+    if g.sframe > 0:
+        g.a.sub_ri(14, g.sframe)
+    let nret = 0
+    for b in 0..f.nb:
+        if f.blast[b] >= 0 && f.op[f.blast[b]] == int(Op.Ret):
+            nret = nret + 1
+    g.epi_jump = g.nsaved > 0 && nret > 1
+    g.epi = g.a.new_label()
+    /#/ the parameters of the entry block
+    let ci = 0
+    let cx = 0
+    let cs = 0
+    if f.ret >= rp_first_agg():
+        ci = 1
+    let p = f.pfirst[0]
+    while p >= 0:
+        let r = f.rep[p]
+        if r >= rp_first_agg() || g_is_int_class(g, r):
+            if ci < 6:
+                if r >= rp_first_agg():
+                    g_copy_mem(g, g_vb(g, p), 0 - g.voff[p], int_reg(ci), 0, rsize(rs, r))
+                else:
+                    g_st(g, p, int_reg(ci))
+            else:
+                g.a.load(0, 5, 16 + 8 * cs, 8)
+                if r >= rp_first_agg():
+                    g.a.mov_rr(6, 0)
+                    g_copy_mem(g, g_vb(g, p), 0 - g.voff[p], 6, 0, rsize(rs, r))
+                else:
+                    g_st(g, p, 0)
+                cs = cs + 1
+            ci = ci + 1
+        else:
+            if cx < 8:
+                if g.xhome[p] >= 0:
+                    g.a.movaps(g.xhome[p], cx)
+                else:
+                    g.a.movq_r(0, cx, r == int(Rp.F32))
+                    g_st(g, p, 0)
+            else:
+                g.a.load(0, 5, 16 + 8 * cs, 8)
+                g_st(g, p, 0)
+                cs = cs + 1
+            cx = cx + 1
+        p = f.nx[p]
+    for k in 0..g.nhc:
+        let c = g.hc[k]
+        if g.xhome[c] >= 0:
+            g_ld(g, 0, f, c)
+            g.a.movq_x(g.xhome[c], 0, f.rep[c] == int(Rp.F32))
+        elif g.home[c] >= 0:
+            /#/ a constant that only a store or a call argument reads got a general register
+            g_ld(g, g.home[c], f, c)
+    g.mk_n = 0
+    let last_ln = 0
+    for oi in 0..f.nb:
+        let b = g.emit[oi]
+        g.a.bind(b)
+        let i = f.bfirst[b]
+        while i >= 0:
+            if f.ln[i] > 0 && f.ln[i] != last_ln:
+                last_ln = f.ln[i]
+                if g.mk_n >= len(g.mk_l):
+                    g.mk_l = buf_resize(g.mk_l, (g.mk_n + 1) * 2)
+                    g.mk_ln = buf_resize(g.mk_ln, (g.mk_n + 1) * 2)
+                let ml = g.a.mark()
+                g.mk_l[g.mk_n] = ml
+                g.mk_ln[g.mk_n] = last_ln
+                g.mk_n = g.mk_n + 1
+            let nxt = -1
+            if f.nx[i] < 0 && oi + 1 < f.nb:
+                nxt = g.emit[oi + 1]
+            g_gen_inst(g, f, rs, sy, i, nxt)
+            i = f.nx[i]
+    if g.epi_jump:
+        g.a.bind(g.epi)
+        g_epilogue(g)
+    if g.nfk > 0:
+        while (g.a.pos() - start) % 8 != 0:
+            g.a.byte(204)
+        for k in 0..g.nfk:
+            g.a.bind(g.fk_lab[k])
+            g.a.le64(g.fk_bits[k])
+    let ok = g.a.end_fun()
+    for u in 0..g.nfu:
+        g.a.rl_add[g.fu_rl[u]] = g.a.lab[g.fk_lab[g.fu_k[u]]] - start - 4
+    let w = new_txt()
+    for k in 0..len(f.nm):
+        w.put_byte(f.nm[k])
+    let sym = g.o.sym(&w)
+    g.o.define(sym, start, g.a.pos() - start)
+    if ok && g.err == 0 && g.mk_n > 0:
+        if g.lf_n >= len(g.lf_sym):
+            g.lf_sym = buf_resize(g.lf_sym, (g.lf_n + 1) * 2)
+            g.lf_start = buf_resize(g.lf_start, (g.lf_n + 1) * 2)
+            g.lf_m0 = buf_resize(g.lf_m0, (g.lf_n + 1) * 2)
+        g.lf_sym[g.lf_n] = sym
+        g.lf_start[g.lf_n] = start
+        g.lf_m0[g.lf_n] = g.lm_n
+        g.lf_n = g.lf_n + 1
+        for k in 0..g.mk_n:
+            if g.lm_n >= len(g.lm_at):
+                g.lm_at = buf_resize(g.lm_at, (g.lm_n + 1) * 2)
+                g.lm_ln = buf_resize(g.lm_ln, (g.lm_n + 1) * 2)
+            g.lm_at[g.lm_n] = g.a.lab[g.mk_l[k]]
+            g.lm_ln[g.lm_n] = g.mk_ln[k]
+            g.lm_n = g.lm_n + 1
+    if g.cur >= 0 && ok && g.err == 0:
+        if g.cur >= len(g.msk):
+            let old = len(g.msk)
+            g.msk = buf_resize(g.msk, (g.cur + 1) * 2)
+            for q in old..len(g.msk):
+                g.msk[q] = 0
+        g.msk[g.cur] = 8 + g.fmask
+    return ok && g.err == 0

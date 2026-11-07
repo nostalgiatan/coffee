@@ -1,0 +1,152 @@
+/#/ x86-64: the System V calling convention, passing arguments and taking results.
+use * in gen
+use * in asm
+use * in gen_x86_regs
+use * in gen_x86_isel
+use * in gen_x86_vec
+use * in gen_x86_fun
+use * in gen_dbg
+use * in elf
+use * in dbgtype
+
+fn g_push_arg(g: &Gen, v: int) => void:
+    if g.nav >= len(g.av):
+        g.av = buf_resize(g.av, (g.nav + 1) * 2)
+    g.av[g.nav] = v
+    g.nav = g.nav + 1
+
+/#/ ---- values ------------------------------------------------------------
+
+fn g_is_int_class(g: &Gen, r: int) => bool:
+    return r != int(Rp.F32) && r != int(Rp.F64)
+
+/#/ The call to the symbol `sym` (or the address in r11 when `sym` < 0) with the values queued
+/#/ in `av`; the result of instruction `i` is stored.
+fn g_do_call(g: &Gen, f: &Fun, rs: &Reps, i: int, sym: int, variadic: bool) => void:
+    let ret = f.rep[i]
+    let sret = ret >= rp_first_agg()
+    /#/ which arguments go on the stack
+    let ni = 0
+    let nx = 0
+    if sret:
+        ni = 1
+    let on_stack = 0
+    for k in 0..g.nav:
+        let r = f.rep[g_res(g, f, g.av[k])]
+        if r >= rp_first_agg() || g_is_int_class(g, r):
+            if ni < 6:
+                ni = ni + 1
+            else:
+                on_stack = on_stack + 1
+        elif nx < 8:
+            nx = nx + 1
+        else:
+            on_stack = on_stack + 1
+    if on_stack % 2 == 1:
+        g.a.sub_ri(4, 8)
+    /#/ the stack arguments, last first
+    let k = g.nav - 1
+    while k >= 0:
+        let r = f.rep[g_res(g, f, g.av[k])]
+        let reg_ok = false
+        /#/ recompute whether this one fits in a register: count the ones before it
+        let ci = 0
+        if sret:
+            ci = 1
+        let cx = 0
+        for j in 0..k:
+            let rj = f.rep[g_res(g, f, g.av[j])]
+            if rj >= rp_first_agg() || g_is_int_class(g, rj):
+                ci = ci + 1
+            else:
+                cx = cx + 1
+        if r >= rp_first_agg() || g_is_int_class(g, r):
+            reg_ok = ci < 6
+        else:
+            reg_ok = cx < 8
+        if !reg_ok:
+            if r >= rp_first_agg():
+                let x = g_res(g, f, g.av[k])
+                if f.op[x] == int(Op.Undef):
+                    g.a.lea_rip(0, 1, 0)
+                else:
+                    g.a.lea(0, g_vb(g, x), 0 - g.voff[x])
+            else:
+                g_ld(g, 0, f, g.av[k])
+            g.a.push(0)
+        k = k - 1
+    if sret:
+        g.a.lea(7, g_vb(g, i), 0 - g.voff[i])
+    let ci = 0
+    if sret:
+        ci = 1
+    let cx = 0
+    for an in 0..g.nav:
+        let v = g.av[an]
+        let x = g_res(g, f, v)
+        let r = f.rep[x]
+        if r >= rp_first_agg():
+            if ci < 6:
+                if f.op[x] == int(Op.Undef):
+                    g.a.lea_rip(int_reg(ci), 1, 0)
+                else:
+                    g.a.lea(int_reg(ci), g_vb(g, x), 0 - g.voff[x])
+            ci = ci + 1
+        elif g_is_int_class(g, r):
+            if ci < 6:
+                g_ld(g, int_reg(ci), f, v)
+            ci = ci + 1
+        else:
+            if cx < 8:
+                if g.xhome[x] >= 0:
+                    g.a.movaps(cx, g.xhome[x])
+                else:
+                    g_ld(g, 0, f, v)
+                    g.a.movq_x(cx, 0, r == int(Rp.F32))
+            cx = cx + 1
+    if variadic:
+        g.a.mov_ri(0, nx)
+    if sym < 0:
+        g.a.call_reg(11)
+    else:
+        g.a.call_sym(sym)
+    let pop = on_stack
+    if on_stack % 2 == 1:
+        pop = pop + 1
+    if pop > 0:
+        g.a.add_ri(4, pop * 8)
+    if ret == int(Rp.Void) || sret || f.uses[i] == 0:
+        return
+    if g_is_int_class(g, ret):
+        g_st(g, i, 0)
+    else:
+        g_xfin(g, f, i, 0)
+
+/#/ The symbol of the function the name number `id` of `sy` stands for.
+fn g_callee(g: &Gen, sy: &Names, id: int) => int:
+    let w = new_txt()
+    sy.put(&w, id)
+    return g.o.sym(&w)
+
+/#/ ---- instructions ------------------------------------------------------
+
+fn g_cc_of(g: &Gen, p: int) => int:
+    if p == int(Pr.Eq):
+        return cc_e()
+    if p == int(Pr.Ne):
+        return cc_ne()
+    if p == int(Pr.SLt):
+        return cc_l()
+    if p == int(Pr.SLe):
+        return cc_le()
+    if p == int(Pr.SGt):
+        return cc_g()
+    if p == int(Pr.SGe):
+        return cc_ge()
+    if p == int(Pr.ULt):
+        return cc_b()
+    if p == int(Pr.ULe):
+        return cc_be()
+    if p == int(Pr.UGt):
+        return cc_a()
+    return cc_ae()

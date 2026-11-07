@@ -145,11 +145,11 @@ fn make_image(o: &Obj, a: &Asm) => Image:
 /#/ The image of the module in `lw`, once its functions are generated. Like `object`, it adds the
 /#/ strings and globals to the generator, so only one of the two can be asked for.
 fn image_of(lw: &Lower) => Image:
-    lw.mc.add_rodata(&lw.sbytes)
+    g_add_rodata(&lw.mc, &lw.sbytes)
     for k in 0..lw.gl_n:
         let w = new_txt()
         lw.names.put(&w, lw.gl_name[k])
-        lw.mc.add_global(&w, lw.gl_size[k])
+        g_add_global(&lw.mc, &w, lw.gl_size[k])
     return make_image(&lw.mc.o, &lw.mc.a)
 
 /#/ ---- sandbox ----------------------------------------------------------------
@@ -331,9 +331,9 @@ fn make_image_sbx(o: &Obj, a: &Asm) => Image:
 
 /#/ The sandbox image of the module in `lw`, whose code was generated with `Asm.sbx` set.
 fn image_sbx_of(lw: &Lower) => Image:
-    lw.mc.add_rodata(&lw.sbytes)
+    g_add_rodata(&lw.mc, &lw.sbytes)
     for k in 0..lw.gl_n:
         let w = new_txt()
         lw.names.put(&w, lw.gl_name[k])
-        lw.mc.add_global(&w, lw.gl_size[k])
+        g_add_global(&lw.mc, &w, lw.gl_size[k])
     return make_image_sbx(&lw.mc.o, &lw.mc.a)

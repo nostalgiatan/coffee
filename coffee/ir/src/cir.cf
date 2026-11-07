@@ -431,7 +431,7 @@ fn read_cir(t: &Txt, lw: &Lower) => int:
             sl = sl | (lw.sbytes.b[off + sb] << (8 * sb))
         if sl < 0 || off + 9 + sl > slen:
             return cir_bad_range()
-        lw.mc.add_str(off + 8)
+        g_add_str(&lw.mc, off + 8)
         off = off + 9 + sl
     /#/ globals
     r = Rd { at: from[3], end: from[3] + lens[3], bad: 0 }

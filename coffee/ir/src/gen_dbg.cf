@@ -1,0 +1,127 @@
+/#/ The places of the lines of the flattened text and the line tables of the code, which the code generator fills for debuggers and profilers (shared by all targets).
+use * in gen
+use * in asm
+use * in gen_x86_regs
+use * in gen_x86_call
+use * in gen_x86_isel
+use * in gen_x86_vec
+use * in gen_x86_fun
+use * in elf
+use * in dbgtype
+
+/#/ ---- the places of the lines of the flattened text ------------------------------------------------
+/#/ The driver gives the stretches of the flattened text (from a line on, a file and a line of that
+/#/ file) so that the line marks can name `file:line`; without them lines stay as numbers.
+let dbg_seg_line = new_buf(int, 1)
+
+let dbg_seg_src = new_buf(int, 1)
+
+let dbg_seg_unit = new_buf(int, 1)
+
+let dbg_nseg = 0
+
+let dbg_units = new_txt()
+
+let dbg_lines = 0
+
+let dbg_dir = new_txt()
+
+/#/ Variables and their types go in the table too (set with `-O0 -g`).
+let dbg_vars = false
+
+fn set_debug_vars() => void:
+    dbg_vars = true
+
+fn set_line_map(seg_line: &buf<int>, seg_src: &buf<int>, seg_unit: &buf<int>, nseg: int, units: &Txt, lines: int, dir: &Txt) => void:
+    dbg_seg_line = new_buf(int, nseg + 1)
+    dbg_seg_src = new_buf(int, nseg + 1)
+    dbg_seg_unit = new_buf(int, nseg + 1)
+    for k in 0..nseg:
+        dbg_seg_line[k] = seg_line[k]
+        dbg_seg_src[k] = seg_src[k]
+        dbg_seg_unit[k] = seg_unit[k]
+    dbg_nseg = nseg
+    dbg_units = new_txt()
+    dbg_units.put_all(units)
+    dbg_lines = lines
+    dbg_dir = new_txt()
+    dbg_dir.put_all(dir)
+
+/#/ The stretch of the flattened text that line `line` (1-based) is in, -1 when there is none.
+fn dbg_seg_of(line: int) => int:
+    if line < 1 || line > dbg_lines || dbg_nseg == 0:
+        return 0 - 1
+    let lo = 0
+    let hi = dbg_nseg
+    while lo < hi:
+        let mid = (lo + hi) // 2
+        if dbg_seg_line[mid] <= line - 1:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo - 1
+
+/#/ The source file number `u` appended to `out`.
+fn put_unit_name(out: &Txt, u: int) => void:
+    let k = 0
+    let s = 0
+    for i in 0..dbg_units.n:
+        if dbg_units.b[i] == 10:
+            if k == u:
+                for q in s..i:
+                    out.put_byte(dbg_units.b[q])
+                return
+            k = k + 1
+            s = i + 1
+
+/#/ The line marks as text: `D directory` once when known, `F name` for each function, then
+/#/ `L offset place` for each place where the code of another line starts (the offset from the start
+/#/ of the function; the place is `file:line` when the driver gave the map, else the line of the
+/#/ flattened text).
+fn lines_dump(g: &Gen, out: &Txt) => void:
+    if dbg_dir.n > 0:
+        out.put("D ")
+        out.put_all(&dbg_dir)
+        out.put_byte(10)
+    out.put_all(&g.dt.out)
+    for k in 0..g.lf_n:
+        let fn_txt = new_txt()
+        let s = g.lf_sym[k] - 2
+        for q in g.o.s_name[s]..g.o.s_name[s] + 4096:
+            if g.o.names.b[q] == 0:
+                break
+            fn_txt.put_byte(g.o.names.b[q])
+        let hi = g.lm_n
+        if k + 1 < g.lf_n:
+            hi = g.lf_m0[k + 1]
+        let rows = new_txt()
+        for m in g.lf_m0[k]..hi:
+            /#/ a later mark at the same offset replaces an earlier one
+            if m + 1 < hi && g.lm_at[m + 1] == g.lm_at[m]:
+                continue
+            let ln = g.lm_ln[m]
+            if dbg_nseg > 0:
+                let sg = dbg_seg_of(ln)
+                if sg < 0:
+                    continue
+                rows.put("L ")
+                rows.put_int(g.lm_at[m] - g.lf_start[k])
+                rows.put_byte(32)
+                put_unit_name(&rows, dbg_seg_unit[sg])
+                rows.put_byte(58)
+                rows.put_int(dbg_seg_src[sg] + (ln - 1 - dbg_seg_line[sg]))
+                rows.put_byte(10)
+            else:
+                rows.put("L ")
+                rows.put_int(g.lm_at[m] - g.lf_start[k])
+                rows.put_byte(32)
+                rows.put_int(ln)
+                rows.put_byte(10)
+        if rows.n > 0:
+            out.put("F ")
+            out.put_all(&fn_txt)
+            out.put_byte(10)
+            out.put_all(&rows)
+            if k < len(g.vr_s) && g.vr_e[k] > g.vr_s[k]:
+                for q in g.vr_s[k]..g.vr_e[k]:
+                    out.put_byte(g.vtxt.b[q])

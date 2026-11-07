@@ -1,0 +1,898 @@
+/#/ x86-64: which registers a value may live in, the allocation of them over live ranges, the frame layout and the moves along edges. The register numbers are x86-64's; a target description will replace them.
+use * in gen
+use * in asm
+use * in gen_x86_call
+use * in gen_x86_isel
+use * in gen_x86_vec
+use * in gen_x86_fun
+use * in gen_dbg
+use * in elf
+use * in dbgtype
+
+/#/ Can value `v` live in a register? Scalars made by instructions or block parameters.
+fn g_wants_reg(g: &Gen, f: &Fun, v: int) => bool:
+    if f.fwd[v] >= 0:
+        return false
+    let r = f.rep[v]
+    if r == int(Rp.Void) || r >= rp_first_agg():
+        return false
+    let op = f.op[v]
+    return !(op == int(Op.Slot) || op == int(Op.Const) || op == int(Op.StrLit) || op == int(Op.Undef) || op == int(Op.OwnMove))
+
+/#/ Does instruction `i` make a call (so that the registers a callee may write are lost)?
+fn g_is_clobber(g: &Gen, f: &Fun, i: int) => bool:
+    let op = f.op[i]
+    if g_uses_rdi(g, f, i):
+        return true
+    return op == int(Op.Call) || op == int(Op.CCall) || op == int(Op.CallI) || op == int(Op.Drop) || op == int(Op.Clone) || op == int(Op.Alloc) || op == int(Op.Free) || op == int(Op.FRem) || op == int(Op.VLoop)
+
+/#/ Does instruction `i` use rdi as a scratch register (the aggregate store and return)?
+fn g_uses_rdi(g: &Gen, f: &Fun, i: int) => bool:
+    let op = f.op[i]
+    if op == int(Op.Store) && f.rep[g_res(g, f, f.b[i])] >= rp_first_agg():
+        return true
+    return op == int(Op.Ret) && f.a[i] >= 0 && f.rep[g_res(g, f, f.a[i])] >= rp_first_agg()
+
+/#/ The caller-saved registers that the call `i` may write: all of them unless it is a call of a
+/#/ function of this object that was generated before (then what that one writes), and r8 and r9
+/#/ when its arguments go through them.
+fn g_site_mask(g: &Gen, f: &Fun, i: int) => int:
+    if g_uses_rdi(g, f, i):
+        return 16
+    if f.op[i] != int(Op.Call):
+        return 31
+    let id = f.aux[i]
+    let m = 31
+    if id >= 0 && id < len(g.msk) && g.msk[id] > 0:
+        m = g.msk[id] - 8
+    if f.b[i] >= 5:
+        m = m | 2
+    if f.b[i] >= 6:
+        m = m | 4
+    if f.rep[i] >= rp_first_agg():
+        m = m | 2
+    if f.b[i] >= 1 || f.rep[i] >= rp_first_agg():
+        m = m | 16
+    return m
+
+/#/ The registers written by the calls strictly between positions `lo` and `hi`.
+fn g_cm_in(g: &Gen, lo: int, hi: int) => int:
+    let a = 0
+    let b = g.ra_ncp
+    while a < b:
+        let mid = (a + b) // 2
+        if g.ra_cp[mid] > lo:
+            b = mid
+        else:
+            a = mid + 1
+    let m = 0
+    while a < g.ra_ncp && g.ra_cp[a] < hi:
+        m = m | g.ra_cm[a]
+        a = a + 1
+    return m
+
+/#/ May a value that lives across calls writing `cm` and (`restr`) is a parameter or an argument
+/#/ take register number `r` of the pool?
+fn g_reg_ok(g: &Gen, r: int, cm: int, restr: bool) => bool:
+    if g.a.sbx && r == 8:
+        return false
+    /#/ base-register sandbox code keeps the start of the linear memory in r15 and an address in r13
+    if g.a.bm && (r == 7 || r == 9):
+        return false
+    if r >= 5:
+        return true
+    if ((cm >> r) & 1) == 1:
+        return false
+    return r == 0 || !restr
+
+/#/ Is there a call strictly between positions `lo` and `hi`?
+fn g_crosses(g: &Gen, lo: int, hi: int) => bool:
+    let a = 0
+    let b = g.ra_ncp
+    while a < b:
+        let mid = (a + b) // 2
+        if g.ra_cp[mid] > lo:
+            b = mid
+        else:
+            a = mid + 1
+    return a < g.ra_ncp && g.ra_cp[a] < hi
+
+/#/ Counts the uses of every value of `f`, through forwarding and `own.move`.
+fn g_count_uses(g: &Gen, f: &Fun) => void:
+    if len(g.nuse) < f.ni + 1:
+        g.nuse = new_buf(int, f.ni + 1)
+    for v in 0..f.ni + 1:
+        g.nuse[v] = 0
+    for b in 0..f.nb:
+        let i = f.bfirst[b]
+        while i >= 0:
+            for k in 0..f.nval(i):
+                let v = f.val_at(i, k)
+                if v >= 0:
+                    let x = g_res(g, f, v)
+                    g.nuse[x] = g.nuse[x] + 1
+            i = f.nx[i]
+    for e in 0..f.ne:
+        if f.eto[e] >= 0:
+            for k in 0..f.eargn[e]:
+                let x = g_res(g, f, f.pool[f.eargs[e] + k])
+                g.nuse[x] = g.nuse[x] + 1
+
+/#/ Is `x`, an `index` or a `field`, only the address of the scalar `load` or `store` right
+/#/ after it? Then the access uses the address mode and `x` makes no code of its own.
+fn g_folds(g: &Gen, f: &Fun, x: int) => bool:
+    let op = f.op[x]
+    if op != int(Op.Index) && op != int(Op.Field):
+        return false
+    if g.nuse[x] != 1 || f.fwd[x] >= 0:
+        return false
+    if op == int(Op.Index):
+        let sz = f.aux[x]
+        if sz != 1 && sz != 2 && sz != 4 && sz != 8:
+            return false
+    let u = f.nx[x]
+    if u < 0:
+        return false
+    if f.op[u] == int(Op.Load):
+        return g_res(g, f, f.a[u]) == x && f.rep[u] < rp_first_agg()
+    if f.op[u] == int(Op.Store):
+        let v = g_res(g, f, f.b[u])
+        return g_res(g, f, f.a[u]) == x && v != x && f.rep[v] < rp_first_agg()
+    return false
+
+/#/ The address of the folded `x` as base, index, scale and displacement in `am_*`; what is not
+/#/ in a register of its own is loaded into `s1` (the base) and `s2` (the index).
+fn g_addr_of(g: &Gen, f: &Fun, x: int, s1: int, s2: int) => void:
+    g.am_base = g_src(g, f, f.a[x], s1)
+    if f.op[x] == int(Op.Index) && g_near_const(g, f, f.b[x]):
+        g.am_idx = -1
+        g.am_scale = 1
+        g.am_disp = f.aux[g_res(g, f, f.b[x])] * f.aux[x]
+    elif f.op[x] == int(Op.Index):
+        g.am_idx = g_src(g, f, f.b[x], s2)
+        g.am_scale = f.aux[x]
+        g.am_disp = 0
+    else:
+        g.am_idx = -1
+        g.am_scale = 1
+        g.am_disp = f.aux[x]
+
+/#/ Does a call stand at position `p`?
+fn g_at_call(g: &Gen, p: int) => bool:
+    let a = 0
+    let b = g.ra_ncp
+    while a < b:
+        let mid = (a + b) // 2
+        if g.ra_cp[mid] >= p:
+            b = mid
+        else:
+            a = mid + 1
+    return a < g.ra_ncp && g.ra_cp[a] == p
+
+/#/ The edges leaving block `b`, in `ed`.
+fn g_term_edges(g: &Gen, f: &Fun, b: int) => void:
+    g.ned = 0
+    let t = f.blast[b]
+    if t < 0:
+        return
+    let op = f.op[t]
+    if op == int(Op.Br):
+        g_add_edge(g, f.aux[t])
+    elif op == int(Op.CondBr):
+        g_add_edge(g, f.b[t])
+        g_add_edge(g, f.c[t])
+    elif op == int(Op.Switch):
+        for k in 0..f.b[t]:
+            g_add_edge(g, f.pool[f.aux[t] + k * 2 + 1])
+        g_add_edge(g, f.c[t])
+
+fn g_add_edge(g: &Gen, e: int) => void:
+    if g.ned >= len(g.ed):
+        g.ed = buf_resize(g.ed, (g.ned + 1) * 2)
+    g.ed[g.ned] = e
+    g.ned = g.ned + 1
+
+/#/ Chooses a register for the values that deserve one: `home` of every value (-1 for the frame).
+/#/ Live ranges are single intervals of the block order, made from the liveness of every block.
+fn g_alloc_regs(g: &Gen, f: &Fun, rs: &Reps) => void:
+    let n = f.ni
+    if len(g.home) < n + 1:
+        g.home = new_buf(int, n + 1)
+        g.xhome = new_buf(int, n + 1)
+        g.xsg = new_buf(int, n + 1)
+        g.did = new_buf(int, n + 1)
+    for v in 0..n:
+        g.home[v] = -1
+        g.xhome[v] = -1
+        g.xsg[v] = 0
+        g.did[v] = -1
+    g.nsaved = 0
+    g.ra_ncp = 0
+    g.fmask = 31
+    let bs: buf<int> = new_buf(int, f.nb + 1)
+    let be: buf<int> = new_buf(int, f.nb + 1)
+    let depth: buf<int> = new_buf(int, f.nb + 1)
+    /#/ loop depth: a back edge (to a block not after its source in the order of the code) wraps the
+    /#/ blocks between
+    let at: buf<int> = new_buf(int, f.nb + 1)
+    for oi in 0..f.nb:
+        at[g.ord[oi]] = oi
+    for b in 0..f.nb:
+        g_term_edges(g, f, b)
+        for k in 0..g.ned:
+            let t = f.eto[g.ed[k]]
+            if t >= 0 && at[t] <= at[b]:
+                for q in at[t]..at[b] + 1:
+                    depth[g.ord[q]] = depth[g.ord[q]] + 1
+    /#/ dense numbers, positions: uses at even numbers, definitions after them
+    let nd = 0
+    for b in 0..f.nb:
+        let p = f.pfirst[b]
+        while p >= 0:
+            if g_wants_reg(g, f, p):
+                g.did[p] = nd
+                nd = nd + 1
+            p = f.nx[p]
+        let i = f.bfirst[b]
+        while i >= 0:
+            if g_wants_reg(g, f, i):
+                g.did[i] = nd
+                nd = nd + 1
+            i = f.nx[i]
+    g.nhc = 0
+    /#/ a float constant used inside a loop is loaded once, at the entry (when the entry is no loop)
+    let entry_ok = g.ord[0] == 0
+    for b in 0..f.nb:
+        g_term_edges(g, f, b)
+        for k in 0..g.ned:
+            if f.eto[g.ed[k]] == 0:
+                entry_ok = false
+    if entry_ok:
+        for b in 0..f.nb:
+            if depth[b] == 0:
+                continue
+            let i = f.bfirst[b]
+            while i >= 0:
+                for k in 0..f.nval(i):
+                    nd = g_hoist_const(g, f, f.val_at(i, k), nd)
+                i = f.nx[i]
+            g_term_edges(g, f, b)
+            for k in 0..g.ned:
+                let e = g.ed[k]
+                for j in 0..f.eargn[e]:
+                    nd = g_hoist_const(g, f, f.pool[f.eargs[e] + j], nd)
+    if nd == 0:
+        return
+    let dv: buf<int> = new_buf(int, nd + 1)
+    g.ra_lo = new_buf(int, nd + 1)
+    g.ra_hi = new_buf(int, nd + 1)
+    g.ra_wt = new_buf(int, nd + 1)
+    g.ra_dblk = new_buf(int, nd + 1)
+    g.ra_dset = new_buf(int, nd + 1)
+    g.nuq = 0
+    for d in 0..nd:
+        g.ra_lo[d] = 1000000000
+        g.ra_hi[d] = -1
+    g.fmask = 0
+    let pos = 0
+    for oi in 0..f.nb:
+        let b = g.ord[oi]
+        bs[b] = pos + 1
+        let p = f.pfirst[b]
+        let w = 1
+        for q in 0..depth[b]:
+            if w < 4096:
+                w = w * 8
+        while p >= 0:
+            let d = g.did[p]
+            if d >= 0:
+                dv[d] = p
+                g.ra_dblk[d] = b
+                g.ra_lo[d] = pos + 1
+                g.ra_hi[d] = pos + 1
+                g.ra_wt[d] = g.ra_wt[d] + w
+            p = f.nx[p]
+        pos = pos + 2
+        let i = f.bfirst[b]
+        be[b] = bs[b]
+        while i >= 0:
+            be[b] = pos
+            if g_is_clobber(g, f, i):
+                if g.ra_ncp >= len(g.ra_cp):
+                    g.ra_cp = buf_resize(g.ra_cp, (g.ra_ncp + 1) * 2)
+                if g.ra_ncp >= len(g.ra_cm):
+                    g.ra_cm = buf_resize(g.ra_cm, (g.ra_ncp + 1) * 2)
+                g.ra_cp[g.ra_ncp] = pos
+                g.ra_cm[g.ra_ncp] = g_site_mask(g, f, i)
+                g.fmask = g.fmask | g.ra_cm[g.ra_ncp]
+                g.ra_ncp = g.ra_ncp + 1
+            let d = g.did[i]
+            if d >= 0:
+                dv[d] = i
+                g.ra_dblk[d] = b
+                g.ra_lo[d] = pos + 1
+                g.ra_hi[d] = pos + 1
+                g.ra_wt[d] = g.ra_wt[d] + w
+            i = f.nx[i]
+            pos = pos + 2
+    for k in 0..g.nhc:
+        let c = g.hc[k]
+        let d = g.did[c]
+        dv[d] = c
+        g.ra_dblk[d] = 0
+        g.ra_lo[d] = bs[0]
+        g.ra_hi[d] = bs[0]
+        g.ra_dset[d] = 1
+    /#/ the uses: those of a value not defined (yet) in the block they are in make it live into the block
+    for b in 0..f.nb:
+        let w = 1
+        for q in 0..depth[b]:
+            if w < 4096:
+                w = w * 8
+        let p = f.pfirst[b]
+        while p >= 0:
+            if g.did[p] >= 0:
+                g.ra_dset[g.did[p]] = 1
+            p = f.nx[p]
+        let i = f.bfirst[b]
+        let ip = bs[b] + 1
+        while i >= 0:
+            for k in 0..f.nval(i):
+                g_note_use(g, f, f.val_at(i, k), b, ip, w)
+            let d = g.did[i]
+            if d >= 0:
+                g.ra_dset[d] = 1
+            i = f.nx[i]
+            ip = ip + 2
+        g_term_edges(g, f, b)
+        for k in 0..g.ned:
+            let e = g.ed[k]
+            for j in 0..f.eargn[e]:
+                g_note_use(g, f, f.pool[f.eargs[e] + j], b, be[b], w)
+    /#/ liveness: from each such use walk back over the predecessors up to the block of the definition;
+    /#/ the blocks walked are the ones the value is live into, their predecessors the ones it is live
+    /#/ out of. The ranges cover those. `lvs`/`lve` bound each value's blocks in `lvb`.
+    let pc: buf<int> = new_buf(int, f.nb + 2)
+    for b in 0..f.nb:
+        g_term_edges(g, f, b)
+        for k in 0..g.ned:
+            let t = f.eto[g.ed[k]]
+            if t >= 0:
+                pc[t + 1] = pc[t + 1] + 1
+    for b in 0..f.nb:
+        pc[b + 1] = pc[b + 1] + pc[b]
+    let pred: buf<int> = new_buf(int, pc[f.nb] + 1)
+    let pfill: buf<int> = new_buf(int, f.nb + 1)
+    for b in 0..f.nb:
+        g_term_edges(g, f, b)
+        for k in 0..g.ned:
+            let t = f.eto[g.ed[k]]
+            if t >= 0:
+                pred[pc[t] + pfill[t]] = b
+                pfill[t] = pfill[t] + 1
+    /#/ the uses by value
+    let uc: buf<int> = new_buf(int, nd + 2)
+    for q in 0..g.nuq:
+        uc[g.uq_d[q] + 1] = uc[g.uq_d[q] + 1] + 1
+    for d in 0..nd:
+        uc[d + 1] = uc[d + 1] + uc[d]
+    let ub: buf<int> = new_buf(int, g.nuq + 1)
+    let ufill: buf<int> = new_buf(int, nd + 1)
+    for q in 0..g.nuq:
+        let d = g.uq_d[q]
+        ub[uc[d] + ufill[d]] = g.uq_b[q]
+        ufill[d] = ufill[d] + 1
+    let inm: buf<int> = new_buf(int, f.nb + 1)
+    let stack: buf<int> = new_buf(int, f.nb + 1)
+    let lvb: buf<int> = new_buf(int, 64)
+    let nlv = 0
+    let lvs: buf<int> = new_buf(int, nd + 1)
+    let lve: buf<int> = new_buf(int, nd + 1)
+    for d in 0..nd:
+        lvs[d] = nlv
+        let stamp = d + 1
+        let db = g.ra_dblk[d]
+        for q in uc[d]..uc[d + 1]:
+            let u = ub[q]
+            if inm[u] == stamp || u == db:
+                continue
+            let sp = 0
+            stack[0] = u
+            sp = 1
+            inm[u] = stamp
+            while sp > 0:
+                sp = sp - 1
+                let x = stack[sp]
+                if nlv >= len(lvb):
+                    lvb = buf_resize(lvb, (nlv + 1) * 2)
+                lvb[nlv] = x
+                nlv = nlv + 1
+                if bs[x] < g.ra_lo[d]:
+                    g.ra_lo[d] = bs[x]
+                if bs[x] > g.ra_hi[d]:
+                    g.ra_hi[d] = bs[x]
+                for r in pc[x]..pc[x + 1]:
+                    let pb = pred[r]
+                    if be[pb] + 1 > g.ra_hi[d]:
+                        g.ra_hi[d] = be[pb] + 1
+                    if be[pb] + 1 < g.ra_lo[d]:
+                        g.ra_lo[d] = be[pb] + 1
+                    if pb != db && inm[pb] != stamp:
+                        inm[pb] = stamp
+                        stack[sp] = pb
+                        sp = sp + 1
+        lve[d] = nlv
+    /#/ coalescing: a value computed in block `b` and passed on a back edge to the parameter `p` may
+    /#/ take p's register when p is not read after it (in `b`, or in what follows `b`) and the value
+    /#/ does not leave `b`; their ranges overlap only because p stays alive on its other paths
+    let coal: buf<int> = new_buf(int, nd + 1)
+    for d in 0..nd:
+        coal[d] = -1
+    for b in 0..f.nb:
+        g_term_edges(g, f, b)
+        for k in 0..g.ned:
+            let e = g.ed[k]
+            let t = f.eto[e]
+            if t < 0 || at[t] > at[b]:
+                continue
+            let pp = f.pfirst[t]
+            for j in 0..f.eargn[e]:
+                let x = g_res(g, f, f.pool[f.eargs[e] + j])
+                let dx = g.did[x]
+                let dp = g.did[pp]
+                if dx >= 0 && dp >= 0 && f.op[x] != int(Op.Param) && f.blk[x] == b && coal[dx] < 0:
+                    let ok = !g_live_out_of(g, f, b, dx, &lvb, &lvs, &lve)
+                    if g_live_out_of(g, f, b, dp, &lvb, &lvs, &lve):
+                        ok = false
+                    let i = f.nx[x]
+                    while ok && i >= 0:
+                        for q in 0..f.nval(i):
+                            if f.val_at(i, q) >= 0 && g_res(g, f, f.val_at(i, q)) == pp:
+                                ok = false
+                        i = f.nx[i]
+                    for k2 in 0..g.ned:
+                        let e2 = g.ed[k2]
+                        for j2 in 0..f.eargn[e2]:
+                            if g_res(g, f, f.pool[f.eargs[e2] + j2]) == pp:
+                                ok = false
+                    if ok:
+                        coal[dx] = dp
+                pp = f.nx[pp]
+    /#/ what a register is worth to a value: its uses (weighted by loop depth) per position of its range
+    let dn: buf<int> = new_buf(int, nd + 1)
+    for d in 0..nd:
+        dn[d] = g.ra_wt[d] * 1024 // (g.ra_hi[d] - g.ra_lo[d] + 2)
+    /#/ linear scan, by start
+    let top = pos + 4
+    let first: buf<int> = new_buf(int, top + 1)
+    let link: buf<int> = new_buf(int, nd + 1)
+    for q in 0..top + 1:
+        first[q] = -1
+    let sd = nd - 1
+    while sd >= 0:
+        link[sd] = first[g.ra_lo[sd]]
+        first[g.ra_lo[sd]] = sd
+        sd = sd - 1
+    /#/ the caller-saved registers first (r10, then r8 and r9, the registers of the fifth and sixth
+    /#/ argument), then the saved ones
+    let regs: buf<int> = new_buf(int, 10)
+    regs[0] = 10
+    regs[1] = 8
+    regs[2] = 9
+    regs[3] = 11
+    regs[4] = 7
+    regs[5] = 3
+    regs[6] = 12
+    regs[7] = 13
+    regs[8] = 14
+    regs[9] = 15
+    let ent: buf<int> = new_buf(int, nd + 1)
+    let ep = f.pfirst[0]
+    while ep >= 0:
+        if g.did[ep] >= 0:
+            ent[g.did[ep]] = 1
+        ep = f.nx[ep]
+    for k in 0..g.nhc:
+        ent[g.did[g.hc[k]]] = 1
+    let occ: buf<int> = new_buf(int, 10)
+    for r in 0..10:
+        occ[r] = -1
+    let used: buf<int> = new_buf(int, 10)
+    /#/ the xmm registers 2 to 15 for floats that are not alive across a call (all are caller-saved);
+    /#/ the arguments are loaded into xmm0 to xmm7, so a parameter or an argument stays in 8 to 15
+    let occx: buf<int> = new_buf(int, 16)
+    for r in 0..16:
+        occx[r] = -1
+    for q in 0..top + 1:
+        let cd = first[q]
+        while cd >= 0:
+            let d = cd
+            let nxt = link[d]
+            let fr_x = -1
+            let rd = f.rep[dv[d]]
+            if (rd == int(Rp.F32) || rd == int(Rp.F64)) && !g_crosses(g, g.ra_lo[d], g.ra_hi[d]):
+                let lowx = 2
+                if ent[d] == 1 || g_at_call(g, g.ra_hi[d]):
+                    lowx = 8
+                for r in 2..16:
+                    if occx[r] >= 0 && g.ra_hi[occx[r]] < g.ra_lo[d]:
+                        occx[r] = -1
+                for r in lowx..16:
+                    if occx[r] < 0 && fr_x < 0:
+                        fr_x = r
+                if fr_x >= 0:
+                    occx[fr_x] = d
+                    g.xhome[dv[d]] = fr_x
+                    if rd == int(Rp.F32):
+                        g.xsg[dv[d]] = 1
+                    cd = nxt
+                    continue
+            /#/ which of the caller-saved registers `d` may take: not one that a call it is alive
+            /#/ across may write; only r10 when it is an argument of the call it ends at or a
+            /#/ parameter of the function (loading the arguments or the parameters would overwrite it)
+            let cm = g_cm_in(g, g.ra_lo[d], g.ra_hi[d])
+            let restr = ent[d] == 1 || g_at_call(g, g.ra_hi[d])
+            for r in 0..10:
+                if occ[r] >= 0 && g.ra_hi[occ[r]] < g.ra_lo[d]:
+                    occ[r] = -1
+            let fr = -1
+            /#/ the hint: the register of the first operand when it ends where `d` begins
+            let hint = g_hint_reg(g, f, dv[d])
+            let shared = -1
+            if coal[d] >= 0 && g.home[dv[coal[d]]] >= 0 && g.ra_lo[coal[d]] < g.ra_lo[d]:
+                for r in 0..10:
+                    if regs[r] == g.home[dv[coal[d]]] && occ[r] == coal[d] && g_reg_ok(g, r, cm, restr):
+                        shared = r
+            if shared >= 0:
+                fr = shared
+            if hint >= 0 && fr < 0:
+                for r in 0..10:
+                    if regs[r] == hint && occ[r] < 0 && g_reg_ok(g, r, cm, restr):
+                        fr = r
+            for r in 0..10:
+                if occ[r] < 0 && fr < 0 && g_reg_ok(g, r, cm, restr):
+                    fr = r
+            if fr >= 0:
+                if shared < 0 || g.ra_hi[d] > g.ra_hi[occ[fr]]:
+                    occ[fr] = d
+                g.home[dv[d]] = regs[fr]
+                used[fr] = 1
+            else:
+                /#/ the least wanted of the live ones and this one goes to the frame
+                let worst = -1
+                for r in 0..10:
+                    if g_reg_ok(g, r, cm, restr):
+                        if worst < 0 || dn[occ[r]] < dn[occ[worst]]:
+                            worst = r
+                if dn[occ[worst]] < dn[d]:
+                    g.home[dv[occ[worst]]] = -1
+                    g.home[dv[d]] = regs[worst]
+                    occ[worst] = d
+            cd = nxt
+    /#/ the check: nothing in a caller-saved register is alive across a call, and r8 and r9
+    /#/ hold neither a parameter nor an argument of the call that ends the value
+    for d in 0..nd:
+        let h = g.home[dv[d]]
+        if h == 7 || h == 8 || h == 9 || h == 10 || h == 11:
+            let bit = 0
+            if h == 8:
+                bit = 1
+            elif h == 9:
+                bit = 2
+            elif h == 11:
+                bit = 3
+            elif h == 7:
+                bit = 4
+            if ((g_cm_in(g, g.ra_lo[d], g.ra_hi[d]) >> bit) & 1) == 1:
+                g.err = 1
+            if h != 10 && (ent[d] == 1 || g_at_call(g, g.ra_hi[d])):
+                g.err = 1
+    for d in 0..nd:
+        let xh = g.xhome[dv[d]]
+        if xh >= 0:
+            if g_crosses(g, g.ra_lo[d], g.ra_hi[d]) || xh < 2:
+                g.err = 1
+            if xh < 8 && (ent[d] == 1 || g_at_call(g, g.ra_hi[d])):
+                g.err = 1
+    /#/ what this function may write: the registers of its calls, and its own caller-saved homes
+    for r in 0..5:
+        if used[r] == 1:
+            g.fmask = g.fmask | (1 << r)
+    if len(g.saved) < 6:
+        g.saved = new_buf(int, 8)
+    for r in 0..10:
+        if used[r] == 1 && r >= 5:
+            g.saved[g.nsaved] = regs[r]
+            g.nsaved = g.nsaved + 1
+
+/#/ For an instruction that computes into its first operand's register (two-address): the
+/#/ register that operand has, else -1.
+fn g_hint_reg(g: &Gen, f: &Fun, v: int) => int:
+    let op = f.op[v]
+    if op == int(Op.Add) || op == int(Op.Sub) || op == int(Op.Mul) || op == int(Op.And) || op == int(Op.Or) || op == int(Op.Xor) || op == int(Op.Shl) || op == int(Op.AShr) || op == int(Op.LShr) || op == int(Op.Neg) || op == int(Op.Not):
+        if f.a[v] >= 0:
+            return g.home[g_res(g, f, f.a[v])]
+        return -1
+    if op == int(Op.Trunc) || op == int(Op.Bitcast) || op == int(Op.PtrToInt) || op == int(Op.IntToPtr) || op == int(Op.SExt) || op == int(Op.ZExt):
+        if f.a[v] >= 0:
+            return g.home[g_res(g, f, f.a[v])]
+    return -1
+
+/#/ Give the float constant `v` a number as a value to keep in a register, once; returns the new count.
+fn g_hoist_const(g: &Gen, f: &Fun, v: int, nd: int) => int:
+    if v < 0:
+        return nd
+    let x = g_res(g, f, v)
+    if f.op[x] != int(Op.Const) || g.did[x] >= 0:
+        return nd
+    if f.rep[x] != int(Rp.F64) && f.rep[x] != int(Rp.F32):
+        return nd
+    if g.nhc >= len(g.hc):
+        g.hc = buf_resize(g.hc, (g.nhc + 1) * 2)
+    g.hc[g.nhc] = x
+    g.nhc = g.nhc + 1
+    g.did[x] = nd
+    return nd + 1
+
+fn g_note_use(g: &Gen, f: &Fun, v: int, b: int, p: int, w: int) => void:
+    if v < 0:
+        return
+    let x = g_res(g, f, v)
+    let d = g.did[x]
+    if d < 0:
+        return
+    g.ra_wt[d] = g.ra_wt[d] + w
+    if p < g.ra_lo[d]:
+        g.ra_lo[d] = p
+    if p > g.ra_hi[d]:
+        g.ra_hi[d] = p
+    if g.ra_dset[d] == 1 && g.ra_dblk[d] == b:
+        return
+    if g.nuq >= len(g.uq_d):
+        g.uq_d = buf_resize(g.uq_d, (g.nuq + 1) * 2)
+        g.uq_b = buf_resize(g.uq_b, (g.nuq + 1) * 2)
+    g.uq_d[g.nuq] = d
+    g.uq_b[g.nuq] = b
+    g.nuq = g.nuq + 1
+
+/#/ Is value `d` live out of block `b`: live into one of its successors?
+fn g_live_out_of(g: &Gen, f: &Fun, b: int, d: int, lvb: &buf<int>, lvs: &buf<int>, lve: &buf<int>) => bool:
+    g_term_edges(g, f, b)
+    for k in 0..g.ned:
+        let t = f.eto[g.ed[k]]
+        if t >= 0:
+            for q in lvs[d]..lve[d]:
+                if lvb[q] == t:
+                    return true
+    return false
+
+/#/ ---- frame -------------------------------------------------------------
+
+fn g_place_size(g: &Gen, rs: &Reps, r: int) => int:
+    let s = round8(rsize(rs, r))
+    if s < 8:
+        return 8
+    return s
+
+/#/ Gives every value its place; the size of the frame.
+fn g_layout(g: &Gen, f: &Fun, rs: &Reps) => void:
+    if len(g.voff) < f.ni + 1:
+        g.voff = new_buf(int, f.ni + 1)
+        g.sh = new_buf(int, f.ni + 1)
+    for v in 0..f.ni:
+        g.sh[v] = 0
+    let sbx = g.a.sbx
+    /#/ sandbox code keeps aggregates and the slots whose address is taken in the shadow frame, in
+    /#/ the linear memory: a pointer to them is an offset like any other, and the host stack holds
+    /#/ only what the code cannot name (return addresses, saved registers, spilled scalars)
+    let scur = 0
+    let cur = g.rbase + 8 * g.nsaved
+    let tmp = 0
+    for b in 0..f.nb:
+        let p = f.pfirst[b]
+        while p >= 0:
+            if g.home[p] < 0 && g.xhome[p] < 0:
+                if sbx && f.rep[p] >= rp_first_agg():
+                    g.voff[p] = 0 - scur
+                    g.sh[p] = 1
+                    scur = scur + g_place_size(g, rs, f.rep[p])
+                else:
+                    cur = cur + g_place_size(g, rs, f.rep[p])
+                    g.voff[p] = cur
+            p = f.nx[p]
+        let i = f.bfirst[b]
+        while i >= 0:
+            let op = f.op[i]
+            if op == int(Op.Slot):
+                let sz = round8(f.ty[i])
+                if f.ty[i] < 1:
+                    sz = sz + 8
+                if sbx:
+                    g.voff[i] = 0 - scur
+                    g.sh[i] = 1
+                    scur = scur + sz
+                else:
+                    cur = cur + sz
+                    g.voff[i] = cur
+            elif f.rep[i] != int(Rp.Void) && op != int(Op.OwnMove) && g.home[i] < 0 && g.xhome[i] < 0:
+                if sbx && f.rep[i] >= rp_first_agg():
+                    g.voff[i] = 0 - scur
+                    g.sh[i] = 1
+                    scur = scur + g_place_size(g, rs, f.rep[i])
+                else:
+                    cur = cur + g_place_size(g, rs, f.rep[i])
+                    g.voff[i] = cur
+            i = f.nx[i]
+    for e in 0..f.ne:
+        if f.eto[e] >= 0:
+            let sum = 0
+            for k in 0..f.eargn[e]:
+                sum = sum + g_place_size(g, rs, f.rep[g_res(g, f, f.pool[f.eargs[e] + k])])
+            if sum > tmp:
+                tmp = sum
+    cur = cur + tmp
+    g.tmp = cur
+    g.frame = (cur + 15) // 16 * 16
+    g.sframe = (scur + 15) // 16 * 16
+    /#/ a frame larger than the guard below the shadow stack could be stepped over
+    if g.sframe > 32768:
+        g.err = 1
+
+/#/ ---- edges -------------------------------------------------------------
+
+/#/ Copies what edge `e` passes into the parameters of the block it enters; through a scratch
+/#/ area when an argument is itself a parameter of that block (the copies are simultaneous).
+fn g_edge_copy(g: &Gen, f: &Fun, rs: &Reps, e: int) => void:
+    let to = f.eto[e]
+    let n = f.eargn[e]
+    if n == 0:
+        return
+    let hazard = false
+    let pj = f.pfirst[to]
+    for k in 0..n:
+        let x = g_res(g, f, f.pool[f.eargs[e] + k])
+        if f.op[x] == int(Op.Param) && f.blk[x] == to:
+            hazard = true
+        /#/ a parameter already written must not be what a later argument reads
+        let hx = g_hid(g, x)
+        if hx >= 0:
+            let q = f.pfirst[to]
+            for j in 0..k:
+                if g_hid(g, q) == hx:
+                    hazard = true
+                q = f.nx[q]
+    if !hazard:
+        let p = f.pfirst[to]
+        for k in 0..n:
+            if g.home[p] >= 0:
+                g_ld(g, g.home[p], f, f.pool[f.eargs[e] + k])
+            elif g.xhome[p] >= 0:
+                let ax = g_res(g, f, f.pool[f.eargs[e] + k])
+                if g.xhome[ax] >= 0:
+                    if g.xhome[ax] != g.xhome[p]:
+                        g.a.movaps(g.xhome[p], g.xhome[ax])
+                else:
+                    g_ld(g, 0, f, ax)
+                    g_st(g, p, 0)
+            else:
+                g_val_to(g, f, rs, g_vb(g, p), 0 - g.voff[p], f.pool[f.eargs[e] + k])
+            p = f.nx[p]
+        return
+    /#/ every parameter in a register: the copies as a sequence of moves, each after the ones that read
+    /#/ its register; a cycle goes through rcx (general) or xmm0 (floats)
+    let allreg = true
+    let pp = f.pfirst[to]
+    for k in 0..n:
+        if g.home[pp] < 0 && g.xhome[pp] < 0:
+            allreg = false
+        pp = f.nx[pp]
+    if allreg:
+        g_edge_moves(g, f, e)
+        return
+    let at = 0
+    for k in 0..n:
+        let v = f.pool[f.eargs[e] + k]
+        g_val_to(g, f, rs, 5, 0 - g.tmp + at, v)
+        at = at + g_place_size(g, rs, f.rep[g_res(g, f, v)])
+    let p = f.pfirst[to]
+    at = 0
+    for k in 0..n:
+        let sz = g_place_size(g, rs, f.rep[p])
+        if g.home[p] >= 0:
+            g.a.load(g.home[p], 5, 0 - g.tmp + at, 8)
+        elif g.xhome[p] >= 0:
+            g.a.load(0, 5, 0 - g.tmp + at, 8)
+            g_st(g, p, 0)
+        else:
+            g_copy_mem(g, g_vb(g, p), 0 - g.voff[p], 5, 0 - g.tmp + at, sz)
+        at = at + sz
+        p = f.nx[p]
+
+/#/ The register a move reads, as `hid` numbers it; -1 when it reads a constant, an address or the frame.
+fn g_move_src(g: &Gen, f: &Fun, x: int) => int:
+    let k = f.op[x]
+    if k == int(Op.Const) || k == int(Op.Undef) || k == int(Op.StrLit) || k == int(Op.Slot):
+        return -1
+    return g_hid(g, x)
+
+/#/ The simultaneous copies of edge `e` into the parameters (all in registers) as moves in an order
+/#/ where no move overwrites what a later one reads; a cycle is broken through a scratch register.
+fn g_edge_moves(g: &Gen, f: &Fun, e: int) => void:
+    let to = f.eto[e]
+    let n = f.eargn[e]
+    let pd: buf<int> = new_buf(int, n + 1)
+    let pa: buf<int> = new_buf(int, n + 1)
+    let ps: buf<int> = new_buf(int, n + 1)
+    let done: buf<int> = new_buf(int, n + 1)
+    let p = f.pfirst[to]
+    for k in 0..n:
+        pd[k] = p
+        pa[k] = g_res(g, f, f.pool[f.eargs[e] + k])
+        ps[k] = g_move_src(g, f, pa[k])
+        p = f.nx[p]
+    let left = n
+    while left > 0:
+        let progress = false
+        for k in 0..n:
+            if done[k] == 0:
+                let d = g_hid(g, pd[k])
+                let blocked = false
+                for j in 0..n:
+                    if j != k && done[j] == 0 && ps[j] == d:
+                        blocked = true
+                if !blocked:
+                    g_emit_move(g, f, pd[k], pa[k], ps[k])
+                    done[k] = 1
+                    left = left - 1
+                    progress = true
+        if !progress:
+            /#/ a cycle: some pending move reads a register that another pending move writes
+            let s = -1
+            for k in 0..n:
+                if done[k] == 0 && s < 0:
+                    let d = g_hid(g, pd[k])
+                    for j in 0..n:
+                        if j != k && done[j] == 0 && ps[j] == d && s < 0:
+                            s = d
+            if s < 32:
+                g.a.mov_rr(1, s)
+            else:
+                g.a.movaps(0, s - 32)
+            for j in 0..n:
+                if done[j] == 0 && ps[j] == s:
+                    if s < 32:
+                        ps[j] = -2
+                    else:
+                        ps[j] = -3
+
+/#/ One move: parameter `p` from the value `ax` (which sits in the register numbered `src`, or -2 / -3
+/#/ when that was copied to rcx / xmm0).
+fn g_emit_move(g: &Gen, f: &Fun, p: int, ax: int, src: int) => void:
+    if g.home[p] >= 0:
+        if src == -2:
+            g.a.mov_rr(g.home[p], 1)
+        elif src == -3:
+            g.a.movq_r(g.home[p], 0, g.xsg[ax] == 1)
+        else:
+            g_ld(g, g.home[p], f, ax)
+    else:
+        if src == -3:
+            g.a.movaps(g.xhome[p], 0)
+        elif src == -2:
+            g_st(g, p, 1)
+        elif g.xhome[ax] >= 0 && src >= 32:
+            if g.xhome[ax] != g.xhome[p]:
+                g.a.movaps(g.xhome[p], g.xhome[ax])
+        else:
+            g_ld(g, 0, f, ax)
+            g_st(g, p, 0)
+
+/#/ A number for the register of `x`, general ones as they are and xmm ones from 32; -1 in the frame.
+fn g_hid(g: &Gen, x: int) => int:
+    if g.home[x] >= 0:
+        return g.home[x]
+    if g.xhome[x] >= 0:
+        return 32 + g.xhome[x]
+    return -1
+
+/#/ ---- calls -------------------------------------------------------------

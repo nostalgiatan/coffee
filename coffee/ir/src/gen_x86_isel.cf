@@ -1,0 +1,869 @@
+/#/ x86-64: the machine instructions of each IR operation, and the loads and stores of operands.
+use * in gen
+use * in asm
+use * in gen_x86_regs
+use * in gen_x86_call
+use * in gen_x86_vec
+use * in gen_x86_fun
+use * in gen_dbg
+use * in elf
+use * in dbgtype
+
+/#/ The value an operand stands for, through forwarding and `own.move`.
+fn g_res(g: &Gen, f: &Fun, v: int) => int:
+    let x = f.follow(v)
+    while f.op[x] == int(Op.OwnMove):
+        x = f.follow(f.a[x])
+    return x
+
+/#/ reg = the value (a scalar, 8 bytes; narrower ones have meaningful low bytes only)
+fn g_ld(g: &Gen, reg: int, f: &Fun, v: int) => void:
+    let x = g_res(g, f, v)
+    let k = f.op[x]
+    if k == int(Op.Const):
+        let r = f.rep[x]
+        if r == int(Rp.F32):
+            g.a.mov_ri(reg, f.aux[x] & 4294967295)
+        else:
+            g.a.mov_ri(reg, f.aux[x])
+    elif k == int(Op.Undef):
+        g.a.mov_ri(reg, 0)
+    elif k == int(Op.StrLit):
+        g.a.lea_rip(reg, 1, g.sbase + g_so(g, f.aux[x]))
+    elif k == int(Op.Slot):
+        g.a.lea(reg, g_vb(g, x), 0 - g.voff[x])
+    elif g.home[x] >= 0:
+        if g.home[x] != reg:
+            g.a.mov_rr(reg, g.home[x])
+    elif g.xhome[x] >= 0:
+        g.a.movq_r(reg, g.xhome[x], g.xsg[x] == 1)
+    else:
+        g.a.load(reg, 5, 0 - g.voff[x], 8)
+
+fn g_so(g: &Gen, id: int) => int:
+    return g.soff[id]
+
+/#/ The base register of the bytes of value `x`: rbp, or r14 for the shadow frame of sandbox code.
+fn g_vb(g: &Gen, x: int) => int:
+    if g.a.sbx && g.sh[x] == 1:
+        return 14
+    return 5
+
+/#/ The register that holds `v`: its own when it has one, else `scratch`, loaded with it.
+fn g_src(g: &Gen, f: &Fun, v: int, scratch: int) => int:
+    let h = g.home[g_res(g, f, v)]
+    if h >= 0:
+        return h
+    g_ld(g, scratch, f, v)
+    return scratch
+
+/#/ The register of `v` when it has one, else -1.
+fn g_home_of(g: &Gen, f: &Fun, v: int) => int:
+    return g.home[g_res(g, f, v)]
+
+/#/ reg = the value extended from its width
+fn g_ld_ext(g: &Gen, reg: int, f: &Fun, v: int, signed: bool) => void:
+    g_ld(g, reg, f, v)
+    let x = g_res(g, f, v)
+    let r = f.rep[x]
+    if f.op[x] == int(Op.Cmp):
+        /#/ the result of a compare is 0 or 1 in a whole register already
+        return
+    if r == int(Rp.I8) || r == int(Rp.I16) || r == int(Rp.I32):
+        g.a.extend(reg, reg, rsize_scalar(r), signed)
+
+/#/ mov [rbp - place of i], reg
+fn g_st(g: &Gen, i: int, reg: int) => void:
+    if g.home[i] >= 0:
+        if g.home[i] != reg:
+            g.a.mov_rr(g.home[i], reg)
+    elif g.xhome[i] >= 0:
+        g.a.movq_x(g.xhome[i], reg, g.xsg[i] == 1)
+    else:
+        g.a.store(5, 0 - g.voff[i], reg, 8)
+
+/#/ The xmm register of float `v`: its own when it has one, else `scratch`, loaded with it.
+fn g_xsrc(g: &Gen, f: &Fun, v: int, scratch: int) => int:
+    let x = g_res(g, f, v)
+    if g.xhome[x] >= 0:
+        return g.xhome[x]
+    if f.op[x] == int(Op.Const) && !g.a.sbx:
+        g_load_fconst(g, scratch, f, x)
+        return scratch
+    g_ld(g, 0, f, x)
+    g.a.movq_x(scratch, 0, f.rep[x] == int(Rp.F32))
+    return scratch
+
+/#/ xmm `reg` = the float constant `x`, read from the pool after the function's code.
+fn g_load_fconst(g: &Gen, reg: int, f: &Fun, x: int) => void:
+    let single = f.rep[x] == int(Rp.F32)
+    let bits = f.aux[x]
+    if single:
+        bits = bits & 4294967295
+    let k = 0
+    while k < g.nfk && g.fk_bits[k] != bits:
+        k = k + 1
+    if k == g.nfk:
+        if k >= len(g.fk_bits):
+            g.fk_bits = buf_resize(g.fk_bits, (k + 1) * 2)
+            g.fk_lab = buf_resize(g.fk_lab, (k + 1) * 2)
+        g.fk_bits[k] = bits
+        g.fk_lab[k] = g.a.new_label()
+        g.nfk = k + 1
+    if g.nfu >= len(g.fu_rl):
+        g.fu_rl = buf_resize(g.fu_rl, (g.nfu + 1) * 2)
+        g.fu_k = buf_resize(g.fu_k, (g.nfu + 1) * 2)
+    g.a.load_x_sym(reg, single, g.fsym)
+    g.fu_rl[g.nfu] = g.a.nrl - 1
+    g.fu_k[g.nfu] = k
+    g.nfu = g.nfu + 1
+
+/#/ Where instruction `i` (a float) makes its result: its xmm register, else xmm0.
+fn g_xdst(g: &Gen, i: int) => int:
+    if g.xhome[i] >= 0:
+        return g.xhome[i]
+    return 0
+
+/#/ The result of instruction `i` is in xmm `x`: kept there, or stored.
+fn g_xfin(g: &Gen, f: &Fun, i: int, x: int) => void:
+    if g.xhome[i] >= 0:
+        if g.xhome[i] != x:
+            g.a.movaps(g.xhome[i], x)
+    else:
+        g.a.movq_r(0, x, f.rep[i] == int(Rp.F32))
+        g_st(g, i, 0)
+
+/#/ For an aggregate value: the base register and displacement of its bytes.
+fn g_ab_reg(g: &Gen, f: &Fun, v: int) => int:
+    let x = g_res(g, f, v)
+    if f.op[x] == int(Op.Undef):
+        g.a.lea_rip(6, 1, 0)
+        return 6
+    return g_vb(g, x)
+
+fn g_ab_disp(g: &Gen, f: &Fun, v: int) => int:
+    let x = g_res(g, f, v)
+    if f.op[x] == int(Op.Undef):
+        return 0
+    return 0 - g.voff[x]
+
+/#/ n bytes from [sb + sd] to [db + dd], through rax.
+fn g_copy_mem(g: &Gen, db: int, dd: int, sb: int, sd: int, n: int) => void:
+    let k = 0
+    while k + 8 <= n:
+        g.a.load(0, sb, sd + k, 8)
+        g.a.store(db, dd + k, 0, 8)
+        k = k + 8
+    if k + 4 <= n:
+        g.a.load(0, sb, sd + k, 4)
+        g.a.store(db, dd + k, 0, 4)
+        k = k + 4
+    if k + 2 <= n:
+        g.a.load(0, sb, sd + k, 2)
+        g.a.store(db, dd + k, 0, 2)
+        k = k + 2
+    if k < n:
+        g.a.load(0, sb, sd + k, 1)
+        g.a.store(db, dd + k, 0, 1)
+
+/#/ Value `v` to [db + dd], in full: a scalar as 8 bytes, an aggregate as its layout.
+fn g_val_to(g: &Gen, f: &Fun, rs: &Reps, db: int, dd: int, v: int) => void:
+    let x = g_res(g, f, v)
+    let r = f.rep[x]
+    if r >= rp_first_agg():
+        let sb = g_ab_reg(g, f, x)
+        g_copy_mem(g, db, dd, sb, g_ab_disp(g, f, x), rsize(rs, r))
+    elif g.home[x] >= 0:
+        g.a.store(db, dd, g.home[x], 8)
+    else:
+        g_ld(g, 0, f, x)
+        g.a.store(db, dd, 0, 8)
+
+/#/ ---- registers -----------------------------------------------------------
+
+fn g_is_signed_pred(g: &Gen, p: int) => bool:
+    return p == int(Pr.SLt) || p == int(Pr.SLe) || p == int(Pr.SGt) || p == int(Pr.SGe)
+
+/#/ Is the compare `i` used only by the branch right after it? Then the flags carry it.
+fn g_fused(g: &Gen, f: &Fun, i: int) => bool:
+    let n = f.nx[i]
+    if n < 0 || f.op[n] != int(Op.CondBr) || f.uses[i] != 1:
+        return false
+    return g_res(g, f, f.a[n]) == i
+
+/#/ Is the float compare `i` one the flags carry in a single condition (not == or !=)?
+fn g_fflag_ok(g: &Gen, f: &Fun, i: int) => bool:
+    let p = f.aux[i]
+    return p == int(Pr.OLt) || p == int(Pr.OLe) || p == int(Pr.OGt) || p == int(Pr.OGe)
+
+/#/ Compare the operands of the float compare `i` and return the condition that holds when it is true.
+/#/ An unordered result sets CF, so `a` and `ae` are false for it, as the compare requires.
+fn g_fcmp_flags(g: &Gen, f: &Fun, i: int) => int:
+    let p = f.aux[i]
+    let single = f.rep[g_res(g, f, f.a[i])] == int(Rp.F32)
+    let xa = g_xsrc(g, f, f.a[i], 0)
+    let xb = g_xsrc(g, f, f.b[i], 1)
+    if p == int(Pr.OLt) || p == int(Pr.OLe):
+        g.a.ucomi(single, xb, xa)
+    else:
+        g.a.ucomi(single, xa, xb)
+    if p == int(Pr.OLt) || p == int(Pr.OGt):
+        return cc_a()
+    return cc_ae()
+
+/#/ Is `v` a constant small enough that, times an element size of at most 8, it is a displacement?
+fn g_near_const(g: &Gen, f: &Fun, v: int) => bool:
+    let x = g_res(g, f, v)
+    if f.op[x] != int(Op.Const):
+        return false
+    let r = f.rep[x]
+    if r != int(Rp.I64) && r != int(Rp.Ptr):
+        return false
+    return f.aux[x] >= 0 - 100000000 && f.aux[x] <= 100000000
+
+/#/ Is `v` a 64-bit constant that fits the sign-extended 32-bit immediate of an instruction?
+fn g_small_imm(g: &Gen, f: &Fun, v: int) => bool:
+    let x = g_res(g, f, v)
+    if f.op[x] != int(Op.Const):
+        return false
+    let r = f.rep[x]
+    if r != int(Rp.I64) && r != int(Rp.Ptr):
+        return false
+    return f.aux[x] >= 0 - 2147483648 && f.aux[x] <= 2147483647
+
+/#/ Sets the flags for the integer compare `i`.
+fn g_cmp_flags(g: &Gen, f: &Fun, i: int) => void:
+    let signed = g_is_signed_pred(g, f.aux[i])
+    let wr = f.rep[g_res(g, f, f.a[i])]
+    if wr == int(Rp.I64) || wr == int(Rp.Ptr):
+        /#/ a whole register: compare it where it lives
+        let la = g_src(g, f, f.a[i], 0)
+        if g_small_imm(g, f, f.b[i]):
+            g.a.cmp_ri(la, f.aux[g_res(g, f, f.b[i])])
+        else:
+            g.a.cmp_rr(la, g_src(g, f, f.b[i], 1))
+        return
+    g_ld_ext(g, 0, f, f.a[i], signed)
+    if g_small_imm(g, f, f.b[i]):
+        g.a.cmp_ri(0, f.aux[g_res(g, f, f.b[i])])
+        return
+    g_ld_ext(g, 1, f, f.b[i], signed)
+    g.a.cmp_rr(0, 1)
+
+/#/ Division or remainder of the 64-bit value `i`'s first operand by the constant `d` >= 2,
+/#/ without a divide instruction; false if `op` and `d` have no such form here.
+fn g_div_const(g: &Gen, f: &Fun, i: int, op: int, d: int) => bool:
+    let signed = op == int(Op.SDiv) || op == int(Op.SRem)
+    let rem = op == int(Op.SRem) || op == int(Op.URem)
+    let pow2 = (d & (d - 1)) == 0
+    let k = 0
+    while (1 << k) < d:
+        k = k + 1
+    if !signed:
+        if !pow2:
+            return false
+        g_ld(g, 0, f, f.a[i])
+        if rem:
+            g.a.and_ri(0, d - 1)
+        else:
+            g.a.shift_i(5, 0, k)
+        g_st(g, i, 0)
+        return true
+    g_ld(g, 1, f, f.a[i])
+    if pow2:
+        /#/ x + (d - 1 when x is negative), then shifted
+        g.a.mov_rr(0, 1)
+        g.a.shift_i(7, 0, 63)
+        g.a.shift_i(5, 0, 64 - k)
+        g.a.add_rr(0, 1)
+        if rem:
+            g.a.shift_i(7, 0, k)
+            g.a.shift_i(4, 0, k)
+            g.a.sub_rr(1, 0)
+            g_st(g, i, 1)
+        else:
+            g.a.shift_i(7, 0, k)
+            g_st(g, i, 0)
+        return true
+    /#/ q = (mulh(m, x) + x >> (l - 1)) - (x >> 63), with m = 1 + floor(2^(63 + l) / d)
+    g.a.mov_ri(0, magic_mult(d, k))
+    g.a.grp3(5, 1)
+    g.a.add_rr(2, 1)
+    g.a.shift_i(7, 2, k - 1)
+    g.a.mov_rr(0, 1)
+    g.a.shift_i(7, 0, 63)
+    g.a.sub_rr(2, 0)
+    if rem:
+        g.a.imul_rri(2, 2, d)
+        g.a.sub_rr(1, 2)
+        g_st(g, i, 1)
+    else:
+        g_st(g, i, 2)
+    return true
+
+fn g_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => void:
+    let op = f.op[i]
+    let r = f.rep[i]
+    if op == int(Op.Param) || op == int(Op.Slot) || op == int(Op.OwnMove) || op == int(Op.Const) || op == int(Op.StrLit) || op == int(Op.Undef):
+        return
+    if op == int(Op.Add) || op == int(Op.Sub) || op == int(Op.Mul) || op == int(Op.And) || op == int(Op.Or) || op == int(Op.Xor):
+        let d = g.home[i]
+        if d >= 0:
+            /#/ the result has a register: work in it, with the operands where they live
+            let a = f.a[i]
+            let b = f.b[i]
+            if g_home_of(g, f, b) == d && op != int(Op.Sub):
+                a = f.b[i]
+                b = f.a[i]
+            if g_home_of(g, f, b) != d:
+                if g_small_imm(g, f, b):
+                    let v = f.aux[g_res(g, f, b)]
+                    if op == int(Op.Mul):
+                        if v > 0 && (v & (v - 1)) == 0:
+                            g_ld(g, d, f, a)
+                            let sh = 0
+                            while (1 << sh) < v:
+                                sh = sh + 1
+                            g.a.shift_i(4, d, sh)
+                        else:
+                            g.a.imul_rri(d, g_src(g, f, a, 0), v)
+                        return
+                    if op == int(Op.Add) && g_home_of(g, f, a) >= 0:
+                        g.a.lea(d, g_home_of(g, f, a), v)
+                        return
+                    g_ld(g, d, f, a)
+                    if op == int(Op.Add):
+                        g.a.add_ri(d, v)
+                    elif op == int(Op.Sub):
+                        g.a.sub_ri(d, v)
+                    elif op == int(Op.And):
+                        g.a.and_ri(d, v)
+                    elif op == int(Op.Or):
+                        g.a.or_ri(d, v)
+                    else:
+                        g.a.xor_ri(d, v)
+                    return
+                if op == int(Op.Add) && g_home_of(g, f, a) >= 0 && g_home_of(g, f, a) != d && g_home_of(g, f, b) >= 0:
+                    /#/ both operands live on: one lea instead of a copy and an add
+                    g.a.lea_idx(d, g_home_of(g, f, a), g_home_of(g, f, b), 1)
+                    return
+                g_ld(g, d, f, a)
+                let rb = g_src(g, f, b, 1)
+                if op == int(Op.Add):
+                    g.a.add_rr(d, rb)
+                elif op == int(Op.Sub):
+                    g.a.sub_rr(d, rb)
+                elif op == int(Op.Mul):
+                    g.a.imul_rr(d, rb)
+                elif op == int(Op.And):
+                    g.a.and_rr(d, rb)
+                elif op == int(Op.Or):
+                    g.a.or_rr(d, rb)
+                else:
+                    g.a.xor_rr(d, rb)
+                return
+        g_ld(g, 0, f, f.a[i])
+        if (op == int(Op.Add) || op == int(Op.Sub)) && g_small_imm(g, f, f.b[i]):
+            if op == int(Op.Add):
+                g.a.add_ri(0, f.aux[g_res(g, f, f.b[i])])
+            else:
+                g.a.sub_ri(0, f.aux[g_res(g, f, f.b[i])])
+            g_st(g, i, 0)
+            return
+        g_ld(g, 1, f, f.b[i])
+        if op == int(Op.Add):
+            g.a.add_rr(0, 1)
+        elif op == int(Op.Sub):
+            g.a.sub_rr(0, 1)
+        elif op == int(Op.Mul):
+            g.a.imul_rr(0, 1)
+        elif op == int(Op.And):
+            g.a.and_rr(0, 1)
+        elif op == int(Op.Or):
+            g.a.or_rr(0, 1)
+        else:
+            g.a.xor_rr(0, 1)
+        g_st(g, i, 0)
+        return
+    if op == int(Op.SDiv) || op == int(Op.SRem) || op == int(Op.UDiv) || op == int(Op.URem):
+        let signed = op == int(Op.SDiv) || op == int(Op.SRem)
+        if r == int(Rp.I64) && g_small_imm(g, f, f.b[i]) && f.aux[g_res(g, f, f.b[i])] >= 2:
+            if g_div_const(g, f, i, op, f.aux[g_res(g, f, f.b[i])]):
+                return
+        g_ld_ext(g, 0, f, f.a[i], signed)
+        g_ld_ext(g, 1, f, f.b[i], signed)
+        if signed:
+            g.a.cqo()
+            g.a.idiv(1)
+        else:
+            g.a.mov_ri(2, 0)
+            g.a.div(1)
+        if op == int(Op.SDiv) || op == int(Op.UDiv):
+            g_st(g, i, 0)
+        else:
+            g_st(g, i, 2)
+        return
+    if op == int(Op.Shl) || op == int(Op.AShr) || op == int(Op.LShr):
+        if g_small_imm(g, f, f.b[i]):
+            let k = f.aux[g_res(g, f, f.b[i])]
+            if k >= 0 && k < 64:
+                let sc = 4
+                if op == int(Op.LShr):
+                    sc = 5
+                elif op == int(Op.AShr):
+                    sc = 7
+                let d = g.home[i]
+                if d >= 0:
+                    g_ld_ext(g, d, f, f.a[i], op == int(Op.AShr))
+                    g.a.shift_i(sc, d, k)
+                else:
+                    g_ld_ext(g, 0, f, f.a[i], op == int(Op.AShr))
+                    g.a.shift_i(sc, 0, k)
+                    g_st(g, i, 0)
+                return
+        g_ld_ext(g, 0, f, f.a[i], op == int(Op.AShr))
+        g_ld(g, 1, f, f.b[i])
+        if op == int(Op.Shl):
+            g.a.shift_cl(4, 0)
+        elif op == int(Op.LShr):
+            g.a.shift_cl(5, 0)
+        else:
+            g.a.shift_cl(7, 0)
+        g_st(g, i, 0)
+        return
+    if op == int(Op.FnAddr):
+        g.a.lea_rip(0, g_callee(g, sy, f.aux[i]), 0)
+        g_st(g, i, 0)
+        return
+    if op == int(Op.Neg) || op == int(Op.Not):
+        g_ld(g, 0, f, f.a[i])
+        if op == int(Op.Neg):
+            g.a.neg(0)
+        else:
+            g.a.not_(0)
+        g_st(g, i, 0)
+        return
+    if op == int(Op.FNeg):
+        let single = r == int(Rp.F32)
+        let xa = g_xsrc(g, f, f.a[i], 0)
+        let xd = g_xdst(g, i)
+        if single:
+            g.a.mov_ri(1, 2147483648)
+        else:
+            g.a.mov_ri(1, 0 - 9223372036854775807 - 1)
+        g.a.movq_x(1, 1, false)
+        if xd != xa:
+            g.a.movaps(xd, xa)
+        g.a.xorps(xd, 1)
+        g_xfin(g, f, i, xd)
+        return
+    if op == int(Op.FAdd) || op == int(Op.FSub) || op == int(Op.FMul) || op == int(Op.FDiv):
+        let single = r == int(Rp.F32)
+        let code = 88
+        if op == int(Op.FMul):
+            code = 89
+        elif op == int(Op.FSub):
+            code = 92
+        elif op == int(Op.FDiv):
+            code = 94
+        let xa = g_xsrc(g, f, f.a[i], 0)
+        let xb = g_xsrc(g, f, f.b[i], 1)
+        let xd = g_xdst(g, i)
+        if xd == xa:
+            g.a.sse(code, single, xd, xb)
+        elif xd == xb && (op == int(Op.FAdd) || op == int(Op.FMul)):
+            g.a.sse(code, single, xd, xa)
+        elif xd != xb:
+            g.a.movaps(xd, xa)
+            g.a.sse(code, single, xd, xb)
+        else:
+            g.a.movaps(0, xa)
+            g.a.sse(code, single, 0, xb)
+            g.a.movaps(xd, 0)
+        g_xfin(g, f, i, xd)
+        return
+    if op == int(Op.FRem):
+        let single = r == int(Rp.F32)
+        let xa = g_xsrc(g, f, f.a[i], 0)
+        if xa != 0:
+            g.a.movaps(0, xa)
+        let xb = g_xsrc(g, f, f.b[i], 1)
+        if xb != 1:
+            g.a.movaps(1, xb)
+        let nm = new_txt()
+        if single:
+            nm.put("fmodf")
+        else:
+            nm.put("fmod")
+        g.a.call_sym(g.o.sym(&nm))
+        g_xfin(g, f, i, 0)
+        return
+    if op == int(Op.Cmp):
+        if g_fused(g, f, i):
+            return
+        g_cmp_flags(g, f, i)
+        if g.home[i] >= 0:
+            g.a.setcc(g_cc_of(g, f.aux[i]), g.home[i])
+        else:
+            g.a.setcc(g_cc_of(g, f.aux[i]), 0)
+            g_st(g, i, 0)
+        return
+    if op == int(Op.FCmp):
+        let p = f.aux[i]
+        if g_fflag_ok(g, f, i) && g_fused(g, f, i):
+            return
+        let single = f.rep[g_res(g, f, f.a[i])] == int(Rp.F32)
+        let xa = g_xsrc(g, f, f.a[i], 0)
+        let xb = g_xsrc(g, f, f.b[i], 1)
+        if p == int(Pr.OLt) || p == int(Pr.OLe):
+            g.a.ucomi(single, xb, xa)
+            if p == int(Pr.OLt):
+                g.a.setcc(cc_a(), 0)
+            else:
+                g.a.setcc(cc_ae(), 0)
+        elif p == int(Pr.OGt) || p == int(Pr.OGe):
+            g.a.ucomi(single, xa, xb)
+            if p == int(Pr.OGt):
+                g.a.setcc(cc_a(), 0)
+            else:
+                g.a.setcc(cc_ae(), 0)
+        else:
+            g.a.ucomi(single, xa, xb)
+            if p == int(Pr.OEq):
+                g.a.setcc(cc_e(), 0)
+                g.a.setcc(cc_np(), 1)
+            else:
+                g.a.setcc(cc_ne(), 0)
+                g.a.setcc(cc_np(), 1)
+            g.a.and_rr(0, 1)
+        g_st(g, i, 0)
+        return
+    if op == int(Op.Trunc) || op == int(Op.Bitcast) || op == int(Op.PtrToInt) || op == int(Op.IntToPtr):
+        if g.home[i] >= 0:
+            g_ld(g, g.home[i], f, f.a[i])
+            return
+        g_ld(g, 0, f, f.a[i])
+        g_st(g, i, 0)
+        return
+    if op == int(Op.SExt) || op == int(Op.ZExt):
+        if g.home[i] >= 0:
+            g_ld_ext(g, g.home[i], f, f.a[i], op == int(Op.SExt))
+            return
+        g_ld_ext(g, 0, f, f.a[i], op == int(Op.SExt))
+        g_st(g, i, 0)
+        return
+    if op == int(Op.SiToFp) || op == int(Op.UiToFp):
+        let single = r == int(Rp.F32)
+        let signed = op == int(Op.SiToFp)
+        let xd = g_xdst(g, i)
+        g_ld_ext(g, 0, f, f.a[i], signed)
+        if signed || f.rep[g_res(g, f, f.a[i])] != int(Rp.I64):
+            g.a.cvt_si2f(xd, 0, single)
+        else:
+            let pos = g.a.new_label()
+            let done = g.a.new_label()
+            g.a.test_rr(0, 0)
+            g.a.jcc(9, pos)
+            g.a.mov_rr(1, 0)
+            g.a.shift_i(5, 0, 1)
+            g.a.mov_ri(2, 1)
+            g.a.and_rr(1, 2)
+            g.a.or_rr(0, 1)
+            g.a.cvt_si2f(xd, 0, single)
+            g.a.sse(88, single, xd, xd)
+            g.a.jmp(done)
+            g.a.bind(pos)
+            g.a.cvt_si2f(xd, 0, single)
+            g.a.bind(done)
+        g_xfin(g, f, i, xd)
+        return
+    if op == int(Op.FpToSi) || op == int(Op.FpToUi):
+        let single = f.rep[g_res(g, f, f.a[i])] == int(Rp.F32)
+        let xa = g_xsrc(g, f, f.a[i], 0)
+        if op == int(Op.FpToUi) && r == int(Rp.I64):
+            let small = g.a.new_label()
+            let done = g.a.new_label()
+            if xa != 0:
+                g.a.movaps(0, xa)
+            if single:
+                g.a.mov_ri(1, 1593835520)
+            else:
+                g.a.mov_ri(1, 4890909195324358656)
+            g.a.movq_x(1, 1, single)
+            g.a.ucomi(single, 0, 1)
+            g.a.jcc(cc_b(), small)
+            g.a.sse(92, single, 0, 1)
+            g.a.cvt_f2si(0, 0, single)
+            g.a.mov_ri(1, 0 - 9223372036854775807 - 1)
+            g.a.xor_rr(0, 1)
+            g.a.jmp(done)
+            g.a.bind(small)
+            g.a.cvt_f2si(0, 0, single)
+            g.a.bind(done)
+        else:
+            g.a.cvt_f2si(0, xa, single)
+        g_st(g, i, 0)
+        return
+    if op == int(Op.FpExt) || op == int(Op.FpTrunc):
+        let to_single = op == int(Op.FpTrunc)
+        let xa = g_xsrc(g, f, f.a[i], 0)
+        let xd = g_xdst(g, i)
+        g.a.cvt_ff(xd, xa, to_single)
+        g_xfin(g, f, i, xd)
+        return
+    if (op == int(Op.Field) || op == int(Op.Index)) && g_folds(g, f, i):
+        return
+    if op == int(Op.Field):
+        let d = g.home[i]
+        if d < 0:
+            d = 0
+        let rb = g_src(g, f, f.a[i], 0)
+        if f.aux[i] == 0 && rb == d:
+            g_st(g, i, d)
+            return
+        g.a.lea(d, rb, f.aux[i])
+        g_st(g, i, d)
+        return
+    if op == int(Op.Index):
+        let d = g.home[i]
+        if d < 0:
+            d = 0
+        let sz = f.aux[i]
+        let ba = g_res(g, f, f.a[i])
+        if f.op[ba] == int(Op.StrLit) && (sz == 1 || sz == 2 || sz == 4 || sz == 8) && g_near_const(g, f, f.b[i]):
+            /#/ a place in the text of a literal: one rip-relative lea
+            g.a.lea_rip(d, 1, g.sbase + g_so(g, f.aux[ba]) + f.aux[g_res(g, f, f.b[i])] * sz)
+            g_st(g, i, d)
+            return
+        let ra = g_src(g, f, f.a[i], 0)
+        let rb = 1
+        if !((sz == 1 || sz == 2 || sz == 4 || sz == 8) && g_near_const(g, f, f.b[i])):
+            rb = g_src(g, f, f.b[i], 1)
+        if (sz == 1 || sz == 2 || sz == 4 || sz == 8) && g_near_const(g, f, f.b[i]):
+            let dp = f.aux[g_res(g, f, f.b[i])] * sz
+            if !(dp == 0 && ra == d):
+                g.a.lea(d, ra, dp)
+        elif sz == 1 || sz == 2 || sz == 4 || sz == 8:
+            g.a.lea_idx(d, ra, rb, sz)
+        else:
+            g.a.imul_rri(1, rb, sz)
+            g.a.lea_idx(d, ra, 1, 1)
+        g_st(g, i, d)
+        return
+    if op == int(Op.Extract):
+        let ar = f.rep[g_res(g, f, f.a[i])]
+        let eo = elem_off(rs, ar, f.aux[i])
+        let sb = g_ab_reg(g, f, f.a[i])
+        let sd = g_ab_disp(g, f, f.a[i]) + eo
+        if r >= rp_first_agg():
+            g_copy_mem(g, g_vb(g, i), 0 - g.voff[i], sb, sd, rsize(rs, r))
+        elif g.xhome[i] >= 0:
+            g.a.load_x(g.xhome[i], sb, sd, r == int(Rp.F32))
+        else:
+            let d = g.home[i]
+            if d < 0:
+                d = 0
+            g.a.load(d, sb, sd, rsize(rs, r))
+            g_st(g, i, d)
+        return
+    if op == int(Op.Insert):
+        let eo = elem_off(rs, r, f.aux[i])
+        let sb = g_ab_reg(g, f, f.a[i])
+        g_copy_mem(g, g_vb(g, i), 0 - g.voff[i], sb, g_ab_disp(g, f, f.a[i]), rsize(rs, r))
+        let er = f.rep[g_res(g, f, f.b[i])]
+        if er >= rp_first_agg():
+            let eb = g_ab_reg(g, f, f.b[i])
+            g_copy_mem(g, g_vb(g, i), 0 - g.voff[i] + eo, eb, g_ab_disp(g, f, f.b[i]), rsize(rs, er))
+        else:
+            g_ld(g, 0, f, f.b[i])
+            g.a.store(g_vb(g, i), 0 - g.voff[i] + eo, 0, rsize(rs, er))
+        return
+    if op == int(Op.Load):
+        if r >= rp_first_agg():
+            g_ld(g, 6, f, f.a[i])
+            g_copy_mem(g, g_vb(g, i), 0 - g.voff[i], 6, 0, rsize(rs, r))
+        elif g.xhome[i] >= 0:
+            let xd = g.xhome[i]
+            let sg = r == int(Rp.F32)
+            let x = g_res(g, f, f.a[i])
+            if g_folds(g, f, x):
+                g_addr_of(g, f, x, 6, 1)
+                if g.am_idx >= 0:
+                    g.a.load_x_idx(xd, g.am_base, g.am_idx, g.am_scale, 0, sg)
+                else:
+                    g.a.load_x(xd, g.am_base, g.am_disp, sg)
+            else:
+                g.a.load_x(xd, g_src(g, f, f.a[i], 6), 0, sg)
+        else:
+            let d = g.home[i]
+            if d < 0:
+                d = 0
+            let x = g_res(g, f, f.a[i])
+            if g_folds(g, f, x):
+                g_addr_of(g, f, x, 6, 1)
+                if g.am_idx >= 0:
+                    g.a.load_idx(d, g.am_base, g.am_idx, g.am_scale, 0, rsize(rs, r))
+                else:
+                    g.a.load(d, g.am_base, g.am_disp, rsize(rs, r))
+            else:
+                g.a.load(d, g_src(g, f, f.a[i], 6), 0, rsize(rs, r))
+            g_st(g, i, d)
+        return
+    if op == int(Op.Store):
+        let vr = f.rep[g_res(g, f, f.b[i])]
+        if vr >= rp_first_agg():
+            g_ld(g, 7, f, f.a[i])
+            let sb = g_ab_reg(g, f, f.b[i])
+            g_copy_mem(g, 7, 0, sb, g_ab_disp(g, f, f.b[i]), rsize(rs, vr))
+        elif g.xhome[g_res(g, f, f.b[i])] >= 0:
+            let xv = g.xhome[g_res(g, f, f.b[i])]
+            let sg = vr == int(Rp.F32)
+            let x = g_res(g, f, f.a[i])
+            if g_folds(g, f, x):
+                g_addr_of(g, f, x, 1, 6)
+                if g.am_idx >= 0:
+                    g.a.store_x_idx(g.am_base, g.am_idx, g.am_scale, 0, xv, sg)
+                else:
+                    g.a.store_x(g.am_base, g.am_disp, xv, sg)
+            else:
+                g.a.store_x(g_src(g, f, f.a[i], 1), 0, xv, sg)
+        else:
+            let rv = g_src(g, f, f.b[i], 0)
+            let x = g_res(g, f, f.a[i])
+            if g_folds(g, f, x):
+                g_addr_of(g, f, x, 1, 6)
+                if g.am_idx >= 0:
+                    g.a.store_idx(g.am_base, g.am_idx, g.am_scale, 0, rv, rsize(rs, vr))
+                else:
+                    g.a.store(g.am_base, g.am_disp, rv, rsize(rs, vr))
+            else:
+                g.a.store(g_src(g, f, f.a[i], 1), 0, rv, rsize(rs, vr))
+        return
+    if op == int(Op.Alloc):
+        g.a.mov_ri(7, f.ty[i])
+        let nm = new_txt()
+        nm.put("malloc")
+        g.a.call_sym(g.o.sym(&nm))
+        g_st(g, i, 0)
+        return
+    if op == int(Op.Free):
+        g_ld(g, 7, f, f.a[i])
+        let nm = new_txt()
+        nm.put("free")
+        g.a.call_sym(g.o.sym(&nm))
+        return
+    if op == int(Op.Drop) || op == int(Op.Clone):
+        g.nav = 0
+        g_push_arg(g, f.a[i])
+        g_do_call(g, f, rs, i, g_callee(g, sy, f.aux[i]), false)
+        return
+    if op == int(Op.VLoop):
+        g_gen_vloop(g, f, i)
+        return
+    if op == int(Op.Call) || op == int(Op.CCall) || op == int(Op.CallI):
+        g.nav = 0
+        for k in 0..f.b[i]:
+            g_push_arg(g, f.pool[f.a[i] + k])
+        if op == int(Op.CallI) && g.a.sbx:
+            /#/ a function value would have to be a checked table index
+            g_bad(g)
+            return
+        if op == int(Op.CallI):
+            g_ld(g, 11, f, f.c[i])
+            g_do_call(g, f, rs, i, 0 - 1, false)
+        else:
+            g_do_call(g, f, rs, i, g_callee(g, sy, f.aux[i]), op == int(Op.CCall) && f.c[i] != 0)
+        return
+    if op == int(Op.Br):
+        let e = f.aux[i]
+        g_edge_copy(g, f, rs, e)
+        if f.eto[e] != next:
+            g.a.jmp(f.eto[e])
+        return
+    if op == int(Op.CondBr):
+        let e1 = f.b[i]
+        let e2 = f.c[i]
+        let c = g_res(g, f, f.a[i])
+        let cc = cc_ne()
+        if f.op[c] == int(Op.Cmp) && g_fused(g, f, c):
+            g_cmp_flags(g, f, c)
+            cc = g_cc_of(g, f.aux[c])
+        elif f.op[c] == int(Op.FCmp) && g_fflag_ok(g, f, c) && g_fused(g, f, c):
+            cc = g_fcmp_flags(g, f, c)
+        else:
+            g_ld_ext(g, 0, f, f.a[i], false)
+            g.a.extend(0, 0, 1, false)
+            g.a.test_rr(0, 0)
+        if f.eargn[e1] == 0 && f.eargn[e2] == 0:
+            /#/ no moves on either edge: one conditional jump, the other way falls through
+            if f.eto[e2] == next:
+                g.a.jcc(cc, f.eto[e1])
+            elif f.eto[e1] == next:
+                g.a.jcc(cc ^ 1, f.eto[e2])
+            else:
+                g.a.jcc(cc, f.eto[e1])
+                g.a.jmp(f.eto[e2])
+            return
+        if f.eargn[e1] == 0:
+            /#/ the true edge needs no moves: jump straight to its block
+            g.a.jcc(cc, f.eto[e1])
+            g_edge_copy(g, f, rs, e2)
+            if f.eto[e2] != next:
+                g.a.jmp(f.eto[e2])
+            return
+        if f.eargn[e2] == 0:
+            g.a.jcc(cc ^ 1, f.eto[e2])
+            g_edge_copy(g, f, rs, e1)
+            if f.eto[e1] != next:
+                g.a.jmp(f.eto[e1])
+            return
+        let yes = g.a.new_label()
+        g.a.jcc(cc, yes)
+        g_edge_copy(g, f, rs, e2)
+        g.a.jmp(f.eto[e2])
+        g.a.bind(yes)
+        g_edge_copy(g, f, rs, e1)
+        if f.eto[e1] != next:
+            g.a.jmp(f.eto[e1])
+        return
+    if op == int(Op.Switch):
+        g_ld_ext(g, 0, f, f.a[i], true)
+        for k in 0..f.b[i]:
+            let skip = g.a.new_label()
+            let e = f.pool[f.aux[i] + k * 2 + 1]
+            g.a.mov_ri(1, f.pool[f.aux[i] + k * 2])
+            g.a.cmp_rr(0, 1)
+            g.a.jcc(cc_ne(), skip)
+            g_edge_copy(g, f, rs, e)
+            g.a.jmp(f.eto[e])
+            g.a.bind(skip)
+        g_edge_copy(g, f, rs, f.c[i])
+        g.a.jmp(f.eto[f.c[i]])
+        return
+    if op == int(Op.Ret):
+        if f.a[i] >= 0:
+            let vr = f.rep[g_res(g, f, f.a[i])]
+            if vr >= rp_first_agg():
+                g.a.load(7, 5, 0 - 8, 8)
+                let sb = g_ab_reg(g, f, f.a[i])
+                g_copy_mem(g, 7, 0, sb, g_ab_disp(g, f, f.a[i]), rsize(rs, vr))
+            elif g_is_int_class(g, vr):
+                g_ld(g, 0, f, f.a[i])
+            else:
+                let rx = g_res(g, f, f.a[i])
+                if g.xhome[rx] >= 0:
+                    g.a.movaps(0, g.xhome[rx])
+                else:
+                    g_ld(g, 0, f, f.a[i])
+                    g.a.movq_x(0, 0, vr == int(Rp.F32))
+        if g.epi_jump:
+            g.a.jmp(g.epi)
+        else:
+            g_epilogue(g)
+        return
+    if op == int(Op.Unreachable):
+        g.a.ud2()
+        return
+    g_bad(g)
+
+/#/ ---- functions ---------------------------------------------------------

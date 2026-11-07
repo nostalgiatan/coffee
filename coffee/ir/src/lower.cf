@@ -772,7 +772,7 @@ class Lower:
         /#/ the length of the text comes first, as in every string
         for i in 0..8:
             self.sbytes.put_byte((body.n >> (8 * i)) & 255)
-        self.mc.add_str(self.sbytes.n)
+        g_add_str(&self.mc, self.sbytes.n)
         self.sbytes.put_all(body)
         self.sbytes.put_byte(0)
         return id
@@ -3658,7 +3658,7 @@ class Lower:
                 if ir_dump:
                     say(f"verifier: {vd.n} findings in a function, first: code {vd.code[0]} instruction {vd.inst[0]} block {vd.blk[0]}\n")
         let code0 = self.mc.a.pos()
-        if !self.mc.gen_fun(&self.f, &self.rs, &self.names):
+        if !g_gen_fun(&self.mc, &self.f, &self.rs, &self.names):
             self.mc_err = self.mc_err + 1
         if stats_on || lint_on:
             let fname = new_txt()
@@ -3680,12 +3680,12 @@ class Lower:
             lines_txt.put_all(&lt)
             if dbg_on:
                 self.mc.o.dbg = lt
-        self.mc.add_rodata(&self.sbytes)
+        g_add_rodata(&self.mc, &self.sbytes)
         for k in 0..self.gl_n:
             let w = new_txt()
             self.names.put(&w, self.gl_name[k])
-            self.mc.add_global(&w, self.gl_size[k])
-        return self.mc.elf()
+            g_add_global(&self.mc, &w, self.gl_size[k])
+        return g_elf(&self.mc)
 
 fn type_param_count(a: &Ast, f: int) => int:
     let k = 0
