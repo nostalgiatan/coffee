@@ -1,0 +1,76 @@
+/#/ The x86-64 target: the facts the register allocator and the call code need about the machine,
+/#/ in one place. Register numbers are the machine's (rax 0, rcx 1, rdx 2, rbx 3, rsi 6, rdi 7, r8..r15).
+/#/ The allocator works on pool slots, the index into the pool table; the first `tg_ncaller()` slots
+/#/ are the caller-saved ones, the rest are saved by the function that uses them.
+
+/#/ The number of general registers the allocator may hand out.
+fn tg_npool() => int:
+    return 10
+
+/#/ The pool in the order the allocator tries it: the caller-saved registers first (r10, then r8 and
+/#/ r9, the registers of the fifth and sixth argument, then r11 and rdi), then the saved ones (rbx,
+/#/ r12..r15).
+fn tg_pool() => buf<int>:
+    let regs: buf<int> = new_buf(int, 10)
+    regs[0] = 10
+    regs[1] = 8
+    regs[2] = 9
+    regs[3] = 11
+    regs[4] = 7
+    regs[5] = 3
+    regs[6] = 12
+    regs[7] = 13
+    regs[8] = 14
+    regs[9] = 15
+    return regs
+
+/#/ How many of the first pool slots a call may overwrite.
+fn tg_ncaller() => int:
+    return 5
+
+/#/ Is pool slot `s` kept for something else in sandboxed code (`sbx`: r14 is the shadow frame;
+/#/ `bm`, the base-register form: r15 holds the start of the linear memory and r13 an address)?
+fn tg_reserved(sbx: bool, bm: bool, s: int) => bool:
+    if sbx && s == 8:
+        return true
+    return bm && (s == 7 || s == 9)
+
+/#/ The bit that register `r` has in a call's write mask; the pool register of slot 0 (r10) has bit 0.
+fn tg_call_bit(r: int) => int:
+    if r == 8:
+        return 1
+    if r == 9:
+        return 2
+    if r == 11:
+        return 3
+    if r == 7:
+        return 4
+    return 0
+
+/#/ Is `r` one of the registers a call may overwrite, apart from the scratch ones?
+fn tg_is_caller_saved(r: int) => bool:
+    return r == 7 || r == 8 || r == 9 || r == 10 || r == 11
+
+/#/ The write mask of a call of a function not seen yet: every caller-saved pool register.
+fn tg_mask_all() => int:
+    return 31
+
+/#/ The mask bits of the registers that carry the integer arguments past the fourth (r8 and r9)
+/#/ and the aggregate argument or result (rdi).
+fn tg_mask_arg5() => int:
+    return 2
+
+fn tg_mask_arg6() => int:
+    return 4
+
+fn tg_mask_rdi() => int:
+    return 16
+
+/#/ The first float register the allocator hands out (xmm0 and xmm1 are scratch), and the first of
+/#/ those that carry the float parameters and arguments (xmm8..xmm15; a value there never lives
+/#/ across a call or the entry).
+fn tg_xmm_first() => int:
+    return 2
+
+fn tg_xmm_arg_first() => int:
+    return 8

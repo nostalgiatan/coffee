@@ -1,6 +1,6 @@
 # x86-64 后端参考
 
-文件:`ir/src/asm.cf`(指令编码)、`ir/src/elf.cf`(目标文件)、`ir/src/gen.cf`(状态 `Gen` 和各目标共用的部分)、`ir/src/gen_dbg.cf`(行表),以及 x86-64 专属的 `gen_x86_regs.cf`(寄存器、帧、边上的移动)、`gen_x86_call.cf`(调用约定)、`gen_x86_isel.cf`(每个操作的指令)、`gen_x86_vec.cf`(向量循环)、`gen_x86_fun.cf`(一个函数和目标文件)。代码生成器是自由函数 `g_*(g: &Gen, ...)`,不是 `Gen` 的方法:Coffee 的方法只能写在类里面,一个类不能分在几个文件;改成自由函数以后,新增一个目标是新增一组 `gen_<目标>_*.cf`。选择理由见 [后端的取舍](../explanation/backend-choices.md)。
+文件:`ir/src/asm.cf`(指令编码)、`ir/src/elf.cf`(目标文件)、`ir/src/gen.cf`(状态 `Gen` 和各目标共用的部分)、`ir/src/gen_dbg.cf`(行表),以及 x86-64 专属的 `target_x86.cf`(目标描述:寄存器池、调用者保存的槽数、调用的写掩码、被沙箱占用的槽、xmm 范围,分配器只通过它们知道机器)、`gen_x86_regs.cf`(寄存器、帧、边上的移动)、`gen_x86_call.cf`(调用约定)、`gen_x86_isel.cf`(每个操作的指令)、`gen_x86_vec.cf`(向量循环)、`gen_x86_fun.cf`(一个函数和目标文件)。代码生成器是自由函数 `g_*(g: &Gen, ...)`,不是 `Gen` 的方法:Coffee 的方法只能写在类里面,一个类不能分在几个文件;改成自由函数以后,新增一个目标是新增一组 `gen_<目标>_*.cf`。选择理由见 [后端的取舍](../explanation/backend-choices.md)。
 
 ## 目标文件
 

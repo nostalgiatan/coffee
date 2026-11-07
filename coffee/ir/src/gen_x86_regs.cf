@@ -1,4 +1,4 @@
-/#/ x86-64: which registers a value may live in, the allocation of them over live ranges, the frame layout and the moves along edges. The register numbers are x86-64's; a target description will replace them.
+/#/ x86-64: which registers a value may live in, the allocation of them over live ranges, the frame layout and the moves along edges. The machine's facts (the pool, the caller-saved slots, call masks) are in target_x86.cf.
 use * in gen
 use * in asm
 use * in gen_x86_call
@@ -6,6 +6,7 @@ use * in gen_x86_isel
 use * in gen_x86_vec
 use * in gen_x86_fun
 use * in gen_dbg
+use * in target_x86
 use * in elf
 use * in dbgtype
 
@@ -38,21 +39,21 @@ fn g_uses_rdi(g: &Gen, f: &Fun, i: int) => bool:
 /#/ when its arguments go through them.
 fn g_site_mask(g: &Gen, f: &Fun, i: int) => int:
     if g_uses_rdi(g, f, i):
-        return 16
+        return tg_mask_rdi()
     if f.op[i] != int(Op.Call):
-        return 31
+        return tg_mask_all()
     let id = f.aux[i]
-    let m = 31
+    let m = tg_mask_all()
     if id >= 0 && id < len(g.msk) && g.msk[id] > 0:
         m = g.msk[id] - 8
     if f.b[i] >= 5:
-        m = m | 2
+        m = m | tg_mask_arg5()
     if f.b[i] >= 6:
-        m = m | 4
+        m = m | tg_mask_arg6()
     if f.rep[i] >= rp_first_agg():
-        m = m | 2
+        m = m | tg_mask_arg5()
     if f.b[i] >= 1 || f.rep[i] >= rp_first_agg():
-        m = m | 16
+        m = m | tg_mask_rdi()
     return m
 
 /#/ The registers written by the calls strictly between positions `lo` and `hi`.
@@ -74,12 +75,9 @@ fn g_cm_in(g: &Gen, lo: int, hi: int) => int:
 /#/ May a value that lives across calls writing `cm` and (`restr`) is a parameter or an argument
 /#/ take register number `r` of the pool?
 fn g_reg_ok(g: &Gen, r: int, cm: int, restr: bool) => bool:
-    if g.a.sbx && r == 8:
+    if tg_reserved(g.a.sbx, g.a.bm, r):
         return false
-    /#/ base-register sandbox code keeps the start of the linear memory in r15 and an address in r13
-    if g.a.bm && (r == 7 || r == 9):
-        return false
-    if r >= 5:
+    if r >= tg_ncaller():
         return true
     if ((cm >> r) & 1) == 1:
         return false
@@ -475,17 +473,7 @@ fn g_alloc_regs(g: &Gen, f: &Fun, rs: &Reps) => void:
         sd = sd - 1
     /#/ the caller-saved registers first (r10, then r8 and r9, the registers of the fifth and sixth
     /#/ argument), then the saved ones
-    let regs: buf<int> = new_buf(int, 10)
-    regs[0] = 10
-    regs[1] = 8
-    regs[2] = 9
-    regs[3] = 11
-    regs[4] = 7
-    regs[5] = 3
-    regs[6] = 12
-    regs[7] = 13
-    regs[8] = 14
-    regs[9] = 15
+    let regs = tg_pool()
     let ent: buf<int> = new_buf(int, nd + 1)
     let ep = f.pfirst[0]
     while ep >= 0:
@@ -494,10 +482,10 @@ fn g_alloc_regs(g: &Gen, f: &Fun, rs: &Reps) => void:
         ep = f.nx[ep]
     for k in 0..g.nhc:
         ent[g.did[g.hc[k]]] = 1
-    let occ: buf<int> = new_buf(int, 10)
-    for r in 0..10:
+    let occ: buf<int> = new_buf(int, tg_npool())
+    for r in 0..tg_npool():
         occ[r] = -1
-    let used: buf<int> = new_buf(int, 10)
+    let used: buf<int> = new_buf(int, tg_npool())
     /#/ the xmm registers 2 to 15 for floats that are not alive across a call (all are caller-saved);
     /#/ the arguments are loaded into xmm0 to xmm7, so a parameter or an argument stays in 8 to 15
     let occx: buf<int> = new_buf(int, 16)
@@ -573,35 +561,27 @@ fn g_alloc_regs(g: &Gen, f: &Fun, rs: &Reps) => void:
     /#/ hold neither a parameter nor an argument of the call that ends the value
     for d in 0..nd:
         let h = g.home[dv[d]]
-        if h == 7 || h == 8 || h == 9 || h == 10 || h == 11:
-            let bit = 0
-            if h == 8:
-                bit = 1
-            elif h == 9:
-                bit = 2
-            elif h == 11:
-                bit = 3
-            elif h == 7:
-                bit = 4
+        if tg_is_caller_saved(h):
+            let bit = tg_call_bit(h)
             if ((g_cm_in(g, g.ra_lo[d], g.ra_hi[d]) >> bit) & 1) == 1:
                 g.err = 1
-            if h != 10 && (ent[d] == 1 || g_at_call(g, g.ra_hi[d])):
+            if h != regs[0] && (ent[d] == 1 || g_at_call(g, g.ra_hi[d])):
                 g.err = 1
     for d in 0..nd:
         let xh = g.xhome[dv[d]]
         if xh >= 0:
-            if g_crosses(g, g.ra_lo[d], g.ra_hi[d]) || xh < 2:
+            if g_crosses(g, g.ra_lo[d], g.ra_hi[d]) || xh < tg_xmm_first():
                 g.err = 1
-            if xh < 8 && (ent[d] == 1 || g_at_call(g, g.ra_hi[d])):
+            if xh < tg_xmm_arg_first() && (ent[d] == 1 || g_at_call(g, g.ra_hi[d])):
                 g.err = 1
     /#/ what this function may write: the registers of its calls, and its own caller-saved homes
-    for r in 0..5:
+    for r in 0..tg_ncaller():
         if used[r] == 1:
             g.fmask = g.fmask | (1 << r)
     if len(g.saved) < 6:
         g.saved = new_buf(int, 8)
-    for r in 0..10:
-        if used[r] == 1 && r >= 5:
+    for r in 0..tg_npool():
+        if used[r] == 1 && r >= tg_ncaller():
             g.saved[g.nsaved] = regs[r]
             g.nsaved = g.nsaved + 1
 
