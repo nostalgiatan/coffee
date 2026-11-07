@@ -189,3 +189,18 @@ callgrind of `coffee2 driver/src/main.cf`, instructions: 11.02G before, 5.92G af
 | value-number table is dropped, not cleared, when it was grown for a big function | `ir/src/fun.cf` `clear_vn` | 7% |
 | keyword lookup by (start, length) pairs | `lexer/src/lexer.cf` | 5% |
 | hashed lookups: `Names.find`, `Tys.intern`, `Lib.find` (lazy id index), members of a class or enum (`Syms.member_head`) | names.cf, ty.cf, lib.cf, sym_table.cf | about 15% together |
+
+## Number formatting and a literal copy
+
+`rt/fmt.cf` measured with 300000 f-strings of an int, a float and an int (`fm.cf`): 1.56G instructions
+before, 1.23G after. The float path copied a 1.4 KB string literal on every call because
+`let s = "literal"` allocates, copies and frees (malloc + memcpy + free) where indexing the literal
+directly does not. `__cf_g_cached` now indexes the literal in place. The same copy happens for any
+`let s = "..."` that is only read; a compiler change (bind it to the static text when `s` is never moved,
+assigned or dropped early) is not done.
+
+The limits of the float-constant hoisting were checked on a function with a non-inlined call before the
+loop: the constants are loaded in every iteration there, as stated. Defining them at the loop's single
+outside predecessor instead of the entry would fix it; not done.
+
+cfjit on the 6 MB module of the compiler: 48 ms to read the `.cir`, 67 ms to generate, 119 ms in all.
