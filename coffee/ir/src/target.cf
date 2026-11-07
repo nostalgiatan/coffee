@@ -10,6 +10,7 @@ use * in names
 use * in rep
 use * in gen_x86_fun
 use * in minrt
+use * in elf
 
 /#/ The architectures and systems a target name may use.
 fn arch_x86_64() => int:
@@ -63,3 +64,49 @@ fn min_rt_text() => str:
     if target_arch == arch_x86_64() && target_os == os_linux():
         return min_rt_common_a() + min_rt_os_linux_x86_64_a() + min_rt_common_b() + min_rt_os_linux_x86_64_b()
     return min_rt_common_a() + min_rt_os_linux_aarch64_a() + min_rt_common_b() + min_rt_os_linux_aarch64_b()
+
+/#/ The machine code of `cf_syscall(n, a, b, c, d, e, f)` for the target: the C calling convention moved into
+/#/ the registers of the system call instruction. The linker (`ld/`, its `syscall_stub`) supplies it to a
+/#/ program; a library made with `--pic` has no linker step of ours, so its object carries it.
+fn tg_syscall_stub() => buf<int>:
+    if target_arch == arch_aarch64():
+        let a64 = [232, 3, 0, 170, 224, 3, 1, 170, 225, 3, 2, 170, 226, 3, 3, 170, 227, 3, 4, 170, 228, 3, 5, 170, 229, 3, 6, 170, 1, 0, 0, 212, 192, 3, 95, 214]
+        let out: buf<int> = new_buf(int, 36)
+        for k in 0..36:
+            out[k] = a64[k]
+        return out
+    let x86 = [72, 137, 248, 72, 137, 247, 72, 137, 214, 72, 137, 202, 77, 137, 194, 77, 137, 200, 76, 139, 76, 36, 8, 15, 5, 195]
+    let out: buf<int> = new_buf(int, 26)
+    for k in 0..26:
+        out[k] = x86[k]
+    return out
+
+/#/ Is the name at `at` in `names` (NUL-ended) the text `w`?
+fn tg_name_is(names: &Txt, at: int, w: &str) => bool:
+    for q in 0..len(w):
+        if names.b[at + q] != ch(w, q):
+            return false
+    return names.b[at + len(w)] == 0
+
+/#/ The undefined symbol `cf_syscall` of the object `o`, -1 when it has none.
+fn undef_syscall(o: &Obj) => int:
+    for k in 0..o.ns:
+        if o.s_def[k] < 0 && tg_name_is(&o.names, o.s_name[k], "cf_syscall"):
+            return k
+    return 0 - 1
+
+/#/ With `--pic`: when the object calls `cf_syscall` and does not define it, defines it (hidden) from the
+/#/ target's stub.
+fn g_add_syscall_stub(g: &Gen) => void:
+    if !elf_hide:
+        return
+    let found = undef_syscall(&g.o)
+    if found < 0:
+        return
+    let code = tg_syscall_stub()
+    g.a.begin_fun()
+    let start = g.a.pos()
+    for k in 0..len(code):
+        g.a.byte(code[k])
+    g.a.end_fun()
+    g.o.define(found + 2, start, g.a.pos() - start)

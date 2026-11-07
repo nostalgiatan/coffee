@@ -30,7 +30,7 @@ Each module has its own copy of the runtime (its own heap): memory one module al
 
 ## As a library, for other languages
 
-`jit/tools/build-lib.sh <coffee2> <dir>` builds `libcfjit.a`, `libcfjit.so` and `cfjit.h` (`jit/include/cfjit.h` is the reference: the functions, the codes they return, the rules). It needs `cc` (for a small C file that gives the library the system call function; the library otherwise uses the host's C library). The API is plain C with `long` and pointers, so any language with a C FFI can use it:
+`jit/tools/build-lib.sh <coffee2> <dir>` builds `libcfjit.a`, `libcfjit.so` and `cfjit.h` (`jit/include/cfjit.h` is the reference: the functions, the codes they return, the rules). `--pic` makes the compiler put the target's system call stub (`tg_syscall_stub` in `ir/src/target.cf`) into the object, so `cc` only links the shared object; the library otherwise uses the host's C library. The API is plain C with `long` and pointers, so any language with a C FFI can use it:
 
 | call | meaning |
 |---|---|

@@ -3689,6 +3689,7 @@ class Lower:
             lines_txt.put_all(&lt)
             if dbg_on:
                 self.mc.o.dbg = lt
+        g_add_syscall_stub(&self.mc)
         g_add_rodata(&self.mc, &self.sbytes)
         for k in 0..self.gl_n:
             let w = new_txt()
