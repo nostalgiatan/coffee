@@ -170,14 +170,6 @@ fn ga_val_to(g: &Gen, f: &Fun, rs: &Reps, db: int, dd: int, v: int) => void:
 fn ga_layout(g: &Gen, f: &Fun, rs: &Reps) => void:
     layout_frame(g, f, rs, 16, false, 32000)
 
-/#/ A number for the register of `x`: general ones as they are, float ones from 32; -1 in the frame.
-fn ga_hid(g: &Gen, x: int) => int:
-    if g.home[x] >= 0:
-        return g.home[x]
-    if g.xhome[x] >= 0:
-        return 32 + g.xhome[x]
-    return 0 - 1
-
 /#/ Copies what edge `e` passes into the parameters of the block it enters; through a scratch
 /#/ area when the copies are not independent (an argument is itself a parameter of that block, or lives
 /#/ in the register of a parameter written before it).
@@ -186,18 +178,7 @@ fn ga_edge_copy(g: &Gen, f: &Fun, rs: &Reps, e: int) => void:
     let n = f.eargn[e]
     if n == 0:
         return
-    let hazard = false
-    for k in 0..n:
-        let x = g_res(g, f, f.pool[f.eargs[e] + k])
-        if f.op[x] == int(Op.Param) && f.blk[x] == to:
-            hazard = true
-        let hx = ga_hid(g, x)
-        if hx >= 0:
-            let q = f.pfirst[to]
-            for j in 0..k:
-                if ga_hid(g, q) == hx:
-                    hazard = true
-                q = f.nx[q]
+    let hazard = edge_hazard(g, f, e)
     if !hazard:
         let p = f.pfirst[to]
         for k in 0..n:

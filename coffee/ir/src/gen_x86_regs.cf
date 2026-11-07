@@ -508,20 +508,7 @@ fn g_edge_copy(g: &Gen, f: &Fun, rs: &Reps, e: int) => void:
     let n = f.eargn[e]
     if n == 0:
         return
-    let hazard = false
-    let pj = f.pfirst[to]
-    for k in 0..n:
-        let x = g_res(g, f, f.pool[f.eargs[e] + k])
-        if f.op[x] == int(Op.Param) && f.blk[x] == to:
-            hazard = true
-        /#/ a parameter already written must not be what a later argument reads
-        let hx = g_hid(g, x)
-        if hx >= 0:
-            let q = f.pfirst[to]
-            for j in 0..k:
-                if g_hid(g, q) == hx:
-                    hazard = true
-                q = f.nx[q]
+    let hazard = edge_hazard(g, f, e)
     if !hazard:
         let p = f.pfirst[to]
         for k in 0..n:

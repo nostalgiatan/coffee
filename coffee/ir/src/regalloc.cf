@@ -257,3 +257,22 @@ fn layout_place(g: &Gen, v: int, cur: int, sz: int, down: bool) => int:
     else:
         g.voff[v] = cur
     return cur + sz
+
+/#/ Do the copies of edge `e` into the parameters of the block it enters depend on each other: an argument is
+/#/ itself a parameter of that block, or lives in the register of a parameter written before it?
+fn edge_hazard(g: &Gen, f: &Fun, e: int) => bool:
+    let to = f.eto[e]
+    let n = f.eargn[e]
+    let hazard = false
+    for k in 0..n:
+        let x = g_res(g, f, f.pool[f.eargs[e] + k])
+        if f.op[x] == int(Op.Param) && f.blk[x] == to:
+            hazard = true
+        let hx = g_hid(g, x)
+        if hx >= 0:
+            let q = f.pfirst[to]
+            for j in 0..k:
+                if g_hid(g, q) == hx:
+                    hazard = true
+                q = f.nx[q]
+    return hazard
