@@ -1,6 +1,7 @@
 #!/bin/bash
 # usage: corpus-x86.sh <coffee2> <outdir>   compiles a corpus and writes one sha256 line per output
 # Compare two compilers by running this once per compiler on the same, unchanged tree and diffing the two .sha files.
+# The output is about 850 MB: give a directory on disk (not /tmp, which is memory), and delete it after comparing the .sha files.
 C=$1; O=$2; rm -rf $O; mkdir -p $O; cd "$(dirname "$(realpath "$0")")/../.."
 INC="-I driver/src -I ir/src -I ld/src -I own/src -I types/src -I sema/src -I parser/src -I lexer/src"
 $C driver/src/main.cf $INC --static -o $O/compiler.static 2>/dev/null
