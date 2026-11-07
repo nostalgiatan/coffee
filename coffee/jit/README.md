@@ -20,7 +20,15 @@ Before the sandbox code runs, `ir/src/sbxcheck.cf` checks its machine code (only
 
 `cfjit` runs the IR checker on every function and refuses a module that fails it (`--no-verify` skips it); `--no-run` stops after the image is made. `cfjit prog.cir --time` prints the start-up phases (read_cir, prune, generate, image) in milliseconds on stdout. `coffee2 -O0 --emit-cir` makes the unoptimized module.
 
-Limits of this first version: the image is mapped read-write-execute in one piece; a module may only call system calls (the runtime is lowered into it), anything else is refused; no sandbox yet. See `docs/explanation/jit-design.md`.
+## Linking in memory
+
+The image is laid out in pages with their own rights: the code and the stubs of the external functions (read, execute), the rodata (read), the data and the slots the stubs jump through (read, write). Nothing is writable and executable at once. A call of a function the module does not define goes through a stub and a slot; the loader fills the slots with addresses from a table of names (`Exports` in `src/loader.cf`), which holds what the modules loaded before define.
+
+`cfjit main.cir --with=lib.cir --with=more.cir` loads the modules of `--with=` first, in order, each able to call what the ones before it define, and then `main.cir`. A module is a `.cir` made by `coffee2 --emit-cir`; it needs no `main`. What it exports are its functions (`c fn` keep their exact names); the program that calls one declares it in a `.cfc` (`c fn twice(x: int) => int:`) and imports it with `use twice in lib of c`. A call nothing offers stops the load with the name (`cfjit: the module calls 'twice', which nothing offers`). `--cache` keeps the symbols and the imports of the image (format `CIM2`), so a kept image links the same way.
+
+Each module has its own copy of the runtime (its own heap): memory one module allocates can be freed in another, but a pointer into a module's data is that module's business. The sandbox (`--sandbox`) still refuses any call outside the module.
+
+Not yet: data symbols shared between modules, unloading a module, replacing a function in a loaded module, host functions given by an embedding program (the table is there, `Exports.add(name, address)`; the command line has no way to name one), other systems than Linux.
 
 ## Debugging aids
 

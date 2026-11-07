@@ -1,15 +1,17 @@
-/#/ The loader: puts a flat image into memory the code can run from and calls into it. There is no
-/#/ linker and no dynamic loader in between; the image was made position independent when it was
-/#/ generated, so loading is a copy.
+/#/ The loader: links an image in memory and calls into it. The image was made position independent
+/#/ when it was generated, so there is nothing to relocate: loading is a copy, the filling of the slots
+/#/ the stubs of the external functions jump through, and the setting of the rights of each part
+/#/ (the code and the stubs read and execute, the rodata read, the data and the slots read and write; never
+/#/ writable and executable at once).
 use * in image
 use * in files
 
-/#/ `mmap` flags: private and anonymous; protections: read, write, execute
+/#/ `mmap` flags: private and anonymous; protections: read, write
 fn load_flags() => int:
     return 34
 
 fn load_prot() => int:
-    return 7
+    return 3
 
 fn page_round(n: int) => int:
     return (n + 4095) // 4096 * 4096
@@ -18,22 +20,97 @@ fn page_round(n: int) => int:
 fn mapped(r: int) => bool:
     return r > 0 || r < -4095
 
-/#/ The image in memory: its address, or 0 when the system refused.
-fn load_image(im: &Image) => int:
-    let base = syscall(9, 0, page_round(im.b.n + 1), load_prot(), load_flags(), 0 - 1, 0)
-    if !mapped(base):
+/#/ What the code may call that is not in the image: the functions of the host, and what the modules
+/#/ loaded before define. Names are kept NUL-terminated in `names`; the first definition of a name stays.
+class Exports:
+    names: Txt
+    at: buf<int>
+    addr: buf<int>
+    n: int
+
+    /#/ The address of the symbol spelled `w`, 0 when there is none.
+    fn find(self, w: &Txt) => int:
+        for k in 0..self.n:
+            let p = self.at[k]
+            let q = 0
+            while q < w.n && self.names.b[p + q] == w.b[q]:
+                q = q + 1
+            if q == w.n && self.names.b[p + w.n] == 0:
+                return self.addr[k]
+        return 0
+
+    /#/ Defines `w` as the address `a` (not when `w` is defined already).
+    fn add(self, w: &Txt, a: int) => void:
+        if a == 0 || self.find(w) != 0:
+            return
+        if self.n >= len(self.at):
+            self.at = buf_resize(self.at, (self.n + 1) * 2)
+            self.addr = buf_resize(self.addr, (self.n + 1) * 2)
+        self.at[self.n] = self.names.n
+        self.addr[self.n] = a
+        self.names.put_all(w)
+        self.names.put_byte(0)
+        self.n = self.n + 1
+
+fn new_exports() => Exports:
+    return Exports { names: new_txt(), at: new_buf(int, 16), addr: new_buf(int, 16), n: 0 }
+
+/#/ The name that starts at `at` in `names`.
+fn name_txt(names: &Txt, at: int) => Txt:
+    let w = new_txt()
+    let q = at
+    while q < names.n && names.b[q] != 0:
+        w.put_byte(names.b[q])
+        q = q + 1
+    return w
+
+/#/ The image in memory at `base`: the symbols it defines are added to `syms`, except `main`.
+fn export_image(im: &Image, base: int, syms: &Exports) => void:
+    for k in 0..im.nsym:
+        let w = name_txt(&im.names, im.sym_name[k])
+        if !w.is("main"):
+            syms.add(&w, base + im.sym_at[k])
+
+/#/ The image in memory, linked to `syms`: its address; 0 when the system refused the memory, or when
+/#/ the image calls something `syms` does not define, whose name is then in `missing`. `want` is
+/#/ the address to load at, 0 for any (and a `want` that is taken is a failure).
+fn link_image(im: &Image, syms: &Exports, want: int, missing: &Txt) => int:
+    let flags = load_flags()
+    if want != 0:
+        /#/ MAP_FIXED_NOREPLACE
+        flags = flags + 1048576
+    let size = page_round(im.total + 1)
+    let base = syscall(9, want, size, load_prot(), flags, 0 - 1, 0)
+    if !mapped(base) || (want != 0 && base != want):
         return 0
     copy_in(base, &im.b)
+    for k in 0..im.nimp:
+        let w = name_txt(&im.names, im.imp_name[k])
+        let a = syms.find(&w)
+        if a == 0:
+            missing.put_all(&w)
+            syscall(11, base, size, 0, 0, 0, 0)
+            return 0
+        poke64(base + im.imp_slot[k], a)
+    /#/ the code and the stubs: read and execute; the rodata: read; the data and the slots stay read and write
+    if sys_mprotect(base, im.rx_end, 5) != 0:
+        syscall(11, base, size, 0, 0, 0, 0)
+        return 0
+    if im.ro_end > im.ro_at:
+        sys_mprotect(base + im.ro_at, im.ro_end - im.ro_at, 1)
     return base
+
+/#/ The image in memory: its address, or 0 when the system refused. It may not call anything outside.
+fn load_image(im: &Image) => int:
+    let syms = new_exports()
+    let missing = new_txt()
+    return link_image(im, &syms, 0, &missing)
 
 /#/ Like `load_image`, at the address `want` (0 when it is taken); for `--gdb`, so the addresses are known.
 fn load_image_at(im: &Image, want: int) => int:
-    /#/ MAP_FIXED_NOREPLACE
-    let base = syscall(9, want, page_round(im.b.n + 1), load_prot(), load_flags() + 1048576, 0 - 1, 0)
-    if !mapped(base) || base != want:
-        return 0
-    copy_in(base, &im.b)
-    return base
+    let syms = new_exports()
+    let missing = new_txt()
+    return link_image(im, &syms, want, &missing)
 
 /#/ The bytes of `t` to the memory at `base`.
 fn copy_in(base: int, t: &Txt) => void:
