@@ -229,7 +229,14 @@ fn tag_val(s: &str) => int:
 fn get_col(r: &Rd, t: &Txt, c: &buf<int>, to: int, n: int, mode: int) => void:
     let prev = 0
     for k in 0..n:
-        let v = r.var(t)
+        let v = 0
+        if r.at < r.end && t.b[r.at] < 128:
+            /#/ one byte, the usual case, without the call
+            let b0 = t.b[r.at]
+            r.at = r.at + 1
+            v = (b0 >> 1) ^ (0 - (b0 & 1))
+        else:
+            v = r.var(t)
         if mode == 1:
             v = v + k
         elif mode == 2:

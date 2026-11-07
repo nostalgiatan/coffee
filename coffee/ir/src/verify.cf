@@ -65,10 +65,13 @@ fn types_ok(f: &Fun, i: int) => bool:
     if o == int(Op.SExt) || o == int(Op.ZExt):
         let x = f.rep[f.follow(f.a[i])]
         return rp_is_int(x) && rp_is_int(r) && rp_bits(x) < rp_bits(r)
+    /#/ an address is a pointer, or the integer of `peek8` and `poke64` (the memory of the runtime)
     if o == int(Op.Load):
-        return f.rep[f.follow(f.a[i])] == int(Rp.Ptr) && r != int(Rp.Void)
+        let ar = f.rep[f.follow(f.a[i])]
+        return (ar == int(Rp.Ptr) || ar == int(Rp.I64)) && r != int(Rp.Void)
     if o == int(Op.Store):
-        return f.rep[f.follow(f.a[i])] == int(Rp.Ptr) && f.rep[f.follow(f.b[i])] != int(Rp.Void)
+        let ar = f.rep[f.follow(f.a[i])]
+        return (ar == int(Rp.Ptr) || ar == int(Rp.I64)) && f.rep[f.follow(f.b[i])] != int(Rp.Void)
     if o == int(Op.Field):
         return f.rep[f.follow(f.a[i])] == int(Rp.Ptr) && r == int(Rp.Ptr)
     if o == int(Op.Index):
@@ -158,6 +161,27 @@ fn verify(f: &Fun) => VDiags:
     for k in 0..np:
         rpo[k] = post[np - 1 - k]
         num[rpo[k]] = k
+    /#/ the predecessors of each block among the reachable ones, in reverse post-order
+    let pstart: buf<int> = new_buf(int, nb + 1)
+    for k in 0..np:
+        let pb = rpo[k]
+        if f.terminated(pb):
+            for s in 0..f.nsucc(pb):
+                let t = f.eto[f.succ_edge(pb, s)]
+                if t >= 0 && t < nb:
+                    pstart[t + 1] = pstart[t + 1] + 1
+    for b in 0..nb:
+        pstart[b + 1] = pstart[b + 1] + pstart[b]
+    let plist: buf<int> = new_buf(int, pstart[nb] + 1)
+    let pfill: buf<int> = new_buf(int, nb + 1)
+    for k in 0..np:
+        let pb = rpo[k]
+        if f.terminated(pb):
+            for s in 0..f.nsucc(pb):
+                let t = f.eto[f.succ_edge(pb, s)]
+                if t >= 0 && t < nb:
+                    plist[pstart[t] + pfill[t]] = pb
+                    pfill[t] = pfill[t] + 1
     /#/ immediate dominators (Cooper, Harvey, Kennedy)
     let idom: buf<int> = new_buf(int, nb)
     for b in 0..nb:
@@ -169,25 +193,20 @@ fn verify(f: &Fun) => VDiags:
         for k in 1..np:
             let b = rpo[k]
             let nd = -1
-            for p in 0..np:
-                let pb = rpo[p]
-                if f.terminated(pb) && idom[pb] >= 0:
-                    let links = false
-                    for s in 0..f.nsucc(pb):
-                        if f.eto[f.succ_edge(pb, s)] == b:
-                            links = true
-                    if links:
-                        if nd < 0:
-                            nd = pb
-                        else:
-                            let x = pb
-                            let y = nd
-                            while x != y:
-                                while num[x] > num[y]:
-                                    x = idom[x]
-                                while num[y] > num[x]:
-                                    y = idom[y]
-                            nd = x
+            for pi in pstart[b]..pstart[b + 1]:
+                let pb = plist[pi]
+                if idom[pb] >= 0:
+                    if nd < 0:
+                        nd = pb
+                    else:
+                        let x = pb
+                        let y = nd
+                        while x != y:
+                            while num[x] > num[y]:
+                                x = idom[x]
+                            while num[y] > num[x]:
+                                y = idom[y]
+                        nd = x
             if nd != idom[b]:
                 idom[b] = nd
                 changed = true

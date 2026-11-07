@@ -107,8 +107,8 @@ fn lap(on: bool, what: &str, t0: int) => int:
     return 0
 
 fn main() => int:
-    /#/ the IR checker costs about a third of a start; the machine code of a sandbox is checked on its own
-    set_verify(flag_arg("--verify"))
+    /#/ the IR checker is on (7 ms of a 109 ms start for the compiler's module); `--no-verify` turns it off
+    set_verify(!flag_arg("--no-verify"))
     let sbx = flag_arg("--sandbox")
     let path = path_arg()
     if path.n == 0:
@@ -153,6 +153,9 @@ fn main() => int:
         lap(timing, "prune (done at)", t0)
         lw.generate()
         lap(timing, "generate (done at)", t0)
+        if lw.ver_err > 0:
+            say(f"cfjit: the IR of {lw.ver_err} functions did not pass the check\n")
+            return 2
         if lw.mc_err > 0:
             say(f"cfjit: {lw.mc_err} functions could not be translated\n")
             return 2
