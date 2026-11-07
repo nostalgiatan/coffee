@@ -1,0 +1,40 @@
+name: release
+
+# A tag `v*` builds, tests and publishes the compiler and its tools as one archive.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build from the seed
+        run: coffee/driver/tools/build-from-seed.sh "$RUNNER_TEMP/w"
+      - name: Test every stage
+        run: |
+          export PATH="$RUNNER_TEMP/w:$PATH"
+          for d in lexer parser sema types own ir rt ld driver tea compat; do
+            (cd coffee/$d && tea test --compiler "$RUNNER_TEMP/w/coffee2" -j 4)
+          done
+      - name: Package
+        run: |
+          v="${GITHUB_REF_NAME}"
+          p="coffee-${v}-linux-x86_64"
+          mkdir -p "dist/$p/bin"
+          for t in coffee2 tea cfjit cfprof; do cp "$RUNNER_TEMP/w/$t" "dist/$p/bin/"; done
+          cp -r library "dist/$p/library"
+          cp README.md SYNTAX.md "dist/$p/"
+          tar -C dist -czf "dist/$p.tar.gz" "$p"
+          (cd dist && sha256sum "$p.tar.gz" > "$p.tar.gz.sha256")
+          echo "ARCHIVE=dist/$p.tar.gz" >> "$GITHUB_ENV"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" "$ARCHIVE" "$ARCHIVE.sha256" \
+            --title "Coffee ${GITHUB_REF_NAME}" --generate-notes

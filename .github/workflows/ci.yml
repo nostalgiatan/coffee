@@ -1,0 +1,28 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # no C compiler, Rust or LLVM is used: the committed seed builds the sources
+      - name: Build from the seed
+        run: coffee/driver/tools/build-from-seed.sh "$RUNNER_TEMP/w"
+      - name: Test every stage
+        run: |
+          export PATH="$RUNNER_TEMP/w:$PATH"
+          for d in lexer parser sema types own ir rt ld driver tea compat; do
+            echo "== $d"
+            (cd coffee/$d && tea test --compiler "$RUNNER_TEMP/w/coffee2" -j 4)
+          done
+      # a seed that cannot build the current sources, or sources that differ from the seed's own build
+      - name: Seed is current
+        run: |
+          out=$(coffee/driver/tools/build-from-seed.sh "$RUNNER_TEMP/w2")
+          echo "$out"
+          case "$out" in *"seed is current"*) ;; *) echo "::error::the committed seed is older than the sources; run build-from-seed.sh --refresh"; exit 1;; esac
