@@ -5,6 +5,7 @@ use * in image
 use * in loader
 use * in sandbox
 use * in sbxcheck
+use * in sbxrules
 use * in imgfile
 use * in cstr
 use * in files
@@ -249,8 +250,8 @@ fn main() => int:
                 im = blank_image()
     if at == 0 - 2:
         let lw = new_lower()
-        lw.mc.a.sbx = sbx
-        lw.mc.a.bm = bm
+        lw.mc.a.acc.sbx = sbx
+        lw.mc.a.acc.bm = bm
         let want_lines = flag_arg("--lines")
         let gdb_map = new_txt()
         if want_gdb || want_lines:
@@ -333,7 +334,7 @@ fn main() => int:
         sbx_set_base(bm)
         let bad = sbx_verify(&im.b, im.text_n, im.sys_at)
         if bad >= 0:
-            say(f"cfjit: the code is not safe to run in the sandbox (offset {bad}, reason {sbx_why}, bytes {int(im.b.b[bad])} {int(im.b.b[bad + 1])} {int(im.b.b[bad + 2])} {int(im.b.b[bad + 3])} {int(im.b.b[bad + 4])})\n")
+            say(f"cfjit: the code is not safe to run in the sandbox (offset {bad}, rule {sbr_name(sbx_rule)}, reason {sbx_why}, bytes {int(im.b.b[bad])} {int(im.b.b[bad + 1])} {int(im.b.b[bad + 2])} {int(im.b.b[bad + 3])} {int(im.b.b[bad + 4])})\n")
             return 2
         let rs = sandbox_run(&im, at, allow_arg(), num_arg("mem"), num_arg("cpu"), bm)
         if rs == 0 - 1:

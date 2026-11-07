@@ -21,7 +21,7 @@ fn ga_gen_vloop(g: &Gen, f: &Fun, i: int) => void:
     let np = f.aux[i] & 255
     let ni = (f.aux[i] >> 8) & 255
     let plen = f.aux[i] >> 16
-    if g.a.sbx:
+    if g.a.acc.sbx:
         /#/ the scalar loop does it all
         let k0 = 0
         if rk > 0:

@@ -14,7 +14,7 @@ fn g_elf(g: &Gen) => Txt:
 
 /#/ The saved registers come back by pop, from below the frame's locals.
 fn g_epilogue(g: &Gen) => void:
-    if g.sframe > 0 && !g.a.bm:
+    if g.sframe > 0 && !g.a.acc.bm:
         g.a.add_ri(14, g.sframe)
     if g.nsaved > 0:
         if g.frame > g.rbase + 8 * g.nsaved:
@@ -62,7 +62,7 @@ fn g_gen_fun(g: &Gen, f: &Fun, rs: &Reps, sy: &Names) => bool:
         g.a.push(g.saved[k])
     if g.frame > g.rbase + 8 * g.nsaved:
         g.a.sub_ri(4, g.frame - g.rbase - 8 * g.nsaved)
-    if g.sframe > 0 && !g.a.bm:
+    if g.sframe > 0 && !g.a.acc.bm:
         g.a.sub_ri(14, g.sframe)
     let nret = 0
     for b in 0..f.nb:
@@ -78,7 +78,7 @@ fn g_gen_fun(g: &Gen, f: &Fun, rs: &Reps, sy: &Names) => bool:
         ci = 1
     let p = f.pfirst[0]
     /#/ rcx and rdx may still hold arguments: an address made for a copy must not use them
-    g.a.keep = 6
+    g.a.acc.keep = 6
     while p >= 0:
         let r = f.rep[p]
         if r >= rp_first_agg() || g_is_int_class(g, r):
@@ -109,7 +109,7 @@ fn g_gen_fun(g: &Gen, f: &Fun, rs: &Reps, sy: &Names) => bool:
                 cs = cs + 1
             cx = cx + 1
         p = f.nx[p]
-    g.a.keep = 0
+    g.a.acc.keep = 0
     for k in 0..g.nhc:
         let c = g.hc[k]
         if g.xhome[c] >= 0:

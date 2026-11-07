@@ -14,12 +14,14 @@
 /#/ - What is left (arithmetic, logic, moves, floating point and vector operations on registers) cannot
 /#/   reach memory or change the flow, once the writes above are held back.
 use * in txt
+use * in sbxrules
 
 /#/ Why the last word was refused (a number from `a64_no`).
 let sbx_a64_why = 0
 
 fn a64k_no(why: int) => int:
     sbx_a64_why = why
+    sbx_rule = sbr_of_a64(why)
     return -1
 
 /#/ The signed field of `w` of `bits` bits from bit `lo`.
@@ -180,6 +182,7 @@ fn a64k_word(w: int, at: int, d: &Wk) => int:
 fn sbx_verify_a64(code: &Txt, n: int, entry: int) => int:
     if n % 4 != 0:
         sbx_a64_why = 14
+        sbx_rule = sbr_decode()
         return 0
     let d = new_wk()
     let i = 0
@@ -194,9 +197,11 @@ fn sbx_verify_a64(code: &Txt, n: int, entry: int) => int:
             if !(d.kind == 2 && t == entry):
                 if t < 0 || t >= n:
                     sbx_a64_why = 15
+                    sbx_rule = sbr_branch()
                     return i
         i = i + 4
     if falls:
         sbx_a64_why = 16
+        sbx_rule = sbr_branch()
         return n - 4
     return -1

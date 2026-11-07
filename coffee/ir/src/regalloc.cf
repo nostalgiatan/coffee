@@ -195,7 +195,7 @@ fn layout_frame(g: &Gen, f: &Fun, rs: &Reps, hdr: int, down: bool, frame_cap: in
         g.sh = new_buf(int, f.ni + 1)
     for v in 0..f.ni:
         g.sh[v] = 0
-    let sbx = g.a.sbx
+    let sbx = g.a.acc.sbx
     let scur = 0
     let cur = hdr + g.rbase + 8 * g.nsaved
     let tmp = 0
@@ -246,10 +246,10 @@ fn layout_frame(g: &Gen, f: &Fun, rs: &Reps, hdr: int, down: bool, frame_cap: in
         cur = cur + tmp
     g.frame = (cur + 15) // 16 * 16
     g.sframe = (scur + 15) // 16 * 16
-    if sbx && g.a.bm:
+    if sbx && g.a.acc.bm:
         /#/ base mode: the shadow frame stands just below the frame pointer, in the bytes the frame of the host stack
         /#/ takes; the frame is at least as large, so a callee's shadow frame does not overlap this one
-        g.a.shd = 0 - g.sframe
+        g.a.acc.shd = 0 - g.sframe
         if g.frame < g.sframe:
             g.frame = g.sframe
     /#/ a frame larger than the guard below the shadow stack could be stepped over
@@ -282,3 +282,78 @@ fn edge_hazard(g: &Gen, f: &Fun, e: int) => bool:
                     hazard = true
                 q = f.nx[q]
     return hazard
+
+/#/ The values with a live range (`0..nd`) in the order the scan visits them: by the start of the range, the
+/#/ lower number first. `g.ptop` is the last position.
+fn lscan_order(g: &Gen, nd: int) => buf<int>:
+    let top = g.ptop + 4
+    let first: buf<int> = new_buf(int, top + 1)
+    let link: buf<int> = new_buf(int, nd + 1)
+    for q in 0..top + 1:
+        first[q] = 0 - 1
+    let sd = nd - 1
+    while sd >= 0:
+        link[sd] = first[g.ra_lo[sd]]
+        first[g.ra_lo[sd]] = sd
+        sd = sd - 1
+    let order: buf<int> = new_buf(int, nd + 1)
+    let n = 0
+    for q in 0..top + 1:
+        let cd = first[q]
+        while cd >= 0:
+            order[n] = cd
+            n = n + 1
+            cd = link[cd]
+    return order
+
+/#/ Linear scan of the general registers, the part both targets share. `order` is `lscan_order`; `regs[0..npool]`
+/#/ are the registers in the order they are tried; `allow[d]` has bit r set when value `d` may take `regs[r]`;
+/#/ `skip[d]` is 1 for a value that does not take a general register (a float in a vector register). A value takes,
+/#/ in this order: the register of the value it is coalesced with, the register `g_hint_reg` names, the first free
+/#/ one; when none is free the least wanted of the live values and this one goes to the frame. Returns which
+/#/ registers were used (1 per slot).
+fn lscan_int(g: &Gen, f: &Fun, order: &buf<int>, nd: int, regs: &buf<int>, npool: int, allow: &buf<int>, skip: &buf<int>) => buf<int>:
+    let occ: buf<int> = new_buf(int, npool)
+    let used: buf<int> = new_buf(int, npool)
+    for r in 0..npool:
+        occ[r] = 0 - 1
+    for k in 0..nd:
+        let d = order[k]
+        if skip[d] == 1:
+            continue
+        let v = g.dv[d]
+        for r in 0..npool:
+            if occ[r] >= 0 && g.ra_hi[occ[r]] < g.ra_lo[d]:
+                occ[r] = 0 - 1
+        let fr = 0 - 1
+        let shared = 0 - 1
+        if g.coal[d] >= 0 && g.home[g.dv[g.coal[d]]] >= 0 && g.ra_lo[g.coal[d]] < g.ra_lo[d]:
+            for r in 0..npool:
+                if regs[r] == g.home[g.dv[g.coal[d]]] && occ[r] == g.coal[d] && ((allow[d] >> r) & 1) == 1:
+                    shared = r
+        if shared >= 0:
+            fr = shared
+        let hint = g_hint_reg(g, f, v)
+        if hint >= 0 && fr < 0:
+            for r in 0..npool:
+                if regs[r] == hint && occ[r] < 0 && ((allow[d] >> r) & 1) == 1:
+                    fr = r
+        for r in 0..npool:
+            if occ[r] < 0 && fr < 0 && ((allow[d] >> r) & 1) == 1:
+                fr = r
+        if fr >= 0:
+            if shared < 0 || g.ra_hi[d] > g.ra_hi[occ[fr]]:
+                occ[fr] = d
+            g.home[v] = regs[fr]
+            used[fr] = 1
+        else:
+            let worst = 0 - 1
+            for r in 0..npool:
+                if ((allow[d] >> r) & 1) == 1:
+                    if worst < 0 || g.dn[occ[r]] < g.dn[occ[worst]]:
+                        worst = r
+            if g.dn[occ[worst]] < g.dn[d]:
+                g.home[g.dv[occ[worst]]] = 0 - 1
+                g.home[v] = regs[worst]
+                occ[worst] = d
+    return used

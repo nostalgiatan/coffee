@@ -22,7 +22,7 @@ fn g_gen_vloop(g: &Gen, f: &Fun, i: int) => void:
     let np = f.aux[i] & 255
     let ni = (f.aux[i] >> 8) & 255
     let plen = f.aux[i] >> 16
-    if g.a.sbx:
+    if g.a.acc.sbx:
         /#/ the scalar loop does it all
         /#/ (with a reduction the slot is the first operand and still holds the accumulator)
         let k0 = 0

@@ -22,7 +22,7 @@ use * in gen_a64_fun
 /#/ The base register of the bytes of value `x`: x29, or x27 (the shadow frame in the linear memory) for the
 /#/ aggregates and slots of sandbox code.
 fn ga_sb(g: &Gen, x: int) => int:
-    if g.a.sbx && g.sh[x] == 1:
+    if g.a.acc.sbx && g.sh[x] == 1:
         return 27
     return ta_fp()
 
@@ -222,114 +222,70 @@ fn ga_alloc_regs(g: &Gen, f: &Fun, rs: &Reps) => void:
     if nd == 0:
         return
     let npool = ta_nsaved_regs()
-    if g.a.sbx:
+    if g.a.acc.sbx:
         /#/ x27 is the shadow frame pointer of sandbox code
         npool = npool - 1
-    let top = g.ptop + 4
-    let first: buf<int> = new_buf(int, top + 1)
-    let link: buf<int> = new_buf(int, nd + 1)
-    for q in 0..top + 1:
-        first[q] = 0 - 1
-    let sd = nd - 1
-    while sd >= 0:
-        link[sd] = first[g.ra_lo[sd]]
-        first[g.ra_lo[sd]] = sd
-        sd = sd - 1
-    let occ: buf<int> = new_buf(int, npool)
-    let used: buf<int> = new_buf(int, npool)
+    let order = lscan_order(g, nd)
+    let regs: buf<int> = new_buf(int, npool)
     for r in 0..npool:
-        occ[r] = 0 - 1
+        regs[r] = ga_pool_reg(r)
+    let skip: buf<int> = new_buf(int, nd + 1)
+    let allow: buf<int> = new_buf(int, nd + 1)
     let occx: buf<int> = new_buf(int, 24)
     let xused: buf<int> = new_buf(int, 8)
     for r in 0..24:
         occx[r] = 0 - 1
-    for q in 0..top + 1:
-        let cd = first[q]
-        while cd >= 0:
-            let d = cd
-            let nxt = link[d]
-            let v = g.dv[d]
-            let rd = f.rep[v]
-            if rd == int(Rp.F32) || rd == int(Rp.F64):
-                /#/ v8..v15 (slots 0 to 7) are kept by a callee, v16..v31 (slots 8 to 23) are not: those take
-                /#/ the values no call is made in the life of
-                for r in 0..24:
-                    if occx[r] >= 0 && g.ra_hi[occx[r]] < g.ra_lo[d]:
-                        occx[r] = 0 - 1
-                let crossing = g_crosses(g, g.ra_lo[d], g.ra_hi[d])
-                let lo = 0
-                let hi = 8
-                if !crossing:
-                    lo = 8
-                    hi = 24
-                let fx = 0 - 1
-                for r in lo..hi:
+    for k in 0..nd:
+        let d = order[k]
+        allow[d] = (1 << npool) - 1
+        let v = g.dv[d]
+        let rd = f.rep[v]
+        if rd == int(Rp.F32) || rd == int(Rp.F64):
+            skip[d] = 1
+            /#/ v8..v15 (slots 0 to 7) are kept by a callee, v16..v31 (slots 8 to 23) are not: those take
+            /#/ the values no call is made in the life of
+            for r in 0..24:
+                if occx[r] >= 0 && g.ra_hi[occx[r]] < g.ra_lo[d]:
+                    occx[r] = 0 - 1
+            let crossing = g_crosses(g, g.ra_lo[d], g.ra_hi[d])
+            let lo = 0
+            let hi = 8
+            if !crossing:
+                lo = 8
+                hi = 24
+            let fx = 0 - 1
+            for r in lo..hi:
+                if occx[r] < 0 && fx < 0:
+                    fx = r
+            if fx < 0 && !crossing:
+                for r in 0..8:
                     if occx[r] < 0 && fx < 0:
                         fx = r
-                if fx < 0 && !crossing:
-                    for r in 0..8:
-                        if occx[r] < 0 && fx < 0:
-                            fx = r
-                if fx >= 0:
-                    occx[fx] = d
-                    g.xhome[v] = 8 + fx
-                    if fx >= 8:
-                        g.xhome[v] = 16 + fx - 8
+            if fx >= 0:
+                occx[fx] = d
+                g.xhome[v] = 8 + fx
+                if fx >= 8:
+                    g.xhome[v] = 16 + fx - 8
+                if rd == int(Rp.F32):
+                    g.xsg[v] = 1
+                if fx < 8:
+                    xused[fx] = 1
+            else:
+                let worst = 0 - 1
+                for r in lo..hi:
+                    if worst < 0 || g.dn[occx[r]] < g.dn[occx[worst]]:
+                        worst = r
+                if g.dn[occx[worst]] < g.dn[d]:
+                    g.xhome[g.dv[occx[worst]]] = 0 - 1
+                    g.xhome[v] = 8 + worst
+                    if worst >= 8:
+                        g.xhome[v] = 16 + worst - 8
                     if rd == int(Rp.F32):
                         g.xsg[v] = 1
-                    if fx < 8:
-                        xused[fx] = 1
-                else:
-                    let worst = 0 - 1
-                    for r in lo..hi:
-                        if worst < 0 || g.dn[occx[r]] < g.dn[occx[worst]]:
-                            worst = r
-                    if g.dn[occx[worst]] < g.dn[d]:
-                        g.xhome[g.dv[occx[worst]]] = 0 - 1
-                        g.xhome[v] = 8 + worst
-                        if worst >= 8:
-                            g.xhome[v] = 16 + worst - 8
-                        if rd == int(Rp.F32):
-                            g.xsg[v] = 1
-                        occx[worst] = d
-                        if worst < 8:
-                            xused[worst] = 1
-                cd = nxt
-                continue
-            for r in 0..npool:
-                if occ[r] >= 0 && g.ra_hi[occ[r]] < g.ra_lo[d]:
-                    occ[r] = 0 - 1
-            let fr = 0 - 1
-            let shared = 0 - 1
-            if g.coal[d] >= 0 && g.home[g.dv[g.coal[d]]] >= 0 && g.ra_lo[g.coal[d]] < g.ra_lo[d]:
-                for r in 0..npool:
-                    if ga_pool_reg(r) == g.home[g.dv[g.coal[d]]] && occ[r] == g.coal[d]:
-                        shared = r
-            if shared >= 0:
-                fr = shared
-            let hint = g_hint_reg(g, f, v)
-            if hint >= 0 && fr < 0:
-                for r in 0..npool:
-                    if ga_pool_reg(r) == hint && occ[r] < 0:
-                        fr = r
-            for r in 0..npool:
-                if occ[r] < 0 && fr < 0:
-                    fr = r
-            if fr >= 0:
-                if shared < 0 || g.ra_hi[d] > g.ra_hi[occ[fr]]:
-                    occ[fr] = d
-                g.home[v] = ga_pool_reg(fr)
-                used[fr] = 1
-            else:
-                let worst = 0
-                for r in 0..npool:
-                    if g.dn[occ[r]] < g.dn[occ[worst]]:
-                        worst = r
-                if g.dn[occ[worst]] < g.dn[d]:
-                    g.home[g.dv[occ[worst]]] = 0 - 1
-                    g.home[v] = ga_pool_reg(worst)
-                    occ[worst] = d
-            cd = nxt
+                    occx[worst] = d
+                    if worst < 8:
+                        xused[worst] = 1
+    let used = lscan_int(g, f, &order, nd, &regs, npool, &allow, &skip)
     if len(g.saved) < npool + 9:
         g.saved = new_buf(int, npool + 9)
     for r in 0..npool:

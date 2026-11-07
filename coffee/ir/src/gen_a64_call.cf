@@ -45,7 +45,7 @@ fn ga_do_call(g: &Gen, f: &Fun, rs: &Reps, i: int, sym: int, variadic: bool) => 
             cls[k] = 2
             on_stack = on_stack + 1
     let sbytes = (on_stack * 8 + 15) // 16 * 16
-    if g.a.sbx && (sbytes > 0 || sym < 0):
+    if g.a.acc.sbx && (sbytes > 0 || sym < 0):
         /#/ sandbox code passes at most 8 integer and 8 float arguments, and calls no function value
         a64_err = true
         return

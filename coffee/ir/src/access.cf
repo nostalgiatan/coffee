@@ -1,0 +1,45 @@
+/#/ How the code generator reaches memory in sandbox code, the part that does not depend on the instruction set (design:
+/#/ docs/explanation/architecture.md, "the access class"). One `Access` belongs to each assembler (`Asm.acc`). The
+/#/ target's assembler asks it three things:
+/#/
+/#/   - is this operand guarded at all (`guarded`)? Only sandbox code is, and not `lea`, which only computes, nor an
+/#/     access through the frame register of the host stack, which the code cannot get the address of;
+/#/   - which register may hold the address that an access in the base form makes (`pick`)? One that the access does not
+/#/     use itself and that holds nothing the code still needs (`keep`);
+/#/   - did an access find no form (`fail`, `bad`)? Then the function is not made.
+class Access:
+    /#/ sandbox code: every guarded memory operand goes through the linear memory
+    sbx: bool
+    /#/ with `sbx`: the base form (the address made in a register as a 32-bit number, used as [base + register]) instead
+    /#/ of the segment form (x86-64 `gs`)
+    bm: bool
+    /#/ base mode, x86-64: added to the displacement of an access through the shadow base: minus the shadow frame of the
+    /#/ function, whose bytes stand below its frame pointer
+    shd: int
+    /#/ base mode: bit n set means candidate register n holds a value the code still needs, which an address must not overwrite
+    keep: int
+    /#/ accesses that found no register for their address
+    bad: int
+
+    fn guarded(self, is_lea: bool, frame_base: bool) => bool:
+        return self.sbx && !is_lea && !frame_base
+
+    /#/ The first of the candidates 0..`ncand` that is not `base`, `idx` or (when `value` is set) `reg`, and not kept; -1 when none.
+    fn pick(self, ncand: int, base: int, idx: int, reg: int, value: bool) => int:
+        for c in 0..ncand:
+            if c != base && c != idx && (!value || c != reg) && ((self.keep >> c) & 1) == 0:
+                return c
+        return 0 - 1
+
+    /#/ Like `pick`, but a kept register is allowed: the caller saves its value around the access.
+    fn pick_saved(self, ncand: int, base: int, idx: int, reg: int, value: bool) => int:
+        for c in 0..ncand:
+            if c != base && c != idx && (!value || c != reg):
+                return c
+        return 0 - 1
+
+    fn fail(self) => void:
+        self.bad = self.bad + 1
+
+fn new_access() => Access:
+    return Access { sbx: false, bm: false, shd: 0, keep: 0, bad: 0 }

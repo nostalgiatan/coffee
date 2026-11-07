@@ -126,7 +126,7 @@ fn a64_mov_rr(a: &Asm, rd: int, rn: int) => void:
 
 /#/ rd = rn + v, or rn - v when `sub`; a value that does not fit 12 bits (or 12 bits shifted) goes through x17.
 fn a64_addsub_ri(a: &Asm, sub: bool, rd: int, rn: int, v: int) => void:
-    if a.sbx && rd == 31 && rn == 31 && v >= 4096:
+    if a.acc.sbx && rd == 31 && rn == 31 && v >= 4096:
         /#/ sandbox code moves sp by immediates only (the verifier takes nothing else)
         if v >= 16777216:
             a64_err = true
@@ -303,7 +303,7 @@ fn a64_ldst(a: &Asm, load: bool, rt: int, base: int, disp: int, n: int) => void:
     let l = 0
     if load:
         l = 1
-    if a.sbx && base != 29 && base != 31:
+    if a.acc.sbx && base != 29 && base != 31:
         /#/ the linear memory: [x28, w, uxtw]
         let ar = a64_sbx_off(a, base, disp)
         a64_w(a, 941639680 | (sz << 30) | (l << 22) | (ar << 16) | (28 << 5) | rt)
@@ -313,7 +313,7 @@ fn a64_ldst(a: &Asm, load: bool, rt: int, base: int, disp: int, n: int) => void:
     elif disp >= 0 - 256 && disp < 256:
         a64_w(a, 939524096 | (sz << 30) | (l << 22) | ((disp & 511) << 12) | (base << 5) | rt)
     else:
-        if a.sbx:
+        if a.acc.sbx:
             a64_err = true
         a64_mov_ri(a, 17, disp)
         a64_w(a, 941647872 | (sz << 30) | (l << 22) | (17 << 16) | (base << 5) | rt)
@@ -333,7 +333,7 @@ fn a64_ldst_idx(a: &Asm, load: bool, rt: int, base: int, idx: int, shifted: bool
     let s = 0
     if shifted && n > 1:
         s = 1 << 12
-    if a.sbx:
+    if a.acc.sbx:
         a64_sbx_sum(a, base, idx, shifted && n > 1, sz)
         a64_w(a, 941639680 | (sz << 30) | (l << 22) | (15 << 16) | (28 << 5) | rt)
         return
@@ -341,7 +341,7 @@ fn a64_ldst_idx(a: &Asm, load: bool, rt: int, base: int, idx: int, shifted: bool
 
 /#/ rd = the address of the symbol `sym` plus `addend`: adrp and add, with their relocations.
 fn a64_adr_sym(a: &Asm, rd: int, sym: int, addend: int) => void:
-    if a.sbx:
+    if a.acc.sbx:
         /#/ the address is a 32-bit offset in the linear memory: movz and movk, filled in by the image
         a.reloc(sym, r_a64_movw_g0_nc(), addend)
         a64_set(a, a.c.n - 4, 1384120320 | rd)
@@ -521,7 +521,7 @@ fn a64_fldst(a: &Asm, load: bool, vt: int, base: int, disp: int, n: int) => void
     let l = 0
     if load:
         l = 1
-    if a.sbx && base != 29 && base != 31:
+    if a.acc.sbx && base != 29 && base != 31:
         let ar = a64_sbx_off(a, base, disp)
         a64_w(a, 1008748544 | (sz << 30) | (l << 22) | (ar << 16) | (28 << 5) | vt)
         return
@@ -530,7 +530,7 @@ fn a64_fldst(a: &Asm, load: bool, vt: int, base: int, disp: int, n: int) => void
     elif disp >= 0 - 256 && disp < 256:
         a64_w(a, 1006632960 | (sz << 30) | (l << 22) | ((disp & 511) << 12) | (base << 5) | vt)
     else:
-        if a.sbx:
+        if a.acc.sbx:
             a64_err = true
         a64_mov_ri(a, 17, disp)
         a64_w(a, 1008756736 | (sz << 30) | (l << 22) | (17 << 16) | (base << 5) | vt)
@@ -546,7 +546,7 @@ fn a64_fldst_idx(a: &Asm, load: bool, vt: int, base: int, idx: int, shifted: boo
     let s = 0
     if shifted:
         s = 1 << 12
-    if a.sbx:
+    if a.acc.sbx:
         a64_sbx_sum(a, base, idx, shifted, sz)
         a64_w(a, 1008748544 | (sz << 30) | (l << 22) | (15 << 16) | (28 << 5) | vt)
         return
@@ -560,7 +560,7 @@ fn a64_vdup(a: &Asm, esz: int, vd: int, rn: int) => void:
 
 /#/ vt = the 16 bytes at [base] / the 16 bytes at [base] = vt.
 fn a64_vldst(a: &Asm, load: bool, vt: int, base: int) => void:
-    if a.sbx && base != 29 && base != 31:
+    if a.acc.sbx && base != 29 && base != 31:
         if load:
             a64_w(a, 1021331456 | (base << 16) | (28 << 5) | vt)
         else:

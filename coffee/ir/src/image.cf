@@ -267,8 +267,8 @@ fn make_image_sbx(o: &Obj, a: &Asm) => Image:
         sys_at = im.b.n
         let sa = new_asm()
         /#/ the heap word accesses go through gs like the code's own
-        sa.sbx = true
-        sa.bm = a.bm
+        sa.acc.sbx = true
+        sa.acc.bm = a.acc.bm
         sa.begin_fun()
         let ex = sa.new_label()
         let mm = sa.new_label()

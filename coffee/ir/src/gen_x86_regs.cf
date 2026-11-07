@@ -66,7 +66,7 @@ fn g_cm_in(g: &Gen, lo: int, hi: int) => int:
 /#/ May a value that lives across calls writing `cm` and (`restr`) is a parameter or an argument
 /#/ take register number `r` of the pool?
 fn g_reg_ok(g: &Gen, r: int, cm: int, restr: bool) => bool:
-    if tg_reserved(g.a.sbx, g.a.bm, r):
+    if tg_reserved(g.a.acc.sbx, g.a.acc.bm, r):
         return false
     if r >= tg_ncaller():
         return true
@@ -369,18 +369,8 @@ fn g_alloc_regs(g: &Gen, f: &Fun, rs: &Reps) => void:
     let nd = g_live_ranges(g, f, rs, true)
     if nd == 0:
         return
-    let pos = g.ptop
     /#/ linear scan, by start
-    let top = pos + 4
-    let first: buf<int> = new_buf(int, top + 1)
-    let link: buf<int> = new_buf(int, nd + 1)
-    for q in 0..top + 1:
-        first[q] = -1
-    let sd = nd - 1
-    while sd >= 0:
-        link[sd] = first[g.ra_lo[sd]]
-        first[g.ra_lo[sd]] = sd
-        sd = sd - 1
+    let order = lscan_order(g, nd)
     /#/ the caller-saved registers first (r10, then r8 and r9, the registers of the fifth and sixth
     /#/ argument), then the saved ones
     let regs = tg_pool()
@@ -392,81 +382,44 @@ fn g_alloc_regs(g: &Gen, f: &Fun, rs: &Reps) => void:
         ep = f.nx[ep]
     for k in 0..g.nhc:
         ent[g.did[g.hc[k]]] = 1
-    let occ: buf<int> = new_buf(int, tg_npool())
-    for r in 0..tg_npool():
-        occ[r] = -1
-    let used: buf<int> = new_buf(int, tg_npool())
     /#/ the xmm registers 2 to 15 for floats that are not alive across a call (all are caller-saved);
-    /#/ the arguments are loaded into xmm0 to xmm7, so a parameter or an argument stays in 8 to 15
+    /#/ the arguments are loaded into xmm0 to xmm7, so a parameter or an argument stays in 8 to 15.
+    /#/ A float that finds none (or lives across a call) takes a general register like the others.
     let occx: buf<int> = new_buf(int, 16)
     for r in 0..16:
         occx[r] = -1
-    for q in 0..top + 1:
-        let cd = first[q]
-        while cd >= 0:
-            let d = cd
-            let nxt = link[d]
+    let skip: buf<int> = new_buf(int, nd + 1)
+    let allow: buf<int> = new_buf(int, nd + 1)
+    for k in 0..nd:
+        let d = order[k]
+        let rd = f.rep[g.dv[d]]
+        if (rd == int(Rp.F32) || rd == int(Rp.F64)) && !g_crosses(g, g.ra_lo[d], g.ra_hi[d]):
             let fr_x = -1
-            let rd = f.rep[g.dv[d]]
-            if (rd == int(Rp.F32) || rd == int(Rp.F64)) && !g_crosses(g, g.ra_lo[d], g.ra_hi[d]):
-                let lowx = 2
-                if ent[d] == 1 || g_at_call(g, g.ra_hi[d]):
-                    lowx = 8
-                for r in 2..16:
-                    if occx[r] >= 0 && g.ra_hi[occx[r]] < g.ra_lo[d]:
-                        occx[r] = -1
-                for r in lowx..16:
-                    if occx[r] < 0 && fr_x < 0:
-                        fr_x = r
-                if fr_x >= 0:
-                    occx[fr_x] = d
-                    g.xhome[g.dv[d]] = fr_x
-                    if rd == int(Rp.F32):
-                        g.xsg[g.dv[d]] = 1
-                    cd = nxt
-                    continue
-            /#/ which of the caller-saved registers `d` may take: not one that a call it is alive
-            /#/ across may write; only r10 when it is an argument of the call it ends at or a
-            /#/ parameter of the function (loading the arguments or the parameters would overwrite it)
-            let cm = g_cm_in(g, g.ra_lo[d], g.ra_hi[d])
-            let restr = ent[d] == 1 || g_at_call(g, g.ra_hi[d])
-            for r in 0..10:
-                if occ[r] >= 0 && g.ra_hi[occ[r]] < g.ra_lo[d]:
-                    occ[r] = -1
-            let fr = -1
-            /#/ the hint: the register of the first operand when it ends where `d` begins
-            let hint = g_hint_reg(g, f, g.dv[d])
-            let shared = -1
-            if g.coal[d] >= 0 && g.home[g.dv[g.coal[d]]] >= 0 && g.ra_lo[g.coal[d]] < g.ra_lo[d]:
-                for r in 0..10:
-                    if regs[r] == g.home[g.dv[g.coal[d]]] && occ[r] == g.coal[d] && g_reg_ok(g, r, cm, restr):
-                        shared = r
-            if shared >= 0:
-                fr = shared
-            if hint >= 0 && fr < 0:
-                for r in 0..10:
-                    if regs[r] == hint && occ[r] < 0 && g_reg_ok(g, r, cm, restr):
-                        fr = r
-            for r in 0..10:
-                if occ[r] < 0 && fr < 0 && g_reg_ok(g, r, cm, restr):
-                    fr = r
-            if fr >= 0:
-                if shared < 0 || g.ra_hi[d] > g.ra_hi[occ[fr]]:
-                    occ[fr] = d
-                g.home[g.dv[d]] = regs[fr]
-                used[fr] = 1
-            else:
-                /#/ the least wanted of the live ones and this one goes to the frame
-                let worst = -1
-                for r in 0..10:
-                    if g_reg_ok(g, r, cm, restr):
-                        if worst < 0 || g.dn[occ[r]] < g.dn[occ[worst]]:
-                            worst = r
-                if g.dn[occ[worst]] < g.dn[d]:
-                    g.home[g.dv[occ[worst]]] = -1
-                    g.home[g.dv[d]] = regs[worst]
-                    occ[worst] = d
-            cd = nxt
+            let lowx = 2
+            if ent[d] == 1 || g_at_call(g, g.ra_hi[d]):
+                lowx = 8
+            for r in 2..16:
+                if occx[r] >= 0 && g.ra_hi[occx[r]] < g.ra_lo[d]:
+                    occx[r] = -1
+            for r in lowx..16:
+                if occx[r] < 0 && fr_x < 0:
+                    fr_x = r
+            if fr_x >= 0:
+                occx[fr_x] = d
+                g.xhome[g.dv[d]] = fr_x
+                if rd == int(Rp.F32):
+                    g.xsg[g.dv[d]] = 1
+                skip[d] = 1
+                continue
+        /#/ which of the caller-saved registers `d` may take: not one that a call it is alive
+        /#/ across may write; only r10 when it is an argument of the call it ends at or a
+        /#/ parameter of the function (loading the arguments or the parameters would overwrite it)
+        let cm = g_cm_in(g, g.ra_lo[d], g.ra_hi[d])
+        let restr = ent[d] == 1 || g_at_call(g, g.ra_hi[d])
+        for r in 0..tg_npool():
+            if g_reg_ok(g, r, cm, restr):
+                allow[d] = allow[d] | (1 << r)
+    let used = lscan_int(g, f, &order, nd, &regs, tg_npool(), &allow, &skip)
     /#/ the check: nothing in a caller-saved register is alive across a call, and r8 and r9
     /#/ hold neither a parameter nor an argument of the call that ends the value
     for d in 0..nd:

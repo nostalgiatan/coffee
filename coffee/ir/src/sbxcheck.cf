@@ -16,6 +16,7 @@
 /#/ The code is decoded from its start to its end in one go, so the instruction boundaries the check
 /#/ sees are those the processor sees.
 use * in txt
+use * in sbxrules
 use * in target_x86
 
 class Dec:
@@ -45,6 +46,7 @@ let sbx_why = 0
 fn dec_no(d: &Dec, why: int) => int:
     d.why = why
     sbx_why = why
+    sbx_rule = sbr_of_x86(why)
     return -1
 
 fn dec_s32(code: &Txt, i: int) => int:
@@ -336,6 +338,7 @@ fn sbx_verify(code: &Txt, n: int, entry: int) => int:
         i = i + l
     /#/ the code after the last instruction is not the code's: it must not run on into it
     if falls:
+        sbx_rule = sbr_branch()
         return last
     let tg = new_buf(int, n + 1)
     for k in 0..n + 1:
@@ -347,6 +350,7 @@ fn sbx_verify(code: &Txt, n: int, entry: int) => int:
             let t = d.tgt
             if !(d.kind == 2 && t == entry):
                 if t < 0 || t >= n || bnd[t] == 0:
+                    sbx_rule = sbr_branch()
                     return i
                 tg[t] = 1
         i = i + l
@@ -358,6 +362,7 @@ fn sbx_verify(code: &Txt, n: int, entry: int) => int:
         let l = sbx_decode(code, i, n, &d)
         if d.acc >= 0:
             if prev != d.acc || tg[i] == 1:
+                sbx_rule = sbr_adjacent()
                 return i
         prev = d.wr
         i = i + l

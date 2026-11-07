@@ -1,0 +1,107 @@
+/#/ The cases of src/sbxcases.cf through the verifier of their target: each must be refused at the offset the
+/#/ line says, for the rule it says. Every rule must have a case for every target it applies to.
+use * in say
+use * in txt
+use * in sbxcheck
+use * in sbxcheck_a64
+use * in sbxrules
+use * in sbxcases
+use fflush in libc of c
+
+fn miss(msg: str) => int:
+    say(msg)
+    fflush(0)
+    return 1
+
+/#/ The rule that starts with the letter `c`.
+fn rule_by_letter(c: int) => int:
+    for r in 1..sbr_count() + 1:
+        if int(sbr_name(r)[0]) == c:
+            return r
+    return 0
+
+/#/ Runs one line: `f` holds its fields, `nf` how many (rule letter, target, mode, offset, then the code).
+fn run_line(f: &buf<int>, nf: int, n: int) => int:
+    let rule = rule_by_letter(f[0])
+    let arch = 0
+    if f[1] == 97:
+        arch = 1
+    let want = f[3]
+    let t = new_txt()
+    if arch == 0:
+        for q in 4..nf:
+            t.put_byte(f[q])
+        sbx_set_base(f[2] == 98)
+    else:
+        if f[2] == 119:
+            /#/ one word in the body of a frame
+            let pre = [3506471935, 2835381245, 2432697341]
+            let post = [2839575549, 2432730111, 3596551104]
+            for q in 0..3:
+                for b in 0..4:
+                    t.put_byte((pre[q] >> (8 * b)) & 255)
+            for q in 4..nf:
+                for b in 0..4:
+                    t.put_byte((f[q] >> (8 * b)) & 255)
+            for q in 0..3:
+                for b in 0..4:
+                    t.put_byte((post[q] >> (8 * b)) & 255)
+        else:
+            for q in 4..nf:
+                for b in 0..4:
+                    t.put_byte((f[q] >> (8 * b)) & 255)
+    sbx_rule = 0
+    let got = 0 - 1
+    if arch == 0:
+        got = sbx_verify(&t, t.n, -1)
+    else:
+        got = sbx_verify_a64(&t, t.n, -1)
+    sbx_set_base(false)
+    if got != want:
+        return miss(f"case {n}: refused at {got}, want {want}\n")
+    if sbx_rule != rule:
+        return miss(f"case {n}: rule {sbr_name(sbx_rule)}, want {sbr_name(rule)}\n")
+    return 0
+
+fn main() => int:
+    let m = 0
+    let text = sbx_cases()
+    let f: buf<int> = new_buf(int, 64)
+    let nf = 0
+    let cur = 0
+    let have = false
+    let alpha = false
+    let n = 0
+    /#/ cases[arch * 8 + rule]: how many lines there are for the rule on the target
+    let seen: buf<int> = new_buf(int, 32)
+    for i in 0..len(text):
+        let c = int(text[i])
+        if c == 32 || c == 10:
+            if have:
+                f[nf] = cur
+                nf = nf + 1
+            cur = 0
+            have = false
+            alpha = false
+            if c == 10:
+                n = n + 1
+                m = m + run_line(&f, nf, n)
+                let arch = 0
+                if f[1] == 97:
+                    arch = 1
+                let r = rule_by_letter(f[0])
+                seen[arch * 8 + r] = seen[arch * 8 + r] + 1
+                nf = 0
+        elif c >= 48 && c <= 57 && !alpha:
+            cur = cur * 10 + (c - 48)
+            have = true
+        else:
+            if !have:
+                cur = c
+                have = true
+            alpha = true
+    for arch in 0..2:
+        for r in 1..sbr_count() + 1:
+            if sbr_applies(arch, r) && seen[arch * 8 + r] == 0:
+                m = m + miss(f"no case for rule {sbr_name(r)} on target {arch}\n")
+    return m

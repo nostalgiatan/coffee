@@ -45,8 +45,8 @@ fn g_so(g: &Gen, id: int) => int:
 
 /#/ The base register of the bytes of value `x`: rbp, or r14 for the shadow frame of sandbox code.
 fn g_vb(g: &Gen, x: int) => int:
-    if g.a.sbx && g.sh[x] == 1:
-        if g.a.bm:
+    if g.a.acc.sbx && g.sh[x] == 1:
+        if g.a.acc.bm:
             return sh_base()
         return 14
     return 5
@@ -89,7 +89,7 @@ fn g_xsrc(g: &Gen, f: &Fun, v: int, scratch: int) => int:
     let x = g_res(g, f, v)
     if g.xhome[x] >= 0:
         return g.xhome[x]
-    if f.op[x] == int(Op.Const) && !g.a.sbx:
+    if f.op[x] == int(Op.Const) && !g.a.acc.sbx:
         g_load_fconst(g, scratch, f, x)
         return scratch
     g_ld(g, 0, f, x)
@@ -695,7 +695,7 @@ fn g_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => voi
         g.nav = 0
         for k in 0..f.b[i]:
             g_push_arg(g, f.pool[f.a[i] + k])
-        if op == int(Op.CallI) && g.a.sbx:
+        if op == int(Op.CallI) && g.a.acc.sbx:
             /#/ a function value would have to be a checked table index
             g_bad(g)
             return
