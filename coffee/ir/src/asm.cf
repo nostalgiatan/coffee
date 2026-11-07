@@ -644,13 +644,13 @@ class Asm:
         self.byte(5 | ((x & 7) << 3))
         self.reloc(sym, r_pc32(), 0)
 
-    /#/ xmm `x` = the 16 bytes at [base + idx * scale] (unaligned)
-    fn vload(self, x: int, base: int, idx: int, scale: int) => void:
-        self.rmem_idx(0, 15, 16, x, base, idx, scale, 0, false)
+    /#/ xmm `x` = the 16 bytes at [base + idx * scale + disp] (unaligned)
+    fn vload(self, x: int, base: int, idx: int, scale: int, disp: int) => void:
+        self.rmem_idx(0, 15, 16, x, base, idx, scale, disp, false)
 
-    /#/ [base + idx * scale] = the 16 bytes of xmm `x`
-    fn vstore(self, base: int, idx: int, scale: int, x: int) => void:
-        self.rmem_idx(0, 15, 17, x, base, idx, scale, 0, false)
+    /#/ [base + idx * scale + disp] = the 16 bytes of xmm `x`
+    fn vstore(self, base: int, idx: int, scale: int, x: int, disp: int) => void:
+        self.rmem_idx(0, 15, 17, x, base, idx, scale, disp, false)
 
     /#/ A packed instruction `0F opc` on two xmm registers, with the prefix 66 when `pfx` is set.
     fn vec_op(self, pfx: bool, opc: int, dst: int, src: int) => void:

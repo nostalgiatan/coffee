@@ -2053,13 +2053,19 @@ class Gen:
     /#/ stores. It writes rax, rcx, rdx, rsi, rdi, r8..r11 and every xmm register, like a call.
     fn gen_vloop(self, f: &Fun, i: int) => void:
         let base = f.a[i]
-        let lane = f.c[i]
+        let lane = f.c[i] & 15
+        /#/ a reduction: 0 none, else 1 +, 2 -, 3 ^, 4 |, 5 &; the accumulator is in the slot that is the first operand
+        let rk = f.c[i] >> 4
         let np = f.aux[i] & 255
         let ni = (f.aux[i] >> 8) & 255
         let plen = f.aux[i] >> 16
         if self.a.sbx:
             /#/ the scalar loop does it all
-            self.ld(0, f, f.pool[base])
+            /#/ (with a reduction the slot is the first operand and still holds the accumulator)
+            let k0 = 0
+            if rk > 0:
+                k0 = 1
+            self.ld(0, f, f.pool[base + k0])
             self.st(i, 0)
             return
         let eb = 4
@@ -2085,6 +2091,8 @@ class Gen:
             w = 2
             fl = false
         let nops = 2 + np + ni
+        if rk > 0:
+            nops = nops + 1
         for k in 0..nops:
             self.ld(0, f, f.pool[base + k])
             self.a.push(0)
@@ -2113,21 +2121,71 @@ class Gen:
             self.a.pop(self.vl_reg(k))
         self.a.pop(1)
         self.a.pop(0)
-        self.a.add_ri(1, 1 - w)
+        if rk == 5:
+            self.a.vec_op(true, 118, 7, 7)
+        elif rk > 0:
+            self.a.xorps(7, 7)
+        /#/ two vectors a round while two are left, then one at a time
+        self.a.add_ri(1, 1 - 2 * w)
+        let top2 = self.a.new_label()
+        let done2 = self.a.new_label()
+        self.a.cmp_rr(0, 1)
+        self.a.jcc(13, done2)
+        self.a.bind(top2)
+        self.vl_body(f, base + nops, plen, eb, lane, fl, dbl, 0, rk)
+        self.vl_body(f, base + nops, plen, eb, lane, fl, dbl, 16, rk)
+        self.a.add_ri(0, 2 * w)
+        self.a.cmp_rr(0, 1)
+        self.a.jcc(12, top2)
+        self.a.bind(done2)
+        self.a.add_ri(1, w)
         let top = self.a.new_label()
         let done = self.a.new_label()
         self.a.cmp_rr(0, 1)
         self.a.jcc(13, done)
         self.a.bind(top)
+        self.vl_body(f, base + nops, plen, eb, lane, fl, dbl, 0, rk)
+        self.a.add_ri(0, w)
+        self.a.cmp_rr(0, 1)
+        self.a.jcc(12, top)
+        self.a.bind(done)
+        if rk > 0:
+            /#/ the two halves of the accumulator together, then with the value in the slot, which gets the result
+            self.a.pop(2)
+            self.a.movaps(0, 7)
+            self.a.vec_op(true, 109, 0, 0)
+            let cop = 212
+            if rk == 3:
+                cop = 239
+            elif rk == 4:
+                cop = 235
+            elif rk == 5:
+                cop = 219
+            self.a.vec_op(true, cop, 7, 0)
+            self.a.movq_r(1, 7, false)
+            self.a.load(6, 2, 0, 8)
+            if rk == 3:
+                self.a.xor_rr(6, 1)
+            elif rk == 4:
+                self.a.or_rr(6, 1)
+            elif rk == 5:
+                self.a.and_rr(6, 1)
+            else:
+                self.a.add_rr(6, 1)
+            self.a.store(2, 0, 6, 8)
+        self.st(i, 0)
+
+    /#/ The program of a vector loop for the vector at the index in rax plus `disp` bytes.
+    fn vl_body(self, f: &Fun, pbase: int, plen: int, eb: int, lane: int, fl: bool, dbl: bool, disp: int, rk: int) => void:
         /#/ `inv[k]` is the invariant a stack slot stands for (it is copied only when something writes to the slot)
         let inv: buf<int> = new_buf(int, plen + 2)
         let sp = 0
         for q in 0..plen:
-            let tk = f.cval(self.res(f, f.pool[base + nops + q]))
+            let tk = f.cval(self.res(f, f.pool[pbase + q]))
             let code = tk & 255
             let arg = tk >> 8
             if code == 1:
-                self.a.vload(sp, self.vl_reg(arg), 0, eb)
+                self.a.vload(sp, self.vl_reg(arg), 0, eb, disp)
                 inv[sp] = -1
                 sp = sp + 1
             elif code == 2:
@@ -2145,13 +2203,22 @@ class Gen:
             else:
                 if inv[sp - 1] >= 0:
                     self.a.movaps(sp - 1, 8 + inv[sp - 1])
-                self.a.vstore(self.vl_reg(arg), 0, eb, sp - 1)
+                self.a.vstore(self.vl_reg(arg), 0, eb, sp - 1, disp)
                 sp = sp - 1
-        self.a.add_ri(0, w)
-        self.a.cmp_rr(0, 1)
-        self.a.jcc(12, top)
-        self.a.bind(done)
-        self.st(i, 0)
+        if rk > 0:
+            /#/ the value of the round goes into the accumulator, xmm7
+            if inv[sp - 1] >= 0:
+                self.a.movaps(sp - 1, 8 + inv[sp - 1])
+            let opc = 212
+            if rk == 2:
+                opc = 251
+            elif rk == 3:
+                opc = 239
+            elif rk == 4:
+                opc = 235
+            elif rk == 5:
+                opc = 219
+            self.a.vec_op(true, opc, 7, sp - 1)
 
     /#/ The register of buffer `k` of a vector loop.
     fn vl_reg(self, k: int) => int:

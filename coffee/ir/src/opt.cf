@@ -1747,9 +1747,25 @@ fn vectorize(f: &Fun) => bool:
     for k in 1..np:
         let h = rpo[k]
         let hterm = f.blast[h]
-        if hterm < 0 || f.op[hterm] != int(Op.CondBr) || f.npar[h] != 1:
+        if hterm < 0 || f.op[hterm] != int(Op.CondBr) || (f.npar[h] != 1 && f.npar[h] != 2):
             continue
+        /#/ the counter, and with a second parameter the accumulator of a reduction
         let iv = f.pfirst[h]
+        let acc = -1
+        let ipos = 0
+        if f.npar[h] == 2:
+            let c0 = f.follow(f.a[hterm])
+            if f.op[c0] != int(Op.Cmp):
+                continue
+            let x0 = f.follow(f.a[c0])
+            if x0 == f.nx[f.pfirst[h]]:
+                iv = x0
+                acc = f.pfirst[h]
+                ipos = 1
+            elif x0 == f.pfirst[h]:
+                acc = f.nx[iv]
+            if acc < 0 || f.rep[acc] != int(Rp.I64):
+                continue
         if f.rep[iv] != int(Rp.I64):
             continue
         /#/ the loop
@@ -1801,25 +1817,101 @@ fn vectorize(f: &Fun) => bool:
         let n0 = 0
         let nlatch = 0
         let inext = -1
+        let anext = -1
+        let acc0 = -1
+        let apos = 1 - ipos
         for e in 0..f.ne:
             if f.eto[e] == h && f.efrom[e] >= 0 && f.efrom[e] < nb:
                 let fb = f.efrom[e]
                 let tt = f.blast[fb]
                 if inl[fb] == 1:
                     nlatch = nlatch + 1
-                    if tt < 0 || f.op[tt] != int(Op.Br) || f.aux[tt] != e || f.eargn[e] != 1:
+                    if tt < 0 || f.op[tt] != int(Op.Br) || f.aux[tt] != e || f.eargn[e] != f.npar[h]:
                         ok = false
                     else:
-                        inext = f.follow(f.pool[f.eargs[e]])
+                        inext = f.follow(f.pool[f.eargs[e] + ipos])
+                        if acc >= 0:
+                            anext = f.follow(f.pool[f.eargs[e] + apos])
                 elif idom[fb] >= 0:
                     n0 = n0 + 1
                     e0 = e
-                    if tt < 0 || f.op[tt] != int(Op.Br) || f.aux[tt] != e || f.eargn[e] != 1:
+                    if tt < 0 || f.op[tt] != int(Op.Br) || f.aux[tt] != e || f.eargn[e] != f.npar[h]:
                         ok = false
+                    elif acc >= 0:
+                        acc0 = f.follow(f.pool[f.eargs[e] + apos])
         if !ok || n0 != 1 || nlatch != 1:
             continue
         if f.op[inext] != int(Op.Add) || f.follow(f.a[inext]) != iv || !f.is_const(f.follow(f.b[inext])) || f.cval(f.follow(f.b[inext])) != 1:
             continue
+        /#/ a reduction: the accumulator becomes `acc op e1 op e2 ...` (op: + - ^ | &; a chain of one operation, each
+        /#/ link used once), and nothing else in the loop reads it
+        let rk = 0
+        let chain: buf<int> = new_buf(int, 6)
+        let nch = 0
+        let terms: buf<int> = new_buf(int, 6)
+        let nt = 0
+        if acc >= 0:
+            if v_outside(f, &inl, anext) || f.rep[anext] != int(Rp.I64):
+                continue
+            let ro = f.op[anext]
+            if ro == int(Op.Add):
+                rk = 1
+            elif ro == int(Op.Sub):
+                rk = 2
+            elif ro == int(Op.Xor):
+                rk = 3
+            elif ro == int(Op.Or):
+                rk = 4
+            elif ro == int(Op.And):
+                rk = 5
+            if rk == 0:
+                continue
+            let cur = anext
+            let found = false
+            let bad = false
+            while !found && !bad:
+                chain[nch] = cur
+                nch = nch + 1
+                let ca = f.follow(f.a[cur])
+                let cb = f.follow(f.b[cur])
+                if ca == acc:
+                    terms[nt] = cb
+                    nt = nt + 1
+                    found = true
+                elif cb == acc && rk != 2:
+                    terms[nt] = ca
+                    nt = nt + 1
+                    found = true
+                elif rk != 2 && nch < 5 && f.op[ca] == ro && f.uses[ca] == 1 && !v_outside(f, &inl, ca):
+                    terms[nt] = cb
+                    nt = nt + 1
+                    cur = ca
+                elif rk != 2 && nch < 5 && f.op[cb] == ro && f.uses[cb] == 1 && !v_outside(f, &inl, cb):
+                    terms[nt] = ca
+                    nt = nt + 1
+                    cur = cb
+                else:
+                    bad = true
+            if bad:
+                continue
+            for q in 0..nt:
+                if terms[q] == acc:
+                    ok = false
+            for b in 0..nb:
+                if inl[b] == 1:
+                    let j = f.bfirst[b]
+                    while j >= 0:
+                        let inchain = false
+                        for q in 0..nch:
+                            if chain[q] == j:
+                                inchain = true
+                        if !inchain:
+                            for q in 0..f.nval(j):
+                                if f.val_at(j, q) >= 0 && f.follow(f.val_at(j, q)) == acc:
+                                    ok = false
+                        j = f.nx[j]
+            if !ok:
+                continue
         /#/ the body: plain instructions, checks of i against a length outside, one store
         let sts: buf<int> = new_buf(int, 4)
         let nstore = 0
@@ -1879,7 +1971,7 @@ fn vectorize(f: &Fun) => bool:
                     elif !(o == int(Op.Cmp) || o == int(Op.Index) || o == int(Op.Load) || o == int(Op.ZExt) || o == int(Op.SExt) || o == int(Op.Trunc) || o == int(Op.Add) || o == int(Op.Sub) || o == int(Op.Mul) || o == int(Op.And) || o == int(Op.Or) || o == int(Op.Xor) || o == int(Op.FAdd) || o == int(Op.FSub) || o == int(Op.FMul) || o == int(Op.FDiv)):
                         ok = false
                     j = f.nx[j]
-        if !ok || nstore < 1:
+        if !ok || (nstore < 1 && rk == 0) || (nstore > 0 && rk > 0):
             continue
         /#/ the stores in the order they run
         for x in 1..nstore:
@@ -1890,7 +1982,9 @@ fn vectorize(f: &Fun) => bool:
                 sts[y - 1] = tmp
                 y = y - 1
         /#/ the program of each stored value
-        let lane = v_lane_of(f.rep[f.follow(f.b[sts[0]])])
+        let lane = 5
+        if rk == 0:
+            lane = v_lane_of(f.rep[f.follow(f.b[sts[0]])])
         if lane < 0:
             continue
         let c = new_vctx(lane, f.ni)
@@ -1931,6 +2025,22 @@ fn vectorize(f: &Fun) => bool:
                 c.nptr = ks + 1
             v_push(&c, 4, ks)
             c.depth = 0
+        if rk > 0:
+            c.minseq = -1
+            let bop = 0
+            if rk == 3:
+                bop = 6
+            elif rk == 4:
+                bop = 5
+            elif rk == 5:
+                bop = 4
+            for q in 0..nt:
+                v_emit(&c, f, &inl, iv, terms[q])
+                if q > 0:
+                    v_push(&c, 3, bop)
+                    c.depth = c.depth - 1
+            if c.depth != 1:
+                c.ok = false
         if !c.ok:
             continue
         /#/ with several stores, a buffer may be seen through a second pointer to it: only the headers of
@@ -1947,7 +2057,7 @@ fn vectorize(f: &Fun) => bool:
                 while j >= 0:
                     for q in 0..f.nval(j):
                         let x = f.val_at(j, q)
-                        if x >= 0 && !v_outside(f, &inl, f.follow(x)) && f.follow(x) != iv:
+                        if x >= 0 && !v_outside(f, &inl, f.follow(x)) && f.follow(x) != iv && f.follow(x) != acc:
                             ok = false
                     j = f.nx[j]
         for e in 0..f.ne:
@@ -1955,14 +2065,14 @@ fn vectorize(f: &Fun) => bool:
                 for q in 0..f.eargn[e]:
                     let x = f.follow(f.pool[f.eargs[e] + q])
                     if inl[f.efrom[e]] == 0 || inl[f.eto[e]] == 0:
-                        if !v_outside(f, &inl, x) && x != iv && !(inl[f.efrom[e]] == 1 && inl[f.eto[e]] == 1):
+                        if !v_outside(f, &inl, x) && x != iv && x != acc && !(inl[f.efrom[e]] == 1 && inl[f.eto[e]] == 1):
                             ok = false
         if !ok:
             continue
         /#/ the entry: the checks, then the vector loop or the scalar one
         let pre = f.efrom[e0]
         let t = f.blast[pre]
-        let i0 = f.follow(f.pool[f.eargs[e0]])
+        let i0 = f.follow(f.pool[f.eargs[e0] + ipos])
         let okv = -1
         for q in 0..nchk:
             f.set_block(pre)
@@ -1977,6 +2087,12 @@ fn vectorize(f: &Fun) => bool:
                 okv = an
         let vb = f.new_block()
         f.set_block(vb)
+        let sl = -1
+        if rk > 0:
+            /#/ the accumulator goes through a slot of the frame: the loop reads it and writes the new value
+            sl = f.slot(8)
+            f.store(sl, acc0)
+            f.arg(sl)
         f.arg(i0)
         f.arg(n)
         for q in 0..c.nptr:
@@ -1985,8 +2101,15 @@ fn vectorize(f: &Fun) => bool:
             f.arg(c.invs[q])
         for q in 0..c.np:
             f.arg(f.cint(int(Rp.I64), c.prog[q]))
-        let vl = f.vloop(lane, c.nptr | (c.ninv << 8) | (c.np << 16))
+        let vl = f.vloop(lane | (rk << 4), c.nptr | (c.ninv << 8) | (c.np << 16))
+        let accv = -1
+        if rk > 0:
+            accv = f.load(int(Rp.I64), -1, sl)
+        if rk > 0 && ipos == 1:
+            f.arg(accv)
         f.arg(vl)
+        if rk > 0 && ipos == 0:
+            f.arg(accv)
         f.br(h)
         unlink(f, t)
         f.set_block(pre)
