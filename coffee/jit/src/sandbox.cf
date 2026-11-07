@@ -196,14 +196,20 @@ fn stub_restorer() => Txt:
 /#/ stands at the same distance from the top in both. -1 when no such place is free.
 fn map_mirror_stack(region: int, ss_top: int, total: int) => int:
     let low = ss_top - total
-    let hh = region // 4294967296 + 1
-    for k in 0..4096:
-        let hint = (hh + k) * 4294967296 + low
-        let r = syscall(sc_mmap(), hint, total, 3, 34 + 1048576, 0 - 1, 0)
-        if r == hint:
-            return r
-        if mapped(r):
-            syscall(sc_munmap(), r, total, 0, 0, 0, 0)
+    let hh = region // 4294967296
+    for k in 1..4096:
+        /#/ the segments above the region, then those below it (the region may be at the top of the address space)
+        for sgn in 0..2:
+            let seg = hh + k
+            if sgn == 1:
+                seg = hh - k
+            if seg > 0 && seg < 32768:
+                let hint = seg * 4294967296 + low
+                let r = syscall(sc_mmap(), hint, total, 3, 34 + 1048576, 0 - 1, 0)
+                if r == hint:
+                    return r
+                if mapped(r):
+                    syscall(sc_munmap(), r, total, 0, 0, 0, 0)
     return 0 - 1
 
 /#/ Makes the signal `sig` run the handler at `handler`, on the alternate stack.

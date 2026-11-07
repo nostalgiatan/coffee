@@ -122,6 +122,8 @@ class Asm:
     /#/ base mode: added to the displacement of an access through the shadow base (`sh_base`): minus the shadow frame
     /#/ of the function, whose bytes stand below its frame pointer
     shd: int
+    /#/ base mode: bit n set: register n of rax, rcx, rdx holds a value the code still needs, which an address must not overwrite
+    keep: int
 
     fn dump(self, t: &Txt) => void:
         t.put_all(&self.c)
@@ -305,9 +307,38 @@ class Asm:
             return reg
         let xmm = opc == 15 && (opc2 == 16 || opc2 == 17 || opc2 == 110 || opc2 == 126 || opc2 == 214 || opc2 == 40 || opc2 == 41)
         for sc in 0..3:
+            if sc != base && sc != idx && (xmm || sc != reg) && ((self.keep >> sc) & 1) == 0:
+                return sc
+        return 0 - 1
+
+    /#/ A register to use for the address when `addr_scratch` found none free: one of rax, rcx, rdx that the access
+    /#/ does not use, whose value is kept on the stack meanwhile; -1 when there is none.
+    fn addr_spill(self, opc: int, opc2: int, reg: int, base: int, idx: int) => int:
+        let xmm = opc == 15 && (opc2 == 16 || opc2 == 17 || opc2 == 110 || opc2 == 126 || opc2 == 214 || opc2 == 40 || opc2 == 41)
+        for sc in 0..3:
             if sc != base && sc != idx && (xmm || sc != reg):
                 return sc
         return 0 - 1
+
+    /#/ The guarded access of base mode: the address of `[lbase + idx * scale + disp]` as a 32-bit number in a
+    /#/ register, then the access as [r15 + register] right after it.
+    fn bm_access(self, w: int, opc: int, opc2: int, reg: int, lbase: int, idx: int, scale: int, disp: int, force: bool) => void:
+        let sc = self.addr_scratch(opc, opc2, reg, lbase, idx)
+        let spilled = false
+        if sc < 0:
+            sc = self.addr_spill(opc, opc2, reg, lbase, idx)
+            if sc < 0:
+                self.badacc = self.badacc + 1
+                return
+            spilled = true
+            self.push(sc)
+        let held = self.pfx
+        self.pfx = 0 - 1
+        self.mem(0, 141, 0 - 1, sc, lbase, idx, scale, disp, false)
+        self.pfx = held
+        self.mem(w, opc, opc2, reg, tg_sbx_base(), sc, 1, 0, force)
+        if spilled:
+            self.pop(sc)
 
     /#/ The one place a memory operand is made (design: docs/explanation/sandbox-design.md, "the memory-access
     /#/ funnel"): `opc` with a register and `[base + idx * scale + disp]`, `idx` -1 for none. `lea` (141) only
@@ -323,30 +354,12 @@ class Asm:
             if opc == 141:
                 self.enc_lea_sh(reg, idx, scale, disp + self.shd)
                 return
-            base = 5
-            disp = disp + self.shd
-            let sc = self.addr_scratch(opc, opc2, reg, 5, idx)
-            if sc < 0:
-                self.badacc = self.badacc + 1
-                return
-            let held = self.pfx
-            self.pfx = 0 - 1
-            self.mem(0, 141, 0 - 1, sc, 5, idx, scale, disp, false)
-            self.pfx = held
-            self.mem(w, opc, opc2, reg, tg_sbx_base(), sc, 1, 0, force)
+            self.bm_access(w, opc, opc2, reg, 5, idx, scale, disp + self.shd, force)
             return
         let guarded = opc != 141 && !self.frame_base(base)
         let gs = false
         if guarded && self.bm && base != tg_sbx_base():
-            let sc = self.addr_scratch(opc, opc2, reg, base, idx)
-            if sc < 0:
-                self.badacc = self.badacc + 1
-                return
-            let held = self.pfx
-            self.pfx = 0 - 1
-            self.mem(0, 141, 0 - 1, sc, base, idx, scale, disp, false)
-            self.pfx = held
-            self.mem(w, opc, opc2, reg, tg_sbx_base(), sc, 1, 0, force)
+            self.bm_access(w, opc, opc2, reg, base, idx, scale, disp, force)
             return
         if guarded && self.sbx && !self.bm:
             gs = true
@@ -841,4 +854,4 @@ class Asm:
         self.rr(0, 15, 90, dst, src, false)
 
 fn new_asm() => Asm:
-    return Asm { c: new_txt(), lab: new_buf(int, 64), nlab: 0, fx_at: new_buf(int, 64), fx_lab: new_buf(int, 64), fx_kind: new_buf(int, 64), nfx: 0, fs: 0, rl0: 0, rl_at: new_buf(int, 64), rl_sym: new_buf(int, 64), rl_ty: new_buf(int, 64), rl_add: new_buf(int, 64), nrl: 0, lm_end: -1, lm_d: 0, lm_s: 0, ls_end: -1, ls_base: 0, ls_disp: 0, ls_reg: 0, sbx: false, bm: false, pfx: 0 - 1, badacc: 0, shd: 0 }
+    return Asm { c: new_txt(), lab: new_buf(int, 64), nlab: 0, fx_at: new_buf(int, 64), fx_lab: new_buf(int, 64), fx_kind: new_buf(int, 64), nfx: 0, fs: 0, rl0: 0, rl_at: new_buf(int, 64), rl_sym: new_buf(int, 64), rl_ty: new_buf(int, 64), rl_add: new_buf(int, 64), nrl: 0, lm_end: -1, lm_d: 0, lm_s: 0, ls_end: -1, ls_base: 0, ls_disp: 0, ls_reg: 0, sbx: false, bm: false, pfx: 0 - 1, badacc: 0, shd: 0, keep: 0 }

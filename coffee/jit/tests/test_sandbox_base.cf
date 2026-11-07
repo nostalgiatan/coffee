@@ -92,6 +92,8 @@ fn main() => int:
     system("printf X | dd of=sbb.cir.sbxb.cim bs=1 seek=200 conv=notrunc 2>/dev/null")
     m = m + expect(32, run_sbx_with(clone fib, "--cache"), 144)
     /#/ a cache made for other code is not used
+    /#/ an aggregate parameter is copied while the 3rd and 4th arguments are still in rdx and rcx
+    m = m + expect(62, run_sbx("class P:\n    a: int\n    b: int\n\nfn f(p: P, s: int, x: int, y: int) => int:\n    return p.a * 1000 + p.b * 100 + s * 10 + x - y\n\nfn main() => int:\n    return f(P { a: 1, b: 2 }, 3, 7, 5) - 1232\n"), 0)
     m = m + expect(33, run_sbx_with("fn main() => int:\n    return 7\n", "--cache"), 7)
     system("rm -f sbb.cf sbb.cir sbb.cir.sbxb.cim sbb.log sbb.out")
     return m
