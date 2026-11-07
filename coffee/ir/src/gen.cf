@@ -97,6 +97,15 @@ class Gen:
     /#/ float constants kept in an xmm register from the entry on (they are used in loops)
     hc: buf<int>
     nhc: int
+    /#/ float constants read from the end of the function's own code: the bits and label of each, and the
+    /#/ relocations that read them (and which constant), with the symbol of the function
+    fk_bits: buf<int>
+    fk_lab: buf<int>
+    nfk: int
+    fu_rl: buf<int>
+    fu_k: buf<int>
+    nfu: int
+    fsym: int
     /#/ the source lines of the code: the offset in the text of the object where the code of a line
     /#/ starts, and the line (of the flattened text); `mk_*` are those of the function being made
     lm_at: buf<int>
@@ -222,9 +231,36 @@ class Gen:
         let x = self.res(f, v)
         if self.xhome[x] >= 0:
             return self.xhome[x]
+        if f.op[x] == int(Op.Const) && !self.a.sbx:
+            self.load_fconst(scratch, f, x)
+            return scratch
         self.ld(0, f, x)
         self.a.movq_x(scratch, 0, f.rep[x] == int(Rp.F32))
         return scratch
+
+    /#/ xmm `reg` = the float constant `x`, read from the pool after the function's code.
+    fn load_fconst(self, reg: int, f: &Fun, x: int) => void:
+        let single = f.rep[x] == int(Rp.F32)
+        let bits = f.aux[x]
+        if single:
+            bits = bits & 4294967295
+        let k = 0
+        while k < self.nfk && self.fk_bits[k] != bits:
+            k = k + 1
+        if k == self.nfk:
+            if k >= len(self.fk_bits):
+                self.fk_bits = buf_resize(self.fk_bits, (k + 1) * 2)
+                self.fk_lab = buf_resize(self.fk_lab, (k + 1) * 2)
+            self.fk_bits[k] = bits
+            self.fk_lab[k] = self.a.new_label()
+            self.nfk = k + 1
+        if self.nfu >= len(self.fu_rl):
+            self.fu_rl = buf_resize(self.fu_rl, (self.nfu + 1) * 2)
+            self.fu_k = buf_resize(self.fu_k, (self.nfu + 1) * 2)
+        self.a.load_x_sym(reg, single, self.fsym)
+        self.fu_rl[self.nfu] = self.a.nrl - 1
+        self.fu_k[self.nfu] = k
+        self.nfu = self.nfu + 1
 
     /#/ Where instruction `i` (a float) makes its result: its xmm register, else xmm0.
     fn xdst(self, i: int) => int:
@@ -2013,6 +2049,12 @@ class Gen:
         if f.ret >= rp_first_agg():
             self.rbase = 8
         self.a.begin_fun()
+        self.nfk = 0
+        self.nfu = 0
+        let nm = new_txt()
+        for k in 0..len(f.nm):
+            nm.put_byte(f.nm[k])
+        self.fsym = self.o.sym(&nm)
         if len(self.ord) < f.nb + 1:
             self.ord = new_buf(int, f.nb + 1)
             self.emit = new_buf(int, f.nb + 1)
@@ -2113,7 +2155,15 @@ class Gen:
         if self.epi_jump:
             self.a.bind(self.epi)
             self.epilogue()
+        if self.nfk > 0:
+            while (self.a.pos() - start) % 8 != 0:
+                self.a.byte(204)
+            for k in 0..self.nfk:
+                self.a.bind(self.fk_lab[k])
+                self.a.le64(self.fk_bits[k])
         let ok = self.a.end_fun()
+        for u in 0..self.nfu:
+            self.a.rl_add[self.fu_rl[u]] = self.a.lab[self.fk_lab[self.fu_k[u]]] - start - 4
         let w = new_txt()
         for k in 0..len(f.nm):
             w.put_byte(f.nm[k])
@@ -2255,7 +2305,7 @@ fn lines_dump(g: &Gen, out: &Txt) => void:
                     out.put_byte(g.vtxt.b[q])
 
 fn new_gen() => Gen:
-    return Gen { a: new_asm(), o: new_obj(), voff: new_buf(int, 64), sh: new_buf(int, 64), sframe: 0, tmp: 0, frame: 0, err: 0, av: new_buf(int, 16), nav: 0, sbase: 256, soff: new_buf(int, 16), nstr: 0, home: new_buf(int, 64), xhome: new_buf(int, 64), ord: new_buf(int, 16), emit: new_buf(int, 16), xsg: new_buf(int, 64), did: new_buf(int, 64), nsaved: 0, rbase: 0, saved: new_buf(int, 8), ed: new_buf(int, 16), ned: 0, ra_lo: new_buf(int, 1), ra_hi: new_buf(int, 1), ra_wt: new_buf(int, 1), uq_d: new_buf(int, 16), uq_b: new_buf(int, 16), nuq: 0, ra_dblk: new_buf(int, 1), ra_dset: new_buf(int, 1), ra_cp: new_buf(int, 16), ra_ncp: 0, ra_cm: new_buf(int, 16), cur: -1, msk: new_buf(int, 16), fmask: 0, nuse: new_buf(int, 64), am_base: 0, am_idx: -1, am_scale: 1, am_disp: 0, epi: 0, epi_jump: false, hc: new_buf(int, 16), nhc: 0, lm_at: new_buf(int, 64), lm_ln: new_buf(int, 64), lm_n: 0, mk_l: new_buf(int, 64), mk_ln: new_buf(int, 64), mk_n: 0, lf_sym: new_buf(int, 64), lf_start: new_buf(int, 64), lf_m0: new_buf(int, 64), lf_n: 0, dt: new_dbg_types(), vtxt: new_txt(), vr_s: new_buf(int, 64), vr_e: new_buf(int, 64) }
+    return Gen { a: new_asm(), o: new_obj(), voff: new_buf(int, 64), sh: new_buf(int, 64), sframe: 0, tmp: 0, frame: 0, err: 0, av: new_buf(int, 16), nav: 0, sbase: 256, soff: new_buf(int, 16), nstr: 0, home: new_buf(int, 64), xhome: new_buf(int, 64), ord: new_buf(int, 16), emit: new_buf(int, 16), xsg: new_buf(int, 64), did: new_buf(int, 64), nsaved: 0, rbase: 0, saved: new_buf(int, 8), ed: new_buf(int, 16), ned: 0, ra_lo: new_buf(int, 1), ra_hi: new_buf(int, 1), ra_wt: new_buf(int, 1), uq_d: new_buf(int, 16), uq_b: new_buf(int, 16), nuq: 0, ra_dblk: new_buf(int, 1), ra_dset: new_buf(int, 1), ra_cp: new_buf(int, 16), ra_ncp: 0, ra_cm: new_buf(int, 16), cur: -1, msk: new_buf(int, 16), fmask: 0, nuse: new_buf(int, 64), am_base: 0, am_idx: -1, am_scale: 1, am_disp: 0, epi: 0, epi_jump: false, hc: new_buf(int, 16), nhc: 0, fk_bits: new_buf(int, 8), fk_lab: new_buf(int, 8), nfk: 0, fu_rl: new_buf(int, 16), fu_k: new_buf(int, 16), nfu: 0, fsym: 0, lm_at: new_buf(int, 64), lm_ln: new_buf(int, 64), lm_n: 0, mk_l: new_buf(int, 64), mk_ln: new_buf(int, 64), mk_n: 0, lf_sym: new_buf(int, 64), lf_start: new_buf(int, 64), lf_m0: new_buf(int, 64), lf_n: 0, dt: new_dbg_types(), vtxt: new_txt(), vr_s: new_buf(int, 64), vr_e: new_buf(int, 64) }
 
 /#/ The multiplier that divides by `d` (not a power of two; `l` is the log2 of `d` rounded up):
 /#/ 1 + floor(2^(63 + l) / d), taken as a 64-bit pattern, by long division one bit at a time.

@@ -631,6 +631,19 @@ class Asm:
         else:
             self.rr(1, 15, 126, x, r, false)
 
+    /#/ xmm `x` = the double or float at `sym` + the addend (set later by the caller through the relocation
+    /#/ this makes, the last one): for a constant kept after the code of the function
+    fn load_x_sym(self, x: int, single: bool, sym: int) => void:
+        if single:
+            self.byte(243)
+        else:
+            self.byte(242)
+        self.rex(0, x, 0, false)
+        self.byte(15)
+        self.byte(16)
+        self.byte(5 | ((x & 7) << 3))
+        self.reloc(sym, r_pc32(), 0)
+
     /#/ xmm dst = xmm src (all 128 bits)
     fn movaps(self, dst: int, src: int) => void:
         self.rr(0, 15, 40, dst, src, false)
