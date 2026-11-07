@@ -46,6 +46,8 @@ fn g_so(g: &Gen, id: int) => int:
 /#/ The base register of the bytes of value `x`: rbp, or r14 for the shadow frame of sandbox code.
 fn g_vb(g: &Gen, x: int) => int:
     if g.a.sbx && g.sh[x] == 1:
+        if g.a.bm:
+            return sh_base()
         return 14
     return 5
 

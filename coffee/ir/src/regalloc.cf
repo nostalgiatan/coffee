@@ -246,6 +246,12 @@ fn layout_frame(g: &Gen, f: &Fun, rs: &Reps, hdr: int, down: bool, frame_cap: in
         cur = cur + tmp
     g.frame = (cur + 15) // 16 * 16
     g.sframe = (scur + 15) // 16 * 16
+    if sbx && g.a.bm:
+        /#/ base mode: the shadow frame stands just below the frame pointer, in the bytes the frame of the host stack
+        /#/ takes; the frame is at least as large, so a callee's shadow frame does not overlap this one
+        g.a.shd = 0 - g.sframe
+        if g.frame < g.sframe:
+            g.frame = g.sframe
     /#/ a frame larger than the guard below the shadow stack could be stepped over
     if g.sframe > 32768 || (sbx && frame_cap > 0 && g.frame > frame_cap):
         g.err = 1

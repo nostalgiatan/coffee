@@ -14,7 +14,7 @@ fn g_elf(g: &Gen) => Txt:
 
 /#/ The saved registers come back by pop, from below the frame's locals.
 fn g_epilogue(g: &Gen) => void:
-    if g.sframe > 0:
+    if g.sframe > 0 && !g.a.bm:
         g.a.add_ri(14, g.sframe)
     if g.nsaved > 0:
         if g.frame > g.rbase + 8 * g.nsaved:
@@ -62,7 +62,7 @@ fn g_gen_fun(g: &Gen, f: &Fun, rs: &Reps, sy: &Names) => bool:
         g.a.push(g.saved[k])
     if g.frame > g.rbase + 8 * g.nsaved:
         g.a.sub_ri(4, g.frame - g.rbase - 8 * g.nsaved)
-    if g.sframe > 0:
+    if g.sframe > 0 && !g.a.bm:
         g.a.sub_ri(14, g.sframe)
     let nret = 0
     for b in 0..f.nb:

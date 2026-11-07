@@ -55,6 +55,10 @@ fn r_abs32() => int:
 
 /#/ Where the code at old position `p` is once the jumps are shortened: `st` are the starts of the
 /#/ `n` jumps, and `pref[k]` the bytes saved by the jumps before the `k`th.
+/#/ The number that stands for the shadow frame as a base register in base mode (no machine register has it).
+fn sh_base() => int:
+    return 16
+
 fn new_pos(st: &buf<int>, pref: &buf<int>, n: int, p: int) => int:
     let lo = 0
     let hi = n
@@ -115,6 +119,9 @@ class Asm:
     pfx: int
     /#/ guarded accesses of base mode that found no register for their address (the function fails)
     badacc: int
+    /#/ base mode: added to the displacement of an access through the shadow base (`sh_base`): minus the shadow frame
+    /#/ of the function, whose bytes stand below its frame pointer
+    shd: int
 
     fn dump(self, t: &Txt) => void:
         t.put_all(&self.c)
@@ -282,6 +289,13 @@ class Asm:
     fn frame_base(self, base: int) => bool:
         return base == 4 || base == 5
 
+    /#/ `lea reg, [rbp + idx * scale + disp]` as a 32-bit operation: a pointer into the shadow frame is a number below 2^32.
+    fn enc_lea_sh(self, reg: int, idx: int, scale: int, disp: int) => void:
+        if idx < 0:
+            self.enc_mem(0, 141, 0 - 1, reg, 5, disp, false)
+        else:
+            self.enc_mem_idx(0, 141, 0 - 1, reg, 5, idx, scale, disp, false)
+
     /#/ The register that holds the address of a guarded access in base mode: the destination of a load, else one
     /#/ of rax, rcx, rdx the access does not use (the value of a store is in `reg`; of a float access, in an xmm
     /#/ register, which is not one of them); -1 when the three are taken.
@@ -303,6 +317,24 @@ class Asm:
     /#/   - base mode (`bm`): the address as a 32-bit number in a register (`lea e<s>, [..]`, see `addr_scratch`) and the access
     /#/     as [r15 + s] right after it; the verifier takes no other form.
     fn mem(self, w: int, opc: int, opc2: int, reg: int, base: int, idx: int, scale: int, disp: int, force: bool) => void:
+        if base == sh_base():
+            /#/ the shadow frame of base mode: the low 32 bits of the frame pointer plus the offset are its address
+            /#/ in the linear memory (the stack of the code is mapped to mirror the shadow stack)
+            if opc == 141:
+                self.enc_lea_sh(reg, idx, scale, disp + self.shd)
+                return
+            base = 5
+            disp = disp + self.shd
+            let sc = self.addr_scratch(opc, opc2, reg, 5, idx)
+            if sc < 0:
+                self.badacc = self.badacc + 1
+                return
+            let held = self.pfx
+            self.pfx = 0 - 1
+            self.mem(0, 141, 0 - 1, sc, 5, idx, scale, disp, false)
+            self.pfx = held
+            self.mem(w, opc, opc2, reg, tg_sbx_base(), sc, 1, 0, force)
+            return
         let guarded = opc != 141 && !self.frame_base(base)
         let gs = false
         if guarded && self.bm && base != tg_sbx_base():
@@ -809,4 +841,4 @@ class Asm:
         self.rr(0, 15, 90, dst, src, false)
 
 fn new_asm() => Asm:
-    return Asm { c: new_txt(), lab: new_buf(int, 64), nlab: 0, fx_at: new_buf(int, 64), fx_lab: new_buf(int, 64), fx_kind: new_buf(int, 64), nfx: 0, fs: 0, rl0: 0, rl_at: new_buf(int, 64), rl_sym: new_buf(int, 64), rl_ty: new_buf(int, 64), rl_add: new_buf(int, 64), nrl: 0, lm_end: -1, lm_d: 0, lm_s: 0, ls_end: -1, ls_base: 0, ls_disp: 0, ls_reg: 0, sbx: false, bm: false, pfx: 0 - 1, badacc: 0 }
+    return Asm { c: new_txt(), lab: new_buf(int, 64), nlab: 0, fx_at: new_buf(int, 64), fx_lab: new_buf(int, 64), fx_kind: new_buf(int, 64), nfx: 0, fs: 0, rl0: 0, rl_at: new_buf(int, 64), rl_sym: new_buf(int, 64), rl_ty: new_buf(int, 64), rl_add: new_buf(int, 64), nrl: 0, lm_end: -1, lm_d: 0, lm_s: 0, ls_end: -1, ls_base: 0, ls_disp: 0, ls_reg: 0, sbx: false, bm: false, pfx: 0 - 1, badacc: 0, shd: 0 }

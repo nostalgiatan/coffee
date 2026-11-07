@@ -190,6 +190,22 @@ fn stub_restorer() => Txt:
     a.end_fun()
     return clone a.c
 
+/#/ The stack the code runs on in base mode: `total` bytes (the low part a guard) placed so that the low 32 bits of
+/#/ its top are `ss_top`. The code finds the shadow frame of a function at the low 32 bits of its frame pointer
+/#/ (`Asm.mem`, the shadow base), so the host stack and the shadow stack are two mappings of one layout: a frame
+/#/ stands at the same distance from the top in both. -1 when no such place is free.
+fn map_mirror_stack(region: int, ss_top: int, total: int) => int:
+    let low = ss_top - total
+    let hh = region // 4294967296 + 1
+    for k in 0..4096:
+        let hint = (hh + k) * 4294967296 + low
+        let r = syscall(sc_mmap(), hint, total, 3, 34 + 1048576, 0 - 1, 0)
+        if r == hint:
+            return r
+        if mapped(r):
+            syscall(sc_munmap(), r, total, 0, 0, 0, 0)
+    return 0 - 1
+
 /#/ Makes the signal `sig` run the handler at `handler`, on the alternate stack.
 fn catch_signal(sig: int, handler: int, restorer: int, act: int) => int:
     poke64(act, handler)
@@ -223,7 +239,11 @@ fn sandbox_run(im: &Image, main_at: int, allow: int, mem_mb: int, cpu_ms: int, b
     let code = sys_mmap(page_up(im.b.n + 1), 7, 34)
     let stubs = sys_mmap(4096, 7, 34)
     let ctrl = sys_mmap(4096, 3, 34)
-    let stack = sys_mmap(1048576 + 65536, 3, 34)
+    let stack = 0 - 1
+    if bm:
+        stack = map_mirror_stack(region, im.ss_top, 1048576 + 65536)
+    else:
+        stack = sys_mmap(1048576 + 65536, 3, 34)
     let alt = sys_mmap(65536, 3, 34)
     if !mapped(code) || !mapped(stubs) || !mapped(ctrl) || !mapped(stack) || !mapped(alt):
         return 0 - 1

@@ -36,11 +36,11 @@ fn tg_sbx_base() => int:
 fn tg_sbx_shadow() => int:
     return 14
 
-/#/ Is pool slot `s` kept for something else in sandboxed code (`sbx`: the shadow frame register; `bm`, the
+/#/ Is pool slot `s` kept for something else in sandboxed code (`sbx` without `bm`: the shadow frame register; `bm`, the
 /#/ base-register form: the memory base)?
 fn tg_reserved(sbx: bool, bm: bool, s: int) => bool:
     let r = tg_pool_reg(s)
-    if sbx && r == tg_sbx_shadow():
+    if sbx && !bm && r == tg_sbx_shadow():
         return true
     return bm && r == tg_sbx_base()
 
