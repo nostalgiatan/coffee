@@ -9,6 +9,7 @@ use * in gen_x86_isel
 use * in gen_a64_regs
 use * in gen_a64_call
 use * in gen_a64_fun
+use * in gen_a64_vec
 
 /#/ Sets the flags for the integer compare `i`.
 fn ga_cmp_flags(g: &Gen, f: &Fun, i: int) => void:
@@ -338,6 +339,9 @@ fn ga_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => vo
         g.nav = 0
         g_push_arg(g, f.a[i])
         ga_do_call(g, f, rs, i, g_callee(g, sy, f.aux[i]), false)
+        return
+    if op == int(Op.VLoop):
+        ga_gen_vloop(g, f, i)
         return
     if op == int(Op.Call) || op == int(Op.CCall) || op == int(Op.CallI):
         g.nav = 0

@@ -1,0 +1,57 @@
+/#/ Vector loops (from driver/tests/test_vector.cf).
+fn fw(a: &buf<f32>, b: &buf<f32>, n: int) => void:
+    for i in 0..n:
+        a[i] = a[i] * f32(0.5) + b[i] + f32(1.0)
+
+fn dw(a: &buf<float>, b: &buf<float>, n: int) => void:
+    for i in 0..n:
+        a[i] = a[i] - b[i] * 2.0
+
+fn uw(a: &buf<u8>, b: &buf<u8>, n: int) => void:
+    for i in 0..n:
+        a[i] = u8(int(a[i]) + int(b[i]) + 1)
+
+fn iw(a: &buf<int>, b: &buf<int>, n: int, k: int) => void:
+    for i in 0..n:
+        a[i] = (a[i] ^ b[i]) + k
+
+fn hw(a: &buf<i16>, b: &buf<i16>, n: int) => void:
+    for i in 0..n:
+        a[i] = i16(int(a[i]) * int(b[i]) - 3)
+
+fn sum(n: int) => int:
+    let fa: buf<f32> = new_buf(f32, 100)
+    let fb: buf<f32> = new_buf(f32, 100)
+    let da: buf<float> = new_buf(float, 100)
+    let db: buf<float> = new_buf(float, 100)
+    let ua: buf<u8> = new_buf(u8, 100)
+    let ub: buf<u8> = new_buf(u8, 100)
+    let ia: buf<int> = new_buf(int, 100)
+    let ib: buf<int> = new_buf(int, 100)
+    let ha: buf<i16> = new_buf(i16, 100)
+    let hb: buf<i16> = new_buf(i16, 100)
+    for j in 0..100:
+        fa[j] = f32(j % 9) + f32(0.5)
+        fb[j] = f32(j % 4)
+        da[j] = float(j % 11)
+        db[j] = float(j % 3) + 0.25
+        ua[j] = u8(j * 7)
+        ub[j] = u8(j * 13 + 5)
+        ia[j] = j * 31
+        ib[j] = j * 17 + 1
+        ha[j] = i16(j * 300)
+        hb[j] = i16(j + 2)
+    fw(&fa, &fb, n)
+    dw(&da, &db, n)
+    uw(&ua, &ub, n)
+    iw(&ia, &ib, n, 5)
+    hw(&ha, &hb, n)
+    let s = 0
+    for j in 0..100:
+        s = s + int(fa[j] * f32(8.0)) + int(da[j]) + int(ua[j]) + ia[j] + int(ha[j])
+    return s
+
+fn main() => int:
+    let t = 0
+    t = t + sum(0) + sum(1) + sum(3) + sum(15) + sum(16) + sum(17) + sum(33) + sum(100)
+    return t % 251

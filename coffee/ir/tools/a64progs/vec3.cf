@@ -1,0 +1,51 @@
+/#/ Vector loops (from driver/tests/test_vector.cf).
+fn two(a: &buf<f32>, b: &buf<f32>, c: &buf<f32>, d: &buf<f32>, n: int) => void:
+    for i in 0..n:
+        c[i] = a[i] + b[i]
+        d[i] = a[i] - b[i]
+
+fn same(a: &buf<int>, b: &buf<int>, n: int) => void:
+    for i in 0..n:
+        let t = a[i]
+        a[i] = t + 1
+        b[i] = t * 3
+
+fn seqd(a: &buf<int>, b: &buf<int>, n: int) => void:
+    for i in 0..n:
+        a[i] = a[i] + b[i]
+        b[i] = a[i] - b[i]
+
+fn alias2(a: &buf<int>, b: &buf<int>, n: int) => void:
+    for i in 0..n:
+        b[i] = a[i] + 1
+        a[i] = b[i] + a[i]
+
+fn main() => int:
+    let fa: buf<f32> = new_buf(f32, 50)
+    let fb: buf<f32> = new_buf(f32, 50)
+    let fc: buf<f32> = new_buf(f32, 50)
+    let fd: buf<f32> = new_buf(f32, 50)
+    let ia: buf<int> = new_buf(int, 50)
+    let ib: buf<int> = new_buf(int, 50)
+    let ja: buf<int> = new_buf(int, 50)
+    let jb: buf<int> = new_buf(int, 50)
+    let ka: buf<int> = new_buf(int, 50)
+    let kb: buf<int> = new_buf(int, 50)
+    for j in 0..50:
+        fa[j] = f32(j % 7)
+        fb[j] = f32(j % 5) + f32(0.5)
+        ia[j] = j * 3
+        ib[j] = j + 1
+        ja[j] = j * 5
+        jb[j] = j * 2
+        ka[j] = j
+        kb[j] = j + 9
+    two(&fa, &fb, &fc, &fd, 47)
+    same(&ia, &ib, 47)
+    seqd(&ja, &jb, 47)
+    alias2(&ka, &kb, 47)
+    alias2(&ka, &ka, 47)
+    let s = 0
+    for j in 0..50:
+        s = s + int(fc[j] * f32(4.0)) + int(fd[j] * f32(4.0)) * 3 + ia[j] + ib[j] * 7 + ja[j] * 11 + jb[j] * 13 + ka[j] * 17 + kb[j] * 19
+    return s % 200

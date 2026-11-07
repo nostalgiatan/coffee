@@ -479,3 +479,61 @@ fn a64_fldst_idx(a: &Asm, load: bool, vt: int, base: int, idx: int, shifted: boo
     if shifted:
         s = 1 << 12
     a64_w(a, 1008756736 | (sz << 30) | (l << 22) | s | (idx << 16) | (base << 5) | vt)
+
+/#/ ---- NEON (the vector loops) ---------------------------------------------------
+
+/#/ vd = every element of size 2^esz bytes (0 to 3) set to the low bits of the general register rn.
+fn a64_vdup(a: &Asm, esz: int, vd: int, rn: int) => void:
+    a64_w(a, 1308625920 | ((1 << esz) << 16) | (rn << 5) | vd)
+
+/#/ vt = the 16 bytes at [base] / the 16 bytes at [base] = vt.
+fn a64_vldst(a: &Asm, load: bool, vt: int, base: int) => void:
+    if load:
+        a64_w(a, 1035993088 | (base << 5) | vt)
+    else:
+        a64_w(a, 1031798784 | (base << 5) | vt)
+
+/#/ vd = vn op vm on elements of size 2^esz bytes; op: 0 add, 1 sub, 2 mul, 3 and, 4 orr, 5 eor.
+fn a64_vint(a: &Asm, op: int, esz: int, vd: int, vn: int, vm: int) => void:
+    let w = 1310753792
+    if op == 1:
+        w = 1847624704
+    elif op == 2:
+        w = 1310759936
+    elif op == 3:
+        w = 1310727168
+    elif op == 4:
+        w = 1319115776
+    elif op == 5:
+        w = 1847598080
+    if op <= 2:
+        w = w | (esz << 22)
+    a64_w(a, w | (vm << 16) | (vn << 5) | vd)
+
+/#/ vd = vn op vm on floats, 2 doubles (`dbl`) or 4 floats; op: 0 add, 1 sub, 2 mul, 3 div.
+fn a64_vfloat(a: &Asm, op: int, dbl: bool, vd: int, vn: int, vm: int) => void:
+    let w = 1310774272
+    if op == 1:
+        w = 1319162880
+    elif op == 2:
+        w = 1847647232
+    elif op == 3:
+        w = 1847655424
+    if dbl:
+        w = w | 4194304
+    a64_w(a, w | (vm << 16) | (vn << 5) | vd)
+
+/#/ vd = vn (all 16 bytes)
+fn a64_vmov(a: &Asm, vd: int, vn: int) => void:
+    a64_w(a, 1319115776 | (vn << 16) | (vn << 5) | vd)
+
+/#/ vd = all zero bits / all one bits
+fn a64_vzero(a: &Asm, vd: int) => void:
+    a64_w(a, 1862329344 | vd)
+
+fn a64_vones(a: &Asm, vd: int) => void:
+    a64_w(a, 1862789088 | vd)
+
+/#/ xd = element `idx` (0 or 1) of the two doubles in vn
+fn a64_vget_d(a: &Asm, xd: int, vn: int, idx: int) => void:
+    a64_w(a, 1309162496 | (idx << 20) | (vn << 5) | xd)

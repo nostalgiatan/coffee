@@ -1014,6 +1014,177 @@ fn part4() => int:
     w = words(1)
     w[0] = 3161291139
     m = m + same(186, &a, &w)
+    a = new_asm()
+    a64_vdup(&a, 0, 20, 9)
+    w = words(1)
+    w[0] = 1308691764
+    m = m + same(187, &a, &w)
+    a = new_asm()
+    a64_vdup(&a, 1, 20, 9)
+    w = words(1)
+    w[0] = 1308757300
+    m = m + same(188, &a, &w)
+    a = new_asm()
+    a64_vdup(&a, 2, 20, 9)
+    w = words(1)
+    w[0] = 1308888372
+    m = m + same(189, &a, &w)
+    a = new_asm()
+    a64_vdup(&a, 3, 20, 9)
+    w = words(1)
+    w[0] = 1309150516
+    m = m + same(190, &a, &w)
+    a = new_asm()
+    a64_vldst(&a, true, 18, 14)
+    w = words(1)
+    w[0] = 1035993554
+    m = m + same(191, &a, &w)
+    a = new_asm()
+    a64_vldst(&a, false, 19, 2)
+    w = words(1)
+    w[0] = 1031798867
+    m = m + same(192, &a, &w)
+    a = new_asm()
+    a64_vint(&a, 0, 0, 16, 17, 25)
+    w = words(1)
+    w[0] = 1312392752
+    m = m + same(193, &a, &w)
+    a = new_asm()
+    a64_vint(&a, 0, 1, 16, 17, 25)
+    w = words(1)
+    w[0] = 1316587056
+    m = m + same(194, &a, &w)
+    a = new_asm()
+    a64_vint(&a, 0, 2, 16, 17, 25)
+    w = words(1)
+    w[0] = 1320781360
+    m = m + same(195, &a, &w)
+    a = new_asm()
+    a64_vint(&a, 0, 3, 16, 17, 25)
+    w = words(1)
+    w[0] = 1324975664
+    m = m + same(196, &a, &w)
+    a = new_asm()
+    a64_vint(&a, 1, 0, 16, 17, 25)
+    w = words(1)
+    w[0] = 1849263664
+    m = m + same(197, &a, &w)
+    a = new_asm()
+    a64_vint(&a, 1, 1, 16, 17, 25)
+    w = words(1)
+    w[0] = 1853457968
+    m = m + same(198, &a, &w)
+    a = new_asm()
+    a64_vint(&a, 1, 2, 16, 17, 25)
+    w = words(1)
+    w[0] = 1857652272
+    m = m + same(199, &a, &w)
+    return m
+
+fn part5() => int:
+    let m = 0
+    let a = new_asm()
+    let w = words(1)
+    a = new_asm()
+    a64_vint(&a, 1, 3, 16, 17, 25)
+    w = words(1)
+    w[0] = 1861846576
+    m = m + same(200, &a, &w)
+    a = new_asm()
+    a64_vint(&a, 2, 0, 16, 17, 25)
+    w = words(1)
+    w[0] = 1312398896
+    m = m + same(201, &a, &w)
+    a = new_asm()
+    a64_vint(&a, 2, 1, 16, 17, 25)
+    w = words(1)
+    w[0] = 1316593200
+    m = m + same(202, &a, &w)
+    a = new_asm()
+    a64_vint(&a, 2, 2, 16, 17, 25)
+    w = words(1)
+    w[0] = 1320787504
+    m = m + same(203, &a, &w)
+    a = new_asm()
+    a64_vint(&a, 3, 3, 16, 17, 25)
+    w = words(1)
+    w[0] = 1312366128
+    m = m + same(204, &a, &w)
+    a = new_asm()
+    a64_vint(&a, 4, 3, 16, 17, 25)
+    w = words(1)
+    w[0] = 1320754736
+    m = m + same(205, &a, &w)
+    a = new_asm()
+    a64_vint(&a, 5, 3, 16, 17, 25)
+    w = words(1)
+    w[0] = 1849237040
+    m = m + same(206, &a, &w)
+    a = new_asm()
+    a64_vfloat(&a, 0, false, 16, 17, 24)
+    w = words(1)
+    w[0] = 1312347696
+    m = m + same(207, &a, &w)
+    a = new_asm()
+    a64_vfloat(&a, 0, true, 16, 17, 24)
+    w = words(1)
+    w[0] = 1316542000
+    m = m + same(208, &a, &w)
+    a = new_asm()
+    a64_vfloat(&a, 1, false, 16, 17, 24)
+    w = words(1)
+    w[0] = 1320736304
+    m = m + same(209, &a, &w)
+    a = new_asm()
+    a64_vfloat(&a, 1, true, 16, 17, 24)
+    w = words(1)
+    w[0] = 1324930608
+    m = m + same(210, &a, &w)
+    a = new_asm()
+    a64_vfloat(&a, 2, false, 16, 17, 24)
+    w = words(1)
+    w[0] = 1849220656
+    m = m + same(211, &a, &w)
+    a = new_asm()
+    a64_vfloat(&a, 2, true, 16, 17, 24)
+    w = words(1)
+    w[0] = 1853414960
+    m = m + same(212, &a, &w)
+    a = new_asm()
+    a64_vfloat(&a, 3, false, 16, 17, 24)
+    w = words(1)
+    w[0] = 1849228848
+    m = m + same(213, &a, &w)
+    a = new_asm()
+    a64_vfloat(&a, 3, true, 16, 17, 24)
+    w = words(1)
+    w[0] = 1853423152
+    m = m + same(214, &a, &w)
+    a = new_asm()
+    a64_vmov(&a, 16, 24)
+    w = words(1)
+    w[0] = 1320689424
+    m = m + same(215, &a, &w)
+    a = new_asm()
+    a64_vzero(&a, 22)
+    w = words(1)
+    w[0] = 1862329366
+    m = m + same(216, &a, &w)
+    a = new_asm()
+    a64_vones(&a, 22)
+    w = words(1)
+    w[0] = 1862789110
+    m = m + same(217, &a, &w)
+    a = new_asm()
+    a64_vget_d(&a, 9, 22, 0)
+    w = words(1)
+    w[0] = 1309163209
+    m = m + same(218, &a, &w)
+    a = new_asm()
+    a64_vget_d(&a, 10, 22, 1)
+    w = words(1)
+    w[0] = 1310211786
+    m = m + same(219, &a, &w)
     return m
 
 /#/ Branches to labels, forward and back, are patched when the function ends.

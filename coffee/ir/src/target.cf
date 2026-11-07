@@ -53,8 +53,7 @@ fn set_target(name: &Txt) => int:
         target_os = os_linux()
         /#/ fixed 4-byte instructions: every function starts on one
         fn_align_at_least(4)
-        /#/ the vector loops (`vloop`) have no aarch64 code yet
-        set_vector_loops(false)
+        set_vector_loops(true)
         return 0
     return 1
 

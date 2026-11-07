@@ -1,0 +1,174 @@
+/#/ aarch64: the vector loop (`VLoop`) as NEON; see g_gen_vloop in gen_x86_vec.cf for what it means.
+/#/ Registers: x0 the index, x1 the end, x2..x8 the buffers, x12 the address of the accumulator's
+/#/ slot, x13 the limit, x14 the address of the element; v16..v21 the stack of the program, v22 the
+/#/ accumulator, v24..v31 the loop invariants. Like a call it may write all of these.
+use * in gen
+use * in asm
+use * in asm_a64
+use * in target_a64
+use * in gen_x86_regs
+use * in gen_x86_call
+use * in gen_x86_isel
+use * in gen_a64_regs
+use * in gen_a64_isel
+use * in gen_a64_fun
+
+/#/ The vector loop `i`.
+fn ga_gen_vloop(g: &Gen, f: &Fun, i: int) => void:
+    let base = f.a[i]
+    let lane = f.c[i] & 15
+    let rk = f.c[i] >> 4
+    let np = f.aux[i] & 255
+    let ni = (f.aux[i] >> 8) & 255
+    let plen = f.aux[i] >> 16
+    if g.a.sbx:
+        /#/ the scalar loop does it all
+        let k0 = 0
+        if rk > 0:
+            k0 = 1
+        ga_ld(g, 0, f, f.pool[base + k0])
+        ga_st(g, i, 0)
+        return
+    /#/ the element size as a power of two, the elements in a vector, floats or not
+    let es = 2
+    let w = 4
+    let fl = false
+    let dbl = false
+    if lane == 0:
+        fl = true
+    elif lane == 1:
+        es = 3
+        w = 2
+        fl = true
+        dbl = true
+    elif lane == 2:
+        es = 0
+        w = 16
+    elif lane == 3:
+        es = 1
+        w = 8
+    elif lane == 5:
+        es = 3
+        w = 2
+    let nops = 2 + np + ni
+    if rk > 0:
+        nops = nops + 1
+    /#/ the invariants first, all into scratch registers (one may live in a register the splats write)
+    let at = 0
+    if rk > 0:
+        at = 1
+    for j in 0..ni:
+        ga_ld(g, ga_vl_tmp(j), f, f.pool[base + at + 2 + np + j])
+    for j in 0..ni:
+        a64_vdup(&g.a, es, 24 + j, ga_vl_tmp(j))
+    if rk > 0:
+        ga_ld(g, 12, f, f.pool[base])
+    ga_ld(g, 0, f, f.pool[base + at])
+    ga_ld(g, 1, f, f.pool[base + at + 1])
+    for k in 0..np:
+        ga_ld(g, 2 + k, f, f.pool[base + at + 2 + k])
+    if rk == 5:
+        a64_vones(&g.a, 22)
+    elif rk > 0:
+        a64_vzero(&g.a, 22)
+    /#/ while a whole vector is left: index + w <= end
+    a64_addsub_ri(&g.a, false, 13, 1, 1 - w)
+    let top = g.a.new_label()
+    let done = g.a.new_label()
+    a64_cmp_rr(&g.a, 0, 13)
+    a64_bcc(&g.a, ac_ge(), done)
+    g.a.bind(top)
+    ga_vl_body(g, f, base + nops, plen, es, lane, fl, dbl, rk)
+    a64_addsub_ri(&g.a, false, 0, 0, w)
+    a64_cmp_rr(&g.a, 0, 13)
+    a64_bcc(&g.a, ac_lt(), top)
+    g.a.bind(done)
+    if rk > 0:
+        /#/ the two halves of the accumulator together, then with the value in the slot, which gets the result
+        a64_vget_d(&g.a, 9, 22, 0)
+        a64_vget_d(&g.a, 10, 22, 1)
+        a64_ld(&g.a, 11, 12, 0, 8)
+        if rk == 3:
+            a64_eor_rr(&g.a, 9, 9, 10)
+            a64_eor_rr(&g.a, 9, 9, 11)
+        elif rk == 4:
+            a64_orr_rr(&g.a, 9, 9, 10)
+            a64_orr_rr(&g.a, 9, 9, 11)
+        elif rk == 5:
+            a64_and_rr(&g.a, 9, 9, 10)
+            a64_and_rr(&g.a, 9, 9, 11)
+        else:
+            a64_add_rr(&g.a, 9, 9, 10)
+            a64_add_rr(&g.a, 9, 9, 11)
+        a64_st(&g.a, 12, 0, 9, 8)
+    ga_st(g, i, 0)
+
+/#/ The scratch register the value of invariant `j` waits in.
+fn ga_vl_tmp(j: int) => int:
+    if j < 3:
+        return 9 + j
+    if j < 7:
+        return 10 + j
+    return 12
+
+/#/ The program of a vector loop for the vector at the index in x0.
+fn ga_vl_body(g: &Gen, f: &Fun, pbase: int, plen: int, es: int, lane: int, fl: bool, dbl: bool, rk: int) => void:
+    /#/ `inv[k]` is the invariant a stack slot stands for (it is copied only when something writes to the slot)
+    let inv: buf<int> = new_buf(int, plen + 2)
+    let sp = 0
+    for q in 0..plen:
+        let tk = f.cval(g_res(g, f, f.pool[pbase + q]))
+        let code = tk & 255
+        let arg = tk >> 8
+        if code == 1:
+            a64_add_rr_lsl(&g.a, 14, 2 + arg, 0, es)
+            a64_vldst(&g.a, true, 16 + sp, 14)
+            inv[sp] = -1
+            sp = sp + 1
+        elif code == 2:
+            inv[sp] = arg
+            sp = sp + 1
+        elif code == 3:
+            sp = sp - 1
+            if inv[sp - 1] >= 0:
+                a64_vmov(&g.a, 16 + sp - 1, 24 + inv[sp - 1])
+                inv[sp - 1] = -1
+            let src = 16 + sp
+            if inv[sp] >= 0:
+                src = 24 + inv[sp]
+            ga_vl_bin(g, arg, es, fl, dbl, 16 + sp - 1, src)
+        else:
+            if inv[sp - 1] >= 0:
+                a64_vmov(&g.a, 16 + sp - 1, 24 + inv[sp - 1])
+            a64_add_rr_lsl(&g.a, 14, 2 + arg, 0, es)
+            a64_vldst(&g.a, false, 16 + sp - 1, 14)
+            sp = sp - 1
+    if rk > 0:
+        /#/ the value of the round goes into the accumulator
+        let v = 16 + sp - 1
+        if inv[sp - 1] >= 0:
+            v = 24 + inv[sp - 1]
+        if rk == 1:
+            a64_vint(&g.a, 0, 3, 22, 22, v)
+        elif rk == 2:
+            a64_vint(&g.a, 1, 3, 22, 22, v)
+        elif rk == 3:
+            a64_vint(&g.a, 5, 3, 22, 22, v)
+        elif rk == 4:
+            a64_vint(&g.a, 4, 3, 22, 22, v)
+        else:
+            a64_vint(&g.a, 3, 3, 22, 22, v)
+
+/#/ `x[a] = x[a] op x[b]` for the vector operation `op` (add 0, sub 1, mul 2, div 3, and 4, or 5, xor 6).
+fn ga_vl_bin(g: &Gen, op: int, es: int, fl: bool, dbl: bool, a: int, b: int) => void:
+    if fl:
+        a64_vfloat(&g.a, op, dbl, a, a, b)
+        return
+    if op == 4:
+        a64_vint(&g.a, 3, 3, a, a, b)
+    elif op == 5:
+        a64_vint(&g.a, 4, 3, a, a, b)
+    elif op == 6:
+        a64_vint(&g.a, 5, 3, a, a, b)
+    else:
+        a64_vint(&g.a, op, es, a, a, b)
