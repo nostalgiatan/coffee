@@ -250,57 +250,6 @@ fn g_cmp_flags(g: &Gen, f: &Fun, i: int) => void:
     g_ld_ext(g, 1, f, f.b[i], signed)
     g.a.cmp_rr(0, 1)
 
-/#/ Division or remainder of the 64-bit value `i`'s first operand by the constant `d` >= 2,
-/#/ without a divide instruction; false if `op` and `d` have no such form here.
-fn g_div_const(g: &Gen, f: &Fun, i: int, op: int, d: int) => bool:
-    let signed = op == int(Op.SDiv) || op == int(Op.SRem)
-    let rem = op == int(Op.SRem) || op == int(Op.URem)
-    let pow2 = (d & (d - 1)) == 0
-    let k = 0
-    while (1 << k) < d:
-        k = k + 1
-    if !signed:
-        if !pow2:
-            return false
-        g_ld(g, 0, f, f.a[i])
-        if rem:
-            g.a.and_ri(0, d - 1)
-        else:
-            g.a.shift_i(5, 0, k)
-        g_st(g, i, 0)
-        return true
-    g_ld(g, 1, f, f.a[i])
-    if pow2:
-        /#/ x + (d - 1 when x is negative), then shifted
-        g.a.mov_rr(0, 1)
-        g.a.shift_i(7, 0, 63)
-        g.a.shift_i(5, 0, 64 - k)
-        g.a.add_rr(0, 1)
-        if rem:
-            g.a.shift_i(7, 0, k)
-            g.a.shift_i(4, 0, k)
-            g.a.sub_rr(1, 0)
-            g_st(g, i, 1)
-        else:
-            g.a.shift_i(7, 0, k)
-            g_st(g, i, 0)
-        return true
-    /#/ q = (mulh(m, x) + x >> (l - 1)) - (x >> 63), with m = 1 + floor(2^(63 + l) / d)
-    g.a.mov_ri(0, magic_mult(d, k))
-    g.a.grp3(5, 1)
-    g.a.add_rr(2, 1)
-    g.a.shift_i(7, 2, k - 1)
-    g.a.mov_rr(0, 1)
-    g.a.shift_i(7, 0, 63)
-    g.a.sub_rr(2, 0)
-    if rem:
-        g.a.imul_rri(2, 2, d)
-        g.a.sub_rr(1, 2)
-        g_st(g, i, 1)
-    else:
-        g_st(g, i, 2)
-    return true
-
 fn g_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => void:
     let op = f.op[i]
     let r = f.rep[i]
@@ -385,11 +334,14 @@ fn g_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => voi
             g.a.xor_rr(0, 1)
         g_st(g, i, 0)
         return
+    if op == int(Op.SMulHi):
+        g_ld(g, 1, f, f.a[i])
+        g_ld(g, 0, f, f.b[i])
+        g.a.grp3(5, 1)
+        g_st(g, i, 2)
+        return
     if op == int(Op.SDiv) || op == int(Op.SRem) || op == int(Op.UDiv) || op == int(Op.URem):
         let signed = op == int(Op.SDiv) || op == int(Op.SRem)
-        if r == int(Rp.I64) && g_small_imm(g, f, f.b[i]) && f.aux[g_res(g, f, f.b[i])] >= 2:
-            if g_div_const(g, f, i, op, f.aux[g_res(g, f, f.b[i])]):
-                return
         g_ld_ext(g, 0, f, f.a[i], signed)
         g_ld_ext(g, 1, f, f.b[i], signed)
         if signed:

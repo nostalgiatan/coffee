@@ -63,6 +63,7 @@ enum Op:
     Ret
     Unreachable
     VLoop
+    SMulHi
 
 /#/ Comparison predicates; the signedness of an integer compare is in the predicate.
 enum Pr:
@@ -216,4 +217,6 @@ fn new_optab() => OpTab:
     t.def("unreachable", 0, f_term())
     /#/ The vector loop of `vectorize`: arguments as for a call; see `gen_vloop`.
     t.def("vloop", var_args(), f_reads() | f_writes())
+    /#/ The high 64 bits of the signed 128-bit product; made by `legalize` for a division by a constant.
+    t.def("smulhi", 2, p)
     return t

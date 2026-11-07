@@ -45,7 +45,7 @@ fn new_vdiags() => VDiags:
 fn types_ok(f: &Fun, i: int) => bool:
     let o = f.op[i]
     let r = f.rep[i]
-    if o == int(Op.Add) || o == int(Op.Sub) || o == int(Op.Mul) || o == int(Op.SDiv) || o == int(Op.UDiv) || o == int(Op.SRem) || o == int(Op.URem) || o == int(Op.And) || o == int(Op.Or) || o == int(Op.Xor) || o == int(Op.Shl) || o == int(Op.AShr) || o == int(Op.LShr):
+    if o == int(Op.Add) || o == int(Op.Sub) || o == int(Op.Mul) || o == int(Op.SDiv) || o == int(Op.UDiv) || o == int(Op.SRem) || o == int(Op.URem) || o == int(Op.And) || o == int(Op.Or) || o == int(Op.Xor) || o == int(Op.Shl) || o == int(Op.AShr) || o == int(Op.LShr) || o == int(Op.SMulHi):
         return rp_is_int(r) && f.rep[f.follow(f.a[i])] == r && f.rep[f.follow(f.b[i])] == r
     if o == int(Op.Neg) || o == int(Op.Not):
         return rp_is_int(r) && f.rep[f.follow(f.a[i])] == r

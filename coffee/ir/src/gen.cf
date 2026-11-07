@@ -152,23 +152,6 @@ fn g_bad(g: &Gen) => void:
 fn new_gen() => Gen:
     return Gen { a: new_asm(), o: new_obj(), voff: new_buf(int, 64), sh: new_buf(int, 64), sframe: 0, tmp: 0, frame: 0, err: 0, av: new_buf(int, 16), nav: 0, sbase: 256, soff: new_buf(int, 16), nstr: 0, home: new_buf(int, 64), xhome: new_buf(int, 64), ord: new_buf(int, 16), emit: new_buf(int, 16), xsg: new_buf(int, 64), did: new_buf(int, 64), nsaved: 0, rbase: 0, saved: new_buf(int, 8), ed: new_buf(int, 16), ned: 0, ra_lo: new_buf(int, 1), ra_hi: new_buf(int, 1), ra_wt: new_buf(int, 1), uq_d: new_buf(int, 16), uq_b: new_buf(int, 16), nuq: 0, ra_dblk: new_buf(int, 1), ra_dset: new_buf(int, 1), ra_cp: new_buf(int, 16), ra_ncp: 0, ra_cm: new_buf(int, 16), cur: -1, msk: new_buf(int, 16), fmask: 0, nuse: new_buf(int, 64), am_base: 0, am_idx: -1, am_scale: 1, am_disp: 0, epi: 0, epi_jump: false, hc: new_buf(int, 16), nhc: 0, fk_bits: new_buf(int, 8), fk_lab: new_buf(int, 8), nfk: 0, fu_rl: new_buf(int, 16), fu_k: new_buf(int, 16), nfu: 0, fsym: 0, lm_at: new_buf(int, 64), lm_ln: new_buf(int, 64), lm_n: 0, mk_l: new_buf(int, 64), mk_ln: new_buf(int, 64), mk_n: 0, lf_sym: new_buf(int, 64), lf_start: new_buf(int, 64), lf_m0: new_buf(int, 64), lf_n: 0, dt: new_dbg_types(), vtxt: new_txt(), vr_s: new_buf(int, 64), vr_e: new_buf(int, 64) }
 
-/#/ The multiplier that divides by `d` (not a power of two; `l` is the log2 of `d` rounded up):
-/#/ 1 + floor(2^(63 + l) / d), taken as a 64-bit pattern, by long division one bit at a time.
-fn magic_mult(d: int, l: int) => int:
-    let q = 0
-    let r = 0
-    let bit = 63 + l
-    while bit >= 0:
-        r = r * 2
-        if bit == 63 + l:
-            r = r + 1
-        if r >= d:
-            r = r - d
-            if bit < 64:
-                q = q | (1 << bit)
-        bit = bit - 1
-    return q + 1
-
 fn rsize_scalar(r: int) => int:
     if r == int(Rp.I8):
         return 1

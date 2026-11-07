@@ -29,6 +29,93 @@ fn lz_to_ccall(f: &Fun, sy: &Names, i: int, name: &str, x: int, y: int) => void:
     f.aux[i] = id
     f.bump_uses(i, 1)
 
+/#/ The multiplier that divides by `d` (not a power of two; `l` is the log2 of `d` rounded up):
+/#/ 1 + floor(2^(63 + l) / d), taken as a 64-bit pattern, by long division one bit at a time.
+fn magic_mult(d: int, l: int) => int:
+    let q = 0
+    let r = 0
+    let bit = 63 + l
+    while bit >= 0:
+        r = r * 2
+        if bit == 63 + l:
+            r = r + 1
+        if r >= d:
+            r = r - d
+            if bit < 64:
+                q = q | (1 << bit)
+        bit = bit - 1
+    return q + 1
+
+/#/ A new instruction of the integer operation `op` just before `i`, in the block of `i`.
+fn lz_before(f: &Fun, i: int, op: int, x: int, y: int) => int:
+    let n = f.mk(op, int(Rp.I64), 0 - 1, x, y, 0 - 1, 0)
+    let p = f.pv[i]
+    f.nx[n] = i
+    f.pv[n] = p
+    f.pv[i] = n
+    if p >= 0:
+        f.nx[p] = n
+    else:
+        f.bfirst[f.blk[i]] = n
+    f.blk[n] = f.blk[i]
+    return n
+
+/#/ Makes `i` the instruction `op x, y`.
+fn lz_become(f: &Fun, i: int, op: int, x: int, y: int) => void:
+    f.op[i] = op
+    f.a[i] = x
+    f.b[i] = y
+    f.c[i] = 0 - 1
+    f.aux[i] = 0
+    f.bump_uses(i, 1)
+
+/#/ A 64-bit division or remainder `i` by the constant `d` >= 2, without a divide instruction.
+/#/ Signed: x + (d - 1 when x is negative), shifted, for a power of two; else
+/#/ q = (mulhi(m, x) + x >> (l - 1)) - (x >> 63) with m = 1 + floor(2^(63 + l) / d). Unsigned:
+/#/ a shift or a mask for a power of two. The rest stays a divide.
+fn lz_divconst(f: &Fun, i: int, d: int) => void:
+    let o = f.op[i]
+    let signed = o == int(Op.SDiv) || o == int(Op.SRem)
+    let rem = o == int(Op.SRem) || o == int(Op.URem)
+    let pow2 = (d & (d - 1)) == 0
+    if !signed && !pow2:
+        return
+    let k = 0
+    while (1 << k) < d:
+        k = k + 1
+    let x = f.follow(f.a[i])
+    let i64 = int(Rp.I64)
+    f.bump_uses(i, 0 - 1)
+    f.line = f.ln[i]
+    if !signed:
+        if rem:
+            lz_become(f, i, int(Op.And), x, f.cint(i64, d - 1))
+        else:
+            lz_become(f, i, int(Op.LShr), x, f.cint(i64, k))
+        return
+    let q = 0
+    if pow2:
+        let s = lz_before(f, i, int(Op.AShr), x, f.cint(i64, 63))
+        let u = lz_before(f, i, int(Op.LShr), s, f.cint(i64, 64 - k))
+        let t = lz_before(f, i, int(Op.Add), u, x)
+        if rem:
+            let q2 = lz_before(f, i, int(Op.AShr), t, f.cint(i64, k))
+            let sh = lz_before(f, i, int(Op.Shl), q2, f.cint(i64, k))
+            lz_become(f, i, int(Op.Sub), x, sh)
+        else:
+            lz_become(f, i, int(Op.AShr), t, f.cint(i64, k))
+        return
+    let h = lz_before(f, i, int(Op.SMulHi), x, f.cint(i64, magic_mult(d, k)))
+    let t = lz_before(f, i, int(Op.Add), h, x)
+    let t2 = lz_before(f, i, int(Op.AShr), t, f.cint(i64, k - 1))
+    let s = lz_before(f, i, int(Op.AShr), x, f.cint(i64, 63))
+    if rem:
+        q = lz_before(f, i, int(Op.Sub), t2, s)
+        let p = lz_before(f, i, int(Op.Mul), q, f.cint(i64, d))
+        lz_become(f, i, int(Op.Sub), x, p)
+    else:
+        lz_become(f, i, int(Op.Sub), t2, s)
+
 /#/ The `Switch` that ends block `b` (instruction `i`) becomes a chain of tests: each block compares
 /#/ the value with one case and branches to that case's edge or to the next test; the last one
 /#/ falls to the default. The edges keep their arguments; they leave from the new blocks now.
@@ -99,6 +186,10 @@ fn legalize(f: &Fun, sy: &Names) => void:
                 lz_to_ccall(f, sy, i, "malloc", sz, -1)
             elif o == int(Op.Free):
                 lz_to_ccall(f, sy, i, "free", f.a[i], -1)
+            elif o == int(Op.SDiv) || o == int(Op.SRem) || o == int(Op.UDiv) || o == int(Op.URem):
+                let y = f.follow(f.b[i])
+                if f.rep[i] == int(Rp.I64) && f.op[y] == int(Op.Const) && f.rep[y] == int(Rp.I64) && f.aux[y] >= 2 && f.aux[y] <= 2147483647:
+                    lz_divconst(f, i, f.aux[y])
             elif o == int(Op.FRem):
                 if f.rep[i] == int(Rp.F32):
                     lz_to_ccall(f, sy, i, "fmodf", f.a[i], f.b[i])
