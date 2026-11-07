@@ -1,0 +1,57 @@
+/#/ Floats kept in registers: many live at once (more than the registers there are), across calls,
+/#/ through memory, in loops, with f32 mixed in.
+use write in libc of c
+
+fn out(s: str) => void:
+    write(1, s, len(s))
+
+fn bump(x: float) => float:
+    return x * 1.5 + 1.0
+
+class P:
+    x: float
+    y: float(4)
+
+fn live(n: float) => float:
+    let a0 = n + 1.0
+    let a1 = n * 2.0
+    let a2 = n - 3.0
+    let a3 = n * n
+    let a4 = n + 5.0
+    let a5 = n * 6.0
+    let a6 = n - 7.0
+    let a7 = n * 8.0
+    let a8 = n + 9.0
+    let a9 = n * 10.0
+    let b0 = bump(a0)
+    let b1 = bump(a1)
+    let b2 = a2 + a3 + a4
+    let c0 = a0 * a1 + a2 * a3 + a4 * a5 + a6 * a7 + a8 * a9
+    return b0 + b1 + b2 + c0 + a0 + a1 + a2 + a3 + a4 + a5 + a6 + a7 + a8 + a9
+
+fn loop(n: int) => float:
+    let s = 0.0
+    let t: float(4) = f32(0.5)
+    let ps = new_buf(float, 8)
+    for i in 0..8:
+        ps[i] = float(i) * 0.25
+    for i in 0..n:
+        s = s + bump(ps[i % 8]) + float(t)
+        t = f32(float(t) * 1.01)
+    return s
+
+fn pp(p: &P) => float:
+    return p.x + float(p.y)
+
+fn main() => int:
+    let h = 0
+    h = h * 31 + int(live(2.0))
+    h = h * 31 + int(live(0.5) * 100.0)
+    h = h * 31 + int(loop(50) * 10.0)
+    let p = P { x: 1.25, y: f32(2.5) }
+    h = h * 31 + int(pp(&p) * 100.0)
+    p.y = f32(7.0)
+    p.x = p.x * float(p.y)
+    h = h * 31 + int(pp(&p) * 100.0)
+    out(f"{h}\n")
+    return h % 251

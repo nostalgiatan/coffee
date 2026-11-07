@@ -28,11 +28,9 @@ fn ga_cmp_flags(g: &Gen, f: &Fun, i: int) => void:
 /#/ Loads the operands of the float compare `i` into v0 and v1 and compares them.
 fn ga_fcmp_flags(g: &Gen, f: &Fun, i: int) => void:
     let single = f.rep[g_res(g, f, f.a[i])] == int(Rp.F32)
-    ga_ld(g, 9, f, f.a[i])
-    a64_fmov_to(&g.a, 0, 9, single)
-    ga_ld(g, 9, f, f.b[i])
-    a64_fmov_to(&g.a, 1, 9, single)
-    a64_fcmp(&g.a, single, 0, 1)
+    let va = ga_fsrc(g, f, f.a[i], 0)
+    let vb = ga_fsrc(g, f, f.b[i], 1)
+    a64_fcmp(&g.a, single, va, vb)
 
 /#/ The address of the folded `x` (see `g_folds`) as base, index, scale and displacement in `am_*`;
 /#/ what is not a constant is loaded into `s1` (the base) and `s2` (the index).
@@ -51,6 +49,16 @@ fn ga_addr_of(g: &Gen, f: &Fun, x: int, s1: int, s2: int) => void:
         g.am_scale = 1
         g.am_disp = f.aux[x]
 
+/#/ The same for the float register `vt`.
+fn ga_fmem(g: &Gen, load: bool, vt: int, n: int) => void:
+    if g.am_idx < 0:
+        a64_fldst(&g.a, load, vt, g.am_base, g.am_disp, n)
+    elif g.am_scale == n || g.am_scale == 1:
+        a64_fldst_idx(&g.a, load, vt, g.am_base, g.am_idx, g.am_scale == n, n)
+    else:
+        a64_add_rr_lsl(&g.a, 15, g.am_base, g.am_idx, a64_log2(g.am_scale))
+        a64_fldst(&g.a, load, vt, 15, 0, n)
+
 /#/ A load or store of `n` bytes of `rt` at the address `am_*` describes.
 fn ga_mem(g: &Gen, load: bool, rt: int, n: int) => void:
     if g.am_idx < 0:
@@ -63,10 +71,9 @@ fn ga_mem(g: &Gen, load: bool, rt: int, n: int) => void:
 
 fn ga_arith(g: &Gen, f: &Fun, i: int, op: int) => void:
     let single = f.rep[i] == int(Rp.F32)
-    ga_ld(g, 9, f, f.a[i])
-    a64_fmov_to(&g.a, 0, 9, single)
-    ga_ld(g, 9, f, f.b[i])
-    a64_fmov_to(&g.a, 1, 9, single)
+    let va = ga_fsrc(g, f, f.a[i], 0)
+    let vb = ga_fsrc(g, f, f.b[i], 1)
+    let d = ga_fdst(g, i, 0)
     let code = 0
     if op == int(Op.FSub):
         code = 1
@@ -74,9 +81,8 @@ fn ga_arith(g: &Gen, f: &Fun, i: int, op: int) => void:
         code = 2
     elif op == int(Op.FDiv):
         code = 3
-    a64_farith(&g.a, code, single, 0, 0, 1)
-    a64_fmov_from(&g.a, 9, 0, single)
-    ga_st(g, i, 9)
+    a64_farith(&g.a, code, single, d, va, vb)
+    ga_ffin(g, f, i, d)
 
 fn ga_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => void:
     let op = f.op[i]
@@ -163,11 +169,10 @@ fn ga_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => vo
         return
     if op == int(Op.FNeg):
         let single = r == int(Rp.F32)
-        ga_ld(g, 9, f, f.a[i])
-        a64_fmov_to(&g.a, 0, 9, single)
-        a64_fneg(&g.a, single, 0, 0)
-        a64_fmov_from(&g.a, 9, 0, single)
-        ga_st(g, i, 9)
+        let va = ga_fsrc(g, f, f.a[i], 0)
+        let d = ga_fdst(g, i, 0)
+        a64_fneg(&g.a, single, d, va)
+        ga_ffin(g, f, i, d)
         return
     if op == int(Op.FAdd) || op == int(Op.FSub) || op == int(Op.FMul) || op == int(Op.FDiv):
         ga_arith(g, f, i, op)
@@ -207,24 +212,23 @@ fn ga_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => vo
         let single = r == int(Rp.F32)
         let signed = op == int(Op.SiToFp)
         ga_ld_ext(g, 9, f, f.a[i], signed)
-        a64_cvt_i2f(&g.a, 0, 9, single, signed)
-        a64_fmov_from(&g.a, 9, 0, single)
-        ga_st(g, i, 9)
+        let d = ga_fdst(g, i, 0)
+        a64_cvt_i2f(&g.a, d, 9, single, signed)
+        ga_ffin(g, f, i, d)
         return
     if op == int(Op.FpToSi) || op == int(Op.FpToUi):
         let single = f.rep[g_res(g, f, f.a[i])] == int(Rp.F32)
-        ga_ld(g, 9, f, f.a[i])
-        a64_fmov_to(&g.a, 0, 9, single)
-        a64_cvt_f2i(&g.a, 9, 0, single, op == int(Op.FpToSi))
-        ga_st(g, i, 9)
+        let va = ga_fsrc(g, f, f.a[i], 0)
+        let d = ga_dst(g, i, 9)
+        a64_cvt_f2i(&g.a, d, va, single, op == int(Op.FpToSi))
+        ga_st(g, i, d)
         return
     if op == int(Op.FpExt) || op == int(Op.FpTrunc):
         let to_single = op == int(Op.FpTrunc)
-        ga_ld(g, 9, f, f.a[i])
-        a64_fmov_to(&g.a, 0, 9, !to_single)
-        a64_fcvt(&g.a, 0, 0, to_single)
-        a64_fmov_from(&g.a, 9, 0, to_single)
-        ga_st(g, i, 9)
+        let va = ga_fsrc(g, f, f.a[i], 0)
+        let d = ga_fdst(g, i, 0)
+        a64_fcvt(&g.a, d, va, to_single)
+        ga_ffin(g, f, i, d)
         return
     if (op == int(Op.Field) || op == int(Op.Index)) && g_folds(g, f, i):
         return
@@ -256,6 +260,10 @@ fn ga_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => vo
         let sd = ga_ab_disp(g, f, f.a[i]) + eo
         if r >= rp_first_agg():
             ga_copy_mem(g, ta_fp(), g.voff[i], sb, sd, rsize(rs, r))
+        elif !g_is_int_class(g, r):
+            let d = ga_fdst(g, i, 0)
+            a64_fldst(&g.a, true, d, sb, sd, rsize(rs, r))
+            ga_ffin(g, f, i, d)
         else:
             let d = ga_dst(g, i, 9)
             a64_ld(&g.a, d, sb, sd, rsize(rs, r))
@@ -279,6 +287,16 @@ fn ga_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => vo
             ga_copy_mem(g, ta_fp(), g.voff[i], ta_a0(), 0, rsize(rs, r))
             return
         let x = g_res(g, f, f.a[i])
+        if !g_is_int_class(g, r):
+            let fd = ga_fdst(g, i, 0)
+            if g_folds(g, f, x):
+                ga_addr_of(g, f, x, ta_a0(), ta_a1())
+                ga_fmem(g, true, fd, rsize(rs, r))
+            else:
+                let rb = ga_src(g, f, f.a[i], ta_a0())
+                a64_fldst(&g.a, true, fd, rb, 0, rsize(rs, r))
+            ga_ffin(g, f, i, fd)
+            return
         let d = ga_dst(g, i, 9)
         if g_folds(g, f, x):
             ga_addr_of(g, f, x, ta_a0(), ta_a1())
@@ -295,8 +313,17 @@ fn ga_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => vo
             let sb = ga_ab_reg(g, f, f.b[i])
             ga_copy_mem(g, ta_a1(), 0, sb, ga_ab_disp(g, f, f.b[i]), rsize(rs, vr))
             return
-        let rv = ga_src(g, f, f.b[i], 9)
         let x = g_res(g, f, f.a[i])
+        if !g_is_int_class(g, vr):
+            let fv = ga_fsrc(g, f, f.b[i], 0)
+            if g_folds(g, f, x):
+                ga_addr_of(g, f, x, ta_a0(), ta_a1())
+                ga_fmem(g, false, fv, rsize(rs, vr))
+            else:
+                let rb = ga_src(g, f, f.a[i], ta_a0())
+                a64_fldst(&g.a, false, fv, rb, 0, rsize(rs, vr))
+            return
+        let rv = ga_src(g, f, f.b[i], 9)
         if g_folds(g, f, x):
             ga_addr_of(g, f, x, ta_a0(), ta_a1())
             ga_mem(g, false, rv, rsize(rs, vr))
@@ -379,8 +406,7 @@ fn ga_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => vo
             elif g_is_int_class(g, vr):
                 ga_ld(g, 0, f, f.a[i])
             else:
-                ga_ld(g, 9, f, f.a[i])
-                a64_fmov_to(&g.a, 0, 9, vr == int(Rp.F32))
+                ga_fmove(g, f, 0, f.a[i])
         ga_epilogue(g)
         return
     if op == int(Op.Unreachable):

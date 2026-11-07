@@ -420,3 +420,40 @@ fn a64_fcvt(a: &Asm, vd: int, vn: int, to_single: bool) => void:
         a64_w(a, 509755392 | (vn << 5) | vd)
     else:
         a64_w(a, 505593856 | (vn << 5) | vd)
+
+/#/ vd = vn (a whole register move; the low 32 or 64 bits matter).
+fn a64_fmov_vv(a: &Asm, single: bool, vd: int, vn: int) => void:
+    if single:
+        a64_w(a, 505430016 | (vn << 5) | vd)
+    else:
+        a64_w(a, 509624320 | (vn << 5) | vd)
+
+/#/ A load into (or store of) the float register `vt` of `n` bytes (4 or 8) at [base + disp]; the offset
+/#/ goes through x17 when it does not fit.
+fn a64_fldst(a: &Asm, load: bool, vt: int, base: int, disp: int, n: int) => void:
+    let sz = 2
+    if n == 8:
+        sz = 3
+    let l = 0
+    if load:
+        l = 1
+    if disp >= 0 && disp % n == 0 && disp // n < 4096:
+        a64_w(a, 1023410176 | (sz << 30) | (l << 22) | ((disp // n) << 10) | (base << 5) | vt)
+    elif disp >= 0 - 256 && disp < 256:
+        a64_w(a, 1006632960 | (sz << 30) | (l << 22) | ((disp & 511) << 12) | (base << 5) | vt)
+    else:
+        a64_mov_ri(a, 17, disp)
+        a64_w(a, 1008756736 | (sz << 30) | (l << 22) | (17 << 16) | (base << 5) | vt)
+
+/#/ [base + idx] or, with `shifted`, [base + (idx << log2 n)], for a float register.
+fn a64_fldst_idx(a: &Asm, load: bool, vt: int, base: int, idx: int, shifted: bool, n: int) => void:
+    let sz = 2
+    if n == 8:
+        sz = 3
+    let l = 0
+    if load:
+        l = 1
+    let s = 0
+    if shifted:
+        s = 1 << 12
+    a64_w(a, 1008756736 | (sz << 30) | (l << 22) | s | (idx << 16) | (base << 5) | vt)

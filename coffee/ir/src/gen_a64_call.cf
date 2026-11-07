@@ -71,8 +71,7 @@ fn ga_do_call(g: &Gen, f: &Fun, rs: &Reps, i: int, sym: int, variadic: bool) => 
                 ga_ld(g, ta_int_arg(ci), f, v)
             ci = ci + 1
         elif cls[k] == 1:
-            ga_ld(g, 9, f, v)
-            a64_fmov_to(&g.a, cx, 9, r == int(Rp.F32))
+            ga_fmove(g, f, cx, v)
             cx = cx + 1
     if sym < 0:
         ga_ld(g, ta_ind(), f, f.c[i])
@@ -86,6 +85,5 @@ fn ga_do_call(g: &Gen, f: &Fun, rs: &Reps, i: int, sym: int, variadic: bool) => 
     if g_is_int_class(g, ret):
         ga_st(g, i, 0)
     else:
-        a64_fmov_from(&g.a, 9, 0, ret == int(Rp.F32))
-        ga_st(g, i, 9)
+        ga_ffin(g, f, i, 0)
 

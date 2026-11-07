@@ -16,7 +16,10 @@ use * in dbgtype
 /#/ Frees the frame and returns.
 fn ga_epilogue(g: &Gen) => void:
     for k in 0..g.nsaved:
-        a64_ld(&g.a, g.saved[k], ta_fp(), 16 + g.rbase + 8 * k, 8)
+        if g.saved[k] >= 32:
+            a64_fldst(&g.a, true, g.saved[k] - 32, ta_fp(), 16 + g.rbase + 8 * k, 8)
+        else:
+            a64_ld(&g.a, g.saved[k], ta_fp(), 16 + g.rbase + 8 * k, 8)
     a64_load_fp_lr(&g.a)
     a64_addsub_ri(&g.a, false, 31, 31, g.frame)
     a64_ret(&g.a)
@@ -51,7 +54,10 @@ fn ga_gen_fun(g: &Gen, f: &Fun, rs: &Reps, sy: &Names) => bool:
     if g.rbase > 0:
         a64_st(&g.a, ta_fp(), 16, ta_sret(), 8)
     for k in 0..g.nsaved:
-        a64_st(&g.a, ta_fp(), 16 + g.rbase + 8 * k, g.saved[k], 8)
+        if g.saved[k] >= 32:
+            a64_fldst(&g.a, false, g.saved[k] - 32, ta_fp(), 16 + g.rbase + 8 * k, 8)
+        else:
+            a64_st(&g.a, ta_fp(), 16 + g.rbase + 8 * k, g.saved[k], 8)
     /#/ the parameters of the entry block
     let ci = 0
     let cx = 0
@@ -75,8 +81,10 @@ fn ga_gen_fun(g: &Gen, f: &Fun, rs: &Reps, sy: &Names) => bool:
                 cs = cs + 1
         else:
             if cx < ta_nfloat_args():
-                a64_fmov_from(&g.a, 9, cx, r == int(Rp.F32))
-                ga_st(g, p, 9)
+                if g.xhome[p] >= 0:
+                    a64_fmov_vv(&g.a, false, g.xhome[p], cx)
+                else:
+                    a64_fldst(&g.a, false, cx, ta_fp(), g.voff[p], rsize_scalar(r))
                 cx = cx + 1
             else:
                 a64_ld(&g.a, 9, ta_fp(), g.frame + 8 * cs, 8)

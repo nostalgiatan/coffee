@@ -952,6 +952,68 @@ fn part4() => int:
     w = words(1)
     w[0] = 505593888
     m = m + same(174, &a, &w)
+    a = new_asm()
+    a64_fmov_vv(&a, false, 8, 17)
+    w = words(1)
+    w[0] = 509624872
+    m = m + same(175, &a, &w)
+    a = new_asm()
+    a64_fmov_vv(&a, true, 1, 2)
+    w = words(1)
+    w[0] = 505430081
+    m = m + same(176, &a, &w)
+    a = new_asm()
+    a64_fldst(&a, true, 8, 29, 24, 8)
+    w = words(1)
+    w[0] = 4248833960
+    m = m + same(177, &a, &w)
+    a = new_asm()
+    a64_fldst(&a, false, 9, 29, 24, 8)
+    w = words(1)
+    w[0] = 4244639657
+    m = m + same(178, &a, &w)
+    a = new_asm()
+    a64_fldst(&a, true, 8, 29, 20, 4)
+    w = words(1)
+    w[0] = 3175094184
+    m = m + same(179, &a, &w)
+    a = new_asm()
+    a64_fldst(&a, false, 16, 29, 4, 4)
+    w = words(1)
+    w[0] = 3170895792
+    m = m + same(180, &a, &w)
+    a = new_asm()
+    a64_fldst(&a, true, 8, 29, 17, 8)
+    w = words(1)
+    w[0] = 4232123304
+    m = m + same(181, &a, &w)
+    a = new_asm()
+    a64_fldst(&a, true, 8, 29, 0 - 8, 8)
+    w = words(1)
+    w[0] = 4234118056
+    m = m + same(182, &a, &w)
+    a = new_asm()
+    a64_fldst(&a, true, 8, 29, 100000, 8)
+    w = words(3)
+    w[0] = 3532706833
+    w[1] = 4070572081
+    w[2] = 4235291560
+    m = m + same(183, &a, &w)
+    a = new_asm()
+    a64_fldst_idx(&a, true, 3, 12, 13, false, 8)
+    w = words(1)
+    w[0] = 4235028867
+    m = m + same(184, &a, &w)
+    a = new_asm()
+    a64_fldst_idx(&a, false, 3, 12, 13, true, 8)
+    w = words(1)
+    w[0] = 4230838659
+    m = m + same(185, &a, &w)
+    a = new_asm()
+    a64_fldst_idx(&a, true, 3, 12, 13, true, 4)
+    w = words(1)
+    w[0] = 3161291139
+    m = m + same(186, &a, &w)
     return m
 
 /#/ Branches to labels, forward and back, are patched when the function ends.
