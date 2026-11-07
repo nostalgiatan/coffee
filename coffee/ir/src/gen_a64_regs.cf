@@ -18,8 +18,11 @@ use * in gen_a64_call
 use * in gen_a64_isel
 use * in gen_a64_fun
 
-/#/ The base register of the bytes of value `x`.
-fn ga_vb(g: &Gen, x: int) => int:
+/#/ The base register of the bytes of value `x`: x29, or x27 (the shadow frame in the linear memory) for the
+/#/ aggregates and slots of sandbox code.
+fn ga_sb(g: &Gen, x: int) => int:
+    if g.a.sbx && g.sh[x] == 1:
+        return 27
     return ta_fp()
 
 /#/ reg = the value (a scalar, 8 bytes; narrower ones have meaningful low bytes only)
@@ -41,9 +44,9 @@ fn ga_ld(g: &Gen, reg: int, f: &Fun, v: int) => void:
     elif k == int(Op.StrLit):
         a64_adr_sym(&g.a, reg, 1, g.sbase + g_so(g, f.aux[x]))
     elif k == int(Op.Slot):
-        a64_addsub_ri(&g.a, false, reg, ta_fp(), g.voff[x])
+        a64_addsub_ri(&g.a, false, reg, ga_sb(g, x), g.voff[x])
     else:
-        a64_ld(&g.a, reg, ta_fp(), g.voff[x], 8)
+        a64_ld(&g.a, reg, ga_sb(g, x), g.voff[x], 8)
 
 /#/ reg = the value extended from its width
 fn ga_ld_ext(g: &Gen, reg: int, f: &Fun, v: int, signed: bool) => void:
@@ -76,7 +79,7 @@ fn ga_fsrc(g: &Gen, f: &Fun, v: int, scratch: int) => int:
         ga_ld(g, 9, f, x)
         a64_fmov_to(&g.a, scratch, 9, single)
     else:
-        a64_fldst(&g.a, true, scratch, ta_fp(), g.voff[x], rsize_scalar(f.rep[x]))
+        a64_fldst(&g.a, true, scratch, ga_sb(g, x), g.voff[x], rsize_scalar(f.rep[x]))
     return scratch
 
 /#/ Where the float instruction `i` makes its result: its own register, else `scratch`.
@@ -91,7 +94,7 @@ fn ga_ffin(g: &Gen, f: &Fun, i: int, v: int) => void:
         if g.xhome[i] != v:
             a64_fmov_vv(&g.a, false, g.xhome[i], v)
     else:
-        a64_fldst(&g.a, false, v, ta_fp(), g.voff[i], rsize_scalar(f.rep[i]))
+        a64_fldst(&g.a, false, v, ga_sb(g, i), g.voff[i], rsize_scalar(f.rep[i]))
 
 /#/ Float register `d` = the float value `v`.
 fn ga_fmove(g: &Gen, f: &Fun, d: int, v: int) => void:
@@ -113,7 +116,7 @@ fn ga_st(g: &Gen, i: int, reg: int) => void:
     elif g.xhome[i] >= 0:
         a64_fmov_to(&g.a, g.xhome[i], reg, g.xsg[i] == 1)
     else:
-        a64_st(&g.a, ta_fp(), g.voff[i], reg, 8)
+        a64_st(&g.a, ga_sb(g, i), g.voff[i], reg, 8)
 
 /#/ For an aggregate value: the base register and displacement of its bytes (an undefined one
 /#/ reads from the start of the read-only data).
@@ -122,7 +125,7 @@ fn ga_ab_reg(g: &Gen, f: &Fun, v: int) => int:
     if f.op[x] == int(Op.Undef):
         a64_adr_sym(&g.a, ta_ind(), 1, 0)
         return ta_ind()
-    return ta_fp()
+    return ga_sb(g, x)
 
 fn ga_ab_disp(g: &Gen, f: &Fun, v: int) => int:
     let x = g_res(g, f, v)
@@ -167,14 +170,24 @@ fn ga_layout(g: &Gen, f: &Fun, rs: &Reps) => void:
     if len(g.voff) < f.ni + 1:
         g.voff = new_buf(int, f.ni + 1)
         g.sh = new_buf(int, f.ni + 1)
+    for v in 0..f.ni:
+        g.sh[v] = 0
+    let sbx = g.a.sbx
+    /#/ sandbox code keeps aggregates and the slots in the shadow frame in the linear memory (x27), below x27
+    let scur = 0
     let cur = 16 + g.rbase + 8 * g.nsaved
     let tmp = 0
     for b in 0..f.nb:
         let p = f.pfirst[b]
         while p >= 0:
             if g.home[p] < 0 && g.xhome[p] < 0:
-                g.voff[p] = cur
-                cur = cur + g_place_size(g, rs, f.rep[p])
+                if sbx && f.rep[p] >= rp_first_agg():
+                    g.voff[p] = 0 - scur
+                    g.sh[p] = 1
+                    scur = scur + g_place_size(g, rs, f.rep[p])
+                else:
+                    g.voff[p] = cur
+                    cur = cur + g_place_size(g, rs, f.rep[p])
             p = f.nx[p]
         let i = f.bfirst[b]
         while i >= 0:
@@ -183,11 +196,21 @@ fn ga_layout(g: &Gen, f: &Fun, rs: &Reps) => void:
                 let sz = round8(f.ty[i])
                 if f.ty[i] < 1:
                     sz = sz + 8
-                g.voff[i] = cur
-                cur = cur + sz
+                if sbx:
+                    g.voff[i] = 0 - scur
+                    g.sh[i] = 1
+                    scur = scur + sz
+                else:
+                    g.voff[i] = cur
+                    cur = cur + sz
             elif f.rep[i] != int(Rp.Void) && op != int(Op.OwnMove) && g.home[i] < 0 && g.xhome[i] < 0:
-                g.voff[i] = cur
-                cur = cur + g_place_size(g, rs, f.rep[i])
+                if sbx && f.rep[i] >= rp_first_agg():
+                    g.voff[i] = 0 - scur
+                    g.sh[i] = 1
+                    scur = scur + g_place_size(g, rs, f.rep[i])
+                else:
+                    g.voff[i] = cur
+                    cur = cur + g_place_size(g, rs, f.rep[i])
             i = f.nx[i]
     for e in 0..f.ne:
         if f.eto[e] >= 0:
@@ -199,6 +222,10 @@ fn ga_layout(g: &Gen, f: &Fun, rs: &Reps) => void:
     g.tmp = cur
     cur = cur + tmp
     g.frame = (cur + 15) // 16 * 16
+    g.sframe = (scur + 15) // 16 * 16
+    /#/ a frame larger than the guard below the shadow stack could be stepped over
+    if sbx && (g.sframe > 32768 || g.frame > 32000):
+        g.err = 1
 
 /#/ A number for the register of `x`: general ones as they are, float ones from 32; -1 in the frame.
 fn ga_hid(g: &Gen, x: int) => int:
@@ -236,7 +263,7 @@ fn ga_edge_copy(g: &Gen, f: &Fun, rs: &Reps, e: int) => void:
             elif g.xhome[p] >= 0:
                 ga_fmove(g, f, g.xhome[p], f.pool[f.eargs[e] + k])
             else:
-                ga_val_to(g, f, rs, ta_fp(), g.voff[p], f.pool[f.eargs[e] + k])
+                ga_val_to(g, f, rs, ga_sb(g, p), g.voff[p], f.pool[f.eargs[e] + k])
             p = f.nx[p]
         return
     let at = 0
@@ -253,7 +280,7 @@ fn ga_edge_copy(g: &Gen, f: &Fun, rs: &Reps, e: int) => void:
         elif g.xhome[p] >= 0:
             a64_fldst(&g.a, true, g.xhome[p], ta_fp(), g.tmp + at, rsize_scalar(f.rep[p]))
         else:
-            ga_copy_mem(g, ta_fp(), g.voff[p], ta_fp(), g.tmp + at, sz)
+            ga_copy_mem(g, ga_sb(g, p), g.voff[p], ta_fp(), g.tmp + at, sz)
         at = at + sz
         p = f.nx[p]
 
@@ -271,6 +298,9 @@ fn ga_alloc_regs(g: &Gen, f: &Fun, rs: &Reps) => void:
     if nd == 0:
         return
     let npool = ta_nsaved_regs()
+    if g.a.sbx:
+        /#/ x27 is the shadow frame pointer of sandbox code
+        npool = npool - 1
     let top = g.ptop + 4
     let first: buf<int> = new_buf(int, top + 1)
     let link: buf<int> = new_buf(int, nd + 1)

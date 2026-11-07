@@ -22,6 +22,17 @@ fn r_a64_jump26() => int:
 fn r_a64_call26() => int:
     return 283
 
+/#/ The low and the next 16 bits of an address, in `movz`/`movk` (sandbox code, whose addresses are 32-bit offsets).
+fn r_a64_movw_g0_nc() => int:
+    return 264
+
+fn r_a64_movw_g1_nc() => int:
+    return 266
+
+/#/ Set when sandbox code (`Asm.sbx`) needed a form the verifier does not take (a frame offset past the
+/#/ scaled immediate, an argument on the stack); the function then is not made.
+let a64_err: bool = false
+
 /#/ Condition codes.
 fn ac_eq() => int:
     return 0
@@ -115,6 +126,17 @@ fn a64_mov_rr(a: &Asm, rd: int, rn: int) => void:
 
 /#/ rd = rn + v, or rn - v when `sub`; a value that does not fit 12 bits (or 12 bits shifted) goes through x17.
 fn a64_addsub_ri(a: &Asm, sub: bool, rd: int, rn: int, v: int) => void:
+    if a.sbx && rd == 31 && rn == 31 && v >= 4096:
+        /#/ sandbox code moves sp by immediates only (the verifier takes nothing else)
+        if v >= 16777216:
+            a64_err = true
+        else:
+            let base0 = 2432696320
+            if sub:
+                base0 = 3506438144
+            a64_w(a, base0 | (1 << 22) | ((v >> 12) << 10) | (31 << 5) | 31)
+            a64_addsub_ri(a, sub, 31, 31, v & 4095)
+        return
     let s = sub
     let n = v
     if n < 0:
@@ -252,6 +274,28 @@ fn a64_log2(n: int) => int:
         return 2
     return 3
 
+/#/ Sandbox code: the register that holds the 32-bit offset base + disp: the base itself, or x15 =
+/#/ w(base) + disp (a 32-bit add, which wraps and clears the upper half).
+fn a64_sbx_off(a: &Asm, base: int, disp: int) => int:
+    if disp == 0:
+        return base
+    if disp > 0 - 4096 && disp < 4096:
+        if disp > 0:
+            a64_w(a, 285212672 | (disp << 10) | (base << 5) | 15)
+        else:
+            a64_w(a, 1358954496 | ((0 - disp) << 10) | (base << 5) | 15)
+        return 15
+    a64_mov_ri(a, 17, disp)
+    a64_w(a, 184549376 | (17 << 16) | (base << 5) | 15)
+    return 15
+
+/#/ Sandbox code: w15 = w(base) + (w(idx) << sh when `shifted`).
+fn a64_sbx_sum(a: &Asm, base: int, idx: int, shifted: bool, sz: int) => void:
+    let sh = 0
+    if shifted:
+        sh = sz
+    a64_w(a, 184549376 | (idx << 16) | (sh << 10) | (base << 5) | 15)
+
 /#/ A load into (or store of) the integer register `rt` of `n` bytes (1, 2, 4, 8) at [base + disp]:
 /#/ the scaled form when `disp` fits, else the unscaled one, else the offset goes through x17.
 fn a64_ldst(a: &Asm, load: bool, rt: int, base: int, disp: int, n: int) => void:
@@ -259,11 +303,18 @@ fn a64_ldst(a: &Asm, load: bool, rt: int, base: int, disp: int, n: int) => void:
     let l = 0
     if load:
         l = 1
+    if a.sbx && base != 29 && base != 31:
+        /#/ the linear memory: [x28, w, uxtw]
+        let ar = a64_sbx_off(a, base, disp)
+        a64_w(a, 941639680 | (sz << 30) | (l << 22) | (ar << 16) | (28 << 5) | rt)
+        return
     if disp >= 0 && disp % n == 0 && disp // n < 4096:
         a64_w(a, 956301312 | (sz << 30) | (l << 22) | ((disp // n) << 10) | (base << 5) | rt)
     elif disp >= 0 - 256 && disp < 256:
         a64_w(a, 939524096 | (sz << 30) | (l << 22) | ((disp & 511) << 12) | (base << 5) | rt)
     else:
+        if a.sbx:
+            a64_err = true
         a64_mov_ri(a, 17, disp)
         a64_w(a, 941647872 | (sz << 30) | (l << 22) | (17 << 16) | (base << 5) | rt)
 
@@ -282,10 +333,21 @@ fn a64_ldst_idx(a: &Asm, load: bool, rt: int, base: int, idx: int, shifted: bool
     let s = 0
     if shifted && n > 1:
         s = 1 << 12
+    if a.sbx:
+        a64_sbx_sum(a, base, idx, shifted && n > 1, sz)
+        a64_w(a, 941639680 | (sz << 30) | (l << 22) | (15 << 16) | (28 << 5) | rt)
+        return
     a64_w(a, 941647872 | (sz << 30) | (l << 22) | s | (idx << 16) | (base << 5) | rt)
 
 /#/ rd = the address of the symbol `sym` plus `addend`: adrp and add, with their relocations.
 fn a64_adr_sym(a: &Asm, rd: int, sym: int, addend: int) => void:
+    if a.sbx:
+        /#/ the address is a 32-bit offset in the linear memory: movz and movk, filled in by the image
+        a.reloc(sym, r_a64_movw_g0_nc(), addend)
+        a64_set(a, a.c.n - 4, 1384120320 | rd)
+        a.reloc(sym, r_a64_movw_g1_nc(), addend)
+        a64_set(a, a.c.n - 4, 1923088384 | rd)
+        return
     a.reloc(sym, r_a64_adr_page(), addend)
     a64_set(a, a.c.n - 4, 2415919104 | rd)
     a.reloc(sym, r_a64_add_lo12(), addend)
@@ -459,11 +521,17 @@ fn a64_fldst(a: &Asm, load: bool, vt: int, base: int, disp: int, n: int) => void
     let l = 0
     if load:
         l = 1
+    if a.sbx && base != 29 && base != 31:
+        let ar = a64_sbx_off(a, base, disp)
+        a64_w(a, 1008748544 | (sz << 30) | (l << 22) | (ar << 16) | (28 << 5) | vt)
+        return
     if disp >= 0 && disp % n == 0 && disp // n < 4096:
         a64_w(a, 1023410176 | (sz << 30) | (l << 22) | ((disp // n) << 10) | (base << 5) | vt)
     elif disp >= 0 - 256 && disp < 256:
         a64_w(a, 1006632960 | (sz << 30) | (l << 22) | ((disp & 511) << 12) | (base << 5) | vt)
     else:
+        if a.sbx:
+            a64_err = true
         a64_mov_ri(a, 17, disp)
         a64_w(a, 1008756736 | (sz << 30) | (l << 22) | (17 << 16) | (base << 5) | vt)
 
@@ -478,6 +546,10 @@ fn a64_fldst_idx(a: &Asm, load: bool, vt: int, base: int, idx: int, shifted: boo
     let s = 0
     if shifted:
         s = 1 << 12
+    if a.sbx:
+        a64_sbx_sum(a, base, idx, shifted, sz)
+        a64_w(a, 1008748544 | (sz << 30) | (l << 22) | (15 << 16) | (28 << 5) | vt)
+        return
     a64_w(a, 1008756736 | (sz << 30) | (l << 22) | s | (idx << 16) | (base << 5) | vt)
 
 /#/ ---- NEON (the vector loops) ---------------------------------------------------
@@ -488,6 +560,12 @@ fn a64_vdup(a: &Asm, esz: int, vd: int, rn: int) => void:
 
 /#/ vt = the 16 bytes at [base] / the 16 bytes at [base] = vt.
 fn a64_vldst(a: &Asm, load: bool, vt: int, base: int) => void:
+    if a.sbx && base != 29 && base != 31:
+        if load:
+            a64_w(a, 1021331456 | (base << 16) | (28 << 5) | vt)
+        else:
+            a64_w(a, 1017137152 | (base << 16) | (28 << 5) | vt)
+        return
     if load:
         a64_w(a, 1035993088 | (base << 5) | vt)
     else:

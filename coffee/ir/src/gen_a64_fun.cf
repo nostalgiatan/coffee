@@ -21,6 +21,8 @@ fn ga_epilogue(g: &Gen) => void:
         else:
             a64_ld(&g.a, g.saved[k], ta_fp(), 16 + g.rbase + 8 * k, 8)
     a64_load_fp_lr(&g.a)
+    if g.sframe > 0:
+        a64_addsub_ri(&g.a, true, 27, 27, g.sframe)
     a64_addsub_ri(&g.a, false, 31, 31, g.frame)
     a64_ret(&g.a)
 
@@ -28,6 +30,7 @@ fn ga_epilogue(g: &Gen) => void:
 /#/ The code of `f`; if a conditional branch is out of reach (a function of more than about 1 MB) it is
 /#/ made again with every such branch as a short one over a long one.
 fn ga_gen_fun(g: &Gen, f: &Fun, rs: &Reps, sy: &Names) => bool:
+    a64_err = false
     a64_far = false
     a64_range_miss = false
     let ok = ga_gen_fun1(g, f, rs, sy)
@@ -66,6 +69,8 @@ fn ga_gen_fun1(g: &Gen, f: &Fun, rs: &Reps, sy: &Names) => bool:
     a64_addsub_ri(&g.a, true, 31, 31, g.frame)
     a64_save_fp_lr(&g.a)
     a64_mov_rr(&g.a, ta_fp(), 31)
+    if g.sframe > 0:
+        a64_addsub_ri(&g.a, false, 27, 27, g.sframe)
     if g.rbase > 0:
         a64_st(&g.a, ta_fp(), 16, ta_sret(), 8)
     for k in 0..g.nsaved:
@@ -83,14 +88,14 @@ fn ga_gen_fun1(g: &Gen, f: &Fun, rs: &Reps, sy: &Names) => bool:
         if r >= rp_first_agg() || g_is_int_class(g, r):
             if ci < ta_nint_args():
                 if r >= rp_first_agg():
-                    ga_copy_mem(g, ta_fp(), g.voff[p], ta_int_arg(ci), 0, rsize(rs, r))
+                    ga_copy_mem(g, ga_sb(g, p), g.voff[p], ta_int_arg(ci), 0, rsize(rs, r))
                 else:
                     ga_st(g, p, ta_int_arg(ci))
                 ci = ci + 1
             else:
                 a64_ld(&g.a, ta_a0(), ta_fp(), g.frame + 8 * cs, 8)
                 if r >= rp_first_agg():
-                    ga_copy_mem(g, ta_fp(), g.voff[p], ta_a0(), 0, rsize(rs, r))
+                    ga_copy_mem(g, ga_sb(g, p), g.voff[p], ta_a0(), 0, rsize(rs, r))
                 else:
                     ga_st(g, p, ta_a0())
                 cs = cs + 1
@@ -99,7 +104,7 @@ fn ga_gen_fun1(g: &Gen, f: &Fun, rs: &Reps, sy: &Names) => bool:
                 if g.xhome[p] >= 0:
                     a64_fmov_vv(&g.a, false, g.xhome[p], cx)
                 else:
-                    a64_fldst(&g.a, false, cx, ta_fp(), g.voff[p], rsize_scalar(r))
+                    a64_fldst(&g.a, false, cx, ga_sb(g, p), g.voff[p], rsize_scalar(r))
                 cx = cx + 1
             else:
                 a64_ld(&g.a, 9, ta_fp(), g.frame + 8 * cs, 8)
@@ -149,7 +154,7 @@ fn ga_gen_fun1(g: &Gen, f: &Fun, rs: &Reps, sy: &Names) => bool:
             g.lm_at[g.lm_n] = g.a.lab[g.mk_l[k]]
             g.lm_ln[g.lm_n] = g.mk_ln[k]
             g.lm_n = g.lm_n + 1
-    return ok && g.err == 0
+    return ok && g.err == 0 && !a64_err
 
 /#/ The object file of aarch64 code: the ELF writer's, with the machine number of aarch64 (183).
 fn ga_elf(g: &Gen) => Txt:

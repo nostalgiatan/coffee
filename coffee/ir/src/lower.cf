@@ -3711,6 +3711,7 @@ fn same_text(a: &Ast, x: int, y: int) => bool:
 
 fn new_lower() => Lower:
     let lw = make_lower()
+    lw.mc.a.sbx = target_sandbox
     lw.rt_exit = lw.names.add("exit")
     lw.rt_calloc = lw.names.add("calloc")
     lw.rt_strlen = lw.names.add("strlen")

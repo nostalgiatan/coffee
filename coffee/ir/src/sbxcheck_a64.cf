@@ -1,0 +1,202 @@
+/#/ A check of aarch64 sandbox code (see docs/explanation/sandbox-design.md and docs/reference/aarch64-backend.md).
+/#/ It reads the words the code generator made (`Asm.sbx`) and accepts only what keeps the code inside
+/#/ the linear memory and the control flow inside the code:
+/#/
+/#/ - A load or store is `[x28, w, uxtw]` (x28 holds the start of a 4 GB region, the offset is 32 bits), or
+/#/   a plain `[x29, #imm]` / `[x29, #simm9]` on the stack of the code: not the saved x29 and x30 at
+/#/   [x29, #0..15], and |offset| below 32768. The pair `stp`/`ldp x29, x30, [sp]` of the frame is the
+/#/   only pair. No pre- or post-indexed, literal, exclusive, atomic or structure access.
+/#/ - x28 is not written. x29 is set only by `mov x29, sp`; x30 only by `bl` and by that `ldp`; sp only by
+/#/   `add`/`sub sp, sp, #imm` with an immediate up to 32768. Nothing loads into x28, x29 or x30 but the `ldp`.
+/#/ - Branches are `b`, `bl`, `b.cond`, `cbz`, `cbnz` to an instruction of the code (a `bl` may also go to
+/#/   `entry`, the system call function of the image) and `ret`; `brk #0` stops. No `br`, `blr`, `svc`,
+/#/   `msr`, `eret` or the like. The last word does not run on into what follows.
+/#/ - What is left (arithmetic, logic, moves, floating point and vector operations on registers) cannot
+/#/   reach memory or change the flow, once the writes above are held back.
+use * in txt
+
+/#/ Why the last word was refused (a number from `a64_no`).
+let sbx_a64_why = 0
+
+fn a64k_no(why: int) => int:
+    sbx_a64_why = why
+    return -1
+
+/#/ The signed field of `w` of `bits` bits from bit `lo`.
+fn a64k_sfield(w: int, lo: int, bits: int) => int:
+    let v = (w >> lo) & ((1 << bits) - 1)
+    if v >= (1 << (bits - 1)):
+        v = v - (1 << bits)
+    return v
+
+fn a64k_is(w: int, mask: int, val: int) => bool:
+    return (w & mask) == val
+
+/#/ May a general register `r` (0..31, 31 as the zero register) be written? 28, 29 and 30 may not.
+fn a64k_wr_ok(r: int) => bool:
+    return r < 28 || r == 31
+
+/#/ Checks the word `w`; -1 when it is refused (`sbx_a64_why` says why), else 0 for a word that goes on to the next,
+/#/ 1 for one that never does (ret, b, brk), 2 for a branch or call (its target in `tgt`, kind in `kind`).
+class Wk:
+    kind: int
+    tgt: int
+    ends: bool
+
+fn new_wk() => Wk:
+    return Wk { kind: 0, tgt: -1, ends: false }
+
+fn a64k_word(w: int, at: int, d: &Wk) => int:
+    d.kind = 0
+    d.tgt = -1
+    d.ends = false
+    let rd = w & 31
+    let rn = (w >> 5) & 31
+    let g = (w >> 25) & 15
+    /#/ branches and system: bits 28:26 = 101
+    if ((w >> 26) & 7) == 5:
+        if a64k_is(w, 2080374784, 335544320):
+            /#/ b / bl imm26
+            d.kind = 1
+            d.ends = true
+            if w >= 2147483648:
+                d.kind = 2
+                d.ends = false
+            d.tgt = at + 4 * a64k_sfield(w, 0, 26)
+            return 0
+        if a64k_is(w, 4278190096, 1409286144):
+            /#/ b.cond
+            d.kind = 1
+            d.tgt = at + 4 * a64k_sfield(w, 5, 19)
+            return 0
+        if a64k_is(w, 2113929216, 872415232):
+            /#/ cbz / cbnz
+            d.kind = 1
+            d.tgt = at + 4 * a64k_sfield(w, 5, 19)
+            return 0
+        if w == 3596551104:
+            /#/ ret (x30)
+            d.ends = true
+            return 0
+        if w == 3558866944:
+            /#/ brk #0
+            d.ends = true
+            return 0
+        return a64k_no(1)
+    /#/ loads and stores: bit 27 set, bit 25 clear
+    if ((w >> 27) & 1) == 1 && ((w >> 25) & 1) == 0:
+        if w == 2835381245 || w == 2839575549:
+            /#/ stp / ldp x29, x30, [sp]
+            return 0
+        let v = (w >> 26) & 1
+        if ((w >> 27) & 7) != 7:
+            return a64k_no(2)
+        /#/ a single register, three forms
+        let load = ((w >> 22) & 1) == 1
+        let sx = ((w >> 23) & 1) == 1
+        if sx && v == 0:
+            /#/ a sign-extending load or a prefetch: not made
+            return a64k_no(4)
+        if load && v == 0 && !a64k_wr_ok(rd):
+            return a64k_no(7)
+        if ((w >> 24) & 1) == 1:
+            /#/ unsigned scaled offset
+            if rn != 29:
+                return a64k_no(3)
+            let sz = (w >> 30) & 3
+            if v == 1 && sx:
+                sz = 4
+            let off = ((w >> 10) & 4095) << sz
+            if off >= 32768:
+                return a64k_no(5)
+            if !load && off < 16:
+                return a64k_no(6)
+            return 0
+        if ((w >> 21) & 1) == 0 && ((w >> 10) & 3) == 0:
+            /#/ unscaled offset
+            if rn != 29:
+                return a64k_no(3)
+            let off = a64k_sfield(w, 12, 9)
+            if !load && off < 16:
+                /#/ [x29, #0..15] holds the saved x29 and x30
+                return a64k_no(6)
+            return 0
+        if ((w >> 21) & 1) == 1 && ((w >> 10) & 3) == 2:
+            /#/ a register offset: [x28, w, uxtw] and nothing else
+            if rn != 28 || ((w >> 13) & 7) != 2 || ((w >> 12) & 1) != 0:
+                return a64k_no(8)
+            return 0
+        return a64k_no(2)
+    /#/ data processing with an immediate: bits 28:26 = 100
+    if ((w >> 26) & 7) == 4:
+        let k = (w >> 23) & 7
+        if k == 2:
+            /#/ add / sub immediate
+            let setf = ((w >> 29) & 1) == 1
+            if rd == 31 && !setf:
+                if rn != 31:
+                    return a64k_no(9)
+                let sh = (w >> 22) & 1
+                let imm = ((w >> 10) & 4095) << (12 * sh)
+                if imm > 32768:
+                    return a64k_no(10)
+                return 0
+            if w == 2432697341:
+                /#/ mov x29, sp
+                return 0
+            if !a64k_wr_ok(rd) && !setf:
+                return a64k_no(11)
+            return 0
+        if k == 0 || k == 1 || k == 3:
+            /#/ adr, adrp and the tagged form are not made
+            return a64k_no(12)
+        if !a64k_wr_ok(rd):
+            return a64k_no(11)
+        return 0
+    /#/ data processing with registers: bits 27:25 = x101
+    if (g & 7) == 5:
+        if !a64k_wr_ok(rd):
+            return a64k_no(11)
+        /#/ add / sub with extended registers write sp when rd is 31 (without the flags)
+        if a64k_is(w, 535822336, 186646528) && rd == 31 && ((w >> 29) & 1) == 0:
+            return a64k_no(9)
+        return 0
+    /#/ scalar floating point and vector operations: bits 27:25 = 111
+    if (g & 7) == 7:
+        /#/ the conversions that write a general register: not into x28..x30
+        if a64k_is(w, 2133921792, 505413632):
+            let opc = (w >> 16) & 7
+            if opc != 2 && opc != 3 && opc != 7 && !a64k_wr_ok(rd):
+                return a64k_no(11)
+            return 0
+        /#/ umov / smov
+        if (a64k_is(w, 3219192832, 234896384) || a64k_is(w, 3219192832, 234892288)) && !a64k_wr_ok(rd):
+            return a64k_no(11)
+        return 0
+    return a64k_no(13)
+
+/#/ -1 when the `n` bytes of `code` pass, else the offset of the first word refused (or of the branch whose
+/#/ target is bad). `entry` is where a call may go besides the words of the code, or -1.
+fn sbx_verify_a64(code: &Txt, n: int, entry: int) => int:
+    if n % 4 != 0:
+        sbx_a64_why = 14
+        return 0
+    let d = new_wk()
+    let i = 0
+    let falls = false
+    while i < n:
+        let w = int(code.b[i]) | (int(code.b[i + 1]) << 8) | (int(code.b[i + 2]) << 16) | (int(code.b[i + 3]) << 24)
+        if a64k_word(w, i, &d) < 0:
+            return i
+        falls = !d.ends
+        if d.kind != 0:
+            let t = d.tgt
+            if !(d.kind == 2 && t == entry):
+                if t < 0 || t >= n:
+                    sbx_a64_why = 15
+                    return i
+        i = i + 4
+    if falls:
+        sbx_a64_why = 16
+        return n - 4
+    return -1

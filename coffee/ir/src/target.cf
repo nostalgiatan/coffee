@@ -13,6 +13,14 @@ use * in gen_a64_fun
 use * in opt
 use * in asm
 use * in minrt
+use * in sbxcheck_a64
+use * in txt
+
+/#/ Set by `--sandbox`: the code is made for the sandbox (`Asm.sbx`): all memory through the linear memory.
+let target_sandbox = false
+
+fn set_sandbox(on: bool) => void:
+    target_sandbox = on
 
 /#/ The architectures and systems a target name may use.
 fn arch_x86_64() => int:
@@ -68,6 +76,11 @@ fn gen_function(g: &Gen, f: &Fun, rs: &Reps, sy: &Names) => bool:
 /#/ The object file for the target.
 fn target_object(g: &Gen) => Txt:
     if target_arch == arch_aarch64():
+        if g.a.sbx:
+            let bad = sbx_verify_a64(&g.a.c, g.a.c.n, -1)
+            if bad >= 0:
+                say(f"error: the sandbox code is not safe (offset {bad}, reason {sbx_a64_why})\n")
+                return new_txt()
         return ga_elf(g)
     return g_elf(g)
 

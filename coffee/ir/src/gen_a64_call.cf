@@ -15,7 +15,7 @@ fn ga_agg_addr(g: &Gen, f: &Fun, reg: int, x: int) => void:
     if f.op[x] == int(Op.Undef):
         a64_adr_sym(&g.a, reg, 1, 0)
     else:
-        a64_addsub_ri(&g.a, false, reg, ta_fp(), g.voff[x])
+        a64_addsub_ri(&g.a, false, reg, ga_sb(g, x), g.voff[x])
 
 /#/ The call to the symbol `sym` (or to the function value in the `c` operand of `i` when `sym` < 0, through x16) with the values queued in
 /#/ `av`; the result of instruction `i` is stored. An aggregate goes as a pointer to its place in
@@ -44,6 +44,10 @@ fn ga_do_call(g: &Gen, f: &Fun, rs: &Reps, i: int, sym: int, variadic: bool) => 
             cls[k] = 2
             on_stack = on_stack + 1
     let sbytes = (on_stack * 8 + 15) // 16 * 16
+    if g.a.sbx && (sbytes > 0 || sym < 0):
+        /#/ sandbox code passes at most 8 integer and 8 float arguments, and calls no function value
+        a64_err = true
+        return
     if sbytes > 0:
         a64_addsub_ri(&g.a, true, 31, 31, sbytes)
     let j = 0
@@ -57,7 +61,7 @@ fn ga_do_call(g: &Gen, f: &Fun, rs: &Reps, i: int, sym: int, variadic: bool) => 
             a64_st(&g.a, 31, 8 * j, 9, 8)
             j = j + 1
     if sret:
-        a64_addsub_ri(&g.a, false, ta_sret(), ta_fp(), g.voff[i])
+        a64_addsub_ri(&g.a, false, ta_sret(), ga_sb(g, i), g.voff[i])
     let ci = 0
     let cx = 0
     for k in 0..g.nav:

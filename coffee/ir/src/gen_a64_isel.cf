@@ -158,6 +158,9 @@ fn ga_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => vo
         ga_st(g, i, d)
         return
     if op == int(Op.FnAddr):
+        if g.a.sbx:
+            a64_err = true
+            return
         let d = ga_dst(g, i, 9)
         a64_adr_sym(&g.a, d, g_callee(g, sy, f.aux[i]), 0)
         ga_st(g, i, d)
@@ -263,7 +266,7 @@ fn ga_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => vo
         let sb = ga_ab_reg(g, f, f.a[i])
         let sd = ga_ab_disp(g, f, f.a[i]) + eo
         if r >= rp_first_agg():
-            ga_copy_mem(g, ta_fp(), g.voff[i], sb, sd, rsize(rs, r))
+            ga_copy_mem(g, ga_sb(g, i), g.voff[i], sb, sd, rsize(rs, r))
         elif !g_is_int_class(g, r):
             let d = ga_fdst(g, i, 0)
             a64_fldst(&g.a, true, d, sb, sd, rsize(rs, r))
@@ -276,19 +279,19 @@ fn ga_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => vo
     if op == int(Op.Insert):
         let eo = elem_off(rs, r, f.aux[i])
         let sb = ga_ab_reg(g, f, f.a[i])
-        ga_copy_mem(g, ta_fp(), g.voff[i], sb, ga_ab_disp(g, f, f.a[i]), rsize(rs, r))
+        ga_copy_mem(g, ga_sb(g, i), g.voff[i], sb, ga_ab_disp(g, f, f.a[i]), rsize(rs, r))
         let er = f.rep[g_res(g, f, f.b[i])]
         if er >= rp_first_agg():
             let eb = ga_ab_reg(g, f, f.b[i])
-            ga_copy_mem(g, ta_fp(), g.voff[i] + eo, eb, ga_ab_disp(g, f, f.b[i]), rsize(rs, er))
+            ga_copy_mem(g, ga_sb(g, i), g.voff[i] + eo, eb, ga_ab_disp(g, f, f.b[i]), rsize(rs, er))
         else:
             let rv = ga_src(g, f, f.b[i], 9)
-            a64_st(&g.a, ta_fp(), g.voff[i] + eo, rv, rsize(rs, er))
+            a64_st(&g.a, ga_sb(g, i), g.voff[i] + eo, rv, rsize(rs, er))
         return
     if op == int(Op.Load):
         if r >= rp_first_agg():
             ga_ld(g, ta_a0(), f, f.a[i])
-            ga_copy_mem(g, ta_fp(), g.voff[i], ta_a0(), 0, rsize(rs, r))
+            ga_copy_mem(g, ga_sb(g, i), g.voff[i], ta_a0(), 0, rsize(rs, r))
             return
         let x = g_res(g, f, f.a[i])
         if !g_is_int_class(g, r):
