@@ -1040,6 +1040,29 @@ fn branches() => int:
     w[3] = 3053453225
     w[4] = 3596551104
     m = m + same(900, &a, &w)
+    /#/ far mode: the inverse condition over a plain branch (b.ne #8; b L / cbnz / cbz)
+    a64_far = true
+    a = new_asm()
+    a.begin_fun()
+    let fl = a.new_label()
+    a64_bcc(&a, 0, fl)
+    a64_cbz(&a, 9, fl)
+    a64_cbnz(&a, 9, fl)
+    a.bind(fl)
+    a64_ret(&a)
+    a64_far = false
+    if !a64_end_fun(&a):
+        say("MISS far branches: not patched\n")
+        m = m + 1
+    w = words(7)
+    w[0] = 1409286209
+    w[1] = 335544325
+    w[2] = 3036676169
+    w[3] = 335544323
+    w[4] = 3019898953
+    w[5] = 335544321
+    w[6] = 3596551104
+    m = m + same(901, &a, &w)
     /#/ a label never bound
     let b = new_asm()
     b.begin_fun()

@@ -178,6 +178,9 @@ fn a64_udiv(a: &Asm, rd: int, rn: int, rq: int) => void:
 fn a64_smulh(a: &Asm, rd: int, rn: int, rq: int) => void:
     a64_w(a, 2604694528 | (rq << 16) | (rn << 5) | rd)
 
+fn a64_umulh(a: &Asm, rd: int, rn: int, rq: int) => void:
+    a64_w(a, 2613083136 | (rq << 16) | (rn << 5) | rd)
+
 fn a64_lslv(a: &Asm, rd: int, rn: int, rq: int) => void:
     a64_w(a, 2596282368 | (rq << 16) | (rn << 5) | rd)
 
@@ -304,13 +307,31 @@ fn a64_fix(a: &Asm, l: int, kind: int, w: int) => void:
 fn a64_b(a: &Asm, l: int) => void:
     a64_fix(a, l, 0, 335544320)
 
+/#/ Set while a function is made again because a conditional branch (reach +-1 MB) was out of range:
+/#/ each such branch then skips over an unconditional one (reach +-128 MB).
+let a64_far: bool = false
+/#/ Set by `a64_end_fun` when a conditional branch could not reach its label.
+let a64_range_miss: bool = false
+
 fn a64_bcc(a: &Asm, cc: int, l: int) => void:
+    if a64_far:
+        a64_w(a, 1409286144 | (2 << 5) | (cc ^ 1))
+        a64_b(a, l)
+        return
     a64_fix(a, l, 1, 1409286144 | cc)
 
 fn a64_cbnz(a: &Asm, rt: int, l: int) => void:
+    if a64_far:
+        a64_w(a, 3019898880 | (2 << 5) | rt)
+        a64_b(a, l)
+        return
     a64_fix(a, l, 1, 3036676096 | rt)
 
 fn a64_cbz(a: &Asm, rt: int, l: int) => void:
+    if a64_far:
+        a64_w(a, 3036676096 | (2 << 5) | rt)
+        a64_b(a, l)
+        return
     a64_fix(a, l, 1, 3019898880 | rt)
 
 /#/ bl to a symbol, with its relocation.
@@ -350,6 +371,7 @@ fn a64_end_fun(a: &Asm) => bool:
             a64_set(a, at, w | (d & 67108863))
         else:
             if d < 0 - 262144 || d >= 262144:
+                a64_range_miss = true
                 return false
             a64_set(a, at, w | ((d & 524287) << 5))
     return true

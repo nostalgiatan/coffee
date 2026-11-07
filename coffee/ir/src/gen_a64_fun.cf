@@ -25,7 +25,22 @@ fn ga_epilogue(g: &Gen) => void:
     a64_ret(&g.a)
 
 /#/ Generates function `f`; returns false if something could not be translated.
+/#/ The code of `f`; if a conditional branch is out of reach (a function of more than about 1 MB) it is
+/#/ made again with every such branch as a short one over a long one.
 fn ga_gen_fun(g: &Gen, f: &Fun, rs: &Reps, sy: &Names) => bool:
+    a64_far = false
+    a64_range_miss = false
+    let ok = ga_gen_fun1(g, f, rs, sy)
+    if !ok && a64_range_miss && g.err == 0:
+        g.a.c.n = g.a.fs
+        g.a.nrl = g.a.rl0
+        a64_far = true
+        a64_range_miss = false
+        ok = ga_gen_fun1(g, f, rs, sy)
+        a64_far = false
+    return ok
+
+fn ga_gen_fun1(g: &Gen, f: &Fun, rs: &Reps, sy: &Names) => bool:
     g.err = 0
     g.rbase = 0
     if f.ret >= rp_first_agg():

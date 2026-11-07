@@ -32,6 +32,22 @@ def bigframe(path):
     open(path, 'w').write('\n'.join(lines) + '\n')
 
 
+def bigfunc(path):
+    """A function of about 1.6 MB of aarch64 code with a loop around all of it: the exit test of the
+    loop and the branches over some statements reach past the +-1 MB of a conditional branch."""
+    n = 40000
+    lines = ['fn big(n: int) => int:', '    let s = 1', '    let i = 0', '    while i < n:']
+    for k in range(n):
+        lines.append('        s = (s * 3 + (s >> %d) + i * %d) %% 1000003' % (k % 7 + 1, k * 31 + 5))
+        if k % 200 == 0:
+            lines.append('        if s %% 5 == %d:' % (k % 5))
+            lines.append('            s = s + %d' % k)
+    lines.append('        i = i + 1')
+    lines.append('    return s')
+    lines += ['', 'fn main() => int:', '    return big(3) % 251']
+    open(path, 'w').write('\n'.join(lines) + '\n')
+
+
 def main():
     coffee2 = sys.argv[1]
     args = [a for a in sys.argv[1:] if not a.startswith('--')]
@@ -40,7 +56,8 @@ def main():
     bad = 0
     gen = tempfile.mkdtemp()
     bigframe(os.path.join(gen, 'gen_bigframe.cf'))
-    progs = sorted(glob.glob(os.path.join(HERE, 'a64progs', '*.cf'))) + [os.path.join(gen, 'gen_bigframe.cf')]
+    bigfunc(os.path.join(gen, 'gen_bigfunc.cf'))
+    progs = sorted(glob.glob(os.path.join(HERE, 'a64progs', '*.cf'))) + [os.path.join(gen, 'gen_bigframe.cf'), os.path.join(gen, 'gen_bigfunc.cf')]
     progs = [p for p in progs if flt in os.path.basename(p)]
     for p in progs:
         name = os.path.basename(p)

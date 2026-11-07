@@ -111,11 +111,14 @@ fn ga_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => vo
             a64_eor_rr(&g.a, d, ra, rb)
         ga_st(g, i, d)
         return
-    if op == int(Op.SMulHi):
+    if op == int(Op.SMulHi) || op == int(Op.UMulHi):
         let ra = ga_src(g, f, f.a[i], 9)
         let rb = ga_src(g, f, f.b[i], 10)
         let d = ga_dst(g, i, 9)
-        a64_smulh(&g.a, d, ra, rb)
+        if op == int(Op.SMulHi):
+            a64_smulh(&g.a, d, ra, rb)
+        else:
+            a64_umulh(&g.a, d, ra, rb)
         ga_st(g, i, d)
         return
     if op == int(Op.SDiv) || op == int(Op.SRem) || op == int(Op.UDiv) || op == int(Op.URem):

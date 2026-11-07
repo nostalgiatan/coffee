@@ -81,11 +81,17 @@ AAPCS64:整数和指针放 x0 到 x7,浮点放 v0 到 v7,其余按 8 字节一�
 
 与 x86 不同的语义:`fcvtzs`/`fcvtzu` 饱和,NaN 转整数得 0(x86 的 `cvttsd2si` 给「不确定值」`INT64_MIN`);负数转无符号得 0;这些在 IR 里是未定义的,所以两个目标的差别不算错误。比较的非序语义相同(NaN 与一切比较为假,`!=` 为真)。`fmod` 不是指令,`legalize` 把 `FRem` 换成对 libm `fmod` 的调用,静态运行时没有它。
 
+## 按常数的无符号除法、远条件分支
+
+64 位无符号数除以或取余常数(非 2 的幂,小于 2^31)在 `legalize` 里换成 `UMulHi`(aarch64 的 `umulh`,x86 的 `mul`)加位移:`t = mulhu(x, m)`,`q = (t + ((x - t) >> 1)) >> (l - 1)`,`m = floor(2^64 (2^l - d) / d) + 1`(Granlund–Montgomery 的不带 65 位的形式)。x86 也用它,所以无符号常数除法在两个目标上都不再有除法指令。
+
+条件分支(`b.cc`、`cbz`、`cbnz`)只能跳 ±1 MB。`a64_end_fun` 发现跳不到时置 `a64_range_miss`,`ga_gen_fun` 把函数回退重做一遍,这次每条条件分支写成反条件跳过一条 `b`(±128 MB)。生成的 40000 条语句的函数(目标文件 3.8 MB)在 qemu 下与原生结果一致。
+
 ## 还没有的
 
 - **向量循环**(`VLoop`):需要 NEON 的 `gen_a64_vec.cf`。
 - **沙箱**:基址寄存器形式(`cfjit --sandbox=base`)在 aarch64 上是 `[x28, w偏移, uxtw]`,不多花指令;还没做,`Asm.sbx` 在这个目标上不起作用。
-- 按常数的无符号除法(`legalize` 也没有)、跳转表、`CallI` 以外的尾调用;条件分支只能跳 ±1 MB,更大的函数 `a64_end_fun` 返回 false(报告为生成失败)。
+- 跳转表、`CallI` 以外的尾调用。
 - 静态运行时的 `printf` 只做整数、字符、字符串(`%d %i %u %x %X %o %c %s %p %%`,标志 `-` `0`、宽度、长度字母),最多 5 个参数,没有 `%f`;`sprintf`、`fprintf`、`strtod`、`qsort` 等其余 libc 函数没有,用到它们的程序要 `cc`,而 `cc` 不是交叉编译器。
 - 动态链接(`cc`)和 TLS、IFUNC 等 glibc 的东西。
 - `cfjit`、`tea` 的 `--target` 透传。

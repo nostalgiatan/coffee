@@ -64,6 +64,7 @@ enum Op:
     Unreachable
     VLoop
     SMulHi
+    UMulHi
 
 /#/ Comparison predicates; the signedness of an integer compare is in the predicate.
 enum Pr:
