@@ -26,6 +26,15 @@ fn load_image(im: &Image) => int:
     copy_in(base, &im.b)
     return base
 
+/#/ Like `load_image`, at the address `want` (0 when it is taken); for `--gdb`, so the addresses are known.
+fn load_image_at(im: &Image, want: int) => int:
+    /#/ MAP_FIXED_NOREPLACE
+    let base = syscall(9, want, page_round(im.b.n + 1), load_prot(), load_flags() + 1048576, 0 - 1, 0)
+    if !mapped(base) || base != want:
+        return 0
+    copy_in(base, &im.b)
+    return base
+
 /#/ The bytes of `t` to the memory at `base`.
 fn copy_in(base: int, t: &Txt) => void:
     let k = 0

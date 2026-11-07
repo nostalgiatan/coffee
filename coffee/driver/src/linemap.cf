@@ -1,0 +1,93 @@
+/#/ The map from the lines of the flattened text to `file:line`, as a text beside a `.cir` (made with
+/#/ `--emit-cir -g`, read by `cfjit` to give the code it generates source lines):
+/#/
+/#/     M lines segments
+/#/     D directory
+/#/     U source file             (one for each unit, in order)
+/#/     S flat_line source_line unit
+use * in txt
+use * in gen
+
+fn put_line_map(seg_line: &buf<int>, seg_src: &buf<int>, seg_unit: &buf<int>, nseg: int, units: &Txt, lines: int, dir: &Txt, out: &Txt) => void:
+    out.put("M ")
+    out.put_int(lines)
+    out.put_byte(32)
+    out.put_int(nseg)
+    out.put_byte(10)
+    out.put("D ")
+    out.put_all(dir)
+    out.put_byte(10)
+    let s = 0
+    for i in 0..units.n:
+        if units.b[i] == 10:
+            out.put("U ")
+            for k in s..i:
+                out.put_byte(units.b[k])
+            out.put_byte(10)
+            s = i + 1
+    for k in 0..nseg:
+        out.put("S ")
+        out.put_int(seg_line[k])
+        out.put_byte(32)
+        out.put_int(seg_src[k])
+        out.put_byte(32)
+        out.put_int(seg_unit[k])
+        out.put_byte(10)
+
+/#/ Reads a map made by `put_line_map` and hands it to the line marks of the code generator.
+fn read_line_map(t: &Txt) => void:
+    let seg_line = new_buf(int, 16)
+    let seg_src = new_buf(int, 16)
+    let seg_unit = new_buf(int, 16)
+    let units = new_txt()
+    let dir = new_txt()
+    let lines = 0
+    let nseg = 0
+    let start = 0
+    for i in 0..t.n + 1:
+        if i < t.n && t.b[i] != 10:
+            continue
+        if i > start + 1 && t.b[start + 1] == 32:
+            let c = t.b[start]
+            let body = start + 2
+            if c == int('M'):
+                let sp = body
+                while sp < i && t.b[sp] != 32:
+                    sp = sp + 1
+                lines = dw_read(t, body, sp)
+            elif c == int('D'):
+                for k in body..i:
+                    dir.put_byte(t.b[k])
+            elif c == int('U'):
+                for k in body..i:
+                    units.put_byte(t.b[k])
+                units.put_byte(10)
+            elif c == int('S'):
+                if nseg >= len(seg_line):
+                    seg_line = buf_resize(seg_line, nseg * 2)
+                    seg_src = buf_resize(seg_src, nseg * 2)
+                    seg_unit = buf_resize(seg_unit, nseg * 2)
+                let a = body
+                let f = 0
+                while a < i:
+                    let e = a
+                    while e < i && t.b[e] != 32:
+                        e = e + 1
+                    let v = dw_read(t, a, e)
+                    if f == 0:
+                        seg_line[nseg] = v
+                    elif f == 1:
+                        seg_src[nseg] = v
+                    else:
+                        seg_unit[nseg] = v
+                    f = f + 1
+                    a = e + 1
+                nseg = nseg + 1
+        start = i + 1
+    set_line_map(&seg_line, &seg_src, &seg_unit, nseg, &units, lines, &dir)
+
+fn dw_read(t: &Txt, s: int, e: int) => int:
+    let v = 0
+    for k in s..e:
+        v = v * 10 + t.b[k] - 48
+    return v

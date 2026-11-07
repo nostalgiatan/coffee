@@ -8,6 +8,9 @@ use * in sbxcheck
 use * in imgfile
 use * in cstr
 use * in files
+use * in linemap
+use * in gdbelf
+use * in varmap
 
 /#/ The second word of the command line.
 fn path_arg() => Txt:
@@ -126,6 +129,21 @@ fn write_perf_map(im: &Image, base: int) => void:
     path.put(".map")
     write_file(&path, &out)
 
+/#/ Is a debugger attached (`TracerPid` in `/proc/self/status` is not 0)?
+fn traced() => bool:
+    let t = read_file(&txt_of("/proc/self/status"))
+    let key = "TracerPid:"
+    for i in 0..t.n:
+        let k = 0
+        while k < len(key) && i + k < t.n && t.b[i + k] == int(key[k]):
+            k = k + 1
+        if k == len(key):
+            let q = i + k
+            while q < t.n && (t.b[q] == 32 || t.b[q] == 9):
+                q = q + 1
+            return t.b[q] != 48
+    return false
+
 /#/ With `--time`: the phases of a start, in milliseconds, on stderr.
 fn lap(on: bool, what: &str, t0: int) => int:
     if !on:
@@ -146,7 +164,9 @@ fn main() => int:
         say("cfjit: cannot read the file\n")
         return 2
     /#/ with --cache the image is kept next to the .cir, and used while the .cir and the mode are the same
-    let use_cache = flag_arg("--cache")
+    let want_gdb = flag_arg("--gdb")
+    /#/ the debug file needs the line marks of a generation, which a cached image does not have
+    let use_cache = flag_arg("--cache") && !want_gdb
     let timing = flag_arg("--time")
     let t0 = now_us()
     let mode = 0
@@ -171,12 +191,24 @@ fn main() => int:
         let lw = new_lower()
         lw.mc.a.sbx = sbx
         let want_lines = flag_arg("--lines")
+        let gdb_map = new_txt()
+        if want_gdb:
+            /#/ the line map and the variables, from beside the module
+            let mp = copy_txt(&path)
+            mp.put(".map")
+            let mt = read_file(&mp)
+            if mt.n > 0:
+                read_line_map(&mt)
+                set_debug_vars()
+                gdb_map = mt
         lap(timing, "read file + key", t0)
         let e = read_cir(&cir, &lw)
         lap(timing, "read_cir (done at)", t0)
         if e != 0:
             say(f"cfjit: not a usable .cir (code {e})\n")
             return 2
+        if gdb_map.n > 0:
+            read_var_map(&gdb_map, &lw)
         prune_unreached(&lw)
         lap(timing, "prune (done at)", t0)
         lw.generate()
@@ -188,6 +220,10 @@ fn main() => int:
             let raw = new_txt()
             lines_dump(&lw.mc, &raw)
             write_file(&lp, &raw)
+        let dbg_raw = new_txt()
+        if want_gdb:
+            lines_dump(&lw.mc, &dbg_raw)
+            no_lines()
         if lw.ver_err > 0:
             say(f"cfjit: the IR of {lw.ver_err} functions did not pass the check\n")
             return 2
@@ -207,6 +243,24 @@ fn main() => int:
         if at < 0:
             say("cfjit: the module has no main\n")
             return 2
+        if want_gdb:
+            /#/ the DWARF of the code beside the module, and a gdb script that loads it where the image will be
+            let ge = gdb_elf(&im, &dbg_raw)
+            if ge.n == 0:
+                say("cfjit: no line table (was the .cir made with -g?)\n")
+            else:
+                let gp = copy_txt(&path)
+                gp.put(".dbg")
+                write_file(&gp, &ge)
+                let sc = new_txt()
+                sc.put("add-symbol-file ")
+                sc.put_all(&gp)
+                sc.put_byte(32)
+                sc.put_int(gdb_base())
+                sc.put_byte(10)
+                let sp = copy_txt(&path)
+                sp.put(".gdb")
+                write_file(&sp, &sc)
         lap(timing, "before the drop of the IR", t0)
         if use_cache:
             write_file(&cache_path, &write_cim(&im, at, key))
@@ -225,10 +279,17 @@ fn main() => int:
         if rs == 0 - 2:
             return 139
         return rs
-    let base = load_image(&im)
+    let base = 0
+    if want_gdb:
+        base = load_image_at(&im, gdb_base())
+    else:
+        base = load_image(&im)
     if base == 0:
         say("cfjit: out of memory\n")
         return 2
     if flag_arg("--perf-map"):
         write_perf_map(&im, base)
+    if want_gdb && traced():
+        /#/ stop for the debugger now that the code is in memory: SIGTRAP; `continue` runs the program
+        syscall(62, syscall(39, 0, 0, 0, 0, 0, 0), 5, 0, 0, 0, 0)
     return call_addr(base + at)

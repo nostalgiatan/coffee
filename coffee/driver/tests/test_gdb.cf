@@ -63,5 +63,16 @@ fn main() => int:
     if !has(&log3, "#1 ") || !has(&log3, "in main () at t.cf:16"):
         say("MISS: backtrace from the first instruction\n")
         m = m + 1
+    /#/ the same program through the JIT: `cfjit --gdb` leaves the debug file and a gdb script
+    if system("command -v cfjit > /dev/null 2>&1") == 0:
+        if system("cd gdbt && coffee2 t.cf -g -O0 --emit-cir -o t.cir > build4.log 2>&1 && cfjit t.cir --gdb > jit.log 2>&1") != 0:
+            say("MISS: cfjit --gdb\n")
+            return m + 1
+        system("cd gdbt && gdb -batch -x t.cir.gdb -ex run -ex 'break 11' -ex continue -ex bt -ex 'info args' -ex 'info locals' -ex 'print *p' --args cfjit t.cir --gdb > gdb4.log 2>&1")
+        let lp4 = txt_of("gdbt/gdb4.log")
+        let log4 = read_file(&lp4)
+        if !has(&log4, "n = 4") || !has(&log4, "acc = 0") || !has(&log4, "x = 2") || !has(&log4, "in main () at t.cf:16"):
+            say("MISS: variables or backtrace in JIT code\n")
+            m = m + 1
     fflush(0)
     return m

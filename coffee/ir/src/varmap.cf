@@ -1,0 +1,94 @@
+/#/ The variables and types of a module (`-O0 -g`), as lines in the `.map` beside a `.cir`, so that
+/#/ `cfjit --gdb` can give the code it generates the same debug table the ahead-of-time compiler makes:
+/#/
+/#/     T ...                       a type line, as in `dbgtype.cf`
+/#/     G function                  the variables that follow belong to this function
+/#/     V name type slot P|L        a parameter or local variable in the slot (an instruction of the function)
+use * in lower
+
+/#/ Appends the type lines and the variables of `lw` (which was lowered with `set_debug_vars`) to `out`.
+fn put_var_map(lw: &Lower, out: &Txt) => void:
+    out.put_all(&lw.mc.dt.out)
+    let last = 0 - 1
+    for k in 0..lw.dv_n:
+        if lw.dv_fn[k] != last:
+            last = lw.dv_fn[k]
+            out.put("G ")
+            lw.names.put(out, last)
+            out.put_byte(10)
+        out.put("V ")
+        let q = lw.dv_nm[k]
+        while lw.dv_names.b[q] != 0:
+            out.put_byte(lw.dv_names.b[q])
+            q = q + 1
+        out.put_byte(32)
+        out.put_int(lw.dv_tid[k])
+        out.put_byte(32)
+        out.put_int(lw.dv_slot[k])
+        if lw.dv_par[k] == 1:
+            out.put(" P\n")
+        else:
+            out.put(" L\n")
+
+/#/ Reads the lines of `put_var_map` out of `t` (other lines are skipped) into `lw`, which then dumps
+/#/ them with the line table; the caller has set `set_debug_vars`.
+fn read_var_map(t: &Txt, lw: &Lower) => void:
+    let cur = 0 - 1
+    let start = 0
+    for i in 0..t.n + 1:
+        if i < t.n && t.b[i] != 10:
+            continue
+        if i > start + 2 && t.b[start + 1] == 32:
+            let c = t.b[start]
+            let body = start + 2
+            if c == int('T'):
+                for k in start..i + 1:
+                    lw.mc.dt.out.put_byte(t.b[k])
+            elif c == int('G'):
+                let w = new_txt()
+                for k in body..i:
+                    w.put_byte(t.b[k])
+                cur = lw.names.find(&w)
+            elif c == int('V') && cur >= 0:
+                let a = body
+                while a < i && t.b[a] != 32:
+                    a = a + 1
+                let b = a + 1
+                while b < i && t.b[b] != 32:
+                    b = b + 1
+                let e = b + 1
+                while e < i && t.b[e] != 32:
+                    e = e + 1
+                if lw.dv_n >= len(lw.dv_fn):
+                    let cap = (lw.dv_n + 1) * 2
+                    lw.dv_fn = buf_resize(lw.dv_fn, cap)
+                    lw.dv_tid = buf_resize(lw.dv_tid, cap)
+                    lw.dv_slot = buf_resize(lw.dv_slot, cap)
+                    lw.dv_par = buf_resize(lw.dv_par, cap)
+                    lw.dv_nm = buf_resize(lw.dv_nm, cap)
+                lw.dv_fn[lw.dv_n] = cur
+                lw.dv_nm[lw.dv_n] = lw.dv_names.n
+                for k in body..a:
+                    lw.dv_names.put_byte(t.b[k])
+                lw.dv_names.put_byte(0)
+                lw.dv_tid[lw.dv_n] = var_num(t, a + 1, b)
+                lw.dv_slot[lw.dv_n] = var_num(t, b + 1, e)
+                lw.dv_par[lw.dv_n] = 0
+                if e + 1 < i && t.b[e + 1] == int('P'):
+                    lw.dv_par[lw.dv_n] = 1
+                lw.dv_n = lw.dv_n + 1
+        start = i + 1
+
+fn var_num(t: &Txt, s: int, e: int) => int:
+    let neg = false
+    let k = s
+    if k < e && t.b[k] == 45:
+        neg = true
+        k = k + 1
+    let v = 0
+    while k < e:
+        v = v * 10 + t.b[k] - 48
+        k = k + 1
+    if neg:
+        return 0 - v
+    return v

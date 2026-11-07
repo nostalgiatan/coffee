@@ -2,12 +2,18 @@
 /#/ the runtime of `rt/src/min.cf` lowered together as one module, so the image needs nothing from
 /#/ outside but system calls.
 use * in cir
+use * in varmap
 use * in drive
 use * in minrt
 use * in fmtrt
 
 /#/ The `.cir` file of the `size` bytes in `bytes`; empty when the front end refused them.
 fn build_cir(bytes: buf<int>, size: int, opt: int, cfc: str) => Txt:
+    let none = new_txt()
+    return build_cir_map(bytes, size, opt, cfc, &none)
+
+/#/ Like `build_cir`; the variables and types of a module lowered with `set_debug_vars` are added to `map`.
+fn build_cir_map(bytes: buf<int>, size: int, opt: int, cfc: str, map: &Txt) => Txt:
     let all = new_txt()
     for q in 0..size:
         all.put_byte(bytes[q])
@@ -23,4 +29,5 @@ fn build_cir(bytes: buf<int>, size: int, opt: int, cfc: str) => Txt:
     let lw = module_of(copy_bytes(&all.b, all.n), all.n, opt, cfc, &t, &g)
     if lw.bad > 0:
         return new_txt()
+    put_var_map(&lw, map)
     return write_cir(&lw, opt)

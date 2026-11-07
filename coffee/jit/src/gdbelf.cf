@@ -1,0 +1,116 @@
+/#/ `cfjit --gdb`: an ELF file with the DWARF of the generated code, for `add-symbol-file`.
+/#/
+/#/ The image is mapped at `gdb_base()`; the file has one section `.text` (address 0, the size of the
+/#/ code) and the debug sections made from the line table by `ld/src/dwcore.cf`, with function addresses
+/#/ that are offsets in the image. `add-symbol-file prog.cir.dbg 0x40000000` moves them to where the code is.
+use * in image
+use * in elf
+use * in dwcore
+use * in txt
+
+fn gdb_base() => int:
+    return 1073741824
+
+/#/ The size of the function that starts at `at`: the distance to the next symbol of the image.
+fn fn_size(im: &Image, at: int) => int:
+    let end = im.text_n
+    for q in 0..im.nsym:
+        let b = im.sym_at[q]
+        if b > at && b < end:
+            end = b
+    return end - at
+
+/#/ The ELF file for the line table `dbg` (`lines_dump`) of the code in `im`; empty when no function has lines.
+fn gdb_elf(im: &Image, dbg: &Txt) => Txt:
+    let ta = new_dw_list()
+    let ts = new_dw_list()
+    let start = 0
+    for i in 0..dbg.n + 1:
+        if i < dbg.n && dbg.b[i] != 10:
+            continue
+        if i > start + 2 && dbg.b[start] == int('F') && dbg.b[start + 1] == 32:
+            let w = new_txt()
+            for k in start + 2..i:
+                w.put_byte(dbg.b[k])
+            let at = im.find(&w)
+            if at >= 0:
+                dw_push(&ta, at)
+                dw_push(&ts, fn_size(im, at))
+            else:
+                dw_push(&ta, 0 - 1)
+                dw_push(&ts, 0)
+        start = i + 1
+    let dab = new_txt()
+    let din = new_txt()
+    let dli = new_txt()
+    let dfr = new_txt()
+    let out = new_txt()
+    if !build_dwarf_core(dbg, &ta, &ts, &dab, &din, &dli, &dfr):
+        return out
+    let sh = new_txt()
+    sh.put_byte(0)
+    let n_text = sh.n
+    sh.put(".text")
+    sh.put_byte(0)
+    let n_dab = sh.n
+    sh.put(".debug_abbrev")
+    sh.put_byte(0)
+    let n_din = sh.n
+    sh.put(".debug_info")
+    sh.put_byte(0)
+    let n_dli = sh.n
+    sh.put(".debug_line")
+    sh.put_byte(0)
+    let n_dfr = sh.n
+    sh.put(".debug_frame")
+    sh.put_byte(0)
+    let n_shs = sh.n
+    sh.put(".shstrtab")
+    sh.put_byte(0)
+    /#/ the ELF header over 64 zero bytes, then the section contents
+    for k in 0..64:
+        out.put_byte(0)
+    let off_dab = out.n
+    out.put_all(&dab)
+    let off_din = out.n
+    out.put_all(&din)
+    let off_dli = out.n
+    out.put_all(&dli)
+    let off_dfr = out.n
+    out.put_all(&dfr)
+    let off_shs = out.n
+    out.put_all(&sh)
+    pad_to(&out, 8)
+    let shoff = out.n
+    for k in 0..64:
+        out.put_byte(0)
+    shdr(&out, n_text, 8, 6, 64, im.text_n, 0, 0, 16, 0)
+    shdr(&out, n_dab, 1, 0, off_dab, dab.n, 0, 0, 1, 0)
+    shdr(&out, n_din, 1, 0, off_din, din.n, 0, 0, 1, 0)
+    shdr(&out, n_dli, 1, 0, off_dli, dli.n, 0, 0, 1, 0)
+    shdr(&out, n_dfr, 1, 0, off_dfr, dfr.n, 0, 0, 1, 0)
+    shdr(&out, n_shs, 3, 0, off_shs, sh.n, 0, 0, 1, 0)
+    let h = new_txt()
+    h.put_byte(127)
+    h.put("ELF")
+    h.put_byte(2)
+    h.put_byte(1)
+    h.put_byte(1)
+    for k in 0..9:
+        h.put_byte(0)
+    w16(&h, 2)
+    w16(&h, 62)
+    w32(&h, 1)
+    w64(&h, 0)
+    w64(&h, 0)
+    w64(&h, shoff)
+    w32(&h, 0)
+    w16(&h, 64)
+    w16(&h, 0)
+    w16(&h, 0)
+    w16(&h, 64)
+    w16(&h, 7)
+    w16(&h, 6)
+    for k in 0..64:
+        out.b[k] = h.b[k]
+    return out
