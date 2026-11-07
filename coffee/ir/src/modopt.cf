@@ -542,6 +542,171 @@ fn escape_alloc(f: &Fun, lib: &Lib) => bool:
                     any = true
     return any
 
+/#/ ---- recursion ---------------------------------------------------------------
+
+/#/ Does the call `c` pass what function `f` takes (as many values, of the same shapes), and return what it returns?
+fn tre_call_fits(f: &Fun, c: int) => bool:
+    if f.rep[c] != f.ret || f.b[c] != f.npar[0]:
+        return false
+    let p = f.pfirst[0]
+    let k = 0
+    while p >= 0:
+        if f.rep[f.follow(f.val_at(c, k))] != f.rep[p]:
+            return false
+        p = f.nx[p]
+        k = k + 1
+    return true
+
+/#/ Is everything from `c` (exclusive) up to `r` (exclusive) free of effects?
+fn tre_pure_between(f: &Fun, c: int, r: int) => bool:
+    let x = f.nx[c]
+    while x >= 0 && x != r:
+        if !pure_op(f.op[x]):
+            return false
+        x = f.nx[x]
+    return x == r
+
+/#/ Is `x` available before `c`: a constant, a parameter of the function, or earlier in the block of `c`?
+fn tre_before(f: &Fun, x: int, c: int) => bool:
+    if f.is_const(x) || (f.op[x] == int(Op.Param) && f.blk[x] == 0):
+        return true
+    if f.blk[x] != f.blk[c] || f.op[x] == int(Op.Param):
+        return false
+    let q = f.pv[c]
+    while q >= 0:
+        if q == x:
+            return true
+        q = f.pv[q]
+    return false
+
+/#/ A function that returns the result of calling itself, or that result plus something computed before the
+/#/ call (`fib(n - 1) + fib(n - 2)` is the first call's value plus the second's), is a loop: the parameters
+/#/ become the parameters of a new loop header, and so does an accumulator `acc` that the "something" is added
+/#/ to; every other return gives `acc` plus its value. Sums wrap, so the order does not matter.
+fn tail_recursion(f: &Fun, self_id: int) => bool:
+    if f.nb == 0 || f.ret != int(Rp.I64) || f.ni > 4000:
+        return false
+    let kind: buf<int> = new_buf(int, f.nb + 1)
+    let callv: buf<int> = new_buf(int, f.nb + 1)
+    let xv: buf<int> = new_buf(int, f.nb + 1)
+    let sites = 0
+    let adds = 0
+    for b in 0..f.nb:
+        let r = f.blast[b]
+        if r >= 0 && f.op[r] == int(Op.Ret) && f.a[r] >= 0:
+            let v = f.follow(f.a[r])
+            if f.op[v] == int(Op.Call) && f.aux[v] == self_id && f.uses[v] == 1 && f.blk[v] == b && tre_call_fits(f, v) && tre_pure_between(f, v, r):
+                kind[b] = 1
+                callv[b] = v
+                sites = sites + 1
+            elif f.op[v] == int(Op.Add) && f.rep[v] == int(Rp.I64) && f.uses[v] == 1 && f.blk[v] == b:
+                for side in 0..2:
+                    if kind[b] == 0:
+                        let w = f.follow(f.a[v])
+                        let x = f.follow(f.b[v])
+                        if side == 1:
+                            w = f.follow(f.b[v])
+                            x = f.follow(f.a[v])
+                        if f.op[w] == int(Op.Call) && f.aux[w] == self_id && f.uses[w] == 1 && f.blk[w] == b && w != x && tre_call_fits(f, w) && tre_before(f, x, w) && tre_pure_between(f, w, r):
+                            kind[b] = 2
+                            callv[b] = w
+                            xv[b] = x
+                            sites = sites + 1
+                            adds = adds + 1
+    if sites == 0:
+        return false
+    let np = f.npar[0]
+    let old: buf<int> = new_buf(int, np + 1)
+    let nw: buf<int> = new_buf(int, np + 1)
+    let h = f.new_block()
+    let p = f.pfirst[0]
+    let k = 0
+    while p >= 0:
+        old[k] = p
+        nw[k] = f.param(h, f.rep[p], f.ty[p])
+        p = f.nx[p]
+        k = k + 1
+    let acc = f.param(h, int(Rp.I64), -1)
+    /#/ the body moves to the header
+    f.bfirst[h] = f.bfirst[0]
+    f.blast[h] = f.blast[0]
+    f.bfirst[0] = -1
+    f.blast[0] = -1
+    let i = f.bfirst[h]
+    while i >= 0:
+        f.blk[i] = h
+        i = f.nx[i]
+    for e in 0..f.ne:
+        if f.efrom[e] == 0:
+            f.efrom[e] = h
+    kind[h] = kind[0]
+    callv[h] = callv[0]
+    xv[h] = xv[0]
+    kind[0] = 0
+    /#/ and uses the header's parameters
+    for b in 1..f.nb:
+        let j = f.bfirst[b]
+        while j >= 0:
+            for q in 0..f.nval(j):
+                let v = f.val_at(j, q)
+                if v >= 0:
+                    let x = f.follow(v)
+                    for t in 0..np:
+                        if x == old[t]:
+                            f.set_val_at(j, q, nw[t])
+            j = f.nx[j]
+    for e in 0..f.ne:
+        if f.eto[e] >= 0:
+            for q in 0..f.eargn[e]:
+                let x = f.follow(f.pool[f.eargs[e] + q])
+                for t in 0..np:
+                    if x == old[t]:
+                        f.pool[f.eargs[e] + q] = nw[t]
+    /#/ the entry jumps to the header with the arguments it was given and nothing summed
+    f.cur = 0
+    for t in 0..np:
+        f.arg(old[t])
+    f.arg(f.cint(int(Rp.I64), 0))
+    f.br(h)
+    /#/ the returns
+    for b in 1..f.nb:
+        let r = f.blast[b]
+        if r >= 0 && f.op[r] == int(Op.Ret) && f.a[r] >= 0 && kind[b] == 0 && adds > 0:
+            f.cur = b
+            let v = f.follow(f.a[r])
+            let s = f.raw(int(Op.Add), int(Rp.I64), -1, v, acc, -1, 0)
+            link_before(f, s, r)
+            f.a[r] = s
+    for b in 1..f.nb:
+        if kind[b] != 0:
+            let r = f.blast[b]
+            let c = callv[b]
+            let nacc = acc
+            f.cur = b
+            if kind[b] == 2:
+                let xs = xv[b]
+                for t in 0..np:
+                    if xs == old[t]:
+                        xs = nw[t]
+                nacc = f.raw(int(Op.Add), int(Rp.I64), -1, xs, acc, -1, 0)
+                link_before(f, nacc, r)
+            for t in 0..np:
+                f.arg(f.val_at(c, t))
+            f.arg(nacc)
+            let e = f.mk_edge(h)
+            let sum = f.follow(f.a[r])
+            f.op[r] = int(Op.Br)
+            f.rep[r] = int(Rp.Void)
+            f.a[r] = -1
+            f.b[r] = -1
+            f.c[r] = -1
+            f.aux[r] = e
+            if sum != c:
+                delete_inst(f, sum)
+            delete_inst(f, c)
+    recount_uses(f)
+    return true
+
 /#/ Optimizes every function of `lib`, callees first. `f` is the working function.
 fn module_opt(lib: &Lib, f: &Fun, rs: &Reps) => void:
     let order = call_order(lib)
@@ -551,6 +716,8 @@ fn module_opt(lib: &Lib, f: &Fun, rs: &Reps) => void:
         inline_calls(f, lib, lib.f_id[n])
         optimize_rs(f, rs, true)
         if dead_calls(f, lib):
+            optimize_rs(f, rs, true)
+        if tail_recursion(f, lib.f_id[n]):
             optimize_rs(f, rs, true)
         if escape_alloc(f, lib):
             optimize_rs(f, rs, true)

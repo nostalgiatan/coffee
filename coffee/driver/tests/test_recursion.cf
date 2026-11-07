@@ -1,0 +1,58 @@
+/#/ Recursion that is a loop: a function that returns its own call, or a sum with one, is compiled without the
+/#/ calls but the last one; what it computes does not change.
+use * in say
+use * in files
+use * in cstr
+use * in txt
+use system, fflush in libc of c
+
+/#/ Where `w` is in `t` at or after `from`, -1 if it is not.
+fn find_at(t: &Txt, w: &str, from: int) => int:
+    for i in from..t.n:
+        let k = 0
+        while k < len(w) && i + k < t.n && t.b[i + k] == int(w[k]):
+            k = k + 1
+        if k == len(w):
+            return i
+    return -1
+
+/#/ Does the function `name` of the listing hold `w`?
+fn fn_has(t: &Txt, name: str, w: &str) => bool:
+    let head = f"fn {name}("
+    let s = find_at(t, &head, 0)
+    if s < 0:
+        return false
+    let e = find_at(t, "\nfn ", s + 1)
+    if e < 0:
+        e = t.n
+    let at = find_at(t, w, s)
+    return at >= 0 && at < e
+
+fn main() => int:
+    let m = 0
+    system("rm -rf rect && mkdir rect")
+    let src = "fn fib(n: int) => int:\n    if n < 2:\n        return n\n    return fib(n - 1) + fib(n - 2)\n\nfn sumto(n: int) => int:\n    if n == 0:\n        return 0\n    return n + sumto(n - 1)\n\nfn cnt(n: int, k: int) => int:\n    if n <= 0:\n        return k\n    return cnt(n - 1, k + n % 3)\n\nfn tri(n: int) => int:\n    if n < 3:\n        return 1\n    return tri(n - 1) + 2 + tri(n - 3) - tri(n - 2)\n\nfn ack(m: int, n: int) => int:\n    if m == 0:\n        return n + 1\n    if n == 0:\n        return ack(m - 1, 1)\n    return ack(m - 1, ack(m, n - 1))\n\nfn main() => int:\n    let r = (fib(20) + sumto(1000) + cnt(100000, 0) + tri(15) + ack(2, 3)) % 256\n    return r - 57\n"
+    let sp = txt_of("rect/r.cf")
+    let st = txt_of(&src)
+    write_file(&sp, &st)
+    if system("cd rect && coffee2 r.cf --emit-ir > r.ir 2>&1 && coffee2 r.cf -o r > build.log 2>&1") != 0:
+        say("MISS: build failed\n")
+        return 1
+    let ip = txt_of("rect/r.ir")
+    let ir = read_file(&ip)
+    /#/ fib has one call left (the sum of the first call and the loop), sumto and cnt have none but the loop's
+    if fn_has(&ir, "cnt", "call"):
+        say("MISS: the tail call of cnt is still a call\n")
+        m = m + 1
+    if fn_has(&ir, "sumto", "call"):
+        say("MISS: sumto still calls itself\n")
+        m = m + 1
+    if !fn_has(&ir, "ack", "call"):
+        say("MISS: ack, which cannot be a loop, lost its calls\n")
+        m = m + 1
+    let r = system("cd rect && ./r")
+    if r != 0:
+        say(f"MISS: the program exits with {r}\n")
+        m = m + 1
+    fflush(0)
+    return m

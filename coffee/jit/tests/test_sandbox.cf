@@ -59,8 +59,10 @@ fn main() => int:
     m = m + expect(9, run_sbx("fn main() => int:\n    return peek8(1048576 * 1024 * 1024 * 8)\n"), 139)
     m = m + expect(10, run_sbx("fn zero() => int:\n    return 0\n\nfn main() => int:\n    return 10 // zero()\n"), 139)
     m = m + expect(11, trapped("8"), 0)
-    m = m + expect(12, run_sbx("fn deep(n: int) => int:\n    return deep(n + 1) + 1\n\nfn main() => int:\n    return deep(0)\n"), 139)
+    m = m + expect(12, run_sbx("fn deep(n: int) => int:\n    return deep(n + 1) * 3\n\nfn main() => int:\n    return deep(0)\n"), 139)
     m = m + expect(13, trapped("11"), 0)
+    /#/ a recursion that is a loop uses no stack: it ends at the CPU limit like any endless loop
+    m = m + expect(61, run_sbx_with("fn deep(n: int) => int:\n    return deep(n + 1) + 1\n\nfn main() => int:\n    return deep(0)\n", "--cpu=100"), 139)
     /#/ the high bits of an address do not matter: 4294967296 + 65600 is 65600
     m = m + expect(14, run_sbx("fn main() => int:\n    poke8(65600, 7)\n    poke8(4294967296 + 65600, 9)\n    return peek8(65600)\n"), 9)
     /#/ a system call other than exit and mmap fails, and the module is not stopped
