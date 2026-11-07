@@ -1,0 +1,63 @@
+/#/ The rewrites made just before the machine code: a switch as a chain of tests, allocation and
+/#/ release as calls, a float remainder as a call.
+use * in say
+
+enum Sh:
+    Dot
+    Seg(int)
+    Rect(int, int)
+    Tri(int, int, int)
+    Big(int)
+
+class Cell:
+    n: int
+    m: int
+
+/#/ Four arms and a default, each using what was computed before the match.
+fn area(s: Sh, k: int) => int:
+    let base = k * 3 + 1
+    match s:
+        Sh.Dot => return base
+        Sh.Seg(a) => return base + a
+        Sh.Rect(a, b) => return base + a * b
+        Sh.Tri(a, b, c) => return base + a + b * c
+        Sh.Big(a) => return base - a
+
+/#/ A loop whose body is the match, so the values cross the edges of the chain.
+fn total(n: int) => int:
+    let t = 0
+    for i in 0..n:
+        t += area(Sh.Dot, i) + area(Sh.Seg(i), i) + area(Sh.Rect(i, 2), i) + area(Sh.Tri(1, i, 3), i) + area(Sh.Big(i), i)
+    return t
+
+fn cells(n: int) => int:
+    let t = 0
+    for i in 0..n:
+        let c = Cell { n: i, m: i * 2 }
+        t += c.n + c.m
+    return t
+
+fn rem(a: float, b: float) => float:
+    return a % b
+
+fn remf(a: float(4), b: float(4)) => float(4):
+    return a % b
+
+fn main() => int:
+    let m = 0
+    if area(Sh.Dot, 2) != 7 || area(Sh.Seg(5), 2) != 12 || area(Sh.Rect(3, 4), 2) != 19 || area(Sh.Tri(1, 2, 3), 2) != 14 || area(Sh.Big(4), 2) != 3:
+        say("MISS area\n")
+        m += 1
+    if total(10) != 960:
+        say("MISS total\n")
+        m += 1
+    if cells(100) != 14850:
+        say("MISS cells\n")
+        m += 1
+    if rem(7.5, 2.0) != 1.5 || rem(-7.5, 2.0) != -1.5:
+        say("MISS rem\n")
+        m += 1
+    if remf(7.5, 2.0) != 1.5:
+        say("MISS remf\n")
+        m += 1
+    return m

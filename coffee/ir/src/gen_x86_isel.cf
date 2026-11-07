@@ -797,20 +797,6 @@ fn g_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => voi
         if f.eto[e1] != next:
             g.a.jmp(f.eto[e1])
         return
-    if op == int(Op.Switch):
-        g_ld_ext(g, 0, f, f.a[i], true)
-        for k in 0..f.b[i]:
-            let skip = g.a.new_label()
-            let e = f.pool[f.aux[i] + k * 2 + 1]
-            g.a.mov_ri(1, f.pool[f.aux[i] + k * 2])
-            g.a.cmp_rr(0, 1)
-            g.a.jcc(cc_ne(), skip)
-            g_edge_copy(g, f, rs, e)
-            g.a.jmp(f.eto[e])
-            g.a.bind(skip)
-        g_edge_copy(g, f, rs, f.c[i])
-        g.a.jmp(f.eto[f.c[i]])
-        return
     if op == int(Op.Ret):
         if f.a[i] >= 0:
             let vr = f.rep[g_res(g, f, f.a[i])]

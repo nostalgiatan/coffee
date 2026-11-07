@@ -29,8 +29,67 @@ fn lz_to_ccall(f: &Fun, sy: &Names, i: int, name: &str, x: int, y: int) => void:
     f.aux[i] = id
     f.bump_uses(i, 1)
 
-/#/ `Alloc`, `Free` and `FRem` become calls of `malloc`, `free` and `fmod`.
+/#/ The `Switch` that ends block `b` (instruction `i`) becomes a chain of tests: each block compares
+/#/ the value with one case and branches to that case's edge or to the next test; the last one
+/#/ falls to the default. The edges keep their arguments; they leave from the new blocks now.
+fn lz_switch(f: &Fun, b: int, i: int) => void:
+    let n = f.b[i]
+    let d = f.c[i]
+    let start = f.aux[i]
+    let v = f.follow(f.a[i])
+    f.bump_uses(i, 0 - 1)
+    f.line = f.ln[i]
+    if n == 0:
+        f.op[i] = int(Op.Br)
+        f.a[i] = 0 - 1
+        f.b[i] = 0 - 1
+        f.c[i] = 0 - 1
+        f.aux[i] = d
+        return
+    let rep = f.rep[v]
+    let tb = b
+    for k in 0..n:
+        f.cur = tb
+        let cst = f.cint(rep, f.pool[start + k * 2])
+        let hit = f.pool[start + k * 2 + 1]
+        let cm = f.mk(int(Op.Cmp), int(Rp.I8), 0 - 1, v, cst, 0 - 1, int(Pr.Eq))
+        let other = d
+        let nxt = 0 - 1
+        if k < n - 1:
+            nxt = f.new_block()
+            f.cur = tb
+            other = f.mk_edge(nxt)
+        f.efrom[hit] = tb
+        f.efrom[other] = tb
+        if k == 0:
+            /#/ the test goes before the terminator, which is reused as the branch
+            let p = f.pv[i]
+            f.nx[cm] = i
+            f.pv[cm] = p
+            f.pv[i] = cm
+            if p >= 0:
+                f.nx[p] = cm
+            else:
+                f.bfirst[b] = cm
+            f.blk[cm] = b
+            f.op[i] = int(Op.CondBr)
+            f.a[i] = cm
+            f.b[i] = hit
+            f.c[i] = other
+            f.aux[i] = 0
+            f.bump_uses(i, 1)
+        else:
+            f.link(cm)
+            f.raw(int(Op.CondBr), int(Rp.Void), 0 - 1, cm, hit, other, 0)
+        tb = nxt
+
+/#/ `Switch` becomes a chain of tests; `Alloc`, `Free` and `FRem` become calls of `malloc`, `free` and `fmod`.
 fn legalize(f: &Fun, sy: &Names) => void:
+    let nb0 = f.nb
+    for b in 0..nb0:
+        let t = f.blast[b]
+        if t >= 0 && f.op[t] == int(Op.Switch):
+            lz_switch(f, b, t)
     for b in 0..f.nb:
         let i = f.bfirst[b]
         while i >= 0:

@@ -179,10 +179,6 @@ fn g_term_edges(g: &Gen, f: &Fun, b: int) => void:
     elif op == int(Op.CondBr):
         g_add_edge(g, f.b[t])
         g_add_edge(g, f.c[t])
-    elif op == int(Op.Switch):
-        for k in 0..f.b[t]:
-            g_add_edge(g, f.pool[f.aux[t] + k * 2 + 1])
-        g_add_edge(g, f.c[t])
 
 fn g_add_edge(g: &Gen, e: int) => void:
     if g.ned >= len(g.ed):

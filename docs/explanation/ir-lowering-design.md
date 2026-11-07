@@ -1,6 +1,6 @@
 # IR 内就地下沉的设计
 
-这篇文章是设计稿。第 1、2 步已实现:`ir/src/legalize.cf` 在 `Lower.generate` 里于机器码之前运行,把 `Alloc`、`Free`、`FRem` 改成 `CCall`(`malloc`、`free`、`fmod`/`fmodf`),`gen_x86_*` 里相应的分支已删除。基准的代码大小不变、时间在噪声内;语料库 485 个输出里只有用到 `%` 的浮点测试(`test_floatregs`)的字节变了。问题:为了多目标(x86-64 之外再加 aarch64 等),要不要把一部分与机器有关的决定从 `gen_*` 挪到 IR 上,以及怎么挪才不增加一层中间表示、不拖慢生成的代码。
+这篇文章是设计稿。第 1 到 3 步已实现:`ir/src/legalize.cf` 在 `Lower.generate` 里于机器码之前运行,把 `Switch` 改成 `CondBr` 比较链(新块,边的 `efrom` 改到新块;块的次序由 gen 的 `block_order` 重新算),`Alloc`、`Free`、`FRem` 改成 `CCall`(`malloc`、`free`、`fmod`/`fmodf`),`gen_x86_*` 里相应的分支已删除。基准的代码大小不变、时间在噪声内;语料库 485 个输出里只有用到 `%` 的浮点测试(`test_floatregs`)的字节变了。问题:为了多目标(x86-64 之外再加 aarch64 等),要不要把一部分与机器有关的决定从 `gen_*` 挪到 IR 上,以及怎么挪才不增加一层中间表示、不拖慢生成的代码。
 
 ## 结论
 
