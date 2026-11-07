@@ -7,33 +7,44 @@
 fn tg_npool() => int:
     return 10
 
-/#/ The pool in the order the allocator tries it: the caller-saved registers first (r10, then r8 and
-/#/ r9, the registers of the fifth and sixth argument, then r11 and rdi), then the saved ones (rbx,
-/#/ r12..r15).
+/#/ The register of pool slot `s`, in the order the allocator tries them: the caller-saved registers first
+/#/ (r10, then r8 and r9, the registers of the fifth and sixth argument, then r11 and rdi), then the saved
+/#/ ones (rbx, r12..r15).
+fn tg_pool_reg(s: int) => int:
+    let regs = [10, 8, 9, 11, 7, 3, 12, 13, 14, 15]
+    return regs[s]
+
+/#/ The pool as a table.
 fn tg_pool() => buf<int>:
     let regs: buf<int> = new_buf(int, 10)
-    regs[0] = 10
-    regs[1] = 8
-    regs[2] = 9
-    regs[3] = 11
-    regs[4] = 7
-    regs[5] = 3
-    regs[6] = 12
-    regs[7] = 13
-    regs[8] = 14
-    regs[9] = 15
+    for k in 0..10:
+        regs[k] = tg_pool_reg(k)
     return regs
 
 /#/ How many of the first pool slots a call may overwrite.
 fn tg_ncaller() => int:
     return 5
 
-/#/ Is pool slot `s` kept for something else in sandboxed code (`sbx`: r14 is the shadow frame;
-/#/ `bm`, the base-register form: r15 holds the start of the linear memory and r13 an address)?
+/#/ The roles registers have in sandbox code. The code generator, the assembler and the verifier all read these.
+/#/ Base-register form (`bm`): `tg_sbx_base` holds the start of the linear memory and nothing writes it;
+/#/ `tg_sbx_addr` holds an address as a 32-bit number and only the address computation writes it.
+/#/ `tg_sbx_shadow` holds the base of the shadow frame (the bytes of locals whose address is taken).
+fn tg_sbx_base() => int:
+    return 15
+
+fn tg_sbx_addr() => int:
+    return 13
+
+fn tg_sbx_shadow() => int:
+    return 14
+
+/#/ Is pool slot `s` kept for something else in sandboxed code (`sbx`: the shadow frame register; `bm`, the
+/#/ base-register form: the memory base and the address register)?
 fn tg_reserved(sbx: bool, bm: bool, s: int) => bool:
-    if sbx && s == 8:
+    let r = tg_pool_reg(s)
+    if sbx && r == tg_sbx_shadow():
         return true
-    return bm && (s == 7 || s == 9)
+    return bm && (r == tg_sbx_base() || r == tg_sbx_addr())
 
 /#/ The bit that register `r` has in a call's write mask; the pool register of slot 0 (r10) has bit 0.
 fn tg_call_bit(r: int) => int:

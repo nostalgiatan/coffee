@@ -16,6 +16,7 @@
 /#/ The code is decoded from its start to its end in one go, so the instruction boundaries the check
 /#/ sees are those the processor sees.
 use * in txt
+use * in target_x86
 
 class Dec:
     tgt: int
@@ -268,9 +269,9 @@ fn sbx_decode(code: &Txt, at: int, n: int, d: &Dec) => int:
             if !(isext && ((nowr >> reg) & 1) == 1):
                 dst = rmf | (rb << 3)
         if sbx_bm:
-            if dst == 15:
+            if dst == tg_sbx_base():
                 return dec_no(d, 15)
-            if dst == 13 && !(op == 141 && md != 3 && rexw == 0 && rr == 1 && reg == 5):
+            if dst == tg_sbx_addr() && !(op == 141 && md != 3 && rexw == 0 && rr == (tg_sbx_addr() >> 3) && reg == (tg_sbx_addr() & 7)):
                 return dec_no(d, 15)
         /#/ rsp and rbp: only the moves of a function frame
         if dst == 4:
@@ -289,7 +290,7 @@ fn sbx_decode(code: &Txt, at: int, n: int, d: &Dec) => int:
             i = i + imm
         if dst == 4 || (dst == 5 && !popbp):
             return dec_no(d, 13)
-        if sbx_bm && (dst == 13 || dst == 15):
+        if sbx_bm && (dst == tg_sbx_addr() || dst == tg_sbx_base()):
             return dec_no(d, 15)
     d.ends = op == 195 || op == 233 || op == 235 || op == 204 || (op == 15 && op2 == 11)
     if rel > 0:

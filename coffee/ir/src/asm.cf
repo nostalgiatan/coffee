@@ -7,6 +7,7 @@
 /#/ `[base + disp32]`, and the base is never rsp or r12 (those need an index byte).
 /#/ (It imports `modopt` for the IR modules below it: a module cannot be imported by two routes.)
 use * in modopt
+use * in target_x86
 
 fn cc_e() => int:
     return 4
@@ -280,12 +281,12 @@ class Asm:
     fn mem(self, w: int, opc: int, opc2: int, reg: int, base: int, idx: int, scale: int, disp: int, force: bool) => void:
         let guarded = opc != 141 && !self.frame_base(base)
         let gs = false
-        if guarded && self.bm && !(base == 15 && idx == 13):
+        if guarded && self.bm && !(base == tg_sbx_base() && idx == tg_sbx_addr()):
             let held = self.pfx
             self.pfx = 0 - 1
-            self.mem(0, 141, 0 - 1, 13, base, idx, scale, disp, false)
+            self.mem(0, 141, 0 - 1, tg_sbx_addr(), base, idx, scale, disp, false)
             self.pfx = held
-            self.mem(w, opc, opc2, reg, 15, 13, 1, 0, force)
+            self.mem(w, opc, opc2, reg, tg_sbx_base(), tg_sbx_addr(), 1, 0, force)
             return
         if guarded && self.sbx && !self.bm:
             gs = true
