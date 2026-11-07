@@ -1,7 +1,7 @@
 # 命令行参考:`coffee2`
 
 ```
-coffee2 input.cf [-o output] [-I dir] [-O0|-O1|-O2|-O3] [--emit-obj] [--emit-flat] [--have-c] [--lines file] [--stats] [--lint-perf] [--incremental dir] [-j n] [--static] [-g] [--align] [--verify] [--time] [--target=x86_64-linux]
+coffee2 input.cf [-o output] [-I dir] [-O0|-O1|-O2|-O3] [--emit-obj] [--emit-flat] [--have-c] [--lines file] [--stats] [--lint-perf] [--incremental dir] [-j n] [--static] [-g] [--align] [--verify] [--time] [--pic] [--target=x86_64-linux]
 coffee2 -c header.h [-o output.cfc]
 ```
 
@@ -14,6 +14,7 @@ coffee2 -c header.h [-o output.cfc]
 | `input.cf` | 源文件。必须有且只有一个。 |
 | `-o output` | 输出路径。省略时见下表。 |
 | `-I dir` | 增加一个模块搜索目录和 `.cfc` 搜索目录,可重复。 |
+| `--pic` | 目标文件给共享库用:不是 `c fn` 的符号都是隐藏可见性,链接器因此可以在共享对象里解析对它们的引用。默认不开,开了才改目标文件。 |
 | `--target=名字` | 为哪台机器生成代码。`x86_64-linux`(默认,可写成 `x86_64`),或 `aarch64-linux`(可写成 `aarch64`,见 [aarch64 后端](aarch64-backend.md):现在只能配 `--emit-obj` 得到目标文件,链接和运行时还没有);别的名字报未知目标。 |
 | `-O0` | 关闭 IR 优化器。 |
 | `-O1` `-O2` `-O3` | 打开 IR 优化器。默认 `-O1`。 |

@@ -15,6 +15,8 @@ use * in asm
 use * in minrt
 use * in sbxcheck_a64
 use * in txt
+use * in elf
+use * in stub
 
 /#/ Set by `--sandbox`: the code is made for the sandbox (`Asm.sbx`): all memory through the linear memory.
 let target_sandbox = false
@@ -90,3 +92,37 @@ fn min_rt_text() => str:
     if target_arch == arch_x86_64() && target_os == os_linux():
         return min_rt_common_a() + min_rt_os_linux_x86_64_a() + min_rt_common_b() + min_rt_os_linux_x86_64_b()
     return min_rt_common_a() + min_rt_os_linux_aarch64_a() + min_rt_common_b() + min_rt_os_linux_aarch64_b()
+
+/#/ The machine code of `cf_syscall` for the target (the table is `ld/src/stub.cf`, which the linker uses too).
+fn tg_syscall_stub() => buf<int>:
+    return syscall_stub_for(target_arch)
+
+/#/ Is the name at `at` in `names` (NUL-ended) the text `w`?
+fn tg_name_is(names: &Txt, at: int, w: &str) => bool:
+    for q in 0..len(w):
+        if names.b[at + q] != ch(w, q):
+            return false
+    return names.b[at + len(w)] == 0
+
+/#/ The undefined symbol `cf_syscall` of the object `o`, -1 when it has none.
+fn undef_syscall(o: &Obj) => int:
+    for k in 0..o.ns:
+        if o.s_def[k] < 0 && tg_name_is(&o.names, o.s_name[k], "cf_syscall"):
+            return k
+    return 0 - 1
+
+/#/ With `--pic`: when the object calls `cf_syscall` and does not define it, defines it (hidden) from the
+/#/ target's stub.
+fn g_add_syscall_stub(g: &Gen) => void:
+    if !elf_hide:
+        return
+    let found = undef_syscall(&g.o)
+    if found < 0:
+        return
+    let code = tg_syscall_stub()
+    g.a.begin_fun()
+    let start = g.a.pos()
+    for k in 0..len(code):
+        g.a.byte(code[k])
+    g.a.end_fun()
+    g.o.define(found + 2, start, g.a.pos() - start)

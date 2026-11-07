@@ -271,22 +271,50 @@ class Asm:
             self.byte(opc2)
         self.byte(192 | ((reg & 7) << 3) | (rmr & 7))
 
-    /#/ `opc` with a register and the memory operand `[base + disp]`.
-    fn rmem(self, w: int, opc: int, opc2: int, reg: int, base: int, disp: int, force: bool) => void:
-        if self.bm && opc != 141 && base != 4 && base != 5:
-            /#/ the address as a 32-bit number in r13, then the access relative to r15
+    /#/ Is `base` the register of the host's stack frame (rsp, rbp)? An access through it is not the sandbox's:
+    /#/ the code cannot get the address of the host stack, so it needs no guard.
+    fn frame_base(self, base: int) => bool:
+        return base == 4 || base == 5
+
+    /#/ The one place a memory operand is made (design: docs/explanation/sandbox-design.md, "the memory-access
+    /#/ funnel"): `opc` with a register and `[base + idx * scale + disp]`, `idx` -1 for none. `lea` (141) only
+    /#/ computes and is never guarded. In sandbox code a guarded access is
+    /#/   - `gs` mode (`sbx`): the operand with the prefixes 0x67 0x65, so the hardware takes the address as 32 bits
+    /#/     and adds the start of the linear memory;
+    /#/   - base mode (`bm`): the address as a 32-bit number in r13 (`lea r13d, [..]`) and the access as [r15 + r13].
+    fn mem(self, w: int, opc: int, opc2: int, reg: int, base: int, idx: int, scale: int, disp: int, force: bool) => void:
+        let guarded = opc != 141 && !self.frame_base(base)
+        let gs = false
+        if guarded && self.bm && !(base == 15 && idx == 13):
             let held = self.pfx
             self.pfx = 0 - 1
-            self.rmem(0, 141, 0 - 1, 13, base, disp, false)
+            self.mem(0, 141, 0 - 1, 13, base, idx, scale, disp, false)
             self.pfx = held
-            self.rmem_idx(w, opc, opc2, reg, 15, 13, 1, 0, force)
+            self.mem(w, opc, opc2, reg, 15, 13, 1, 0, force)
             return
+        if guarded && self.sbx && !self.bm:
+            gs = true
         if self.pfx >= 0:
             self.byte(self.pfx)
             self.pfx = 0 - 1
-        if self.sbx && !self.bm && opc != 141 && base != 4 && base != 5:
+        if gs:
             self.byte(103)
             self.byte(101)
+        if idx < 0:
+            self.enc_mem(w, opc, opc2, reg, base, disp, force)
+        else:
+            self.enc_mem_idx(w, opc, opc2, reg, base, idx, scale, disp, force)
+
+    /#/ `opc` with a register and the memory operand `[base + disp]`.
+    fn rmem(self, w: int, opc: int, opc2: int, reg: int, base: int, disp: int, force: bool) => void:
+        self.mem(w, opc, opc2, reg, base, 0 - 1, 1, disp, force)
+
+    /#/ `opc` with a register and the memory operand `[base + idx * scale + disp]`.
+    fn rmem_idx(self, w: int, opc: int, opc2: int, reg: int, base: int, idx: int, scale: int, disp: int, force: bool) => void:
+        self.mem(w, opc, opc2, reg, base, idx, scale, disp, force)
+
+    /#/ The bytes of `[base + disp]`: REX, the opcode, ModRM, SIB and the displacement.
+    fn enc_mem(self, w: int, opc: int, opc2: int, reg: int, base: int, disp: int, force: bool) => void:
         self.rex(w, reg, base, force)
         self.byte(opc)
         if opc2 >= 0:
@@ -303,18 +331,8 @@ class Asm:
             self.sib(base)
             self.le32(disp)
 
-    /#/ `opc` with a register and the memory operand `[base + idx * scale + disp]`.
-    fn rmem_idx(self, w: int, opc: int, opc2: int, reg: int, base: int, idx: int, scale: int, disp: int, force: bool) => void:
-        if self.bm && opc != 141 && base != 4 && base != 5 && !(base == 15 && idx == 13):
-            let held = self.pfx
-            self.pfx = 0 - 1
-            self.rmem_idx(0, 141, 0 - 1, 13, base, idx, scale, disp, false)
-            self.pfx = held
-            self.rmem_idx(w, opc, opc2, reg, 15, 13, 1, 0, force)
-            return
-        if self.pfx >= 0:
-            self.byte(self.pfx)
-            self.pfx = 0 - 1
+    /#/ The bytes of `[base + idx * scale + disp]`.
+    fn enc_mem_idx(self, w: int, opc: int, opc2: int, reg: int, base: int, idx: int, scale: int, disp: int, force: bool) => void:
         let ss = 0
         if scale == 2:
             ss = 1
@@ -323,9 +341,6 @@ class Asm:
         elif scale == 8:
             ss = 3
         let v = 64 | (w << 3) | ((reg >> 3) << 2) | ((idx >> 3) << 1) | (base >> 3)
-        if self.sbx && !self.bm && opc != 141 && base != 4 && base != 5:
-            self.byte(103)
-            self.byte(101)
         if v != 64 || force:
             self.byte(v)
         self.byte(opc)

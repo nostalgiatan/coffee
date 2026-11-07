@@ -3,4 +3,4 @@ name = "compat"
 version = "0.1.0"
 
 [test]
-include = ["src", "../ir/src", "../own/src", "../types/src", "../sema/src", "../parser/src", "../lexer/src"]
+include = ["src", "../ir/src", "../ld/src", "../own/src", "../types/src", "../sema/src", "../parser/src", "../lexer/src"]

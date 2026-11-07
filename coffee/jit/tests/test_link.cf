@@ -1,0 +1,66 @@
+/#/ Linking in memory: modules loaded one after another, each calling the ones before it by name
+/#/ (`--with=`); a call nothing offers is refused with its name; the parts of the image have their
+/#/ own rights (nothing is writable and executable at once); an image kept with `--cache` keeps its
+/#/ symbols and imports. `coffee2` and `cfjit` are found through PATH.
+use * in say
+use * in txt
+use * in cstr
+use * in files
+use system, fflush in libc of c
+
+fn expect(what: int, got: int, want: int) => int:
+    if got != want:
+        say(f"MISS #{what}: got {got}, want {want}\n")
+        fflush(0)
+        return 1
+    return 0
+
+fn put(name: str, src: str) => void:
+    write_file(&txt_of(&name), &txt_of(&src))
+
+fn sh(cmd: str) => int:
+    let c = txt_of(&cmd)
+    let st = system(txt_str(&c))
+    return (st >> 8) & 255
+
+/#/ Makes `name.cir` from `name.cf`; 0 when it worked.
+fn cir(name: str) => int:
+    let c = txt_of("coffee2 ")
+    c.put(&name)
+    c.put(".cf -I . --emit-cir -o ")
+    c.put(&name)
+    c.put(".cir > lk.log 2>&1")
+    return sh(txt_str(&c))
+
+fn main() => int:
+    let m = 0
+    put("lkint.cfc", "c fn twice(x: int) => int:\nc fn total(n: int) => int:\n")
+    put("lklib.cf", "c fn twice(x: int) => int:\n    return x * 2\n\nc fn total(n: int) => int:\n    let a = [1, 2, 3]\n    let t = 0\n    for i in 0..3:\n        t = t + a[i] + n\n    return t\n")
+    put("lkuse.cf", "use twice, total in lkint of c\n\nfn main() => int:\n    return twice(20) + total(1)\n")
+    put("lktop.cf", "use twice in lkint of c\n\nc fn quad(x: int) => int:\n    return twice(twice(x))\n")
+    put("lkq.cfc", "c fn quad(x: int) => int:\n")
+    put("lkmain.cf", "use quad in lkq of c\n\nfn main() => int:\n    return quad(5)\n")
+    put("lkone.cf", "fn fib(n: int) => int:\n    if n < 2:\n        return n\n    return fib(n - 1) + fib(n - 2)\n\nfn main() => int:\n    return fib(10)\n")
+    m = m + expect(1, cir("lklib"), 0)
+    m = m + expect(2, cir("lkuse"), 0)
+    /#/ the library alone does not satisfy the call without `--with`, and names what is missing
+    m = m + expect(3, sh("cfjit lkuse.cir > lk.out 2>&1"), 2)
+    m = m + expect(4, sh("grep -q \"calls 'twice'\" lk.out"), 0)
+    m = m + expect(5, sh("cfjit lkuse.cir --with=lklib.cir"), 49)
+    /#/ a module that calls the one before it, and is called by main
+    m = m + expect(6, cir("lktop"), 0)
+    m = m + expect(7, cir("lkmain"), 0)
+    m = m + expect(8, sh("cfjit lkmain.cir --with=lklib.cir --with=lktop.cir"), 20)
+    /#/ the order matters: lktop needs lklib first
+    m = m + expect(9, sh("cfjit lkmain.cir --with=lktop.cir --with=lklib.cir > lk.out 2>&1"), 2)
+    /#/ the kept image: second run reads it
+    m = m + expect(10, sh("cfjit lkuse.cir --cache --with=lklib.cir"), 49)
+    m = m + expect(11, sh("cfjit lkuse.cir --cache --with=lklib.cir"), 49)
+    m = m + expect(12, sh("cfjit lkuse.cir --cache > lk.out 2>&1"), 2)
+    /#/ no part of the image is writable and executable
+    put("lkwx.cf", "use open, read, malloc in libc of c\n\nfn main() => int:\n    let fd = open(\"/proc/self/maps\", 0, 0)\n    let p = malloc(131072)\n    let n = read(int(fd), p, 131000)\n    let a = int(p)\n    let rwx = 0\n    for i in 0..n - 4:\n        if peek8((a + i) as object) == 114 && peek8((a + i + 1) as object) == 119 && peek8((a + i + 2) as object) == 120 && peek8((a + i + 3) as object) == 112:\n            rwx = rwx + 1\n    return rwx\n")
+    m = m + expect(13, cir("lkwx"), 0)
+    m = m + expect(14, sh("cfjit lkwx.cir"), 0)
+    m = m + expect(15, cir("lkone"), 0)
+    m = m + expect(16, sh("cfjit lkone.cir"), 55)
+    return m

@@ -177,6 +177,8 @@ fn parse_cli(fl: &Flat) => Cli:
                 cli.debug = true
             elif w.is("--time"):
                 time_start()
+            elif w.is("--pic"):
+                set_elf_hide()
             elif w.is("--emit-obj"):
                 cli.set_emit_only()
             elif w.is("--emit-cir"):
@@ -246,7 +248,7 @@ fn dir_of(path: &Txt) => Txt:
     return slice(path, 0, cut)
 
 fn usage() => int:
-    say("usage: coffee2 input.cf [-o output] [--have-c] [-I dir] [-O0|-O1|-O2|-O3] [--emit-obj] [--emit-cir] [--emit-flat] [--lines file] [--incremental dir] [--static|--dynamic] [-g] [--align] [--emit-ir] [--time] [-j n] [--target=x86_64-linux]\n       coffee2 -c header.h [-o output.cfc]\n")
+    say("usage: coffee2 input.cf [-o output] [--have-c] [-I dir] [-O0|-O1|-O2|-O3] [--emit-obj] [--emit-cir] [--emit-flat] [--lines file] [--incremental dir] [--static|--dynamic] [-g] [--align] [--emit-ir] [--time] [-j n] [--pic] [--target=x86_64-linux]\n       coffee2 -c header.h [-o output.cfc]\n")
     fflush(0)
     return 2
 

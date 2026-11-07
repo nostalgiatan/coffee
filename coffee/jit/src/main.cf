@@ -151,6 +151,54 @@ fn lap(on: bool, what: &str, t0: int) => int:
     say(f"cfjit: {what} {(now_us() - t0) // 1000} ms\n")
     return 0
 
+/#/ The values of every `--with=PATH` on the command line, one per line.
+fn with_args() => Txt:
+    let raw = read_file(&txt_of("/proc/self/cmdline"))
+    let w = new_txt()
+    let out = new_txt()
+    for i in 0..raw.n + 1:
+        if i == raw.n || raw.b[i] == 0:
+            if w.n > 7 && w.b[0] == 45 && w.b[1] == 45 && w.b[2] == 119 && w.b[3] == 105 && w.b[4] == 116 && w.b[5] == 104 && w.b[6] == 61:
+                for k in 7..w.n:
+                    out.put_byte(w.b[k])
+                out.put_byte(10)
+            w.clear()
+        else:
+            w.put_byte(raw.b[i])
+    return out
+
+/#/ The module in the file `path` (made with `coffee2 --emit-cir`; it may have no `main`) loaded and linked
+/#/ against `syms`, and what it defines added to them. 0 when it worked; else a message was said.
+fn load_with(path: &Txt, syms: &Exports) => int:
+    let cir = read_file(path)
+    if cir.n < 0:
+        say(f"cfjit: cannot read {txt_str(path)}\n")
+        return 2
+    let lw = new_lower()
+    let e = read_cir(&cir, &lw)
+    if e != 0:
+        say(f"cfjit: {txt_str(path)} is not a usable .cir (code {e})\n")
+        return 2
+    prune_unreached(&lw)
+    lw.generate()
+    if lw.ver_err > 0 || lw.mc_err > 0:
+        say(f"cfjit: {txt_str(path)}: the code could not be made\n")
+        return 2
+    let im = image_of(&lw)
+    if im.err != 0:
+        say(f"cfjit: {txt_str(path)}: a relocation could not be applied\n")
+        return 2
+    let missing = new_txt()
+    let base = link_image(&im, syms, 0, &missing)
+    if base == 0:
+        if missing.n > 0:
+            say(f"cfjit: {txt_str(path)} calls '{txt_str(&missing)}', which nothing offers\n")
+        else:
+            say("cfjit: out of memory\n")
+        return 2
+    export_image(&im, base, syms)
+    return 0
+
 fn main() => int:
     /#/ the IR checker is on (7 ms of a 109 ms start for the compiler's module); `--no-verify` turns it off
     set_verify(!flag_arg("--no-verify"))
@@ -185,14 +233,14 @@ fn main() => int:
     if use_cache:
         key = cim_key(&cir, mode)
     let im = blank_image()
-    let at = 0 - 1
+    let at = 0 - 2
     if use_cache:
         let ct = read_file(&cache_path)
         if ct.n > 0:
             at = read_cim(&ct, key, &im)
-            if at < 0:
+            if at == 0 - 2:
                 im = blank_image()
-    if at < 0:
+    if at == 0 - 2:
         let lw = new_lower()
         lw.mc.a.sbx = sbx
         lw.mc.a.bm = bm
@@ -242,14 +290,11 @@ fn main() => int:
         if im.err != 0:
             say("cfjit: a relocation could not be applied\n")
             return 2
-        if im.nimp > 0:
-            say("cfjit: the module calls functions the loader does not offer\n")
+        if sbx && im.nimp > 0:
+            say("cfjit: the module calls functions the sandbox does not offer\n")
             return 2
         let want = txt_of("main")
         at = im.find(&want)
-        if at < 0:
-            say("cfjit: the module has no main\n")
-            return 2
         if want_gdb:
             /#/ the DWARF of the code beside the module, and a gdb script that loads it where the image will be
             let ge = gdb_elf(&im, &dbg_raw)
@@ -274,6 +319,9 @@ fn main() => int:
     lap(timing, "after the drop of the IR", t0)
     if flag_arg("--no-run"):
         return 0
+    if at < 0:
+        say("cfjit: the module has no main\n")
+        return 2
     if sbx:
         sbx_set_base(bm)
         let bad = sbx_verify(&im.b, im.text_n, im.sys_at)
@@ -287,13 +335,28 @@ fn main() => int:
         if rs == 0 - 2:
             return 139
         return rs
-    let base = 0
+    /#/ what the code may call: the modules of `--with=` (in order, each can call the ones before it)
+    let syms = new_exports()
+    let libs = with_args()
+    let from = 0
+    for i in 0..libs.n:
+        if libs.b[i] == 10:
+            let lp = new_txt()
+            for q in from..i:
+                lp.put_byte(libs.b[q])
+            from = i + 1
+            if load_with(&lp, &syms) != 0:
+                return 2
+    let want_at = 0
     if want_gdb:
-        base = load_image_at(&im, gdb_base())
-    else:
-        base = load_image(&im)
+        want_at = gdb_base()
+    let missing = new_txt()
+    let base = link_image(&im, &syms, want_at, &missing)
     if base == 0:
-        say("cfjit: out of memory\n")
+        if missing.n > 0:
+            say(f"cfjit: the module calls '{txt_str(&missing)}', which nothing offers\n")
+        else:
+            say("cfjit: out of memory\n")
         return 2
     if flag_arg("--perf-map"):
         write_perf_map(&im, base)

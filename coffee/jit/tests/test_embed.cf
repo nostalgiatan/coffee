@@ -1,0 +1,56 @@
+/#/ The JIT as a library: a C program (embed_test.c) offers a function, loads modules, calls them,
+/#/ replaces and unloads. Needs `cc`; `coffee2` is found through PATH. The scratch directory is
+/#/ jit/target/test/test_embed, so the library tool is three levels up.
+use * in say
+use * in txt
+use * in cstr
+use * in files
+use system, fflush in libc of c
+
+fn expect(what: int, got: int, want: int) => int:
+    if got != want:
+        say(f"MISS #{what}: got {got}, want {want}\n")
+        fflush(0)
+        return 1
+    return 0
+
+fn put(name: str, src: str) => void:
+    write_file(&txt_of(&name), &txt_of(&src))
+
+fn sh(cmd: str) => int:
+    let c = txt_of(&cmd)
+    let st = system(txt_str(&c))
+    return (st >> 8) & 255
+
+fn cir(name: str) => int:
+    let c = txt_of("coffee2 ")
+    c.put(&name)
+    c.put(".cf -I . --emit-cir -o ")
+    c.put(&name)
+    c.put(".cir > em.log 2>&1")
+    return sh(txt_str(&c))
+
+fn main() => int:
+    let m = 0
+    put("emhost.cfc", "c fn host_scale(x: int) => int:\n")
+    put("emnone.cfc", "c fn nothing_here(x: int) => int:\n")
+    put("emcomp.cfc", "c fn compute(x: int) => int:\n")
+    put("ema1.cf", "use host_scale in emhost of c\n\nc fn compute(x: int) => int:\n    return host_scale(x) + 1\n")
+    put("ema2.cf", "use host_scale in emhost of c\n\nc fn compute(x: int) => int:\n    return host_scale(x) + 100\n")
+    put("emb.cf", "use compute in emcomp of c\n\nc fn run(x: int) => int:\n    return compute(x) * 2\n")
+    put("embad.cf", "use nothing_here in emnone of c\n\nc fn broken(x: int) => int:\n    return nothing_here(x)\n")
+    put("emz.cf", "c fn other(x: int) => int:\n    return x\n")
+    m = m + expect(9, cir("emz"), 0)
+    m = m + expect(1, cir("ema1"), 0)
+    m = m + expect(2, cir("emb"), 0)
+    m = m + expect(3, cir("ema2"), 0)
+    m = m + expect(4, cir("embad"), 0)
+    m = m + expect(5, sh("sh ../../../tools/build-lib.sh \"$(command -v coffee2)\" lib > em.log 2>&1"), 0)
+    m = m + expect(6, sh("cc -I lib ../../../tests/embed_test.c lib/libcfjit.a -o embed_test > em.log 2>&1"), 0)
+    m = m + expect(7, sh("./embed_test ema1.cir emb.cir ema2.cir embad.cir emz.cir > em.out 2>&1"), 0)
+    m = m + expect(8, sh("grep -q '^ok$' em.out"), 0)
+    /#/ the shared library from Python (ctypes), the host function a Python callback; skipped without python3
+    if sh("command -v python3 > /dev/null") == 0:
+        m = m + expect(10, sh("python3 ../../../tests/embed_test.py lib/libcfjit.so ema1.cir emb.cir > em.out 2>&1"), 0)
+        m = m + expect(11, sh("grep -q '^ok$' em.out"), 0)
+    return m

@@ -8,6 +8,12 @@
 /#/ two above.
 use * in asm
 
+/#/ `--pic`: the symbols that are not offered to the world get hidden visibility.
+let elf_hide = false
+
+fn set_elf_hide() => void:
+    elf_hide = true
+
 class Obj:
     ro: Txt
     /#/ the string table: names, each ended by a NUL, after a NUL
@@ -17,6 +23,8 @@ class Obj:
     s_size: buf<int>
     /#/ the section a symbol is defined in: 1 `.text`, 8 `.data`
     s_sec: buf<int>
+    /#/ 1 for a symbol the object offers to the world (a `c fn`); the others are hidden with `--pic`
+    s_pub: buf<int>
     /#/ the initialized data
     data: Txt
     ns: int
@@ -48,10 +56,12 @@ class Obj:
             self.s_def = buf_resize(self.s_def, cap)
             self.s_size = buf_resize(self.s_size, cap)
             self.s_sec = buf_resize(self.s_sec, cap)
+            self.s_pub = buf_resize(self.s_pub, cap)
         self.s_name[self.ns] = self.names.n
         self.s_def[self.ns] = 0 - 1
         self.s_size[self.ns] = 0
         self.s_sec[self.ns] = 1
+        self.s_pub[self.ns] = 0
         self.names.put_all(w)
         self.names.put_byte(0)
         self.hx[slot] = self.ns + 1
@@ -108,7 +118,7 @@ class Obj:
 fn new_obj() => Obj:
     let nm = new_txt()
     nm.put_byte(0)
-    let o = Obj { ro: new_txt(), names: nm, s_name: new_buf(int, 16), s_def: new_buf(int, 16), s_size: new_buf(int, 16), s_sec: new_buf(int, 16), data: new_txt(), ns: 0, hx: new_buf(int, 256), dbg: new_txt() }
+    let o = Obj { ro: new_txt(), names: nm, s_name: new_buf(int, 16), s_def: new_buf(int, 16), s_size: new_buf(int, 16), s_sec: new_buf(int, 16), s_pub: new_buf(int, 16), data: new_txt(), ns: 0, hx: new_buf(int, 256), dbg: new_txt() }
     /#/ the zero block that stands in for `undef` aggregates
     for k in 0..256:
         o.ro.put_byte(0)
@@ -257,7 +267,12 @@ fn write_elf(o: &Obj, a: &Asm) => Txt:
                 syms.put_byte(17)
             else:
                 syms.put_byte(18)
-            syms.put_byte(0)
+            /#/ with `--pic` what is not a `c fn` is hidden: references to it can be resolved by the
+            /#/ linker even in a shared object
+            if elf_hide && o.s_pub[k] == 0:
+                syms.put_byte(2)
+            else:
+                syms.put_byte(0)
             if fn_of[k] >= 0:
                 w16(&syms, 9 + 2 * fn_of[k])
                 w64(&syms, 0)
