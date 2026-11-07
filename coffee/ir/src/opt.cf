@@ -1324,6 +1324,13 @@ fn range_checks(f: &Fun) => bool:
 /#/ ---- loop-invariant code ---------------------------------------------------
 
 /#/ Does instruction `i` write memory or call something?
+/#/ Is `v` the address of (a field of) what a reference parameter of the function points to?
+fn deref_ok(f: &Fun, v: int) => bool:
+    let x = f.follow(v)
+    while x >= 0 && f.op[x] == int(Op.Field) && f.a[x] >= 0:
+        x = f.follow(f.a[x])
+    return x >= 0 && f.op[x] == int(Op.Param) && f.blk[x] == 0 && f.ty[x] == 0 && f.rep[x] == int(Rp.Ptr)
+
 fn writes_memory(f: &Fun, i: int) => bool:
     let o = f.op[i]
     if o == int(Op.Store) || o == int(Op.Call) || o == int(Op.CCall) || o == int(Op.CallI) || o == int(Op.Alloc) || o == int(Op.Free) || o == int(Op.Drop) || o == int(Op.Clone) || o == int(Op.FRem):
@@ -1383,14 +1390,20 @@ fn hoist_invariants(f: &Fun) => bool:
                     work[nw] = t
                     nw = nw + 1
         /#/ memory written in the loop?
+        /#/ (a store of a float cannot change an integer or pointer in memory, so such a loop leaves the
+        /#/ buffer headers it indexes as they were: `memf` blocks only the loads of floats)
         let mem = false
+        let memf = false
         for r in 0..np:
             let b = rpo[r]
             if inl[b] == 1:
                 let i = f.bfirst[b]
                 while i >= 0:
                     if writes_memory(f, i):
-                        mem = true
+                        if f.op[i] == int(Op.Store) && f.b[i] >= 0 && rp_is_float(f.rep[f.follow(f.b[i])]):
+                            memf = true
+                        else:
+                            mem = true
                     i = f.nx[i]
         /#/ the one block outside the loop that jumps to the header
         let pre0 = -1
@@ -1413,7 +1426,7 @@ fn hoist_invariants(f: &Fun) => bool:
                     let o = f.op[i]
                     let nxt = f.nx[i]
                     /#/ a load of what the header loads, in a loop that writes nothing, is that load
-                    if o == int(Op.Load) && !mem && b != h && f.fwd[i] < 0:
+                    if o == int(Op.Load) && !mem && !(memf && rp_is_float(f.rep[i])) && b != h && f.fwd[i] < 0:
                         let j = f.bfirst[h]
                         let found = -1
                         while j >= 0 && found < 0:
@@ -1432,7 +1445,26 @@ fn hoist_invariants(f: &Fun) => bool:
                             changed = true
                             i = nxt
                             continue
-                    if f.fwd[i] < 0 && (pure_op(o) || (o == int(Op.Load) && !mem && b == h)):
+                    if o == int(Op.Load) && f.fwd[i] < 0 && !mem && !(memf && rp_is_float(f.rep[i])) && b != h && deref_ok(f, f.a[i]):
+                        /#/ a read through a reference parameter cannot fault, so it may run before the loop is known to be entered;
+                        /#/ one equal to a load already moved is that load
+                        let same = -1
+                        for rr in 0..n:
+                            let j = list[rr]
+                            if same < 0 && f.op[j] == int(Op.Load) && f.rep[j] == f.rep[i] && f.ty[j] == f.ty[i] && f.follow(f.a[j]) == f.follow(f.a[i]):
+                                same = j
+                        if same >= 0:
+                            replace_inst(f, i, same)
+                            changed = true
+                            i = nxt
+                            continue
+                        if f.blk[f.follow(f.a[i])] < 0 || inl[f.blk[f.follow(f.a[i])]] == 0:
+                            moved[i] = 1
+                            list[n] = i
+                            n = n + 1
+                            i = nxt
+                            continue
+                    if f.fwd[i] < 0 && (pure_op(o) || (o == int(Op.Load) && !mem && !(memf && rp_is_float(f.rep[i])) && b == h)):
                         let ok = true
                         for u in 0..f.nval(i):
                             let v = f.val_at(i, u)
@@ -1801,8 +1833,47 @@ fn cfg_cleanup(f: &Fun) => bool:
     return any
 
 /#/ The passes that look at what the instructions compute.
+/#/ The variable part of the integer add `i` whose other operand is a constant (that one in `k[0]`), else -1.
+fn add_const_part(f: &Fun, i: int, k: &buf<int>) => int:
+    if f.op[i] != int(Op.Add) || f.a[i] < 0 || f.b[i] < 0:
+        return -1
+    let x = f.follow(f.a[i])
+    let y = f.follow(f.b[i])
+    if f.is_const(y) && !f.is_const(x):
+        k[0] = f.cval(y)
+        return x
+    if f.is_const(x) && !f.is_const(y):
+        k[0] = f.cval(x)
+        return y
+    return -1
+
+/#/ `(x + c1) + c2` becomes `x + (c1 + c2)`, so that an address computed by chained adds of constants
+/#/ is one offset. The inner add stays for its other users, or goes dead.
+fn reassoc_adds(f: &Fun) => bool:
+    let changed = false
+    let k1: buf<int> = new_buf(int, 2)
+    let k2: buf<int> = new_buf(int, 2)
+    for b in 0..f.nb:
+        let i = f.bfirst[b]
+        while i >= 0:
+            if f.op[i] == int(Op.Add) && rp_is_int(f.rep[i]) && f.fwd[i] < 0:
+                let x = add_const_part(f, i, &k1)
+                if x >= 0 && f.op[x] == int(Op.Add) && f.rep[x] == f.rep[i]:
+                    let v = add_const_part(f, x, &k2)
+                    if v >= 0:
+                        let c = f.cint(f.rep[i], wrap(f.rep[i], k1[0] + k2[0]))
+                        f.a[i] = v
+                        f.b[i] = c
+                        changed = true
+            i = f.nx[i]
+    if changed:
+        recount_uses(f)
+    return changed
+
 fn value_passes(f: &Fun, rs: &Reps, split: bool) => bool:
     let changed = false
+    if reassoc_adds(f):
+        changed = true
     if fold_extracts(f):
         changed = true
     if split && split_loads(f, rs):

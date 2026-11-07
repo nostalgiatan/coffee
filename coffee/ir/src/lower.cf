@@ -3587,7 +3587,11 @@ class Lower:
                 if a.kind[p] == int(Nk.SelfParam):
                     self.no_own = 1
                 self.in_params = true
-                self.bind_var(t, g, a, a.tok[p], pt, self.f.param(entry, pr, -1))
+                /#/ a reference parameter is marked (type 0): what it points to can be read at any point of the function
+                let pty = -1
+                if t.kind[pt] == int(Ty.Ref):
+                    pty = 0
+                self.bind_var(t, g, a, a.tok[p], pt, self.f.param(entry, pr, pty))
                 self.in_params = false
                 self.no_own = 0
                 i = i + 1

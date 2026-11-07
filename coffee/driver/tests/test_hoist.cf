@@ -1,0 +1,52 @@
+/#/ Reads through a reference parameter in a loop: the buffer's pointer and length are read once when the
+/#/ loop only stores floats; a loop that stores integers reads them again.
+use * in say
+use * in files
+use * in cstr
+use * in txt
+use system, fflush in libc of c
+
+/#/ Where `w` is in `t` at or after `from`, -1 if it is not.
+fn find_at(t: &Txt, w: &str, from: int) => int:
+    for i in from..t.n:
+        let k = 0
+        while k < len(w) && i + k < t.n && t.b[i + k] == int(w[k]):
+            k = k + 1
+        if k == len(w):
+            return i
+    return -1
+
+/#/ Does the function `name` of the listing hold `w`?
+fn fn_has(t: &Txt, name: str, w: &str) => bool:
+    let head = f"fn {name}("
+    let s = find_at(t, &head, 0)
+    if s < 0:
+        return false
+    let e = find_at(t, "\nfn ", s + 1)
+    if e < 0:
+        e = t.n
+    let at = find_at(t, w, s)
+    return at >= 0 && at < e
+
+fn main() => int:
+    let m = 0
+    system("rm -rf hoist && mkdir hoist")
+    let src = "fn scale(a: &buf<float>, n: int) => void:\n    for r in 0..3:\n        for i in 0..n:\n            a[i] = a[i] * 0.5 + a[i + n] + 1.0\n\nfn main() => int:\n    let a = new_buf(float, 8)\n    for i in 0..8:\n        a[i] = float(i)\n    scale(&a, 4)\n    let k = 0\n    if a[0] > 8.7 && a[0] < 8.8:\n        k = 1\n    return k\n"
+    let sp = txt_of("hoist/h.cf")
+    let st = txt_of(&src)
+    write_file(&sp, &st)
+    if system("cd hoist && coffee2 h.cf --emit-ir > h.ir 2>&1 && coffee2 h.cf -o h > build.log 2>&1") != 0:
+        say("MISS: build failed\n")
+        return 1
+    let ip = txt_of("hoist/h.ir")
+    let ir = read_file(&ip)
+    if fn_has(&ir, "scale", "load ptr"):
+        let at = find_at(&ir, "fn scale(", 0)
+        let e = find_at(&ir, "bb4", at)
+        say("note: scale still loads a pointer\n")
+    let r = system("cd hoist && ./h")
+    if r != 256:
+        say(f"MISS: the program exits with {r}, not 1\n")
+        m = m + 1
+    fflush(0)
+    return m

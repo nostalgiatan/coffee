@@ -528,6 +528,9 @@ class Fun:
         if op == int(Op.Add) || op == int(Op.Sub) || op == int(Op.Or) || op == int(Op.Xor) || op == int(Op.Shl) || op == int(Op.AShr) || op == int(Op.LShr):
             if yc && yv == 0:
                 return x
+        /#/ (x + c1) + c2 is x + (c1 + c2)
+        if op == int(Op.Add) && yc && self.op[x] == int(Op.Add) && self.is_const(self.follow(self.b[x])):
+            return self.bin(int(Op.Add), self.follow(self.a[x]), self.cint(rep, wrap(rep, self.cval(self.follow(self.b[x])) + yv)))
         if op == int(Op.Mul):
             if yc && yv == 1:
                 return x
