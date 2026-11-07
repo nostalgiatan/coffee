@@ -109,6 +109,62 @@ fn dbg_class(d: &DbgTypes, t: &Tys, g: &Syms, x: int) => void:
     d.out.put_all(&fields)
     d.out.put_byte(10)
 
+/#/ The block of enum `x` that has payloads: the tag, and each variant's payload over the same bytes
+/#/ (only the variant the tag names holds values).
+fn dbg_enum(d: &DbgTypes, t: &Tys, g: &Syms, x: int) => void:
+    let row = t.a[x]
+    let li = dbg_int(d)
+    let members = new_txt()
+    let nm = 0
+    for v in 0..g.n:
+        if g.info[v] == row && g.kind[v] == int(Sk.Variant):
+            let sig = g.ty[v]
+            if sig >= 0 && t.kind[sig] == int(Ty.Fn) && t.count_of(sig) > 0:
+                let fields = new_txt()
+                let off = 8
+                for i in 0..t.count_of(sig):
+                    let ft = subst_env(t, t.arg(sig, i), x)
+                    let fid = dbg_type(d, t, g, ft)
+                    off = align_up(off, st_align(t, g, ft))
+                    fields.put(" _")
+                    fields.put_int(i)
+                    fields.put_byte(58)
+                    fields.put_int(fid)
+                    fields.put_byte(58)
+                    fields.put_int(off)
+                    off = off + st_size(t, g, ft)
+                let sid = 5000000 + x * 64 + nm
+                d.out.put("T ")
+                d.out.put_int(sid)
+                d.out.put(" S ")
+                dbg_put_name(d, g, v)
+                d.out.put_byte(32)
+                d.out.put_int(off)
+                d.out.put_byte(32)
+                d.out.put_int(t.count_of(sig))
+                d.out.put_all(&fields)
+                d.out.put_byte(10)
+                members.put_byte(32)
+                for k in 0..g.size[v]:
+                    members.put_byte(g.pool[g.off[v] + k])
+                members.put_byte(58)
+                members.put_int(sid)
+                members.put(":0")
+                nm = nm + 1
+    d.out.put("T ")
+    d.out.put_int(4000000 + x)
+    d.out.put(" S ")
+    dbg_put_name(d, g, row)
+    d.out.put_byte(32)
+    d.out.put_int(st_block(t, g, x))
+    d.out.put_byte(32)
+    d.out.put_int(nm + 1)
+    d.out.put(" tag:")
+    d.out.put_int(li)
+    d.out.put(":0")
+    d.out.put_all(&members)
+    d.out.put_byte(10)
+
 /#/ Describes type `x` and what it names, once; the id a variable of this type has.
 fn dbg_type(d: &DbgTypes, t: &Tys, g: &Syms, x: int) => int:
     let k = t.kind[x]
@@ -147,6 +203,8 @@ fn dbg_type(d: &DbgTypes, t: &Tys, g: &Syms, x: int) => int:
         if t.kind[inner] == int(Ty.Named) && g.kind[t.a[inner]] != int(Sk.Enum):
             /#/ a reference to a class is the class's own pointer
             target = inner
+        elif t.kind[inner] == int(Ty.Named) && has_payload(t, g, t.a[inner]):
+            target = 4000000 + inner
         dbg_ptr(d, id, target)
     elif k == int(Ty.Array):
         let target = dbg_type(d, t, g, t.a[x])
@@ -181,7 +239,9 @@ fn dbg_type(d: &DbgTypes, t: &Tys, g: &Syms, x: int) => int:
         d.out.put_byte(10)
     elif k == int(Ty.Named) && g.kind[t.a[x]] == int(Sk.Enum):
         if has_payload(t, g, t.a[x]):
-            dbg_ptr(d, id, 0 - 1)
+            dbg_ptr(d, id, 4000000 + x)
+            if dbg_new(d, 4000000 + x):
+                dbg_enum(d, t, g, x)
         else:
             d.out.put("T ")
             d.out.put_int(id)

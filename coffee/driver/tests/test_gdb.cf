@@ -1,0 +1,67 @@
+/#/ `-O0 -g --static` under gdb: arguments, locals and the fields of a class have the right values.
+/#/ Skipped (passes) when gdb is not installed.
+use * in say
+use * in drive
+use * in cstr
+use * in files
+use * in flat
+use * in alias
+use * in nested
+use * in minrt
+use * in static_link
+use system, fflush in libc of c
+
+fn has(t: &Txt, w: &str) => bool:
+    for i in 0..t.n:
+        let k = 0
+        while k < len(w) && i + k < t.n && t.b[i + k] == int(w[k]):
+            k = k + 1
+        if k == len(w):
+            return true
+    return false
+
+fn main() => int:
+    if system("command -v gdb > /dev/null 2>&1") != 0:
+        return 0
+    let src = "class P:\n    x: int\n    name: str\n\nfn sum(n: int, p: &P) => int:\n    let acc = 0\n    let f = 1.5\n    let ok = true\n    let s = \"hi\"\n    for i in 0..n:\n        acc = acc + i + p.x\n    return acc\n\nfn main() => int:\n    let p = P { x: 2, name: \"bob\" }\n    let r = sum(4, &p)\n    return r - 14\n"
+    system("rm -rf gdbt && mkdir gdbt")
+    let sp = txt_of("gdbt/t.cf")
+    let st = txt_of(&src)
+    write_file(&sp, &st)
+    if system("cd gdbt && coffee2 t.cf --static -g -O0 -o t > build.log 2>&1") != 0:
+        say("MISS: build failed\n")
+        return 1
+    system("cd gdbt && gdb -batch -ex 'break 11' -ex run -ex 'info args' -ex 'info locals' -ex 'print *p' -ex 'print p->name' -ex 'ptype p' ./t > gdb.log 2>&1")
+    let lp = txt_of("gdbt/gdb.log")
+    let log = read_file(&lp)
+    let m = 0
+    if !has(&log, "n = 4") || !has(&log, "acc = 0") || !has(&log, "f = 1.5") || !has(&log, "ok = true") || !has(&log, "s = 0x") || !has(&log, "\"hi\""):
+        say("MISS: locals or arguments\n")
+        m = m + 1
+    if !has(&log, "x = 2") || !has(&log, "name = 0x") || !has(&log, "\"bob\"") || !has(&log, "t.cf:11"):
+        say("MISS: class fields or line\n")
+        m = m + 1
+
+    /#/ an enum with payloads: the tag and the fields of the variant
+    let esrc = "enum Shape:\n    Circle(r: float)\n    Rect(w: int, h: int)\n    Dot\n\nfn area(s: &Shape, k: int) => int:\n    let t = k + 1\n    return t\n\nfn main() => int:\n    let s = Shape.Rect(3, 4)\n    let a = area(&s, 5)\n    return a - 6\n"
+    let ep = txt_of("gdbt/e.cf")
+    let et = txt_of(&esrc)
+    write_file(&ep, &et)
+    if system("cd gdbt && coffee2 e.cf --static -g -O0 -o e > build2.log 2>&1") != 0:
+        say("MISS: enum build failed\n")
+        return 1
+    system("cd gdbt && gdb -batch -ex 'break 7' -ex run -ex 'print s->Rect' -ex 'print s->tag' ./e > gdb2.log 2>&1")
+    let lp2 = txt_of("gdbt/gdb2.log")
+    let log2 = read_file(&lp2)
+    if !has(&log2, "_0 = 3, _1 = 4") || !has(&log2, "= 1"):
+        say("MISS: enum payload\n")
+        m = m + 1
+    /#/ a breakpoint on the first instruction: the frame is found by the call frame information
+    system("cd gdbt && gdb -batch -ex 'break *sum' -ex run -ex bt ./t > gdb3.log 2>&1")
+    let lp3 = txt_of("gdbt/gdb3.log")
+    let log3 = read_file(&lp3)
+    if !has(&log3, "#1 ") || !has(&log3, "in main () at t.cf:16"):
+        say("MISS: backtrace from the first instruction\n")
+        m = m + 1
+    fflush(0)
+    return m

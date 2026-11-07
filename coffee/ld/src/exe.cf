@@ -93,10 +93,12 @@ fn add_symbols(l: &Linker, out: &Txt, base: int) => int:
     let dab = new_txt()
     let din = new_txt()
     let dli = new_txt()
-    let has_dw = build_dwarf(l, base, &dab, &din, &dli)
+    let dfr = new_txt()
+    let has_dw = build_dwarf(l, base, &dab, &din, &dli, &dfr)
     let n_dab = sh.n
     let n_din = 0
     let n_dli = 0
+    let n_dfr = 0
     if has_dw:
         sh.put(".debug_abbrev")
         sh.put_byte(0)
@@ -105,6 +107,9 @@ fn add_symbols(l: &Linker, out: &Txt, base: int) => int:
         sh.put_byte(0)
         n_dli = sh.n
         sh.put(".debug_line")
+        sh.put_byte(0)
+        n_dfr = sh.n
+        sh.put(".debug_frame")
         sh.put_byte(0)
     put_zeros(out, align_to(out.n, 8) - out.n)
     let off_sym = out.n
@@ -119,6 +124,8 @@ fn add_symbols(l: &Linker, out: &Txt, base: int) => int:
     out.put_all(&din)
     let off_dli = out.n
     out.put_all(&dli)
+    let off_dfr = out.n
+    out.put_all(&dfr)
     put_zeros(out, align_to(out.n, 8) - out.n)
     let shoff = out.n
     put_zeros(out, 64)
@@ -175,7 +182,7 @@ fn add_symbols(l: &Linker, out: &Txt, base: int) => int:
     put64(out, 0)
     l.nshdr = nseg + 4
     if has_dw:
-        for q in 0..3:
+        for q in 0..4:
             let nmo = n_dab
             let off = off_dab
             let sz = dab.n
@@ -187,6 +194,10 @@ fn add_symbols(l: &Linker, out: &Txt, base: int) => int:
                 nmo = n_dli
                 off = off_dli
                 sz = dli.n
+            elif q == 3:
+                nmo = n_dfr
+                off = off_dfr
+                sz = dfr.n
             put32(out, nmo)
             put32(out, 1)
             put64(out, 0)
@@ -197,7 +208,7 @@ fn add_symbols(l: &Linker, out: &Txt, base: int) => int:
             put32(out, 0)
             put64(out, 1)
             put64(out, 0)
-        l.nshdr = nseg + 7
+        l.nshdr = nseg + 8
     return shoff
 
 fn link_exe(l: &Linker) => Txt:

@@ -190,8 +190,9 @@ fn dw_var(out: &Txt, fx_p: &DwList, fx_i: &DwList, t: &Txt, s: int, e: int) => v
     dw_str(out, t, s + 2, a)
     dw_ref(out, fx_p, fx_i, dw_num(t, a + 1, b))
     let ex = new_txt()
-    ex.put_byte(118)
-    dw_sleb(&ex, dw_num(t, b + 1, c))
+    /#/ DW_OP_fbreg: the offset from rbp, which is the CFA - 16
+    ex.put_byte(145)
+    dw_sleb(&ex, dw_num(t, b + 1, c) - 16)
     dw_uleb(out, ex.n)
     out.put_all(&ex)
 
@@ -246,7 +247,7 @@ fn dw_flush(kids: &Txt, fhead: &Txt, fvars: &Txt, ffx_p: &DwList, ffx_i: &DwList
     ffx_i.n = 0
 
 /#/ Makes the three sections; false when no function has lines.
-fn build_dwarf(l: &Linker, base: int, abbrev: &Txt, info: &Txt, line: &Txt) => bool:
+fn build_dwarf(l: &Linker, base: int, abbrev: &Txt, info: &Txt, line: &Txt, frame: &Txt) => bool:
     let t = &l.dbg
     if t.n == 0:
         return false
@@ -268,6 +269,21 @@ fn build_dwarf(l: &Linker, base: int, abbrev: &Txt, info: &Txt, line: &Txt) => b
     let fhead = new_txt()
     let fvars = new_txt()
     let nvar = 0
+    /#/ .debug_frame: the one CIE (the CFA is rsp+8 at a function's entry, the return address below it)
+    dw_w32(frame, 20)
+    dw_w32(frame, 4294967295)
+    frame.put_byte(1)
+    frame.put_byte(0)
+    frame.put_byte(1)
+    frame.put_byte(120)
+    frame.put_byte(16)
+    frame.put_byte(12)
+    frame.put_byte(7)
+    frame.put_byte(8)
+    frame.put_byte(144)
+    frame.put_byte(1)
+    for k in 0..6:
+        frame.put_byte(0)
     /#/ the char type that string pointers point to
     dw_push(&tids, 0 - 2)
     dw_push(&toffs, 0)
@@ -343,6 +359,21 @@ fn build_dwarf(l: &Linker, base: int, abbrev: &Txt, info: &Txt, line: &Txt) => b
                         fhead.put_byte(0)
                         dw_w64(&fhead, faddr)
                         dw_w64(&fhead, fsize)
+                        /#/ the frame base is the CFA, which is rbp+16 once `push rbp; mov rbp, rsp` ran
+                        fhead.put_byte(1)
+                        fhead.put_byte(156)
+                        dw_w32(frame, 28)
+                        dw_w32(frame, 0)
+                        dw_w64(frame, faddr)
+                        dw_w64(frame, fsize)
+                        frame.put_byte(65)
+                        frame.put_byte(14)
+                        frame.put_byte(16)
+                        frame.put_byte(134)
+                        frame.put_byte(2)
+                        frame.put_byte(67)
+                        frame.put_byte(13)
+                        frame.put_byte(6)
             elif c == int('L') && live:
                 let q = start + 2
                 let off = 0
@@ -434,6 +465,7 @@ fn build_dwarf(l: &Linker, base: int, abbrev: &Txt, info: &Txt, line: &Txt) => b
         dw_abp(abbrev, 3, 8)
         dw_abp(abbrev, 17, 1)
         dw_abp(abbrev, 18, 7)
+        dw_abp(abbrev, 64, 24)
         dw_abp(abbrev, 63, 25)
         abbrev.put_byte(0)
         abbrev.put_byte(0)
