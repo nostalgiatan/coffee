@@ -1,0 +1,54 @@
+/#/ Which machine the code is made for. `--target=<arch>-<os>` names it; the default is the machine the
+/#/ compiler runs on, x86-64 Linux, the only one there is so far. Everything that depends on the
+/#/ target asks here: `gen_function` picks the code generator, and the pieces still to be made per
+/#/ target (the runtime's system calls in `rt/src/min.cf`, the object and executable format in `elf.cf`
+/#/ and `ld/`) are listed in docs/explanation/ir-lowering-design.md.
+use * in txt
+use * in gen
+use * in fun
+use * in names
+use * in rep
+use * in gen_x86_fun
+
+/#/ The architectures and systems a target name may use.
+fn arch_x86_64() => int:
+    return 0
+
+fn arch_aarch64() => int:
+    return 1
+
+fn os_linux() => int:
+    return 0
+
+let target_arch = 0
+let target_os = 0
+
+/#/ Does the text begin with `p`?
+fn has_prefix(t: &Txt, p: &str) => bool:
+    if t.n < len(p):
+        return false
+    for i in 0..len(p):
+        if t.b[i] != ch(p, i):
+            return false
+    return true
+
+/#/ The names accepted by `--target=`, for the error message.
+fn target_names() => str:
+    return "x86_64-linux"
+
+/#/ Chooses the target by its name; 0 when it was set, 1 when the name is unknown, 2 when it is known
+/#/ but there is no code generator for it yet.
+fn set_target(name: &Txt) => int:
+    if name.is("x86_64-linux") || name.is("x86_64"):
+        target_arch = arch_x86_64()
+        target_os = os_linux()
+        return 0
+    if name.is("aarch64-linux") || name.is("aarch64"):
+        return 2
+    return 1
+
+/#/ The code of function `f` for the target; false when it could not be made.
+fn gen_function(g: &Gen, f: &Fun, rs: &Reps, sy: &Names) => bool:
+    if target_arch == arch_x86_64():
+        return g_gen_fun(g, f, rs, sy)
+    return false

@@ -1,0 +1,36 @@
+/#/ The target names `--target=` accepts.
+use * in say
+use * in target
+use * in txt
+use fflush in libc of c
+
+fn expect(what: int, got: int, want: int) => int:
+    if got != want:
+        say(f"MISS #{what}: got {got}, want {want}\n")
+        fflush(0)
+        return 1
+    return 0
+
+fn st(name: &str) => int:
+    let t = new_txt()
+    t.put(name)
+    return set_target(&t)
+
+fn hp(text: &str, p: &str) => int:
+    let t = new_txt()
+    t.put(text)
+    if has_prefix(&t, p):
+        return 1
+    return 0
+
+fn main() => int:
+    let m = 0
+    m = m + expect(1, st("x86_64-linux"), 0)
+    m = m + expect(2, st("x86_64"), 0)
+    m = m + expect(3, st("aarch64-linux"), 2)
+    m = m + expect(4, st("riscv"), 1)
+    m = m + expect(5, st(""), 1)
+    m = m + expect(6, target_arch, arch_x86_64())
+    m = m + expect(7, hp("--target=x", "--target="), 1)
+    m = m + expect(8, hp("--targe", "--target="), 0)
+    return m

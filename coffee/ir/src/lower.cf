@@ -16,6 +16,7 @@ use * in print
 use * in own
 use * in decimal
 use * in legalize
+use * in target
 
 /#/ The IR representation of a type; -1 when it has none yet.
 fn rep_of(t: &Tys, g: &Syms, x: int) => int:
@@ -3660,7 +3661,7 @@ class Lower:
                 if ir_dump:
                     say(f"verifier: {vd.n} findings in a function, first: code {vd.code[0]} instruction {vd.inst[0]} block {vd.blk[0]}\n")
         let code0 = self.mc.a.pos()
-        if !g_gen_fun(&self.mc, &self.f, &self.rs, &self.names):
+        if !gen_function(&self.mc, &self.f, &self.rs, &self.names):
             self.mc_err = self.mc_err + 1
         if stats_on || lint_on:
             let fname = new_txt()

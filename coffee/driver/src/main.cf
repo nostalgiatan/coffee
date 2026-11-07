@@ -181,6 +181,15 @@ fn parse_cli(fl: &Flat) => Cli:
                 cli.emit_cir = true
             elif w.is("--emit-flat"):
                 cli.set_flat_only()
+            elif has_prefix(&w, "--target="):
+                let tn = slice(&w, 9, w.n)
+                let st = set_target(&tn)
+                if st == 1:
+                    say(f"error: unknown target '{txt_str(&tn)}' (known: {target_names()})\n")
+                    cli.set_bad()
+                elif st == 2:
+                    say(f"error: the target '{txt_str(&tn)}' has no code generator yet (known: {target_names()})\n")
+                    cli.set_bad()
             elif w.is("-O0"):
                 cli.set_level(0)
             elif w.is("-O1"):
@@ -233,7 +242,7 @@ fn dir_of(path: &Txt) => Txt:
     return slice(path, 0, cut)
 
 fn usage() => int:
-    say("usage: coffee2 input.cf [-o output] [--have-c] [-I dir] [-O0|-O1|-O2|-O3] [--emit-obj] [--emit-cir] [--emit-flat] [--lines file] [--incremental dir] [--static|--dynamic] [-g] [--align] [--emit-ir] [--time] [-j n]\n       coffee2 -c header.h [-o output.cfc]\n")
+    say("usage: coffee2 input.cf [-o output] [--have-c] [-I dir] [-O0|-O1|-O2|-O3] [--emit-obj] [--emit-cir] [--emit-flat] [--lines file] [--incremental dir] [--static|--dynamic] [-g] [--align] [--emit-ir] [--time] [-j n] [--target=x86_64-linux]\n       coffee2 -c header.h [-o output.cfc]\n")
     fflush(0)
     return 2
 
