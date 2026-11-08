@@ -1,0 +1,40 @@
+/#/ A C library given as an object (`<lib>.o` next to its `.cfc`) is linked by the built-in linker, so a
+/#/ program that imports it needs no `cc`: the PATH below has none. The library is written in Coffee
+/#/ (`--have-c`), and calls back into a function of the program.
+use * in say
+use * in files
+use * in cstr
+use * in txt
+use system, fflush in libc of c
+
+fn put_file(path: str, body: str) => void:
+    let p = txt_of(&path)
+    let b = txt_of(&body)
+    write_file(&p, &b)
+
+fn run(target: str, runner: str) => int:
+    let dir = f"sl_{len(target)}"
+    system(f"rm -rf {dir} && mkdir {dir}")
+    let lib = "c fn twice(x: int(4)+) => int(4)+:\n    return x * 2\n\nc fn apply(f: fn(int(4)+) => int(4)+, v: int(4)+) => int(4)+:\n    return f(v) + 1\n"
+    let prog = "use twice, apply in greet of c\n\nfn main() => int:\n    let cb: fn(int(4)+) => int(4)+ = fn(x: int(4)+) => int(4)+:\n        return x + 3\n    if twice(21) != 42:\n        return 1\n    if apply(cb, 10) != 14:\n        return 2\n    return 0\n"
+    put_file(f"{dir}/greet.cf", lib)
+    put_file(f"{dir}/greet.cfc", "c fn twice(x: int(4)+) => int(4)+:\nc fn apply(f: fn(int(4)+) => int(4)+, v: int(4)+) => int(4)+:\n")
+    put_file(f"{dir}/use.cf", prog)
+    let me = f"cd {dir} && coffee2 greet.cf {target} --emit-obj -o greet.o > /dev/null 2>&1 && "
+    let tool = "$(command -v coffee2)"
+    let build = f"{me}PATH=$(dirname {tool}):/nonexistent coffee2 use.cf {target} -o use > build.log 2>&1 && {runner} ./use"
+    let r = system(build)
+    system(f"rm -rf {dir}")
+    if r != 0:
+        say(f"MISS: {target} {runner}: status {r}\n")
+        fflush(0)
+        return 1
+    return 0
+
+fn main() => int:
+    let m = run("--target=x86_64-linux --static", "")
+    if system("command -v qemu-riscv64 > /dev/null 2>&1") == 0:
+        m = m + run("--target=riscv64-linux --static", "qemu-riscv64")
+    if system("command -v qemu-aarch64 > /dev/null 2>&1") == 0:
+        m = m + run("--target=aarch64-linux --static", "qemu-aarch64")
+    return m

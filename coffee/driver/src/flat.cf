@@ -121,6 +121,53 @@ class Flat:
                     cmd.put_byte(self.libs.b[k])
                 st = i + 1
 
+    /#/ The objects or archives that stand for the libraries the program imports, for the built-in linker:
+    /#/ `<lib>.o` or `lib<lib>.a` in a directory a `.cfc` was found in, one path per line. A library with
+    /#/ neither (a shared library, say) adds nothing, which `static_objs_complete` tells.
+    fn static_objs(self) => Txt:
+        let out = new_txt()
+        let st = 0
+        for i in 0..self.libs.n:
+            if self.libs.b[i] == 10:
+                let lib = slice(&self.libs, st, i)
+                st = i + 1
+                let ds = 0
+                let hit = false
+                for k in 0..self.lib_dirs.n:
+                    if self.lib_dirs.b[k] == 10 && !hit:
+                        let d = slice(&self.lib_dirs, ds, k)
+                        ds = k + 1
+                        let p1 = copy_txt(&d)
+                        p1.put_byte(47)
+                        p1.put_all(&lib)
+                        p1.put(".o")
+                        let p2 = copy_txt(&d)
+                        p2.put("/lib")
+                        p2.put_all(&lib)
+                        p2.put(".a")
+                        if read_file(&p1).n >= 0:
+                            out.put_all(&p1)
+                            out.put_byte(10)
+                            hit = true
+                        elif read_file(&p2).n >= 0:
+                            out.put_all(&p2)
+                            out.put_byte(10)
+                            hit = true
+        return out
+
+    /#/ Does every imported library have an object or archive (`static_objs`)?
+    fn static_objs_complete(self) => bool:
+        let objs = self.static_objs()
+        let want = 0
+        for i in 0..self.libs.n:
+            if self.libs.b[i] == 10:
+                want = want + 1
+        let got = 0
+        for i in 0..objs.n:
+            if objs.b[i] == 10:
+                got = got + 1
+        return want == got
+
     fn write_to(self, path: &Txt) => void:
         write_file(path, &self.out)
 

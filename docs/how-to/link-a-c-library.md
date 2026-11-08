@@ -53,6 +53,12 @@ coffee2 use_c.cf -o use_c
 
 输出 `42`。
 
+## 不用 `cc` 链接
+
+库以目标文件(`greet.o`)或静态库(`libgreet.a`)的形式放在 `.cfc` 同一目录时,`coffee2` 用自带的链接器 `cfld` 链接,机器上不需要 `cc`。这对三个目标都成立(`--target=aarch64-linux`、`--target=riscv64-linux` 要加 `--static`;x86-64 自动选择)。C 部分用目标对应的编译器做,例如 `clang --target=riscv64-linux-gnu -ffreestanding -O1 -c greet.c -o greet.o`。
+
+条件:库只依赖内置 C 库(`library/cfc/libc.cfc` 里 `rt/src/min.cf` 提供的那部分)。依赖 glibc 其余部分的库(`printf`、`snprintf`、`libm`)或只有 `.so` 的库,仍然走 `cc`;在没有 `cc` 的机器上这类程序链接失败。回调(C 调 Coffee 函数值)、浮点、超过 8 个整数参数的调用在三个目标上都测过(`driver/tests/test_static_lib.cf`)。
+
 ## 注意
 
 - 同名函数在 libc 或 libm 的内置表里已经有时,保留内置表的签名。
