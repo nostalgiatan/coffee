@@ -500,8 +500,8 @@ fn gr_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => vo
             rv_cp = 0 - 1
             rv_ca = tr_s0()
         else:
-            gr_ld(g, tr_s0(), f, f.a[i])
-            rv_opi(&g.a, 7, tr_s0(), tr_s0(), 255)
+            let cr = gr_src(g, f, f.a[i], tr_s0())
+            rv_opi(&g.a, 7, tr_s0(), cr, 255)
             rv_cp = 0 - 1
             rv_ca = tr_s0()
         if f.eargn[e1] == 0 && f.eargn[e2] == 0:

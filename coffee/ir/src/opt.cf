@@ -317,8 +317,13 @@ fn dead_params(f: &Fun) => bool:
             /#/ nobody uses it, or only the jump around the loop hands it back to itself
             let own = 0
             for e in 0..f.ne:
-                if f.eto[e] == b && k < f.eargn[e] && f.follow(f.pool[f.eargs[e] + k]) == p:
-                    own = own + 1
+                if f.eto[e] == b && k < f.eargn[e]:
+                    let x = f.follow(f.pool[f.eargs[e] + k])
+                    if x == p:
+                        own = own + 1
+                    elif (f.op[x] == int(Op.Add) || f.op[x] == int(Op.Sub)) && f.uses[x] == 1 && f.follow(f.a[x]) == p && f.follow(f.b[x]) != p && rp_is_int(f.rep[x]):
+                        /#/ or the step `p + c`, which only goes round the loop to p
+                        own = own + 1
             if f.uses[p] == own:
                 keep[k] = 0
                 any = true
@@ -715,6 +720,28 @@ fn implies_ult(f: &Fun, c2: int, c: int) => bool:
         return false
     return f.cval(k2) <= f.cval(k) && nonneg(f, x)
 
+/#/ Does a branch that decides the way into block `b` (or into a block that dominates it) say that `x & m` is zero? The
+/#/ true edge of `x & m == 0` is entered by one edge of its branch.
+fn known_low_zero(f: &Fun, idom: &buf<int>, npred: &buf<int>, pred1: &buf<int>, b: int, x: int, m: int) => bool:
+    let y = b
+    while true:
+        if npred[y] == 1:
+            let pb = pred1[y]
+            let pt = f.blast[pb]
+            if pt >= 0 && f.op[pt] == int(Op.CondBr) && f.eto[f.b[pt]] == y && f.eto[f.c[pt]] != y:
+                let c = f.follow(f.a[pt])
+                if f.op[c] == int(Op.Cmp) && f.aux[c] == int(Pr.Eq) && f.is_const(f.follow(f.b[c])) && f.cval(f.follow(f.b[c])) == 0:
+                    let an = f.follow(f.a[c])
+                    if f.op[an] == int(Op.And) && f.rep[an] == int(Rp.I64):
+                        let p = f.follow(f.a[an])
+                        let q = f.follow(f.b[an])
+                        if p == x && f.is_const(q) && (f.cval(q) & m) == m:
+                            return true
+        if y == 0 || idom[y] == y || idom[y] < 0:
+            return false
+        y = idom[y]
+    return false
+
 /#/ A pure instruction that an instruction with the same operation and operands in a dominating
 /#/ block already computed is that one. Then a branch on a condition that a dominating branch has
 /#/ decided (the block is entered by one edge of it) goes one way only: the second bounds check
@@ -760,6 +787,10 @@ fn cse_branches(f: &Fun) => bool:
     let stack: buf<int> = new_buf(int, nb + 1)
     let ka: buf<int> = new_buf(int, 4)
     let kb: buf<int> = new_buf(int, 4)
+    /#/ the scalar loads whose value is still the memory's at the end of a block (no store or call since): up to 8 each, handed
+    /#/ on to a block that has no other way in
+    let avl: buf<int> = new_buf(int, (nb + 1) * 8)
+    let avn: buf<int> = new_buf(int, nb + 1)
     let sp = 1
     stack[0] = 0
     while sp > 0:
@@ -772,9 +803,29 @@ fn cse_branches(f: &Fun) => bool:
         else:
             entered[b] = 1
             mark[b] = nlog
+            avn[b] = 0
+            if npred[b] == 1 && pred1[b] >= 0 && pred1[b] != b && entered[pred1[b]] == 1:
+                for q in 0..avn[pred1[b]]:
+                    avl[b * 8 + q] = avl[pred1[b] * 8 + q]
+                avn[b] = avn[pred1[b]]
             let i = f.bfirst[b]
             while i >= 0:
                 let nxt = f.nx[i]
+                if !pure_op(f.op[i]) && f.fwd[i] < 0:
+                    if f.op[i] == int(Op.Load) && f.rep[i] < rp_first_agg():
+                        let same = -1
+                        for q in 0..avn[b]:
+                            let e = avl[b * 8 + q]
+                            if f.rep[e] == f.rep[i] && f.ty[e] == f.ty[i] && f.follow(f.a[e]) == f.follow(f.a[i]):
+                                same = e
+                        if same >= 0:
+                            replace_inst(f, i, same)
+                            changed = true
+                        elif avn[b] < 8:
+                            avl[b * 8 + avn[b]] = i
+                            avn[b] = avn[b] + 1
+                    elif f.op[i] != int(Op.Load) && f.op[i] != int(Op.Br) && f.op[i] != int(Op.CondBr) && f.op[i] != int(Op.Switch) && f.op[i] != int(Op.Slot):
+                        avn[b] = 0
                 if pure_op(f.op[i]) && f.fwd[i] < 0:
                     operands(f, i, &ka)
                     let h = hmix(hmix(hmix(hmix(hmix(f.op[i], f.rep[i]), ka[0]), ka[1]), ka[2]), f.aux[i]) % cap
@@ -797,6 +848,23 @@ fn cse_branches(f: &Fun) => bool:
                         log[nlog] = h
                         nlog = nlog + 1
                 i = nxt
+            /#/ `x // 2^k` where a branch says the low k bits of x are zero: an arithmetic shift, no rounding to fix
+            let di = f.bfirst[b]
+            while di >= 0:
+                if f.op[di] == int(Op.SDiv) && f.rep[di] == int(Rp.I64) && f.fwd[di] < 0:
+                    let dk = f.follow(f.b[di])
+                    if f.is_const(dk) && f.cval(dk) >= 2 && (f.cval(dk) & (f.cval(dk) - 1)) == 0:
+                        let sh = 0
+                        while (1 << sh) < f.cval(dk):
+                            sh = sh + 1
+                        if known_low_zero(f, &idom, &npred, &pred1, b, f.follow(f.a[di]), f.cval(dk) - 1):
+                            let ks = f.cint(int(Rp.I64), sh)
+                            f.uses[f.b[di]] = f.uses[f.b[di]] - 1
+                            f.uses[ks] = f.uses[ks] + 1
+                            f.op[di] = int(Op.AShr)
+                            f.b[di] = ks
+                            changed = true
+                di = f.nx[di]
             /#/ a decided condition: walk up the blocks that are entered by one edge of a branch
             let t = f.blast[b]
             if t >= 0 && f.op[t] == int(Op.CondBr):
@@ -3214,8 +3282,28 @@ fn reassoc_adds(f: &Fun) => bool:
         recount_uses(f)
     return changed
 
+/#/ An integer operation whose operands became constants after it was built (a variable that never changes, seen through the
+/#/ block parameters) is the constant: `size - 1` for `let size = 262144`.
+fn fold_consts(f: &Fun) => bool:
+    let changed = false
+    for b in 0..f.nb:
+        let i = f.bfirst[b]
+        while i >= 0:
+            let nxt = f.nx[i]
+            let o = f.op[i]
+            if f.fwd[i] < 0 && (o == int(Op.Add) || o == int(Op.Sub) || o == int(Op.Mul) || o == int(Op.And) || o == int(Op.Or) || o == int(Op.Xor) || o == int(Op.Shl) || o == int(Op.AShr) || o == int(Op.LShr) || o == int(Op.SDiv) || o == int(Op.SRem) || o == int(Op.UDiv) || o == int(Op.URem)) && rp_is_int(f.rep[i]):
+                let x = f.follow(f.a[i])
+                let y = f.follow(f.b[i])
+                if f.is_const(x) && f.is_const(y) && f.can_fold(o, f.rep[i], f.cval(x), f.cval(y)):
+                    replace_inst(f, i, f.cint(f.rep[i], f.fold2(o, f.rep[i], f.cval(x), f.cval(y))))
+                    changed = true
+            i = nxt
+    return changed
+
 fn value_passes(f: &Fun, rs: &Reps, split: bool) => bool:
     let changed = false
+    if fold_consts(f):
+        changed = true
     if reassoc_adds(f):
         changed = true
     if fold_extracts(f):

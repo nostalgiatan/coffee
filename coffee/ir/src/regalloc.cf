@@ -380,6 +380,11 @@ fn lscan_int(g: &Gen, f: &Fun, order: &buf<int>, nd: int, regs: &buf<int>, npool
                     shared = r
         if shared >= 0:
             fr = shared
+        elif g.coal[d] >= 0 && g.home[g.dv[g.coal[d]]] >= 0:
+            /#/ the parameter's range ended before this value's began: its register, if nobody took it since, saves the copy
+            for r in 0..npool:
+                if regs[r] == g.home[g.dv[g.coal[d]]] && occ[r] < 0 && ((allow[d] >> r) & 1) == 1 && fr < 0:
+                    fr = r
         let hint = g_hint_reg(g, f, v)
         if hint >= 0 && fr < 0:
             for r in 0..npool:
