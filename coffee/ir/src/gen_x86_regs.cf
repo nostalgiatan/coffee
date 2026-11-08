@@ -152,6 +152,16 @@ fn g_live_ranges(g: &Gen, f: &Fun, rs: &Reps, hoist: bool) => int:
         for k in 0..g.ned:
             if f.eto[g.ed[k]] == 0:
                 entry_ok = false
+    ra_loop_calls = false
+    for b in 0..f.nb:
+        if depth[b] == 0:
+            continue
+        let ci = f.bfirst[b]
+        while ci >= 0:
+            let cop = f.op[ci]
+            if cop == int(Op.Call) || cop == int(Op.CCall) || cop == int(Op.CallI) || cop == int(Op.Drop) || cop == int(Op.Clone) || cop == int(Op.Alloc) || cop == int(Op.Free):
+                ra_loop_calls = true
+            ci = f.nx[ci]
     if entry_ok && hoist:
         for b in 0..f.nb:
             if depth[b] == 0:
@@ -159,7 +169,7 @@ fn g_live_ranges(g: &Gen, f: &Fun, rs: &Reps, hoist: bool) => int:
             let i = f.bfirst[b]
             while i >= 0:
                 for k in 0..f.nval(i):
-                    nd = g_hoist_const(g, f, f.val_at(i, k), nd)
+                    nd = g_hoist_use(g, f, i, k, nd)
                 i = f.nx[i]
             g_term_edges(g, f, b)
             for k in 0..g.ned:

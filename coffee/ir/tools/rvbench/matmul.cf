@@ -1,0 +1,18 @@
+fn main() => int:
+    let n = 64
+    let a: buf<int> = new_buf(int, n * n)
+    let b: buf<int> = new_buf(int, n * n)
+    let c: buf<int> = new_buf(int, n * n)
+    for i in 0..n * n:
+        a[i] = i % 17
+        b[i] = i % 13
+    for i in 0..n:
+        for j in 0..n:
+            let s = 0
+            for k in 0..n:
+                s += a[i * n + k] * b[k * n + j]
+            c[i * n + j] = s
+    let sum = 0
+    for i in 0..n * n:
+        sum = (sum * 31 + c[i]) % 1000000007
+    return sum % 256

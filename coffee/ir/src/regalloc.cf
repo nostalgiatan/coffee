@@ -133,6 +133,45 @@ fn g_hoist_const(g: &Gen, f: &Fun, v: int, nd: int) => int:
     g.did[x] = nd
     return nd + 1
 
+/#/ riscv64: integer constants that an instruction needs in a register (no immediate form) are kept in one too, when they are used in a loop.
+let ra_int_consts = false
+
+/#/ set while the function being allocated has a call inside a loop: kept registers would be saved and restored for every call
+let ra_loop_calls = false
+
+/#/ `v` is operand `k` of instruction `i`: hoist it if it is such a constant (see `ra_int_consts`); returns the new count.
+fn g_hoist_use(g: &Gen, f: &Fun, i: int, k: int, nd: int) => int:
+    let v = f.val_at(i, k)
+    if !ra_int_consts || v < 0 || ra_loop_calls:
+        return g_hoist_const(g, f, v, nd)
+    let x = g_res(g, f, v)
+    let r = f.rep[x]
+    if f.op[x] != int(Op.Const) || r == int(Rp.F32) || r == int(Rp.F64) || r >= rp_first_agg() || f.aux[x] == 0 || g.did[x] >= 0:
+        return g_hoist_const(g, f, v, nd)
+    let op = f.op[i]
+    let near = f.aux[x] >= 0 - 2048 && f.aux[x] < 2048
+    let want = false
+    if op == int(Op.Cmp) || op == int(Op.Mul) || op == int(Op.SDiv) || op == int(Op.UDiv) || op == int(Op.SRem) || op == int(Op.URem) || op == int(Op.Store):
+        want = true
+    elif op == int(Op.Add) || op == int(Op.Sub) || op == int(Op.And) || op == int(Op.Or) || op == int(Op.Xor):
+        want = k == 0 || !near
+    if !want:
+        return nd
+    if g.nhc >= len(g.hc):
+        g.hc = buf_resize(g.hc, (g.nhc + 1) * 2)
+    /#/ an equal constant already kept shares its register (and its dense value)
+    for q in 0..g.nhc:
+        let y = g.hc[q]
+        if f.aux[y] == f.aux[x] && f.rep[y] != int(Rp.F32) && f.rep[y] != int(Rp.F64):
+            g.hc[g.nhc] = x
+            g.nhc = g.nhc + 1
+            g.did[x] = g.did[y]
+            return nd
+    g.hc[g.nhc] = x
+    g.nhc = g.nhc + 1
+    g.did[x] = nd
+    return nd + 1
+
 fn g_note_use(g: &Gen, f: &Fun, v: int, b: int, p: int, w: int) => void:
     if v < 0:
         return

@@ -1,0 +1,16 @@
+fn main() => int:
+    let best = 0
+    let at = 0
+    for start in 1..20000:
+        let n = start
+        let steps = 0
+        while n != 1:
+            if n % 2 == 0:
+                n = n // 2
+            else:
+                n = 3 * n + 1
+            steps += 1
+        if steps > best:
+            best = steps
+            at = start
+    return (at + best) % 256

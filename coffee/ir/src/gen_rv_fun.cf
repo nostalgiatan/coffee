@@ -109,6 +109,23 @@ fn gr_gen_fun1(g: &Gen, f: &Fun, rs: &Reps, sy: &Names) => bool:
                 gr_st(g, p, tr_s1())
                 cs = cs + 1
         p = f.nx[p]
+    /#/ the float constants used in loops, loaded once
+    for k in 0..g.nhc:
+        let c = g.hc[k]
+        if g.dv[g.did[c]] != c:
+            continue
+        if g.home[c] >= 0:
+            rv_li(&g.a, g.home[c], f.aux[c])
+        elif g.xhome[c] >= 0:
+            let single = f.rep[c] == int(Rp.F32)
+            if f.aux[c] == 0:
+                rv_fmv_to(&g.a, g.xhome[c], 0, single)
+            else:
+                let bits = f.aux[c]
+                if single:
+                    bits = bits & 4294967295
+                rv_li(&g.a, tr_s0(), bits)
+                rv_fmv_to(&g.a, g.xhome[c], tr_s0(), single)
     g.mk_n = 0
     let last_ln = 0
     for oi in 0..f.nb:

@@ -118,10 +118,8 @@ fn gr_cmp_cond(g: &Gen, f: &Fun, i: int) => void:
         else:
             rv_cb = gr_src(g, f, f.b[i], tr_s1())
         return
-    gr_ld_ext(g, tr_s0(), f, f.a[i], signed)
-    gr_ld_ext(g, tr_s1(), f, f.b[i], signed)
-    rv_ca = tr_s0()
-    rv_cb = tr_s1()
+    rv_ca = gr_srcx(g, f, f.a[i], tr_s0(), signed)
+    rv_cb = gr_srcx(g, f, f.b[i], tr_s1(), signed)
 
 /#/ d = the float compare `i` (0 or 1; false when either operand is NaN).
 fn gr_fcmp_set(g: &Gen, f: &Fun, i: int, d: int) => void:
@@ -213,6 +211,17 @@ fn gr_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => vo
             rv_addi(&g.a, d, ra, k)
             gr_st(g, i, d)
             return
+        if (op == int(Op.And) || op == int(Op.Or) || op == int(Op.Xor)) && g_small_imm(g, f, f.b[i]):
+            let k = f.aux[g_res(g, f, f.b[i])]
+            if k >= 0 - 2048 && k < 2048:
+                let f3 = 7
+                if op == int(Op.Or):
+                    f3 = 6
+                elif op == int(Op.Xor):
+                    f3 = 4
+                rv_opi(&g.a, f3, d, ra, k)
+                gr_st(g, i, d)
+                return
         let rb = gr_src(g, f, f.b[i], tr_s1())
         if op == int(Op.Add):
             rv_add(&g.a, d, ra, rb)
@@ -240,16 +249,16 @@ fn gr_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => vo
         return
     if op == int(Op.SDiv) || op == int(Op.SRem) || op == int(Op.UDiv) || op == int(Op.URem):
         let signed = op == int(Op.SDiv) || op == int(Op.SRem)
-        gr_ld_ext(g, tr_s0(), f, f.a[i], signed)
-        gr_ld_ext(g, tr_s1(), f, f.b[i], signed)
+        let da = gr_srcx(g, f, f.a[i], tr_s0(), signed)
+        let db = gr_srcx(g, f, f.b[i], tr_s1(), signed)
         if op == int(Op.SDiv):
-            rv_div(&g.a, tr_s2(), tr_s0(), tr_s1())
+            rv_div(&g.a, tr_s2(), da, db)
         elif op == int(Op.UDiv):
-            rv_divu(&g.a, tr_s2(), tr_s0(), tr_s1())
+            rv_divu(&g.a, tr_s2(), da, db)
         elif op == int(Op.SRem):
-            rv_rem(&g.a, tr_s2(), tr_s0(), tr_s1())
+            rv_rem(&g.a, tr_s2(), da, db)
         else:
-            rv_remu(&g.a, tr_s2(), tr_s0(), tr_s1())
+            rv_remu(&g.a, tr_s2(), da, db)
         gr_st(g, i, tr_s2())
         return
     if op == int(Op.Shl) || op == int(Op.AShr) || op == int(Op.LShr):
@@ -259,20 +268,20 @@ fn gr_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => vo
         elif op == int(Op.AShr):
             kind = 2
         let d = gr_dst(g, i, tr_s0())
-        gr_ld_ext(g, tr_s0(), f, f.a[i], op == int(Op.AShr))
+        let sa = gr_srcx(g, f, f.a[i], tr_s0(), op == int(Op.AShr))
         if g_small_imm(g, f, f.b[i]):
             let k = f.aux[g_res(g, f, f.b[i])]
             if k >= 0 && k < 64:
-                rv_shift_i(&g.a, kind, d, tr_s0(), k)
+                rv_shift_i(&g.a, kind, d, sa, k)
                 gr_st(g, i, d)
                 return
         let rb = gr_src(g, f, f.b[i], tr_s1())
         if kind == 0:
-            rv_sll(&g.a, d, tr_s0(), rb)
+            rv_sll(&g.a, d, sa, rb)
         elif kind == 1:
-            rv_srl(&g.a, d, tr_s0(), rb)
+            rv_srl(&g.a, d, sa, rb)
         else:
-            rv_sra(&g.a, d, tr_s0(), rb)
+            rv_sra(&g.a, d, sa, rb)
         gr_st(g, i, d)
         return
     if op == int(Op.FnAddr):
@@ -320,7 +329,9 @@ fn gr_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => vo
         return
     if op == int(Op.SExt) || op == int(Op.ZExt):
         let d = gr_dst(g, i, tr_s0())
-        gr_ld_ext(g, d, f, f.a[i], op == int(Op.SExt))
+        let sx = gr_srcx(g, f, f.a[i], d, op == int(Op.SExt))
+        if sx != d:
+            rv_mov_rr(&g.a, d, sx)
         gr_st(g, i, d)
         return
     if op == int(Op.SiToFp) || op == int(Op.UiToFp):

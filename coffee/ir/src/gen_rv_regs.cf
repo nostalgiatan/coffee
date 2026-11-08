@@ -41,21 +41,30 @@ fn gr_ld(g: &Gen, reg: int, f: &Fun, v: int) => void:
     else:
         rv_ld(&g.a, reg, tr_fp(), g.voff[x], 8)
 
-/#/ reg = the value extended from its width
-fn gr_ld_ext(g: &Gen, reg: int, f: &Fun, v: int, signed: bool) => void:
-    gr_ld(g, reg, f, v)
+/#/ The register that holds `v` extended from its width: its own when it needs no extension, else `scratch`.
+fn gr_srcx(g: &Gen, f: &Fun, v: int, scratch: int, signed: bool) => int:
     let x = g_res(g, f, v)
     let r = f.rep[x]
-    if f.op[x] == int(Op.Cmp):
-        return
-    if r == int(Rp.I8) || r == int(Rp.I16) || r == int(Rp.I32):
-        rv_extend(&g.a, reg, reg, rsize_scalar(r), signed)
+    if f.op[x] == int(Op.Cmp) || !(r == int(Rp.I8) || r == int(Rp.I16) || r == int(Rp.I32)):
+        return gr_src(g, f, v, scratch)
+    let s = gr_src(g, f, v, scratch)
+    rv_extend(&g.a, scratch, s, rsize_scalar(r), signed)
+    return scratch
+
+/#/ reg = the value extended from its width
+fn gr_ld_ext(g: &Gen, reg: int, f: &Fun, v: int, signed: bool) => void:
+    let s = gr_srcx(g, f, v, reg, signed)
+    if s != reg:
+        rv_mov_rr(&g.a, reg, s)
 
 /#/ The register that holds `v`: its own when it has one, else `scratch`, loaded with it.
 fn gr_src(g: &Gen, f: &Fun, v: int, scratch: int) => int:
-    let h = g.home[g_res(g, f, v)]
+    let x = g_res(g, f, v)
+    let h = g.home[x]
     if h >= 0:
         return h
+    if f.op[x] == int(Op.Const) && f.aux[x] == 0 && g.xhome[x] < 0:
+        return 0
     gr_ld(g, scratch, f, v)
     return scratch
 
@@ -162,6 +171,124 @@ fn gr_val_to(g: &Gen, f: &Fun, rs: &Reps, db: int, dd: int, v: int) => void:
 fn gr_layout(g: &Gen, f: &Fun, rs: &Reps) => void:
     layout_frame(g, f, rs, 16, false, 0)
 
+/#/ The copies of edge `e` that are not independent, through registers: every argument into a temporary (t1 to t5, ft0, ft1), then
+/#/ the temporaries into the parameters. False (nothing emitted) when there are more than fit or an aggregate.
+fn gr_edge_regs(g: &Gen, f: &Fun, e: int) => bool:
+    let n = f.eargn[e]
+    let ni = 0
+    let nf = 0
+    let p = f.pfirst[f.eto[e]]
+    for k in 0..n:
+        let r = f.rep[p]
+        if r >= rp_first_agg():
+            return false
+        if g_is_int_class(g, r):
+            ni = ni + 1
+        else:
+            nf = nf + 1
+        p = f.nx[p]
+    if ni > 5 || nf > 2:
+        return false
+    let ii = 0
+    let ff = 0
+    for k in 0..n:
+        let v = f.pool[f.eargs[e] + k]
+        let x = g_res(g, f, v)
+        if g_is_int_class(g, f.rep[x]):
+            gr_ld(g, gr_etmp(ii), f, v)
+            ii = ii + 1
+        else:
+            gr_fmove(g, f, ff, v)
+            ff = ff + 1
+    ii = 0
+    ff = 0
+    p = f.pfirst[f.eto[e]]
+    for k in 0..n:
+        let r = f.rep[p]
+        if g_is_int_class(g, r):
+            if g.home[p] >= 0:
+                rv_mov_rr(&g.a, g.home[p], gr_etmp(ii))
+            else:
+                rv_st(&g.a, tr_fp(), g.voff[p], gr_etmp(ii), 8)
+            ii = ii + 1
+        else:
+            if g.xhome[p] >= 0:
+                rv_fmv_ff(&g.a, g.xhome[p], ff)
+            else:
+                rv_fldst(&g.a, false, ff, tr_fp(), g.voff[p], rsize_scalar(r))
+            ff = ff + 1
+        p = f.nx[p]
+    return true
+
+/#/ The copies of edge `e` as a parallel move when all the parameters are integers: a parameter in the frame is stored first (a store
+/#/ writes no register), then each copy whose register nobody still reads is made, a cycle being broken with a temporary.
+fn gr_edge_moves(g: &Gen, f: &Fun, e: int) => bool:
+    let n = f.eargn[e]
+    if n > 12:
+        return false
+    let p = f.pfirst[f.eto[e]]
+    for k in 0..n:
+        let r = f.rep[p]
+        if r >= rp_first_agg() || !g_is_int_class(g, r):
+            return false
+        p = f.nx[p]
+    let dst: buf<int> = new_buf(int, n + 1)
+    let src: buf<int> = new_buf(int, n + 1)
+    let val: buf<int> = new_buf(int, n + 1)
+    let live: buf<int> = new_buf(int, n + 1)
+    p = f.pfirst[f.eto[e]]
+    for k in 0..n:
+        let v = f.pool[f.eargs[e] + k]
+        val[k] = v
+        dst[k] = g.home[p]
+        src[k] = g.home[g_res(g, f, v)]
+        live[k] = 1
+        if g.home[p] < 0:
+            let sr = gr_src(g, f, v, tr_s0())
+            rv_st(&g.a, tr_fp(), g.voff[p], sr, 8)
+            live[k] = 0
+        elif src[k] == dst[k]:
+            live[k] = 0
+        p = f.nx[p]
+    let ntmp = 0
+    let left = 0
+    for k in 0..n:
+        left = left + live[k]
+    while left > 0:
+        let moved = false
+        for k in 0..n:
+            if live[k] == 1:
+                let busy = false
+                for j in 0..n:
+                    if live[j] == 1 && j != k && src[j] == dst[k]:
+                        busy = true
+                if !busy:
+                    if src[k] >= 0:
+                        rv_mov_rr(&g.a, dst[k], src[k])
+                    else:
+                        gr_ld(g, dst[k], f, val[k])
+                    live[k] = 0
+                    left = left - 1
+                    moved = true
+        if !moved:
+            if ntmp >= 5:
+                return false
+            let k = 0
+            while live[k] == 0:
+                k = k + 1
+            let t = gr_etmp(ntmp)
+            ntmp = ntmp + 1
+            rv_mov_rr(&g.a, t, dst[k])
+            for j in 0..n:
+                if live[j] == 1 && src[j] == dst[k]:
+                    src[j] = t
+    return true
+
+fn gr_etmp(k: int) => int:
+    if k < 2:
+        return 6 + k
+    return 28 + (k - 2)
+
 /#/ Copies what edge `e` passes into the parameters of the block it enters; through a scratch
 /#/ area when the copies are not independent (an argument is itself a parameter of that block, or lives
 /#/ in the register of a parameter written before it).
@@ -181,6 +308,10 @@ fn gr_edge_copy(g: &Gen, f: &Fun, rs: &Reps, e: int) => void:
             else:
                 gr_val_to(g, f, rs, tr_fp(), g.voff[p], f.pool[f.eargs[e] + k])
             p = f.nx[p]
+        return
+    if gr_edge_moves(g, f, e):
+        return
+    if gr_edge_regs(g, f, e):
         return
     let at = 0
     for k in 0..n:
@@ -205,7 +336,9 @@ fn gr_edge_copy(g: &Gen, f: &Fun, rs: &Reps, e: int) => void:
 /#/ no more registers. Every integer register of the pool is kept by a callee. Floats go to fs0..fs11 when they live across a
 /#/ call, else to ft2..ft11.
 fn gr_alloc_regs(g: &Gen, f: &Fun, rs: &Reps) => void:
-    let nd = g_live_ranges(g, f, rs, false)
+    ra_int_consts = true
+    let nd = g_live_ranges(g, f, rs, true)
+    ra_int_consts = false
     g.nsaved = 0
     if nd == 0:
         return
@@ -266,6 +399,12 @@ fn gr_alloc_regs(g: &Gen, f: &Fun, rs: &Reps) => void:
                     if worst < tr_nfsaved():
                         xused[worst] = 1
     let used = lscan_int(g, f, &order, nd, &regs, npool, &allow, &skip)
+    /#/ equal constants kept once share the register of the first
+    for k in 0..g.nhc:
+        let c = g.hc[k]
+        let first = g.dv[g.did[c]]
+        if first != c:
+            g.home[c] = g.home[first]
     if len(g.saved) < npool + tr_nfsaved() + 1:
         g.saved = new_buf(int, npool + tr_nfsaved() + 1)
     for r in 0..npool:
