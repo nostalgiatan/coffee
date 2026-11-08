@@ -1,8 +1,9 @@
 * text=auto eol=lf
 
-# Coffee sources: GitHub has no Coffee grammar, so show them with Python's (same indentation syntax)
-*.cf  linguist-language=Python
-*.cfc linguist-language=Python
+# Coffee sources: GitHub's Linguist has no Coffee yet, so keep them out of the language bar instead of
+# letting them count as ColdFusion or another language. The grammar for editors is editors/vscode/syntaxes/.
+*.cf  linguist-language=Text linguist-detectable=false
+*.cfc linguist-language=Text linguist-detectable=false
 
 # generated or binary: the seed compiler, IR objects, test images
 coffee/driver/seed/* binary linguist-generated
