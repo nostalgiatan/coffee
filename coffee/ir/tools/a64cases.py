@@ -46,7 +46,7 @@ TARGET = 'aarch64-linux'
 for a in sys.argv:
     if a.startswith('--target='):
         TARGET = a[9:]
-QEMU = {'aarch64-linux': 'qemu-aarch64', 'riscv64-linux': 'qemu-riscv64'}[TARGET]
+QEMU = {'aarch64-linux': ['qemu-aarch64'], 'riscv64-linux': ['qemu-riscv64'], 'riscv64-linux-rva22': ['qemu-riscv64', '-cpu', 'rva22u64'], 'riscv64-linux-rva23': ['qemu-riscv64', '-cpu', 'rva23u64']}[TARGET]
 
 
 def run(args):
@@ -54,14 +54,14 @@ def run(args):
     with tempfile.TemporaryDirectory() as d:
         p = os.path.join(d, 'c.cf')
         open(p, 'w').write(src)
-        use_qemu = shutil.which(QEMU) and '--sim' not in sys.argv
+        use_qemu = shutil.which(QEMU[0]) and '--sim' not in sys.argv
         out = os.path.join(d, 'c' if use_qemu else 'c.o')
         flag = '--static' if use_qemu else '--emit-obj'
         r = subprocess.run([coffee2, p, '--target=' + TARGET, flag, '-o', out], capture_output=True, text=True)
         if r.returncode != 0 or not os.path.exists(out):
             return name, 'compile', (r.stdout + r.stderr)[:200]
         if use_qemu:
-            r = subprocess.run([QEMU, out], capture_output=True, text=True, timeout=120)
+            r = subprocess.run(QEMU + [out], capture_output=True, text=True, timeout=120)
         else:
             r = subprocess.run([sys.executable, os.path.join(HERE, 'a64sim.py'), out, '--max-steps', '5000000'],
                                capture_output=True, text=True, timeout=120)

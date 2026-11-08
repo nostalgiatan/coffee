@@ -175,7 +175,12 @@ fn rv_not(a: &Asm, rd: int, rs: int) => void:
 
 /#/ rd = rs extended from its low `n` bytes (1, 2 or 4).
 fn rv_extend(a: &Asm, rd: int, rs: int, n: int, signed: bool) => void:
-    if n == 1:
+    if (rv_ext & 2) != 0 && n < 4 && (signed || n == 2):
+        if signed:
+            rv_zbb_ext(a, n, rd, rs)
+        else:
+            rv_zbb_ext(a, 0, rd, rs)
+    elif n == 1:
         if signed:
             rv_shift_i(a, 0, rd, rs, 56)
             rv_shift_i(a, 2, rd, rd, 56)
@@ -191,6 +196,8 @@ fn rv_extend(a: &Asm, rd: int, rs: int, n: int, signed: bool) => void:
     elif n == 4:
         if signed:
             rv_w(a, rv_enc_i(0, 27, rd, rs, 0))
+        elif (rv_ext & 1) != 0:
+            rv_zext_w(a, rd, rs)
         else:
             rv_shift_i(a, 0, rd, rs, 32)
             rv_shift_i(a, 1, rd, rd, 32)
@@ -412,3 +419,60 @@ fn rv_fldst(a: &Asm, load: bool, ft: int, base: int, disp: int, n: int) => void:
         rv_w(a, rv_enc_i(f3, 7, ft, b, d))
     else:
         rv_w(a, rv_enc_s(f3, 39, b, ft, d))
+
+/#/ ---- extensions ---------------------------------------------------------------
+
+/#/ Which extensions beyond RV64GC the code may use (a bit set, from the target): 1 Zba, 2 Zbb, 4 V.
+let rv_ext: int = 0
+
+/#/ rd = (rs1 << n) + rs2 (Zba), n = 1 to 3.
+fn rv_shadd(a: &Asm, n: int, rd: int, rs1: int, rs2: int) => void:
+    rv_w(a, rv_enc_r(16, 2 * n, 51, rd, rs1, rs2))
+
+/#/ rd = the low 32 bits of rs zero-extended (Zba add.uw with x0).
+fn rv_zext_w(a: &Asm, rd: int, rs: int) => void:
+    rv_w(a, rv_enc_r(4, 0, 59, rd, rs, 0))
+
+/#/ Zbb: sign-extension of a byte (n = 1) or halfword (n = 2), zero-extension of a halfword (n = 0).
+fn rv_zbb_ext(a: &Asm, n: int, rd: int, rs: int) => void:
+    if n == 0:
+        rv_w(a, rv_enc_r(4, 4, 59, rd, rs, 0))
+    else:
+        rv_w(a, rv_enc_i(1, 19, rd, rs, 1540 + n - 1))
+
+/#/ Vector extension. `vsetvli rd, rs1, e<8 << (sew & 7)>, m<1 << (sew >> 3)>, tu, mu`: vl = min(rs1, VLMAX) (VLMAX with rs1 = x0).
+fn rv_vsetvli(a: &Asm, rd: int, rs1: int, sew: int) => void:
+    rv_w(a, ((((sew & 7) << 3) | (sew >> 3)) << 20) | (rs1 << 15) | (7 << 12) | (rd << 7) | 87)
+
+/#/ vle / vse of the elements of size 1 << sew: vector register `v` from or to the memory at x`rs1`.
+fn rv_vmem(a: &Asm, load: bool, sew: int, v: int, rs1: int) => void:
+    let width = 0
+    if sew == 1:
+        width = 5
+    elif sew == 2:
+        width = 6
+    elif sew == 3:
+        width = 7
+    let op = 39
+    if load:
+        op = 7
+    rv_w(a, (1 << 25) | (rs1 << 15) | (width << 12) | (v << 7) | op)
+
+/#/ An unmasked vector operation: `f6` and `f3` (0 integer, 1 float, 2 integer with the multiply group) as the manual gives them.
+fn rv_vop(a: &Asm, f6: int, f3: int, vd: int, vs2: int, vs1: int) => void:
+    rv_w(a, (f6 << 26) | (1 << 25) | (vs2 << 20) | (vs1 << 15) | (f3 << 12) | (vd << 7) | 87)
+
+/#/ v[vd] = x[rs] in every element.
+fn rv_vsplat(a: &Asm, vd: int, rs: int) => void:
+    rv_vop(a, 23, 4, vd, 0, rs)
+
+/#/ v[vd] = the 5-bit immediate in every element.
+fn rv_vsplat_i(a: &Asm, vd: int, imm: int) => void:
+    rv_vop(a, 23, 3, vd, 0, imm & 31)
+
+/#/ Element 0 of v[vd] = x[rs]; x[rd] = element 0 of v[vs].
+fn rv_vmv_sx(a: &Asm, vd: int, rs: int) => void:
+    rv_vop(a, 16, 6, vd, 0, rs)
+
+fn rv_vmv_xs(a: &Asm, rd: int, vs: int) => void:
+    rv_vop(a, 16, 2, rd, vs, 0)

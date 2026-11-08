@@ -10,6 +10,7 @@ use * in gen_x86_isel
 use * in gen_rv_regs
 use * in gen_rv_call
 use * in gen_rv_isel
+use * in gen_rv_vec
 use * in gen_dbg
 use * in elf
 use * in dbgtype

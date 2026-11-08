@@ -1,0 +1,17 @@
+fn step(a: &buf<float>, b: &buf<float>, n: int) => void:
+    for i in 0..n:
+        a[i] = a[i] * 0.5 + b[i]
+
+fn main() => int:
+    let n = 4096
+    let a: buf<float> = new_buf(float, n)
+    let b: buf<float> = new_buf(float, n)
+    for i in 0..n:
+        a[i] = i as float
+        b[i] = 1.0
+    for r in 0..40:
+        step(&a, &b, n)
+    let s = 0.0
+    for i in 0..n:
+        s = s + a[i]
+    return (s as int) % 251

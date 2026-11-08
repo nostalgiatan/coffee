@@ -17,7 +17,7 @@ TARGET = 'aarch64-linux'
 for _a in sys.argv:
     if _a.startswith('--target='):
         TARGET = _a[9:]
-QEMU = {'aarch64-linux': 'qemu-aarch64', 'riscv64-linux': 'qemu-riscv64'}[TARGET]
+QEMU = {'aarch64-linux': ['qemu-aarch64'], 'riscv64-linux': ['qemu-riscv64'], 'riscv64-linux-rva22': ['qemu-riscv64', '-cpu', 'rva22u64'], 'riscv64-linux-rva23': ['qemu-riscv64', '-cpu', 'rva23u64']}[TARGET]
 
 
 def includes(d):
@@ -42,7 +42,7 @@ def run(a):
             msg = (r.stdout + r.stderr).strip().splitlines()
             return d, f, 'compile', msg[-1][:150] if msg else ''
         try:
-            r = subprocess.run([QEMU, t + '/x'], capture_output=True, text=True, timeout=300, cwd=d)
+            r = subprocess.run(QEMU + [t + '/x'], capture_output=True, text=True, timeout=300, cwd=d)
         except subprocess.TimeoutExpired:
             return d, f, 'timeout', ''
         if r.returncode == 0:

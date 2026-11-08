@@ -1,0 +1,22 @@
+fn total(a: &buf<int>, n: int) => int:
+    let s = 0
+    for i in 0..n:
+        s = s + a[i]
+    return s
+
+fn scale(a: &buf<int>, b: &buf<int>, n: int, k: int) => void:
+    for i in 0..n:
+        a[i] = (a[i] ^ b[i]) + k
+
+fn main() => int:
+    let n = 8192
+    let a: buf<int> = new_buf(int, n)
+    let b: buf<int> = new_buf(int, n)
+    for i in 0..n:
+        a[i] = i * 3 + 1
+        b[i] = i
+    let t = 0
+    for r in 0..40:
+        scale(&a, &b, n, r)
+        t = t + total(&a, n)
+    return t % 251

@@ -1,6 +1,6 @@
 # riscv64 后端参考
 
-`--target=riscv64-linux`(可写成 `riscv64`)为 RV64GC 的 Linux 生成代码(用到 I、M、F、D,不用压缩指令)。输出是 `--emit-obj` 的可重定位 ELF64(机器号 243,`e_flags` = 4,双精度浮点 ABI);加 `--static` 由 `cfld` 链进 `rt/src/os_linux_aarch64.cf` 的运行时(riscv64 和 aarch64 用同一张通用系统调用号表,`exit_group` 是 94),得到可以直接运行的可执行文件。没有 riscv 机器时用 `qemu-riscv64` 运行。
+`--target=riscv64-linux`(可写成 `riscv64`)为 RV64GC 的 Linux 生成代码(用到 I、M、F、D,不用压缩指令)。另有两个带扩展的目标:`riscv64-linux-rva22`(再用 Zba、Zbb:`sh1add`/`sh2add`/`sh3add` 做缩放地址,`add.uw`、`sext.b`、`sext.h`、`zext.h` 做扩展)和 `riscv64-linux-rva23`(再加向量扩展 V:向量循环)。扩展目标的程序要在支持它们的处理器上运行,qemu 用 `-cpu rva22u64` / `-cpu rva23u64`。输出是 `--emit-obj` 的可重定位 ELF64(机器号 243,`e_flags` = 4,双精度浮点 ABI);加 `--static` 由 `cfld` 链进 `rt/src/os_linux_aarch64.cf` 的运行时(riscv64 和 aarch64 用同一张通用系统调用号表,`exit_group` 是 94),得到可以直接运行的可执行文件。没有 riscv 机器时用 `qemu-riscv64` 运行。
 
 文件:`ir/src/asm_rv.cf`(指令编码 `rv_*`,写进与 x86、aarch64 共用的 `Asm` 缓冲区)、`target_rv.cf`(寄存器分工,函数名以 `tr_` 开头)、`gen_rv_regs.cf`(帧、操作数装载、边上的复制)、`gen_rv_call.cf`(调用约定)、`gen_rv_isel.cf`(每个操作的指令)、`gen_rv_fun.cf`(一个函数和目标文件)。结构与 [aarch64 后端](aarch64-backend.md)相同,`target.cf` 的 `gen_function` 和 `target_object` 按 `target_arch`(2)选择。
 
@@ -35,16 +35,20 @@
 
 ## 性能
 
-没有 riscv 真机,所以拿 clang 当参照:`ir/tools/rvbench/run.sh <coffee2>` 把 6 个小核(`fib`、`sieve`、`matmul`、`mandel`、`collatz`、`hash`,各有 Coffee 和 C 两份)编成 riscv64,在 `qemu-riscv64 -one-insn-per-tb -d exec` 下数**执行的指令条数**,和 `clang -O2`、`-O1` 的同一核比较,退出码必须一致。指令数不是时间,但同一条流水线上的差别大致和它成正比,而且不受模拟器速度影响。
+没有 riscv 真机,所以拿 clang 当参照:`ir/tools/rvbench/run.sh <coffee2>`(用 `TARGET=` 选目标)把 8 个小核(各有 Coffee 和 C 两份)编成 riscv64,在 `qemu-riscv64 -one-insn-per-tb -d exec` 下数**执行的指令条数**,和 `clang -O2`(带同样的扩展)的同一核比较,退出码必须一致。指令数不是时间,但同一条流水线上的差别大致和它成正比,而且不受模拟器速度影响。数字是 Coffee 比 clang -O2 的倍数(越小越好):
 
-| 核 | Coffee | clang -O2 | 比值 | 第一版 |
-|---|---|---|---|---|
-| fib | 8.53M | 7.19M | 1.19 | 1.19 |
-| sieve | 9.06M | 7.64M | 1.19 | 1.73 |
-| matmul | 2.69M | 2.02M | 1.33 | 2.13 |
-| mandel | 9.44M | 7.43M | 1.27 | 2.10 |
-| collatz | 16.2M | 10.7M | 1.52 | 2.27 |
-| hash | 8.08M | 3.88M | 2.08 | 2.56 |
+| 核 | riscv64-linux | rva22 | rva23 |
+|---|---|---|---|
+| fib | 1.19 | 1.19 | 1.19 |
+| sieve | 1.13 | 1.05 | 1.49 |
+| matmul | 1.33 | 1.34 | 6.14 |
+| mandel | 1.27 | 1.27 | 1.27 |
+| collatz | 1.52 | 1.61 | 1.61 |
+| hash | 2.08 | 2.27 | 2.27 |
+| saxpy(向量循环) | 1.62 | 1.61 | **0.77** |
+| isum(向量循环) | 1.76 | 1.76 | **0.51** |
+
+向量循环在 rva23 上比 clang 的自动向量化指令更少,因为按程序需要的寄存器数选寄存器分组(`LMUL` 8、4、2、1 取最大的装得下的)。`matmul` 在 rva23 上慢是 clang 把内层循环向量化了,而 Coffee 的向量化器只认 `a[i]` 形式的单层循环;`sieve` 同理(clang 向量化了清零循环)。向量目标的循环强度削弱放在向量化之后(向量化器要看没改过的循环),`matmul` 因此比标量目标多了一轮优化,多出 20% 的指令。
 
 做过的优化:
 - **浮点常量和循环里要放进寄存器的整数常量**只在函数入口装一次(`g_hoist_use`);相等的常量共用一个寄存器;循环里有调用的函数不提升(被调用者保存的寄存器每次调用都要存取)。
@@ -60,6 +64,10 @@ IR 一层的三个优化(`opt.cf`),位集由 `set_strength` 决定(1 乘积、2 
 
 剩下的差距:`hash` 的活跃值超过 11 个寄存器,有溢出;`collatz` 里 `n // 2` 要 4 条指令(整数是有符号的,不能像 C 那样假定不溢出);riscv 没有缩放寻址(`Zba` 的 `sh3add` 可省,基线 RV64GC 没有)。
 
+## 向量循环(rva23)
+
+`gen_rv_vec.cf` 把 `VLoop` 做成 RVV 1.0。向量长度由机器决定:每圈 `vsetvli` 取剩下的元素数得到 `vl`,所以循环一直做到末尾,后面的标量循环无事可做。缓冲区各占一个指针寄存器(a2 到 a7 和 t3),每圈按 `vl` 往前走;不变量先 `vmv.v.x` 铺满;归约的累加器用 `tu`(尾部不动),最后 `vred*.vs` 与槽里的值合并。编码用 `llvm-mc` 核对过,全部程序在 qemu 的 rva23u64 下与原生版本输出相同。
+
 ## 还没有
 
-向量循环(`set_vector_loops(false)`)、浮点之外的循环变量强度削弱到 x86-64 和 aarch64(要先在那两个目标上量)、沙盒/JIT 加载器(`cfjit --sandbox` 只有 x86-64 和 aarch64)、调试信息(`-g`)的 riscv 变体、`--pic`、压缩指令和浮点以外的扩展。
+基线 RV64GC 的向量循环(没有向量扩展,`set_vector_loops(false)`;rva23 有)、浮点之外的循环变量强度削弱到 x86-64 和 aarch64(要先在那两个目标上量)、沙盒/JIT 加载器(`cfjit --sandbox` 只有 x86-64 和 aarch64)、调试信息(`-g`)的 riscv 变体、`--pic`、压缩指令和浮点以外的扩展。

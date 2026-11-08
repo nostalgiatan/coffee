@@ -1761,6 +1761,20 @@ let strength_mode = 0
 fn set_strength(mode: int) => void:
     strength_mode = mode
 
+/#/ The rewrites wait until the vector loops of the function were looked for (they want the loops as written): `module_opt` sets this.
+let strength_on = false
+
+fn set_strength_on(on: bool) => void:
+    strength_on = on
+
+/#/ Do the rewrites wait for the vector loops (and so need a round of their own after them)?
+fn strength_late() => bool:
+    return !no_vector && strength_mode != 0
+
+/#/ At the start of a function: the rewrites may run at once when there are no vector loops to wait for.
+fn strength_start() => void:
+    strength_on = no_vector
+
 /#/ Is `v` the same in every iteration of the loop `inl`?
 fn sr_inv(f: &Fun, inl: &buf<int>, v: int) => bool:
     return f.blk[v] < 0 || inl[f.blk[v]] == 0
@@ -1817,7 +1831,7 @@ fn sr_arith(f: &Fun, b: int, op: int, x: int, y: int) => int:
 /#/ In a loop entered once and stepped by a constant, `iv * c` and `base + iv * size` (for `c`, `base` that do not change in the
 /#/ loop) become parameters of the loop header of their own, started before the loop and stepped by an add at each back edge.
 fn strength_reduce(f: &Fun) => bool:
-    if strength_mode == 0 || f.nb < 2:
+    if strength_mode == 0 || !strength_on || f.nb < 2:
         return false
     let nb = f.nb
     let rpo: buf<int> = new_buf(int, nb + 1)

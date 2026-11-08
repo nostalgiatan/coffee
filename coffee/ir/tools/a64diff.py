@@ -21,7 +21,7 @@ TARGET = 'aarch64-linux'
 for _a in sys.argv:
     if _a.startswith('--target='):
         TARGET = _a[9:]
-QEMU = {'aarch64-linux': 'qemu-aarch64', 'riscv64-linux': 'qemu-riscv64'}[TARGET]
+QEMU = {'aarch64-linux': ['qemu-aarch64'], 'riscv64-linux': ['qemu-riscv64'], 'riscv64-linux-rva22': ['qemu-riscv64', '-cpu', 'rva22u64'], 'riscv64-linux-rva23': ['qemu-riscv64', '-cpu', 'rva23u64']}[TARGET]
 
 
 def bigframe(path):
@@ -58,7 +58,7 @@ def main():
     coffee2 = sys.argv[1]
     args = [a for a in sys.argv[1:] if not a.startswith('--')]
     flt = args[1] if len(args) > 1 else ''
-    qemu = shutil.which(QEMU) and '--sim' not in sys.argv
+    qemu = shutil.which(QEMU[0]) and '--sim' not in sys.argv
     bad = 0
     gen = tempfile.mkdtemp()
     bigframe(os.path.join(gen, 'gen_bigframe.cf'))
@@ -83,7 +83,7 @@ def main():
                 bad += 1
                 continue
             if qemu:
-                sim = subprocess.run([QEMU, d + '/a'], capture_output=True)
+                sim = subprocess.run(QEMU + [d + '/a'], capture_output=True)
             else:
                 sim = subprocess.run([sys.executable, os.path.join(HERE, 'a64sim.py'), d + '/a.o'], capture_output=True)
             if sim.returncode != nat.returncode or sim.stdout != nat.stdout:

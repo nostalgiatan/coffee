@@ -752,6 +752,7 @@ fn module_opt(lib: &Lib, f: &Fun, rs: &Reps) => void:
     for k in 0..lib.nf:
         let n = order[k]
         lib.restore(n, f)
+        strength_start()
         inline_calls(f, lib, lib.f_id[n])
         optimize_rs(f, rs, true)
         if dead_calls(f, lib):
@@ -765,7 +766,8 @@ fn module_opt(lib: &Lib, f: &Fun, rs: &Reps) => void:
         let vectorized = 0
         while vectorized < 4 && vectorize(f):
             vectorized = vectorized + 1
-        if vectorized > 0:
+        set_strength_on(true)
+        if vectorized > 0 || strength_late():
             optimize_rs(f, rs, true)
         let inverted = 0
         while inverted < 8 && invert_loops(f):

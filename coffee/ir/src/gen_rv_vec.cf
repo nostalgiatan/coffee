@@ -1,0 +1,228 @@
+/#/ riscv64: the vector loop (`VLoop`) as RVV 1.0 (the V extension, `rv_ext` bit 4); see g_gen_vloop in gen_x86_vec.cf for what it means.
+/#/ Unlike the fixed-width targets the vector length is the machine's: each round does `vl` elements (`vsetvli` of what is left), so
+/#/ the loop runs to the end and the scalar loop after it finds nothing left. Registers: x10 the start, which is the result when
+/#/ nothing was done, x11 the end, x12..x17 and x28 the buffers (stepped along), x7 the address of the accumulator's slot, x29 the
+/#/ elements left, x5 vl, x6 the bytes of a round; v16..v23 the stack of the program, v24 the accumulator, v8..v15 the invariants.
+/#/ Like a call it may write all of these. Tails are undisturbed (`tu`) so the accumulator keeps its other lanes.
+use * in gen
+use * in asm
+use * in asm_rv
+use * in target_rv
+use * in gen_x86_regs
+use * in gen_x86_call
+use * in gen_x86_isel
+use * in gen_rv_regs
+use * in gen_rv_isel
+use * in gen_rv_fun
+
+/#/ The register grouping in use (1, 2, 4 or 8 registers a vector: the most that holds the program) and how many invariants it has:
+/#/ invariant `j` is the group `j`, stack slot `s` the group `ni + s`, the accumulator the group after the stack.
+let gr_vl_l: int = 1
+let gr_vl_ni: int = 0
+let gr_vl_depth: int = 0
+
+fn gr_vl_inv(j: int) => int:
+    return j * gr_vl_l
+
+fn gr_vl_stk(s: int) => int:
+    return (gr_vl_ni + s) * gr_vl_l
+
+fn gr_vl_acc() => int:
+    return (gr_vl_ni + gr_vl_depth) * gr_vl_l
+
+/#/ The `vtype` field of the grouping: 0 1, 1 2, 2 4, 3 8.
+fn gr_vl_lmul() => int:
+    if gr_vl_l == 8:
+        return 3
+    if gr_vl_l == 4:
+        return 2
+    if gr_vl_l == 2:
+        return 1
+    return 0
+
+/#/ The register of buffer `k`.
+fn gr_vl_buf(k: int) => int:
+    if k < 6:
+        return 12 + k
+    return 28
+
+/#/ The vector loop `i`.
+fn gr_gen_vloop(g: &Gen, f: &Fun, i: int) => void:
+    let base = f.a[i]
+    let lane = f.c[i] & 15
+    let rk = f.c[i] >> 4
+    let np = f.aux[i] & 255
+    let ni = (f.aux[i] >> 8) & 255
+    let plen = f.aux[i] >> 16
+    let at = 0
+    if rk > 0:
+        at = 1
+    if g.a.acc.sbx:
+        /#/ the scalar loop does it all (with a reduction the slot is the first operand and still holds the accumulator)
+        gr_ld(g, tr_s0(), f, f.pool[base + at])
+        gr_st(g, i, tr_s0())
+        return
+    /#/ the element size as a power of two, floats or not
+    let es = 2
+    let fl = false
+    if lane == 0:
+        fl = true
+    elif lane == 1:
+        es = 3
+        fl = true
+    elif lane == 2:
+        es = 0
+    elif lane == 3:
+        es = 1
+    elif lane == 5:
+        es = 3
+    let nops = 2 + np + ni
+    if rk > 0:
+        nops = nops + 1
+    if rk > 0:
+        gr_ld(g, 7, f, f.pool[base])
+    gr_ld(g, 10, f, f.pool[base + at])
+    gr_ld(g, 11, f, f.pool[base + at + 1])
+    for k in 0..np:
+        gr_ld(g, gr_vl_buf(k), f, f.pool[base + at + 2 + k])
+    /#/ how deep the program's stack gets decides how many registers a vector may take
+    let pb = base + nops
+    let sp = 0
+    let depth = 0
+    for q in 0..plen:
+        let code = f.cval(g_res(g, f, f.pool[pb + q])) & 255
+        if code == 1 || code == 2:
+            sp = sp + 1
+            if sp > depth:
+                depth = sp
+        elif code == 4 || code == 3:
+            sp = sp - 1
+    gr_vl_ni = ni
+    gr_vl_depth = depth
+    gr_vl_l = 8
+    while gr_vl_l > 1 && (ni + depth + 1) * gr_vl_l > 32:
+        gr_vl_l = gr_vl_l // 2
+    rv_vsetvli(&g.a, 5, 0, es + 8 * gr_vl_lmul())
+    for j in 0..ni:
+        gr_ld(g, 6, f, f.pool[base + at + 2 + np + j])
+        rv_vsplat(&g.a, gr_vl_inv(j), 6)
+    if rk == 5:
+        rv_vsplat_i(&g.a, gr_vl_acc(), 0 - 1)
+    elif rk > 0:
+        rv_vsplat_i(&g.a, gr_vl_acc(), 0)
+    let top = g.a.new_label()
+    let done = g.a.new_label()
+    rv_sub(&g.a, 29, 11, 10)
+    rv_bcc(&g.a, 5, 0, 29, done)
+    if es > 0:
+        rv_shift_i(&g.a, 0, 6, 10, es)
+        for k in 0..np:
+            rv_add(&g.a, gr_vl_buf(k), gr_vl_buf(k), 6)
+    else:
+        for k in 0..np:
+            rv_add(&g.a, gr_vl_buf(k), gr_vl_buf(k), 10)
+    g.a.bind(top)
+    rv_vsetvli(&g.a, 5, 29, es + 8 * gr_vl_lmul())
+    gr_vl_body(g, f, base + nops, plen, es, fl, rk)
+    if es > 0:
+        rv_shift_i(&g.a, 0, 6, 5, es)
+        for k in 0..np:
+            rv_add(&g.a, gr_vl_buf(k), gr_vl_buf(k), 6)
+    else:
+        for k in 0..np:
+            rv_add(&g.a, gr_vl_buf(k), gr_vl_buf(k), 5)
+    rv_sub(&g.a, 29, 29, 5)
+    rv_bcc(&g.a, 1, 29, 0, top)
+    rv_mov_rr(&g.a, 10, 11)
+    g.a.bind(done)
+    if rk > 0:
+        /#/ the lanes of the accumulator together with the value in the slot, which gets the result
+        rv_vsetvli(&g.a, 5, 0, es + 8 * gr_vl_lmul())
+        rv_ld(&g.a, 6, 7, 0, 8)
+        rv_vmv_sx(&g.a, gr_vl_stk(0), 6)
+        let f6 = 0
+        if rk == 3:
+            f6 = 3
+        elif rk == 4:
+            f6 = 2
+        elif rk == 5:
+            f6 = 1
+        rv_vop(&g.a, f6, 2, gr_vl_stk(0), gr_vl_acc(), gr_vl_stk(0))
+        rv_vmv_xs(&g.a, 6, gr_vl_stk(0))
+        rv_st(&g.a, 7, 0, 6, 8)
+    gr_st(g, i, 10)
+
+/#/ The program of a vector loop for the vector at the buffers' pointers.
+fn gr_vl_body(g: &Gen, f: &Fun, pbase: int, plen: int, es: int, fl: bool, rk: int) => void:
+    /#/ `inv[k]` is the invariant a stack slot stands for (it is copied only when something writes to the slot)
+    let inv: buf<int> = new_buf(int, plen + 2)
+    let sp = 0
+    for q in 0..plen:
+        let tk = f.cval(g_res(g, f, f.pool[pbase + q]))
+        let code = tk & 255
+        let arg = tk >> 8
+        if code == 1:
+            rv_vmem(&g.a, true, es, gr_vl_stk(sp), gr_vl_buf(arg))
+            inv[sp] = 0 - 1
+            sp = sp + 1
+        elif code == 2:
+            inv[sp] = arg
+            sp = sp + 1
+        elif code == 3:
+            sp = sp - 1
+            if inv[sp - 1] >= 0:
+                rv_vmv_vv(g, gr_vl_stk(sp - 1), gr_vl_inv(inv[sp - 1]))
+                inv[sp - 1] = 0 - 1
+            let src = gr_vl_stk(sp)
+            if inv[sp] >= 0:
+                src = gr_vl_inv(inv[sp])
+            gr_vl_bin(g, arg, fl, gr_vl_stk(sp - 1), src)
+        else:
+            let v = gr_vl_stk(sp - 1)
+            if inv[sp - 1] >= 0:
+                v = gr_vl_inv(inv[sp - 1])
+            rv_vmem(&g.a, false, es, v, gr_vl_buf(arg))
+            sp = sp - 1
+    if rk > 0:
+        let v = gr_vl_stk(sp - 1)
+        if inv[sp - 1] >= 0:
+            v = gr_vl_inv(inv[sp - 1])
+        let f6 = 0
+        if rk == 2:
+            f6 = 2
+        elif rk == 3:
+            f6 = 11
+        elif rk == 4:
+            f6 = 10
+        elif rk == 5:
+            f6 = 9
+        rv_vop(&g.a, f6, 0, gr_vl_acc(), gr_vl_acc(), v)
+
+/#/ v[vd] = v[vs] (vor with itself).
+fn rv_vmv_vv(g: &Gen, vd: int, vs: int) => void:
+    rv_vop(&g.a, 10, 0, vd, vs, vs)
+
+/#/ `x[a] = x[a] op x[b]` for the vector operation `op` (add 0, sub 1, mul 2, div 3, and 4, or 5, xor 6).
+fn gr_vl_bin(g: &Gen, op: int, fl: bool, a: int, b: int) => void:
+    if fl:
+        let f6 = 0
+        if op == 1:
+            f6 = 2
+        elif op == 2:
+            f6 = 36
+        elif op == 3:
+            f6 = 32
+        rv_vop(&g.a, f6, 1, a, a, b)
+        return
+    if op == 2:
+        rv_vop(&g.a, 37, 2, a, a, b)
+    elif op == 4:
+        rv_vop(&g.a, 9, 0, a, a, b)
+    elif op == 5:
+        rv_vop(&g.a, 10, 0, a, a, b)
+    elif op == 6:
+        rv_vop(&g.a, 11, 0, a, a, b)
+    elif op == 1:
+        rv_vop(&g.a, 2, 0, a, a, b)
+    else:
+        rv_vop(&g.a, 0, 0, a, a, b)

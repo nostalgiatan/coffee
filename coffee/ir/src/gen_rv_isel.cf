@@ -164,7 +164,9 @@ fn gr_addr_of(g: &Gen, f: &Fun, x: int, s1: int, s2: int) => void:
 fn gr_am_base(g: &Gen) => int:
     if g.am_idx < 0:
         return g.am_base
-    if g.am_scale > 1:
+    if g.am_scale > 1 && (rv_ext & 1) != 0 && g.am_scale <= 8:
+        rv_shadd(&g.a, rv_log2(g.am_scale), 31, g.am_idx, g.am_base)
+    elif g.am_scale > 1:
         rv_shift_i(&g.a, 0, 31, g.am_idx, rv_log2(g.am_scale))
         rv_add(&g.a, 31, g.am_base, 31)
     else:
@@ -356,6 +358,9 @@ fn gr_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => vo
         rv_fcvt(&g.a, d, va, to_single)
         gr_ffin(g, f, i, d)
         return
+    if op == int(Op.VLoop):
+        gr_gen_vloop(g, f, i)
+        return
     if (op == int(Op.Field) || op == int(Op.Index)) && g_folds(g, f, i):
         return
     if op == int(Op.Field):
@@ -375,6 +380,8 @@ fn gr_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => vo
             if sz == 1 || sz == 2 || sz == 4 || sz == 8:
                 if sz == 1:
                     rv_add(&g.a, d, ra, rb)
+                elif (rv_ext & 1) != 0:
+                    rv_shadd(&g.a, rv_log2(sz), d, rb, ra)
                 else:
                     rv_shift_i(&g.a, 0, tr_s2(), rb, rv_log2(sz))
                     rv_add(&g.a, d, ra, tr_s2())
