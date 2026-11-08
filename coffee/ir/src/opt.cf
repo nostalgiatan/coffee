@@ -1764,16 +1764,20 @@ fn set_strength(mode: int) => void:
 /#/ The rewrites wait until the vector loops of the function were looked for (they want the loops as written): `module_opt` sets this.
 let strength_on = false
 
+/#/ ... and the pointers that step along addresses wait for them (a vector loop wants `a[i]` as written)
+let strength_addr = false
+
 fn set_strength_on(on: bool) => void:
-    strength_on = on
+    strength_addr = on
 
 /#/ Do the rewrites wait for the vector loops (and so need a round of their own after them)?
 fn strength_late() => bool:
-    return !no_vector && strength_mode != 0
+    return !no_vector && (strength_mode & 2) != 0
 
 /#/ At the start of a function: the rewrites may run at once when there are no vector loops to wait for.
 fn strength_start() => void:
-    strength_on = no_vector
+    strength_on = true
+    strength_addr = no_vector
 
 /#/ Is `v` the same in every iteration of the loop `inl`?
 fn sr_inv(f: &Fun, inl: &buf<int>, v: int) => bool:
@@ -1945,7 +1949,7 @@ fn strength_reduce(f: &Fun) => bool:
                                 cand[nc * 4 + 2] = y
                                 cand[nc * 4 + 3] = -1
                                 nc = nc + 1
-                        elif o == int(Op.Index) && (strength_mode & 2) != 0 && f.is_const(step) && sr_inv(f, &inl, f.follow(f.a[i])):
+                        elif o == int(Op.Index) && (strength_mode & 2) != 0 && strength_addr && f.is_const(step) && sr_inv(f, &inl, f.follow(f.a[i])):
                             let x = f.follow(f.b[i])
                             let off = -1
                             if x != pv && f.op[x] == int(Op.Add) && f.rep[x] == int(Rp.I64):
