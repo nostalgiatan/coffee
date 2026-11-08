@@ -9,7 +9,8 @@ the object is run in the interpreter.
 Usage: a64cases.py <coffee2> [name-filter] [-j N] [--sim] [--target=aarch64-linux|riscv64-linux] [--sandbox=<cfjit>]
 (with --target=riscv64-linux the programs run under qemu-riscv64; there is no interpreter for them)
 With --sandbox=<cfjit> (a cfjit built for the target) each program is made with --emit-cir and run in the sandbox of that
-cfjit (`--sandbox=base`) under qemu: the exit code must be the same, except for the programs that reach outside the sandbox.
+cfjit (`--sandbox=base`) under qemu: the exit code must be the same, except for the programs that reach outside the sandbox. With --plain the
+cfjit loads them without the sandbox (riscv64 and aarch64).
 """
 import concurrent.futures
 import glob
@@ -66,7 +67,7 @@ def run_sandbox(coffee2, name, src, want):
         if r.returncode != 0 or not os.path.exists(out):
             return name, 'compile', (r.stdout + r.stderr)[:200]
         tname = TARGET.split('-')[0]
-        r = subprocess.run(QEMU + [SANDBOX, out, '--target=' + tname, '--sandbox=base'], capture_output=True, text=True, timeout=120)
+        r = subprocess.run(QEMU + [SANDBOX, out, '--target=' + tname] + ([] if '--plain' in sys.argv else ['--sandbox=base']), capture_output=True, text=True, timeout=120)
         if r.returncode == want:
             return name, 'ok', ''
         return name, 'wrong', 'got %d want %d %s' % (r.returncode, want, (r.stdout + r.stderr).strip().splitlines()[-1:])

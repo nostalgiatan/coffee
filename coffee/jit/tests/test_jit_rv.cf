@@ -1,0 +1,49 @@
+/#/ Unsandboxed riscv64 code (`cfjit --target=riscv64`, a riscv64 `cfjit` run by `qemu-riscv64`): the image is loaded at any address, so
+/#/ symbol addresses are pc-relative (auipc, addi), a call of a function the module does not define goes through a stub and a slot, and the
+/#/ instruction cache is flushed. Builds that `cfjit` itself and passes when `qemu-riscv64` is not installed; `coffee2` is found through PATH.
+use * in say
+use * in txt
+use * in cstr
+use * in files
+use system, fflush in libc of c
+
+fn expect(what: int, got: int, want: int) => int:
+    if got != want:
+        say(f"MISS #{what}: got {got}, want {want}\n")
+        fflush(0)
+        return 1
+    return 0
+
+fn run_jit(src: str, opts: str) => int:
+    write_file(&txt_of("jrv.cf"), &txt_of(&src))
+    if system("coffee2 jrv.cf --emit-cir --target=riscv64 -o jrv.cir > jrv.log 2>&1") != 0:
+        return -1
+    let c = txt_of("qemu-riscv64 ./jrv_cfjit jrv.cir --target=riscv64 ")
+    c.put(&opts)
+    c.put(" > jrv.out 2>&1")
+    return (system(txt_str(&c)) >> 8) & 255
+
+fn main() => int:
+    let m = 0
+    if system("which qemu-riscv64 > /dev/null 2>&1") != 0:
+        return 0
+    let inc = "-I ../../../src -I ../../../../driver/src -I ../../../../ir/src -I ../../../../ld/src -I ../../../../own/src -I ../../../../types/src -I ../../../../sema/src -I ../../../../parser/src -I ../../../../lexer/src"
+    let build = txt_of("coffee2 ../../../src/main.cf ")
+    build.put(&inc)
+    build.put(" --static --target=riscv64 -o jrv_cfjit > jrv.build 2>&1")
+    if system(txt_str(&build)) != 0:
+        say("MISS: the riscv64 cfjit did not build\n")
+        return 1
+    m = m + expect(1, run_jit("fn fib(n: int) => int:\n    if n < 2:\n        return n\n    return fib(n - 1) + fib(n - 2)\n\nfn main() => int:\n    return fib(10)\n", ""), 55)
+    /#/ a global, an array, a string literal and a system call
+    m = m + expect(2, run_jit("let counter = 0\n\nfn main() => int:\n    let s = \"hi\\n\"\n    counter = counter + 4\n    let a = [3, 4, 5]\n    syscall(64, 1, int(s as object), 3)\n    return counter + a[2] + len(s)\n", ""), 12)
+    m = m + expect(3, system("test \"$(cat jrv.out)\" = 'hi'"), 0)
+    /#/ a function of another module: through a stub and a slot
+    write_file(&txt_of("jrl.cfc"), &txt_of("c fn twice(x: int) => int:\n"))
+    write_file(&txt_of("jrl.cf"), &txt_of("c fn twice(x: int) => int:\n    return x * 2\n"))
+    if system("coffee2 jrl.cf -I . --emit-cir --target=riscv64 -o jrl.cir > jrv.log 2>&1") != 0:
+        say("MISS: the library did not build\n")
+        return m + 1
+    m = m + expect(4, run_jit("use twice in jrl of c\n\nfn main() => int:\n    return twice(21)\n", "--with=jrl.cir"), 42)
+    system("rm -f jrv_cfjit jrv.build jrv.cf jrv.cir jrv.log jrv.out jrl.cf jrl.cfc jrl.cir")
+    return m

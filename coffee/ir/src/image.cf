@@ -90,7 +90,7 @@ fn make_image(o: &Obj, a: &Asm) => Image:
     im.stub_at = image_round(a.c.n, 16)
     /#/ x86: `jmp [rip+disp]` and two bytes of padding; aarch64: adrp, ldr, br and a nop
     let ssz = 8
-    if target_arch == arch_aarch64():
+    if target_arch != arch_x86_64():
         ssz = 16
     let sysn = len(tg_syscall_stub())
     let stubs_end = im.stub_at + ssz * nimp
@@ -127,7 +127,14 @@ fn make_image(o: &Obj, a: &Asm) => Image:
         im.b.put_byte(0)
     for k in 0..im.nimp:
         let at = im.stub_at + ssz * k
-        if target_arch == arch_aarch64():
+        if target_arch == arch_riscv64():
+            /#/ auipc t6,hi; ld t6,lo(t6); jalr x0,0(t6); ebreak
+            let d = im.imp_slot[k] - at
+            w32(&im.b, ((((d + 2048) >> 12) & 1048575) << 12) | (31 << 7) | 23)
+            w32(&im.b, ((d & 4095) << 20) | (31 << 15) | (3 << 12) | (31 << 7) | 3)
+            w32(&im.b, (31 << 15) | 103)
+            w32(&im.b, 1048691)
+        elif target_arch == arch_aarch64():
             /#/ adrp x16,slot; ldr x16,[x16,#lo12]; br x16; nop
             let slot = im.imp_slot[k]
             let pg = (slot >> 12) - (at >> 12)
@@ -174,6 +181,27 @@ fn make_image(o: &Obj, a: &Asm) => Image:
             im.err = 1
             return im
         let d = target + a.rl_add[r] - at
+        if target_arch == arch_riscv64():
+            let ty = a.rl_ty[r]
+            let w = im.b.b[at] | (im.b.b[at + 1] << 8) | (im.b.b[at + 2] << 16) | (im.b.b[at + 3] << 24)
+            if ty == 24:
+                /#/ the addi of the pair: the distance is from the auipc before it
+                d = d + 4
+                w = w | ((d & 4095) << 20)
+            elif ty == 23:
+                w = w | ((((d + 2048) >> 12) & 1048575) << 12)
+            elif ty == 19:
+                w = w | ((((d + 2048) >> 12) & 1048575) << 12)
+                let w2 = im.b.b[at + 4] | (im.b.b[at + 5] << 8) | (im.b.b[at + 6] << 16) | (im.b.b[at + 7] << 24)
+                w2 = w2 | ((d & 4095) << 20)
+                for q in 0..4:
+                    im.b.b[at + 4 + q] = (w2 >> (8 * q)) & 255
+            else:
+                im.err = 1
+                return im
+            for q in 0..4:
+                im.b.b[at + q] = (w >> (8 * q)) & 255
+            continue
         if target_arch == arch_aarch64():
             if !apply_a64(&im.b, at, a.rl_ty[r], target + a.rl_add[r]):
                 im.err = 1

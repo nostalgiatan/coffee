@@ -263,9 +263,12 @@ fn sandbox_run_a64(im: &Image, main_at: int, allow: int, mem_mb: int, cpu_ms: in
             poke64(code + im.imp_slot[k], tramp + 512 * k)
         if sys_mprotect(tramp, page_up(im.nimp * 512), 5) != 0:
             return 0 - 1
+        flush_icache(tramp, page_up(im.nimp * 512))
     /#/ the code and the stubs are made executable once written (the kernel makes the instruction cache see them)
     if sys_mprotect(code, page_up(im.b.n + 1), 5) != 0 || sys_mprotect(stubs, 4096, 5) != 0:
         return 0 - 1
+    flush_icache(code, page_up(im.b.n + 1))
+    flush_icache(stubs, 4096)
     if (allow & 1) != 0:
         poke8(ctrl + 512, 1)
     if (allow & 2) != 0:

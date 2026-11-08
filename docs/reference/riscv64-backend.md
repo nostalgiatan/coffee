@@ -79,6 +79,10 @@ IR 一层的三个优化(`opt.cf`),位集由 `set_strength` 决定(1 乘积、2 
 - **加载器**(`sandbox_rv.cf`)与 aarch64 共用 `sandbox_run_a64`(多一个 `rv` 参数),只是桩换成 riscv64 的:进入、陷阱、退出、`read`/`write` 的宿主桩(唯一的 `ecall`)、SIGSEGV/SIGBUS/SIGFPE/SIGILL 的处理(pc 在 `ucontext+176`,出错地址在 `siginfo+16`)、SIGALRM 配额。宿主调用跳板是 `host_tramp_rv`。
 - **测试。** `jit/tests/test_sandbox_rv.cf`(和 `test_sandbox_a64.cf` 同一批用例,qemu-riscv64 不在时跳过);`ir/tools/a64cases.py --target=riscv64-linux --sandbox=<cfjit>` 把 191 个 `exits` 用例放进沙盒:184 个与原生退出码相同,其余 7 个(函数值 4 个,与 libc 同名的函数 3 个)和 aarch64 的结果相同。
 
+## JIT 加载(不带沙盒)
+
+`cfjit prog.cir --target=riscv64`(riscv64 版的 `cfjit`,qemu-riscv64 下运行)把映像放在任意地址:符号地址用 `auipc`+`addi`(`rv_pcrel`,重定位种类 23、24,距离由 `make_image` 填),调用是 `auipc`+`jalr` 一对(种类 19);外部函数的桩是 `auipc t6; ld t6, 槽; jalr x0, 0(t6); ebreak`(16 字节),槽由加载器填;代码变成可执行后用 `riscv_flush_icache`(系统调用 259)刷指令缓存。`--with=` 模块照常工作。测试:`jit/tests/test_jit_rv.cf`;191 个 `exits` 用例用 `a64cases.py --sandbox=<cfjit> --plain` 跑:188 个退出码正确,其余 3 个是与 libc 同名函数的用例(前端就不收)。
+
 ## 还没有
 
-基线 RV64GC 的向量循环(没有向量扩展,`set_vector_loops(false)`;rva23 有)、浮点之外的循环变量强度削弱到 x86-64 和 aarch64(要先在那两个目标上量)、非沙盒的 JIT 加载(`cfjit` 在 riscv64 上只做沙盒:普通加载要外部函数桩和位置无关的地址,没有做)、调试信息(`-g`)的 riscv 变体、`--pic`、压缩指令和浮点以外的扩展。
+基线 RV64GC 的向量循环(没有向量扩展,`set_vector_loops(false)`;rva23 有)、浮点之外的循环变量强度削弱到 x86-64 和 aarch64(要先在那两个目标上量)、调试信息(`-g`)的 riscv 变体、`--pic`、压缩指令和浮点以外的扩展。

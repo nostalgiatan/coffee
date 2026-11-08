@@ -195,6 +195,8 @@ fn load_with(path: &Txt, syms: &Exports) => int:
     if cir.n < 0:
         say(f"cfjit: cannot read {txt_str(path)}\n")
         return 2
+    /#/ a module of `--with=` is loaded unsandboxed, whatever the main module is
+    rv_pcrel = target_arch == arch_riscv64()
     let lw = new_lower()
     let e = read_cir(&cir, &lw)
     if e != 0:
@@ -234,6 +236,8 @@ fn main() => int:
     if rv64:
         set_target(&txt_of("riscv64-linux"))
     let sbx = flag_arg("--sandbox") || bm
+    /#/ unsandboxed riscv64 images sit at any address: symbol addresses are pc-relative
+    rv_pcrel = rv64 && !sbx
     let path = path_arg()
     if path.n == 0:
         say("usage: cfjit program.cir\n")

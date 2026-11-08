@@ -106,6 +106,7 @@ fn link_image(im: &Image, syms: &Exports, want: int, missing: &Txt) => int:
     if sys_mprotect(base, im.rx_end, 5) != 0:
         syscall(sc_munmap(), base, size, 0, 0, 0, 0)
         return 0
+    flush_icache(base, im.rx_end)
     if im.ro_end > im.ro_at:
         sys_mprotect(base + im.ro_at, im.ro_end - im.ro_at, 1)
     return base
@@ -134,6 +135,11 @@ fn copy_in(base: int, t: &Txt) => void:
     while k < t.n:
         poke8(base + k, t.b[k])
         k = k + 1
+
+/#/ riscv64 does not make the instruction cache see new code by itself: `riscv_flush_icache` (the system call 259) for the range.
+fn flush_icache(addr: int, n: int) => void:
+    if target_arch == arch_riscv64():
+        syscall(259, addr, addr + n, 0, 0, 0, 0)
 
 fn sys_mmap(n: int, prot: int, flags: int) => int:
     return syscall(sc_mmap(), 0, n, prot, flags, 0 - 1, 0)

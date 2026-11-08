@@ -27,6 +27,9 @@ let rv_range_miss: int = 0
 /#/ arguments on the stack): the function is not made.
 let rv_err: bool = false
 
+/#/ Addresses of symbols are made pc-relative (cfjit's unsandboxed images sit at any address) instead of absolute below 2 GiB.
+let rv_pcrel: bool = false
+
 /#/ Sandbox code keeps the start of the linear memory in s10 and the shadow frame pointer in s11.
 fn rv_sbx_base() => int:
     return 26
@@ -289,6 +292,13 @@ fn rv_st(a: &Asm, base: int, disp: int, rt: int, n: int) => void:
 
 /#/ rd = the address of the symbol `sym` plus `addend` (an absolute 32-bit address: the program is linked below 2 GiB): lui and addi.
 fn rv_adr_sym(a: &Asm, rd: int, sym: int, addend: int) => void:
+    if rv_pcrel:
+        /#/ the loader of cfjit puts the image anywhere: auipc and addi, the distance filled in by `make_image` (kinds 23 and 24)
+        a.reloc(sym, 23, addend)
+        rv_set(a, a.c.n - 4, rv_enc_u(23, rd, 0))
+        a.reloc(sym, 24, addend)
+        rv_set(a, a.c.n - 4, rv_enc_i(0, 19, rd, rd, 0))
+        return
     a.reloc(sym, r_rv_hi20(), addend)
     rv_set(a, a.c.n - 4, rv_enc_u(55, rd, 0))
     a.reloc(sym, r_rv_lo12_i(), addend)
