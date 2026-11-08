@@ -75,10 +75,10 @@ IR 一层的三个优化(`opt.cf`),位集由 `set_strength` 决定(1 乘积、2 
 
 - **寄存器。** s10(x26)放区域起点,s11(x27)是影子帧指针(向上走,函数入口加、出口减;聚合和取过地址的槽在影子帧里,在 s11 下方);这两个不在寄存器池里(池从 11 个减到 9 个)。t6(x31)是访存地址的暂存。宿主栈上只有返回地址、保存的寄存器、溢出的标量。
 - **访存。** 每个受限访存是五条指令之内的固定形式:`[addiw t6, base, disp]`、`slli t6, <t6 或 base>, 32`、`srli t6, t6, 32`、`add t6, t6, s10`,然后 `ld/sd/lw/.../fld/fsd rt, 0(t6)`。不管 `base` 里是什么,地址落在区域里。栈帧上的访问是 `imm(s0)`(帧不超过 2000 字节,位移是 12 位),保存的 s0/ra 在 `s0+0`、`s0+8`。
-- **调用。** 只调模块里的函数、`cf_syscall` 和导入入口;参数在栈上的调用、函数值调用、函数地址不生成(或在做镜像时拒绝)。导入入口 32 字节(`auipc t6,0; ld t6,16(t6); jalr x0,0(t6)`,后面是槽);`read`/`write` 的桩同样。
+- **调用。** 只调模块里的函数、`cf_syscall` 和导入入口;参数在栈上的调用不生成;沙盒里的函数值由 IR 改写成编号和比较链(`sbxfn.cf`)。导入入口 32 字节(`auipc t6,0; ld t6,16(t6); jalr x0,0(t6)`,后面是槽);`read`/`write` 的桩同样。
 - **验证器**(`sbxcheck_rv.cf`)按 6 条共用规则拒绝:不是 32 位指令或是 `ecall`、原子、栅栏、向量的(decode);访存不是 `0(t6)` 形式也不是 `imm(s0)`(unguarded);向 `s0+0..15` 存、通过 sp 访存(frame);写 ra、sp、gp、tp、s0、s10,除了帧自己的那几条固定字(protected);`jalr` 不是 `auipc` 之后的第二条、跳转目标不在代码里、代码走出末尾(branch);跳进 `srli` 之后的 `add` 或访存本身(adjacent,那时 t6 是任意值)。共用的反例集在 `sbxcases.cf`(目标字母 `v`)。
 - **加载器**(`sandbox_rv.cf`)与 aarch64 共用 `sandbox_run_a64`(多一个 `rv` 参数),只是桩换成 riscv64 的:进入、陷阱、退出、`read`/`write` 的宿主桩(唯一的 `ecall`)、SIGSEGV/SIGBUS/SIGFPE/SIGILL 的处理(pc 在 `ucontext+176`,出错地址在 `siginfo+16`)、SIGALRM 配额。宿主调用跳板是 `host_tramp_rv`。
-- **测试。** `jit/tests/test_sandbox_rv.cf`(和 `test_sandbox_a64.cf` 同一批用例,qemu-riscv64 不在时跳过);`ir/tools/a64cases.py --target=riscv64-linux --sandbox=<cfjit>` 把 191 个 `exits` 用例放进沙盒:184 个与原生退出码相同,其余 7 个(函数值 4 个,与 libc 同名的函数 3 个)和 aarch64 的结果相同。
+- **测试。** `jit/tests/test_sandbox_rv.cf`(和 `test_sandbox_a64.cf` 同一批用例,qemu-riscv64 不在时跳过);`ir/tools/a64cases.py --target=riscv64-linux --sandbox=<cfjit>` 把 191 个 `exits` 用例放进沙盒:191 个全部与原生退出码相同(函数值走 `sbxfn.cf` 的改写;与 libc 同名的函数在 `.cir` 里改名 `__cf`)。aarch64 沙盒同样 191/191。
 
 ## JIT 加载(不带沙盒)
 

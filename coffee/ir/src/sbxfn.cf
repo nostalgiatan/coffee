@@ -1,0 +1,142 @@
+/#/ Function values for the sandbox, which has no indirect transfers: the address of a function (`FnAddr`)
+/#/ becomes its number (1, 2, ... in the order the module takes them, 0 stays null), and a call through
+/#/ a value (`CallI`) becomes a chain of comparisons with the numbers of the functions of that shape, each
+/#/ followed by a direct call. A number no function has reaches `unreachable`.
+use * in modopt
+use * in lower
+
+/#/ The parameter representations of function `m` match the `n` values `args` of `f`?
+fn sbxfn_shape(f: &Fun, lib: &Lib, m: int, args: &buf<int>, n: int, ret: int) => bool:
+    if lib.f_nb[m] == 0 || lib.f_ret[m] != ret:
+        return false
+    let b0 = lib.f_b0[m]
+    if lib.npar[b0] != n:
+        return false
+    let i0 = lib.f_i0[m]
+    let p = lib.pfirst[b0]
+    let q = 0
+    while p >= 0 && q < n:
+        if lib.rep[i0 + p] != f.rep[args[q]]:
+            return false
+        p = lib.nx[i0 + p]
+        q = q + 1
+    return q == n
+
+/#/ Replaces the `CallI` `c` of `f` by the chain; `tg` are the ids of the functions taken, number k + 1.
+fn sbxfn_expand(f: &Fun, lib: &Lib, c: int, tg: &buf<int>, nt: int) => void:
+    let bb = f.blk[c]
+    let nargs = f.b[c]
+    let args: buf<int> = new_buf(int, nargs + 1)
+    for k in 0..nargs:
+        args[k] = f.follow(f.val_at(c, k + 1))
+    let callee = f.follow(f.c[c])
+    let rep = f.rep[c]
+    let ty = f.ty[c]
+    let after = f.new_block()
+    let t = f.nx[c]
+    if t >= 0:
+        f.pv[t] = -1
+        f.bfirst[after] = t
+        f.blast[after] = f.blast[bb]
+        f.nx[c] = -1
+        f.blast[bb] = c
+        let i = t
+        while i >= 0:
+            f.blk[i] = after
+            i = f.nx[i]
+    for e in 0..f.ne:
+        if f.efrom[e] == bb:
+            f.efrom[e] = after
+    unlink(f, c)
+    let res = -1
+    if rep != int(Rp.Void):
+        res = f.param(after, rep, ty)
+        f.uses[res] = f.uses[c]
+        f.fwd[c] = res
+    unuse(f, c)
+    /#/ the candidates, and a block of tests for each
+    let first = f.new_block()
+    f.set_block(bb)
+    f.br(first)
+    let cur = first
+    for k in 0..nt:
+        let m = lib.find(tg[k])
+        if m < 0 || !sbxfn_shape(f, lib, m, &args, nargs, rep):
+            continue
+        let hit = f.new_block()
+        let next = f.new_block()
+        f.set_block(cur)
+        let eq = f.cmp(int(Pr.Eq), callee, f.cint(f.rep[callee], k + 1))
+        let e1 = f.mk_edge(hit)
+        let e2 = f.mk_edge(next)
+        f.condbr(eq, e1, e2)
+        f.set_block(hit)
+        for q in 0..nargs:
+            f.arg(args[q])
+        let r = f.call(rep, ty, tg[k])
+        if rep != int(Rp.Void):
+            f.arg(r)
+        f.br(after)
+        cur = next
+    f.set_block(cur)
+    f.unreachable()
+
+/#/ Rewrites the function values of every function the module generates.
+fn sbx_indirect(lw: &Lower) => void:
+    let lib = &lw.lib
+    let tg: buf<int> = new_buf(int, 16)
+    let nt = 0
+    for n in 0..lib.nf:
+        if lw.ext_slot[n] == 1:
+            continue
+        let i0 = lib.f_i0[n]
+        for q in 0..lib.f_ni[n]:
+            if lib.op[i0 + q] == int(Op.FnAddr):
+                let id = lib.aux[i0 + q]
+                /#/ the address of a global stays an address
+                let m = lib.find(id)
+                if m < 0 || lib.f_nb[m] == 0:
+                    continue
+                let seen = false
+                for k in 0..nt:
+                    if tg[k] == id:
+                        seen = true
+                if !seen:
+                    if nt >= len(tg):
+                        tg = buf_resize(tg, nt * 2)
+                    tg[nt] = id
+                    nt = nt + 1
+    for n in 0..lib.nf:
+        if lw.ext_slot[n] == 1:
+            continue
+        let i0 = lib.f_i0[n]
+        let has = false
+        for q in 0..lib.f_ni[n]:
+            let o = lib.op[i0 + q]
+            if o == int(Op.FnAddr) || o == int(Op.CallI):
+                has = true
+        if !has:
+            continue
+        lib.restore(n, &lw.f)
+        let f = &lw.f
+        for i in 0..f.ni:
+            if f.op[i] == int(Op.FnAddr):
+                let id = f.aux[i]
+                for k in 0..nt:
+                    if tg[k] == id:
+                        f.op[i] = int(Op.Const)
+                        f.rep[i] = int(Rp.I64)
+                        f.aux[i] = k + 1
+        let again = true
+        while again:
+            again = false
+            for b in 0..f.nb:
+                let i = f.bfirst[b]
+                while i >= 0 && !again:
+                    if f.op[i] == int(Op.CallI) && f.fwd[i] < 0:
+                        sbxfn_expand(f, lib, i, &tg, nt)
+                        again = true
+                    i = f.nx[i]
+                if again:
+                    break
+        lib.save(f, n, lib.f_id[n])

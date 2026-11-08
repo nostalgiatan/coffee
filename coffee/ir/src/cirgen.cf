@@ -7,6 +7,80 @@ use * in drive
 use * in minrt
 use * in fmtrt
 
+fn is_ident_byte(c: int) => bool:
+    return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95
+
+/#/ Does `t` have, at `at`, the text `w` followed by `(`?
+fn word_call_at(t: &Txt, at: int, w: &Txt) => bool:
+    if at + w.n >= t.n:
+        return false
+    for k in 0..w.n:
+        if t.b[at + k] != w.b[k]:
+            return false
+    return t.b[at + w.n] == 40
+
+/#/ The program may define a function named like one the runtime defines (`malloc`, `write`, ...); the
+/#/ two share a module here, so the program's gets the suffix `__cf` the object files give it.
+fn rename_runtime_clashes(user: &Txt, rt: &str) => Txt:
+    let names = new_txt()
+    let at = 0
+    let n = len(rt)
+    while at < n:
+        if at + 5 <= n && rt[at] == 99 && rt[at + 1] == 32 && rt[at + 2] == 102 && rt[at + 3] == 110 && rt[at + 4] == 32 && (at == 0 || rt[at - 1] == 10):
+            let q = at + 5
+            while q < n && rt[q] != 40:
+                names.put_byte(rt[q])
+                q = q + 1
+            names.put_byte(10)
+        while at < n && rt[at] != 10:
+            at = at + 1
+        at = at + 1
+    let out = copy_txt(user)
+    let s = 0
+    while s < names.n:
+        let w = new_txt()
+        while names.b[s] != 10:
+            w.put_byte(names.b[s])
+            s = s + 1
+        s = s + 1
+        /#/ defined by the program: `fn w(` at the start of a line
+        let defined = false
+        for q in 0..out.n:
+            if (q == 0 || out.b[q - 1] == 10) && out.b[q] == 102 && out.b[q + 1] == 110 && out.b[q + 2] == 32 && word_call_at(&out, q + 3, &w):
+                defined = true
+        if !defined:
+            continue
+        let r = new_txt()
+        let in_str = false
+        let q = 0
+        while q < out.n:
+            let c = out.b[q]
+            if in_str:
+                r.put_byte(c)
+                if c == 92 && q + 1 < out.n:
+                    q = q + 1
+                    r.put_byte(out.b[q])
+                elif c == 34:
+                    in_str = false
+                q = q + 1
+                continue
+            if c == 34:
+                in_str = true
+            elif c == 47 && q + 2 < out.n && out.b[q + 1] == 35 && out.b[q + 2] == 47:
+                while q < out.n && out.b[q] != 10:
+                    r.put_byte(out.b[q])
+                    q = q + 1
+                continue
+            elif (q == 0 || (!is_ident_byte(out.b[q - 1]) && out.b[q - 1] != 46)) && word_call_at(&out, q, &w):
+                r.put_all(&w)
+                r.put("__cf")
+                q = q + w.n
+                continue
+            r.put_byte(c)
+            q = q + 1
+        out = r
+    return out
+
 /#/ The `.cir` file of the `size` bytes in `bytes`; empty when the front end refused them.
 fn build_cir(bytes: buf<int>, size: int, opt: int, cfc: str) => Txt:
     let none = new_txt()
@@ -15,14 +89,17 @@ fn build_cir(bytes: buf<int>, size: int, opt: int, cfc: str) => Txt:
 /#/ Like `build_cir`; the variables and types of a module lowered with `set_debug_vars` are added to `map`.
 fn build_cir_map(bytes: buf<int>, size: int, opt: int, cfc: str, map: &Txt) => Txt:
     let all = new_txt()
+    let mt = min_rt_text()
+    let src = new_txt()
     for q in 0..size:
-        all.put_byte(bytes[q])
+        src.put_byte(bytes[q])
+    let renamed = rename_runtime_clashes(&src, &mt)
+    all.put_all(&renamed)
     all.put_byte(10)
     if prints_numbers(&bytes, size):
         let ft = fmt_rt_text()
         all.put(&ft)
         all.put_byte(10)
-    let mt = min_rt_text()
     all.put(&mt)
     let t = new_tys()
     let g = new_globals()
