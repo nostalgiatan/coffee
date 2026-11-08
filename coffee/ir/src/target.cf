@@ -63,7 +63,8 @@ fn target_names() => str:
 /#/ Chooses the target by its name; 0 when it was set, 1 when the name is unknown, 2 when it is known
 /#/ but there is no code generator for it yet (none now: both known ones have one).
 fn set_target(name: &Txt) => int:
-    set_strength(0)
+    /#/ products stepped along loops, constants threaded into flag tests; riscv64 also steps addresses (it has no scaled index)
+    set_strength(5)
     if name.is("x86_64-linux") || name.is("x86_64"):
         target_arch = arch_x86_64()
         target_os = os_linux()

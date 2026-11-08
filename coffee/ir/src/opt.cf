@@ -1765,6 +1765,19 @@ fn set_strength(mode: int) => void:
 fn sr_inv(f: &Fun, inl: &buf<int>, v: int) => bool:
     return f.blk[v] < 0 || inl[f.blk[v]] == 0
 
+/#/ Is `v` an operand of an add or an index in the loop `inl`?
+fn sr_feeds_add(f: &Fun, inl: &buf<int>, v: int) => bool:
+    for b in 0..f.nb:
+        if inl[b] == 1:
+            let j = f.bfirst[b]
+            while j >= 0:
+                let o = f.op[j]
+                if (o == int(Op.Add) || o == int(Op.Index)) && f.fwd[j] < 0:
+                    if (f.a[j] >= 0 && f.follow(f.a[j]) == v) || (f.b[j] >= 0 && f.follow(f.b[j]) == v):
+                        return true
+                j = f.nx[j]
+    return false
+
 /#/ Gives edge `e` one more argument, `v`.
 fn sr_add_arg(f: &Fun, e: int, v: int) => void:
     let start = f.np
@@ -1909,7 +1922,10 @@ fn strength_reduce(f: &Fun) => bool:
                             if y == pv && x != pv && sr_inv(f, &inl, x):
                                 x = f.follow(f.b[i])
                                 y = f.follow(f.a[i])
-                            if x == pv && y != pv && sr_inv(f, &inl, y):
+                            /#/ (a power of two is a shift, as cheap as the add that would replace it, unless the product is added to something:
+                            /#/ then the address it makes steps with it)
+                            let cheap = x == pv && f.is_const(y) && f.cval(y) > 0 && (f.cval(y) & (f.cval(y) - 1)) == 0 && !sr_feeds_add(f, &inl, i)
+                            if x == pv && y != pv && sr_inv(f, &inl, y) && !cheap:
                                 cand[nc * 4] = i
                                 cand[nc * 4 + 1] = 1
                                 cand[nc * 4 + 2] = y

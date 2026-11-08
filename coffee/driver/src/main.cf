@@ -197,6 +197,9 @@ fn parse_cli(fl: &Flat) => Cli:
                 else:
                     set_ld_arch(target_arch)
                     set_ld_win64(tg_win64())
+            elif has_prefix(&w, "--strength=") && w.n == 12:
+                /#/ which loop rewrites run (a bit set, see `set_strength`), whatever the target says; for measuring them
+                set_strength(w.b[11] - int('0'))
             elif w.is("-O0"):
                 cli.set_level(0)
             elif w.is("-O1"):

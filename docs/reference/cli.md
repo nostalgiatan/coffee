@@ -19,6 +19,7 @@ coffee2 -c header.h [-o output.cfc]
 | `--sandbox` | (仅 `aarch64-linux`)生成沙箱代码:访存只经 `[x28, w, uxtw]`,代码过 aarch64 验证器,见 [aarch64 后端](aarch64-backend.md)。 |
 | `-O0` | 关闭 IR 优化器。 |
 | `-O1` `-O2` `-O3` | 打开 IR 优化器。默认 `-O1`。 |
+| `--strength=N` | (调试用)N 是 0 到 7 的一位数,按位选循环优化:1 乘积强度削弱,2 地址强度削弱,4 常量线程化;覆盖目标的默认值。 |
 | `--emit-obj` | 写出 `.o` 后停止,不链接。 |
 | `-c` (`--gen-cfc`) | 输入是 C 头文件(`.h`),写出 `.cfc`:每个函数声明一行 `c fn`。输出默认是 `<头文件去掉扩展名>.cfc`,`-o` 指定别的。不编译。类型对应:`char`/`short`/`int` 是 `int(1)+`/`int(2)+`/`int(4)+`,`unsigned` 加上写成 `-`,`long`/`long long`/`size_t`/`ssize_t` 是 `int`(`unsigned long` 是 `int(8)-`),`float` 是 `float(4)`,`double` 是 `float`,`_Bool` 是 `bool`,`const char *` 参数是 `string`、结果是 `object`(和 `library/cfc/libc.cfc` 一样),`void *`、别的指针、函数指针、数组参数是 `object`,`...` 是 `args: object`,`enum` 是 `int(4)+`,`struct`/`union`(含 `typedef` 出来的名字)是 `type 名: object`,指向它的指针写成这个名字。写不出的(按值的结构体、`long double`)变成 `/#/ skipped` 注释,`static` 函数不输出。头文件是当文本读的:不预处理、不跟 `#include`、不展开宏。 |
 | `--have-c` | 编译前,为输入文件里带函数体的 `c fn` 写 `<输入去掉.cf>.h`(没有就只给出警告)。`int` 写成 `long long`,`int(4)+` 是 `int`,`int(N)-` 是对应的 `unsigned`,`float` 是 `double`,`str` 是 `const char*`,`object` 是 `void*`,`type X: object` 声明的名字是 `X*`(头文件里有 `typedef struct X X;`)。只看输入文件本身,不看它导入的模块;类不导出。 |
