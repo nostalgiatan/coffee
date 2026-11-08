@@ -4,10 +4,19 @@ on:
   push:
     branches: [master]
   pull_request:
+  workflow_call:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       # no C compiler, Rust or LLVM is used: the committed seed builds the sources
@@ -26,3 +35,17 @@ jobs:
           out=$(coffee/driver/tools/build-from-seed.sh "$RUNNER_TEMP/w2")
           echo "$out"
           case "$out" in *"seed is current"*) ;; *) echo "::error::the committed seed is older than the sources; run build-from-seed.sh --refresh"; exit 1;; esac
+
+  # riscv64 (base, rva22, rva23) and aarch64 under qemu-user: the ported cases, the sandbox, the compiler
+  # compiling itself to the same bytes
+  cross:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install qemu-user
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-user python3
+      - name: Build from the seed
+        run: coffee/driver/tools/build-from-seed.sh "$RUNNER_TEMP/w"
+      - name: Cross gates
+        run: coffee/driver/tools/cross-gates.sh "$RUNNER_TEMP/w"

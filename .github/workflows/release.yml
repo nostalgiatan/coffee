@@ -1,6 +1,7 @@
 name: release
 
-# A tag `v*` builds, tests and publishes the compiler and its tools as one archive.
+# A tag `v*` runs the whole ci, then builds the compiler and its tools for x86-64 and, cross compiled by that
+# compiler, for riscv64 (base and rva23) and aarch64, and publishes the archives.
 on:
   push:
     tags: ["v*"]
@@ -9,32 +10,38 @@ permissions:
   contents: write
 
 jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
   release:
+    needs: ci
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+      - name: Install qemu-user
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-user
       - name: Build from the seed
         run: coffee/driver/tools/build-from-seed.sh "$RUNNER_TEMP/w"
-      - name: Test every stage
+      - name: Package every target
         run: |
-          export PATH="$RUNNER_TEMP/w:$PATH"
-          for d in lexer parser sema types own ir rt ld jit driver tea compat; do
-            (cd coffee/$d && tea test --compiler "$RUNNER_TEMP/w/coffee2" -j 4)
+          for t in x86_64-linux riscv64-linux riscv64-linux-rva23 aarch64-linux; do
+            coffee/driver/tools/package.sh "$RUNNER_TEMP/w" "${GITHUB_REF_NAME}" "$t" dist
           done
-      - name: Package
+      # a cross compiled compiler runs under qemu and compiles a program
+      - name: Smoke test the cross archives
         run: |
-          v="${GITHUB_REF_NAME}"
-          p="coffee-${v}-linux-x86_64"
-          mkdir -p "dist/$p/bin"
-          for t in coffee2 tea cfjit cfprof; do cp "$RUNNER_TEMP/w/$t" "dist/$p/bin/"; done
-          cp -r library "dist/$p/library"
-          cp README.md SYNTAX.md "dist/$p/"
-          tar -C dist -czf "dist/$p.tar.gz" "$p"
-          (cd dist && sha256sum "$p.tar.gz" > "$p.tar.gz.sha256")
-          echo "ARCHIVE=dist/$p.tar.gz" >> "$GITHUB_ENV"
+          printf 'fn main() => int:\n    return 42\n' > smoke.cf
+          for pair in riscv64:qemu-riscv64 aarch64:qemu-aarch64; do
+            a=${pair%%:*}; q=${pair#*:}
+            d=dist/coffee-${GITHUB_REF_NAME}-linux-$a
+            "$q" "$d/bin/coffee2" smoke.cf --target=$a-linux --static -o smoke.$a
+            set +e; "$q" smoke.$a; rc=$?; set -e
+            [ "$rc" = 42 ] || { echo "::error::$a archive: smoke test returned $rc"; exit 1; }
+          done
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" "$ARCHIVE" "$ARCHIVE.sha256" \
+          gh release create "${GITHUB_REF_NAME}" dist/*.tar.gz dist/*.tar.gz.sha256 \
             --title "Coffee ${GITHUB_REF_NAME}" --generate-notes
