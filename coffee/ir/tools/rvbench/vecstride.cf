@@ -1,0 +1,49 @@
+fn mm(a: &buf<int>, b: &buf<int>, c: &buf<int>, n: int) => void:
+    for i in 0..n:
+        for j in 0..n:
+            let s = 0
+            for k in 0..n:
+                s += a[i * n + k] * b[k * n + j]
+            c[i * n + j] = s
+
+fn dotoff(a: &buf<int>, b: &buf<int>, o: int, n: int) => int:
+    let s = 0
+    for k in 0..n:
+        s += a[o + k] * b[k * 3 + 1]
+    return s
+
+fn colsum(a: &buf<int>, w: int, col: int) => int:
+    let s = 0
+    for r in 0..w:
+        s += a[r * 8 + col]
+    return s
+
+fn main() => int:
+    let tot = 0
+    for n in 1..40:
+        let a: buf<int> = new_buf(int, n * n)
+        let b: buf<int> = new_buf(int, n * n)
+        let c: buf<int> = new_buf(int, n * n)
+        for i in 0..n * n:
+            a[i] = (i * 7 + 3) % 19
+            b[i] = (i * 5 + 1) % 23
+        mm(&a, &b, &c, n)
+        let h = 0
+        for i in 0..n * n:
+            h = (h * 31 + c[i]) % 1000003
+        tot = (tot * 17 + h) % 1000003
+    let x: buf<int> = new_buf(int, 400)
+    let y: buf<int> = new_buf(int, 400)
+    for i in 0..400:
+        x[i] = i % 11 + 1
+        y[i] = i % 7 + 2
+    for o in 0..20:
+        for n in 0..100:
+            tot = (tot * 13 + dotoff(&x, &y, o, n)) % 1000003
+    let z: buf<int> = new_buf(int, 8 * 50)
+    for i in 0..400:
+        z[i] = i % 13
+    for w in 0..50:
+        for col in 0..8:
+            tot = (tot * 11 + colsum(&z, w, col)) % 1000003
+    return tot % 256

@@ -116,6 +116,7 @@ fn set_target(name: &Txt) => int:
         if name.is("riscv64-linux-rva23"):
             rv_ext = 7
             set_vector_loops(true)
+            set_vector_wide(true)
         set_strength(7)
         return 0
     return 1
