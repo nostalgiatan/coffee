@@ -1569,6 +1569,419 @@ fn hoist_invariants(f: &Fun) => bool:
         changed = true
     return changed
 
+/#/ The value of `v` in block `b` when parameter k of `b` is `known[k]` (`isk[k]` = 1): a constant, a known parameter, or a conversion or
+/#/ compare of such; `miss[0]` is set when it cannot be told.
+fn tc_eval(f: &Fun, b: int, v0: int, known: &buf<int>, isk: &buf<int>, miss: &buf<int>) => int:
+    let v = f.follow(v0)
+    if f.is_const(v):
+        return f.cval(v)
+    let o = f.op[v]
+    if o == int(Op.Param) && f.blk[v] == b:
+        let k = f.aux[v]
+        if k < len(known) && isk[k] == 1:
+            return known[k]
+        miss[0] = 1
+        return 0
+    if f.blk[v] == b && (o == int(Op.ZExt) || o == int(Op.Trunc) || o == int(Op.SExt)) && f.a[v] >= 0:
+        let x = tc_eval(f, b, f.a[v], known, isk, miss)
+        let r = f.rep[v]
+        if o == int(Op.ZExt):
+            return unsigned_of(f.rep[f.follow(f.a[v])], x)
+        return wrap(r, x)
+    if f.blk[v] == b && o == int(Op.Cmp):
+        let p = f.aux[v]
+        let x = tc_eval(f, b, f.a[v], known, isk, miss)
+        let y = tc_eval(f, b, f.b[v], known, isk, miss)
+        if p == int(Pr.Eq):
+            if x == y:
+                return 1
+            return 0
+        if p == int(Pr.Ne):
+            if x != y:
+                return 1
+            return 0
+    miss[0] = 1
+    return 0
+
+/#/ An edge that passes constants to a block which does nothing but test them goes straight to the side the test takes: the flag of
+/#/ `while go:` set to false on the way out no longer comes back to the test. The block's values may be used only by its own edges.
+fn thread_const_params(f: &Fun) => bool:
+    if (strength_mode & 4) == 0:
+        return false
+    let changed = false
+    let ne0 = f.ne
+    for e in 0..ne0:
+        let b = f.eto[e]
+        if b <= 0 || f.eargn[e] == 0 || f.eargn[e] != f.npar[b] || f.efrom[e] == b:
+            continue
+        let t = f.blast[b]
+        if t < 0 || f.op[t] != int(Op.CondBr):
+            continue
+        /#/ nothing but pure instructions that the test is made of
+        let pure = true
+        let i = f.bfirst[b]
+        while i != t && i >= 0:
+            let o = f.op[i]
+            if !(o == int(Op.ZExt) || o == int(Op.Trunc) || o == int(Op.SExt) || o == int(Op.Cmp)):
+                pure = false
+            i = f.nx[i]
+        if !pure:
+            continue
+        let n = f.npar[b]
+        let known: buf<int> = new_buf(int, n + 1)
+        let isk: buf<int> = new_buf(int, n + 1)
+        let any = false
+        for k in 0..n:
+            let a = f.follow(f.pool[f.eargs[e] + k])
+            if f.is_const(a):
+                known[k] = f.cval(a)
+                isk[k] = 1
+                any = true
+        if !any:
+            continue
+        let miss: buf<int> = new_buf(int, 1)
+        let c = tc_eval(f, b, f.a[t], &known, &isk, &miss)
+        if miss[0] == 1:
+            continue
+        let e2 = f.b[t]
+        if c == 0:
+            e2 = f.c[t]
+        let to = f.eto[e2]
+        if to < 0 || to == b:
+            continue
+        /#/ the arguments of the edge taken may be parameters of `b` (replaced by what `e` passes) or values from outside
+        let ok = true
+        for k in 0..f.eargn[e2]:
+            let x = f.follow(f.pool[f.eargs[e2] + k])
+            if f.blk[x] == b && !(f.op[x] == int(Op.Param)):
+                ok = false
+        if !ok:
+            continue
+        /#/ and nothing else reads what `b` defines
+        let p = f.pfirst[b]
+        let ext = 0
+        while p >= 0:
+            ext = ext + f.uses[p]
+            p = f.nx[p]
+        /#/ uses of parameters by instructions of `b`, and by the edges of `b`
+        let inb = 0
+        i = f.bfirst[b]
+        while i >= 0:
+            for u in 0..f.nval(i):
+                let v = f.val_at(i, u)
+                if v >= 0 && f.op[f.follow(v)] == int(Op.Param) && f.blk[f.follow(v)] == b:
+                    inb = inb + 1
+            i = f.nx[i]
+        for q in 0..f.nsucc(b):
+            let e3 = f.succ_edge(b, q)
+            for u in 0..f.eargn[e3]:
+                let v = f.follow(f.pool[f.eargs[e3] + u])
+                if f.op[v] == int(Op.Param) && f.blk[v] == b:
+                    inb = inb + 1
+        if inb != ext:
+            continue
+        /#/ the instructions of `b` are used by itself only
+        let outer = false
+        i = f.bfirst[b]
+        while i != t && i >= 0:
+            let inner = 0
+            let j = f.nx[i]
+            while j >= 0:
+                for u in 0..f.nval(j):
+                    if f.val_at(j, u) >= 0 && f.follow(f.val_at(j, u)) == i:
+                        inner = inner + 1
+                j = f.nx[j]
+            if f.uses[i] != inner:
+                outer = true
+            i = f.nx[i]
+        if outer:
+            continue
+        tc_redirect(f, e, e2, b)
+        changed = true
+    return changed
+
+/#/ Edge `e` into block `b` is made a copy of edge `e2` out of it: the arguments of `e2` that are parameters of `b` are what `e` passes.
+fn tc_redirect(f: &Fun, e: int, e2: int, b: int) => void:
+    let to = f.eto[e2]
+    let at = f.np
+    for k in 0..f.eargn[e2]:
+        let x = f.follow(f.pool[f.eargs[e2] + k])
+        if f.op[x] == int(Op.Param) && f.blk[x] == b:
+            f.pool_put(f.pool[f.eargs[e] + f.aux[x]])
+        else:
+            f.pool_put(x)
+    for k in 0..f.eargn[e]:
+        let x = f.follow(f.pool[f.eargs[e] + k])
+        f.uses[x] = f.uses[x] - 1
+    f.eargs[e] = at
+    f.eargn[e] = f.eargn[e2]
+    f.eto[e] = to
+    for k in 0..f.eargn[e]:
+        let x = f.follow(f.pool[f.eargs[e] + k])
+        f.uses[x] = f.uses[x] + 1
+
+/#/ An edge into a block that only jumps on, with parameters, goes to where that block jumps, passing what it was passed.
+fn thread_forward(f: &Fun) => bool:
+    if (strength_mode & 4) == 0:
+        return false
+    let changed = false
+    for e in 0..f.ne:
+        let b = f.eto[e]
+        if b <= 0 || f.efrom[e] == b || f.npar[b] == 0 || f.eargn[e] != f.npar[b]:
+            continue
+        let t = f.blast[b]
+        if t < 0 || f.bfirst[b] != t || f.op[t] != int(Op.Br):
+            continue
+        let e2 = f.aux[t]
+        let to = f.eto[e2]
+        if to < 0 || to == b:
+            continue
+        let ext = 0
+        let p = f.pfirst[b]
+        while p >= 0:
+            ext = ext + f.uses[p]
+            p = f.nx[p]
+        let inb = 0
+        for u in 0..f.eargn[e2]:
+            let v = f.follow(f.pool[f.eargs[e2] + u])
+            if f.op[v] == int(Op.Param) && f.blk[v] == b:
+                inb = inb + 1
+        if inb != ext:
+            continue
+        tc_redirect(f, e, e2, b)
+        changed = true
+    return changed
+
+/#/ ---- strength reduction ------------------------------------------------------
+
+/#/ Which of the two reductions run: 1 `iv * c`, 2 `base[iv + k]` (a pointer that steps along). Set by the target: where an address
+/#/ has no scaled index (riscv64) the second saves the shift and the add of every access.
+let strength_mode = 0
+
+fn set_strength(mode: int) => void:
+    strength_mode = mode
+
+/#/ Is `v` the same in every iteration of the loop `inl`?
+fn sr_inv(f: &Fun, inl: &buf<int>, v: int) => bool:
+    return f.blk[v] < 0 || inl[f.blk[v]] == 0
+
+/#/ Gives edge `e` one more argument, `v`.
+fn sr_add_arg(f: &Fun, e: int, v: int) => void:
+    let start = f.np
+    for j in 0..f.eargn[e]:
+        f.pool_put(f.pool[f.eargs[e] + j])
+    f.pool_put(v)
+    f.eargs[e] = start
+    f.eargn[e] = f.eargn[e] + 1
+    f.uses[v] = f.uses[v] + 1
+
+/#/ A new instruction in block `b`, before its last one.
+fn sr_make(f: &Fun, b: int, op: int, rep: int, ty: int, x: int, y: int, aux: int) => int:
+    let r = f.mk(op, rep, ty, x, y, -1, aux)
+    let t = f.blast[b]
+    let p = f.pv[t]
+    f.blk[r] = b
+    f.pv[r] = p
+    f.nx[r] = t
+    f.pv[t] = r
+    if p >= 0:
+        f.nx[p] = r
+    else:
+        f.bfirst[b] = r
+    return r
+
+/#/ A value `x * y` or `x + y` made before the end of block `b` (a constant when both are).
+fn sr_arith(f: &Fun, b: int, op: int, x: int, y: int) => int:
+    let rep = f.rep[x]
+    if f.is_const(x) && f.is_const(y):
+        if op == int(Op.Mul):
+            return f.cint(rep, f.cval(x) * f.cval(y))
+        return f.cint(rep, f.cval(x) + f.cval(y))
+    if f.is_const(y) && f.cval(y) == 0 && op == int(Op.Add):
+        return x
+    return sr_make(f, b, op, rep, f.ty[x], x, y, 0)
+
+/#/ In a loop entered once and stepped by a constant, `iv * c` and `base + iv * size` (for `c`, `base` that do not change in the
+/#/ loop) become parameters of the loop header of their own, started before the loop and stepped by an add at each back edge.
+fn strength_reduce(f: &Fun) => bool:
+    if strength_mode == 0 || f.nb < 2:
+        return false
+    let nb = f.nb
+    let rpo: buf<int> = new_buf(int, nb + 1)
+    let idom: buf<int> = new_buf(int, nb + 1)
+    let pc: buf<int> = new_buf(int, nb + 2)
+    let pl: buf<int> = new_buf(int, f.ne + 1)
+    let np = dominators(f, &rpo, &idom, &pc, &pl)
+    let inl: buf<int> = new_buf(int, nb + 1)
+    let work: buf<int> = new_buf(int, nb + 1)
+    let changed = false
+    let k = np - 1
+    while k >= 1:
+        let h = rpo[k]
+        k = k - 1
+        let nw = 0
+        for q in 0..nb:
+            inl[q] = 0
+        inl[h] = 1
+        for q in pc[h]..pc[h + 1]:
+            let t = pl[q]
+            let x = t
+            while x != h && x != 0 && idom[x] >= 0 && idom[x] != x:
+                x = idom[x]
+            if x == h && inl[t] == 0:
+                inl[t] = 1
+                work[nw] = t
+                nw = nw + 1
+        if nw == 0:
+            continue
+        while nw > 0:
+            nw = nw - 1
+            let b = work[nw]
+            for q in pc[b]..pc[b + 1]:
+                let t = pl[q]
+                if inl[t] == 0 && idom[t] >= 0:
+                    inl[t] = 1
+                    work[nw] = t
+                    nw = nw + 1
+        /#/ the one edge that enters the loop; the others into the header come from inside
+        let ep = -1
+        let nback = 0
+        let ok = true
+        for e in 0..f.ne:
+            if f.eto[e] == h:
+                let fb = f.efrom[e]
+                if fb < 0 || fb >= nb || idom[fb] < 0:
+                    continue
+                if inl[fb] == 1:
+                    nback = nback + 1
+                elif ep >= 0:
+                    ok = false
+                else:
+                    ep = e
+        if !ok || ep < 0 || nback == 0:
+            continue
+        let pre = f.efrom[ep]
+        if f.blast[pre] < 0:
+            continue
+        let made = 0
+        let nparam = f.npar[h]
+        for pi in 0..nparam:
+            if made >= 4:
+                break
+            let pv = f.param_at(h, pi)
+            if f.rep[pv] != int(Rp.I64):
+                continue
+            /#/ its step: the same loop invariant added on every edge back
+            let step = -1
+            let good = true
+            for e in 0..f.ne:
+                if f.eto[e] == h && e != ep && f.efrom[e] >= 0 && f.efrom[e] < nb && idom[f.efrom[e]] >= 0 && inl[f.efrom[e]] == 1 && good:
+                    let a = f.follow(f.pool[f.eargs[e] + pi])
+                    let sv = -1
+                    if f.op[a] == int(Op.Add) && f.rep[a] == int(Rp.I64):
+                        let u = f.follow(f.a[a])
+                        let w = f.follow(f.b[a])
+                        if u == pv && w != pv && sr_inv(f, &inl, w):
+                            sv = w
+                        elif w == pv && u != pv && sr_inv(f, &inl, u):
+                            sv = u
+                    if sv < 0 || (step >= 0 && step != sv) || (f.is_const(sv) && f.cval(sv) == 0):
+                        good = false
+                    else:
+                        step = sv
+            if !good || step < 0:
+                continue
+            let i0 = f.follow(f.pool[f.eargs[ep] + pi])
+            /#/ what can be reduced: instruction, kind, the invariant operand and the offset added to the iv
+            let cand: buf<int> = new_buf(int, 64)
+            let nc = 0
+            for r in 0..np:
+                let b = rpo[r]
+                if inl[b] == 0:
+                    continue
+                let i = f.bfirst[b]
+                while i >= 0:
+                    if f.fwd[i] < 0 && nc < 16 && f.uses[i] > 0:
+                        let o = f.op[i]
+                        if o == int(Op.Mul) && (strength_mode & 1) != 0 && f.rep[i] == int(Rp.I64):
+                            let x = f.follow(f.a[i])
+                            let y = f.follow(f.b[i])
+                            if y == pv && x != pv && sr_inv(f, &inl, x):
+                                x = f.follow(f.b[i])
+                                y = f.follow(f.a[i])
+                            if x == pv && y != pv && sr_inv(f, &inl, y):
+                                cand[nc * 4] = i
+                                cand[nc * 4 + 1] = 1
+                                cand[nc * 4 + 2] = y
+                                cand[nc * 4 + 3] = -1
+                                nc = nc + 1
+                        elif o == int(Op.Index) && (strength_mode & 2) != 0 && f.is_const(step) && sr_inv(f, &inl, f.follow(f.a[i])):
+                            let x = f.follow(f.b[i])
+                            let off = -1
+                            if x != pv && f.op[x] == int(Op.Add) && f.rep[x] == int(Rp.I64):
+                                let u = f.follow(f.a[x])
+                                let w = f.follow(f.b[x])
+                                if u == pv && sr_inv(f, &inl, w):
+                                    off = w
+                                    x = pv
+                                elif w == pv && sr_inv(f, &inl, u):
+                                    off = u
+                                    x = pv
+                            if x == pv:
+                                cand[nc * 4] = i
+                                cand[nc * 4 + 1] = 2
+                                cand[nc * 4 + 2] = off
+                                cand[nc * 4 + 3] = -1
+                                nc = nc + 1
+                    i = f.nx[i]
+            for c in 0..nc:
+                if made >= 4:
+                    break
+                let i = cand[c * 4]
+                if f.fwd[i] >= 0:
+                    continue
+                /#/ the same reduction made already
+                let same = -1
+                for d in 0..c:
+                    if cand[d * 4 + 3] >= 0 && f.op[cand[d * 4]] == f.op[i] && cand[d * 4 + 2] == cand[c * 4 + 2]:
+                        if f.op[i] == int(Op.Mul) || (f.aux[cand[d * 4]] == f.aux[i] && f.follow(f.a[cand[d * 4]]) == f.follow(f.a[i])):
+                            same = cand[d * 4 + 3]
+                if same >= 0:
+                    replace_inst(f, i, same)
+                    changed = true
+                    continue
+                let kind = cand[c * 4 + 1]
+                let inv = cand[c * 4 + 2]
+                let q = f.param(h, f.rep[i], f.ty[i])
+                let start = 0
+                if kind == 1:
+                    start = sr_arith(f, pre, int(Op.Mul), i0, inv)
+                else:
+                    let idx0 = i0
+                    if inv >= 0:
+                        idx0 = sr_arith(f, pre, int(Op.Add), i0, inv)
+                    start = sr_make(f, pre, int(Op.Index), int(Rp.Ptr), -1, f.follow(f.a[i]), idx0, f.aux[i])
+                for e in 0..f.ne:
+                    if f.eto[e] == h && f.efrom[e] >= 0 && f.efrom[e] < nb && idom[f.efrom[e]] >= 0:
+                        if e == ep:
+                            sr_add_arg(f, e, start)
+                        elif inl[f.efrom[e]] == 1:
+                            let lb = f.efrom[e]
+                            let nv = 0
+                            if kind == 1:
+                                let sc = sr_arith(f, pre, int(Op.Mul), step, inv)
+                                nv = sr_make(f, lb, int(Op.Add), f.rep[i], f.ty[i], q, sc, 0)
+                            else:
+                                nv = sr_make(f, lb, int(Op.Index), int(Rp.Ptr), -1, q, step, f.aux[i])
+                            sr_add_arg(f, e, nv)
+                cand[c * 4 + 3] = q
+                replace_inst(f, i, q)
+                made = made + 1
+                changed = true
+    if changed:
+        recount_uses(f)
+    return changed
+
 /#/ ---- vectorization ----------------------------------------------------------
 
 /#/ What a loop that can be done a vector at a time was found to be made of.
@@ -2779,9 +3192,15 @@ fn value_passes(f: &Fun, rs: &Reps, split: bool) => bool:
         changed = true
     if cse_branches(f):
         changed = true
+    if thread_forward(f):
+        changed = true
+    if thread_const_params(f):
+        changed = true
     if range_checks(f):
         changed = true
     if hoist_invariants(f):
+        changed = true
+    if strength_reduce(f):
         changed = true
     if own_opt(f):
         changed = true

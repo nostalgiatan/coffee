@@ -63,6 +63,7 @@ fn target_names() => str:
 /#/ Chooses the target by its name; 0 when it was set, 1 when the name is unknown, 2 when it is known
 /#/ but there is no code generator for it yet (none now: both known ones have one).
 fn set_target(name: &Txt) => int:
+    set_strength(0)
     if name.is("x86_64-linux") || name.is("x86_64"):
         target_arch = arch_x86_64()
         target_os = os_linux()
@@ -97,6 +98,8 @@ fn set_target(name: &Txt) => int:
         /#/ fixed 4-byte instructions (no compressed ones): every function starts on one
         fn_align_at_least(4)
         set_vector_loops(false)
+        /#/ no scaled index in an address: step pointers and products along the loops
+        set_strength(7)
         return 0
     return 1
 

@@ -1,0 +1,80 @@
+/#/ Loops the optimizer rewrites on riscv64 (products and addresses stepped along the loop, flags that only
+/#/ the loop test reads): constant, negative and variable steps, nested loops, a start that is not zero.
+use write in libc of c
+
+fn tri(n: int) => int:
+    let s = 0
+    for i in 0..n:
+        s += i * 7
+    return s
+
+fn down(n: int) => int:
+    let a: buf<int> = new_buf(int, n)
+    for i in 0..n:
+        a[i] = i * 3 + 1
+    let s = 0
+    let i = n - 1
+    while i >= 0:
+        s = s * 31 + a[i] * (i + 2)
+        i = i - 2
+    return s
+
+fn strided(n: int, step: int) => int:
+    let a: buf<int> = new_buf(int, n * 4)
+    let j = 1
+    while j < n * 4:
+        a[j] = j
+        j = j + step
+    let s = 0
+    for k in 0..n * 4:
+        s += a[k] * (k + 1)
+    return s
+
+fn mat(n: int) => int:
+    let a: buf<int> = new_buf(int, n * n)
+    let b: buf<int> = new_buf(int, n * n)
+    for i in 0..n * n:
+        a[i] = i % 5 + 1
+        b[i] = i % 7 + 2
+    let s = 0
+    for i in 0..n:
+        for j in 0..n:
+            let t = 0
+            for k in 0..n:
+                t += a[i * n + k] * b[k * n + j]
+            s = s * 3 + t
+    return s
+
+fn flag(n: int) => int:
+    let keys: buf<int> = new_buf(int, 64)
+    let found = 0
+    let x = 12345
+    for i in 0..n:
+        x = (x * 1103515245 + 12345) % 2147483648
+        let k = x % 50 + 1
+        let h = k
+        let go = true
+        while go:
+            if keys[h % 64] == 0:
+                keys[h % 64] = k
+                go = false
+            elif keys[h % 64] == k:
+                found += 1
+                go = false
+            else:
+                h = h + 1
+    return found
+
+fn narrow(n: int) => int:
+    let s = 0
+    let i: int(4)+ = 0
+    while i < n:
+        s += (i as int) * 5
+        i += 1
+    return s
+
+fn main() => int:
+    let r = tri(100) + down(37) + strided(20, 3) + mat(9) + flag(400) + narrow(50)
+    let t = f"{r}\n"
+    write(1, t, len(t))
+    return r % 251

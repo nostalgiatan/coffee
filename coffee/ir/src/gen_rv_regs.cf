@@ -224,33 +224,44 @@ fn gr_edge_regs(g: &Gen, f: &Fun, e: int) => bool:
 /#/ writes no register), then each copy whose register nobody still reads is made, a cycle being broken with a temporary.
 fn gr_edge_moves(g: &Gen, f: &Fun, e: int) => bool:
     let n = f.eargn[e]
-    if n > 12:
+    if n > 16:
         return false
     let p = f.pfirst[f.eto[e]]
     for k in 0..n:
-        let r = f.rep[p]
-        if r >= rp_first_agg() || !g_is_int_class(g, r):
+        if f.rep[p] >= rp_first_agg():
             return false
         p = f.nx[p]
     let dst: buf<int> = new_buf(int, n + 1)
     let src: buf<int> = new_buf(int, n + 1)
     let val: buf<int> = new_buf(int, n + 1)
     let live: buf<int> = new_buf(int, n + 1)
+    let isf: buf<int> = new_buf(int, n + 1)
     p = f.pfirst[f.eto[e]]
     for k in 0..n:
         let v = f.pool[f.eargs[e] + k]
+        let x = g_res(g, f, v)
         val[k] = v
-        dst[k] = g.home[p]
-        src[k] = g.home[g_res(g, f, v)]
         live[k] = 1
-        if g.home[p] < 0:
-            let sr = gr_src(g, f, v, tr_s0())
-            rv_st(&g.a, tr_fp(), g.voff[p], sr, 8)
-            live[k] = 0
-        elif src[k] == dst[k]:
+        if g_is_int_class(g, f.rep[p]):
+            dst[k] = g.home[p]
+            src[k] = g.home[x]
+            if g.home[p] < 0:
+                let sr = gr_src(g, f, v, tr_s0())
+                rv_st(&g.a, tr_fp(), g.voff[p], sr, 8)
+                live[k] = 0
+        else:
+            isf[k] = 1
+            dst[k] = g.xhome[p]
+            src[k] = g.xhome[x]
+            if g.xhome[p] < 0:
+                let sr = gr_fsrc(g, f, v, 0)
+                rv_fldst(&g.a, false, sr, tr_fp(), g.voff[p], rsize_scalar(f.rep[p]))
+                live[k] = 0
+        if live[k] == 1 && src[k] == dst[k]:
             live[k] = 0
         p = f.nx[p]
     let ntmp = 0
+    let nftmp = 0
     let left = 0
     for k in 0..n:
         left = left + live[k]
@@ -260,10 +271,15 @@ fn gr_edge_moves(g: &Gen, f: &Fun, e: int) => bool:
             if live[k] == 1:
                 let busy = false
                 for j in 0..n:
-                    if live[j] == 1 && j != k && src[j] == dst[k]:
+                    if live[j] == 1 && j != k && isf[j] == isf[k] && src[j] == dst[k]:
                         busy = true
                 if !busy:
-                    if src[k] >= 0:
+                    if isf[k] == 1:
+                        if src[k] >= 0:
+                            rv_fmv_ff(&g.a, dst[k], src[k])
+                        else:
+                            gr_fmove(g, f, dst[k], val[k])
+                    elif src[k] >= 0:
                         rv_mov_rr(&g.a, dst[k], src[k])
                     else:
                         gr_ld(g, dst[k], f, val[k])
@@ -271,17 +287,26 @@ fn gr_edge_moves(g: &Gen, f: &Fun, e: int) => bool:
                     left = left - 1
                     moved = true
         if !moved:
-            if ntmp >= 5:
-                return false
             let k = 0
             while live[k] == 0:
                 k = k + 1
-            let t = gr_etmp(ntmp)
-            ntmp = ntmp + 1
-            rv_mov_rr(&g.a, t, dst[k])
-            for j in 0..n:
-                if live[j] == 1 && src[j] == dst[k]:
-                    src[j] = t
+            if isf[k] == 1:
+                if nftmp >= 2:
+                    return false
+                rv_fmv_ff(&g.a, nftmp, dst[k])
+                for j in 0..n:
+                    if live[j] == 1 && isf[j] == 1 && src[j] == dst[k]:
+                        src[j] = nftmp
+                nftmp = nftmp + 1
+            else:
+                if ntmp >= 5:
+                    return false
+                let t = gr_etmp(ntmp)
+                ntmp = ntmp + 1
+                rv_mov_rr(&g.a, t, dst[k])
+                for j in 0..n:
+                    if live[j] == 1 && isf[j] == 0 && src[j] == dst[k]:
+                        src[j] = t
     return true
 
 fn gr_etmp(k: int) => int:
