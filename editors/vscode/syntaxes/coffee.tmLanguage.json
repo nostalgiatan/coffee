@@ -1,0 +1,169 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Coffee",
+  "scopeName": "source.coffee-lang",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#c-fn" },
+    { "include": "#function-defs" },
+    { "include": "#class-defs" },
+    { "include": "#listener" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#constants" },
+    { "include": "#numbers" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.block.coffee-lang",
+          "begin": "/#\\*",
+          "end": "\\*#/"
+        },
+        {
+          "name": "comment.line.coffee-lang",
+          "match": "/#/.*$"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.interpolated.coffee-lang",
+          "begin": "\\bf\"",
+          "end": "\"",
+          "patterns": [
+            { "include": "#escape" },
+            {
+              "name": "meta.interpolation.coffee-lang",
+              "begin": "\\{",
+              "end": "\\}",
+              "beginCaptures": {
+                "0": { "name": "punctuation.definition.interpolation.begin.coffee-lang" }
+              },
+              "endCaptures": {
+                "0": { "name": "punctuation.definition.interpolation.end.coffee-lang" }
+              },
+              "patterns": [
+                { "include": "$self" }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "string.quoted.double.coffee-lang",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            { "include": "#escape" }
+          ]
+        }
+      ]
+    },
+    "escape": {
+      "name": "constant.character.escape.coffee-lang",
+      "match": "\\\\[ntr0\"'\\\\]"
+    },
+    "c-fn": {
+      "match": "\\b(c)\\s+(fn)(?:\\s+([A-Za-z_][A-Za-z0-9_]*))?",
+      "captures": {
+        "1": { "name": "storage.modifier.coffee-lang" },
+        "2": { "name": "keyword.other.coffee-lang" },
+        "3": { "name": "entity.name.function.coffee-lang" }
+      }
+    },
+    "listener": {
+      "name": "entity.name.function.listener.coffee-lang",
+      "match": "#[A-Za-z_][A-Za-z0-9_]*"
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.coffee-lang",
+          "match": "\\b(if|elif|else|while|for|in|match|return|break|continue|raise)\\b"
+        },
+        {
+          "name": "keyword.other.coffee-lang",
+          "match": "\\b(fn|class|enum|type|packed|let|use|of|as|mv|clone|copy|rm|clean)\\b"
+        },
+        {
+          "name": "storage.modifier.coffee-lang",
+          "match": "\\bmut\\b"
+        },
+        {
+          "name": "variable.language.coffee-lang",
+          "match": "\\bself\\b"
+        }
+      ]
+    },
+    "types": {
+      "name": "storage.type.coffee-lang",
+      "match": "\\b(int(?:\\(\\d+\\)[+-]?)?|float(?:\\(\\d+\\))?|bool|str|string|void|buf|object)\\b"
+    },
+    "constants": {
+      "name": "constant.language.coffee-lang",
+      "match": "\\b(true|false)\\b"
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.float.coffee-lang",
+          "match": "\\b\\d+\\.\\d+\\b"
+        },
+        {
+          "name": "constant.numeric.integer.coffee-lang",
+          "match": "\\b\\d+\\b"
+        }
+      ]
+    },
+    "function-defs": {
+      "match": "\\bfn\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "0": { "name": "meta.function.coffee-lang" },
+        "1": { "name": "entity.name.function.coffee-lang" }
+      }
+    },
+    "class-defs": {
+      "match": "\\b(class|enum)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "keyword.other.coffee-lang" },
+        "2": { "name": "entity.name.type.coffee-lang" }
+      }
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.arrow.coffee-lang",
+          "match": "=>"
+        },
+        {
+          "name": "keyword.operator.logical.coffee-lang",
+          "match": "&&|\\|\\||!"
+        },
+        {
+          "name": "keyword.operator.comparison.coffee-lang",
+          "match": "<=|>=|==|!=|<|>"
+        },
+        {
+          "name": "keyword.operator.bitwise.coffee-lang",
+          "match": "<<|>>|\\||\\^|~"
+        },
+        {
+          "name": "keyword.operator.assignment.coffee-lang",
+          "match": "="
+        },
+        {
+          "name": "keyword.operator.arithmetic.coffee-lang",
+          "match": "[+\\-*/%]"
+        },
+        {
+          "name": "keyword.operator.borrow.coffee-lang",
+          "match": "&"
+        }
+      ]
+    }
+  }
+}

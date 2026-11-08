@@ -1,0 +1,17 @@
+* text=auto eol=lf
+
+# Coffee sources: GitHub has no Coffee grammar, so show them with Python's (same indentation syntax)
+*.cf  linguist-language=Python
+*.cfc linguist-language=Python
+
+# generated or binary: the seed compiler, IR objects, test images
+coffee/driver/seed/* binary linguist-generated
+*.cir binary
+*.o binary
+*.gz binary
+coffee/ir/ir_image_test binary
+coffee/ld/prog binary
+
+# the first-generation Rust-era notes and the generated parts of the compiler are not counted
+docs/legacy-rust/** linguist-documentation
+coffee/ir/src/minrt.cf linguist-generated

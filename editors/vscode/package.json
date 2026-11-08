@@ -1,0 +1,37 @@
+{
+  "name": "coffee-lang",
+  "displayName": "Coffee Language",
+  "description": "Syntax highlighting for Coffee (.cf) and C function declaration files (.cfc)",
+  "version": "0.3.9",
+  "publisher": "coffee",
+  "license": "SEE LICENSE IN ../../LICENSE",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "coffee-lang",
+        "aliases": [
+          "Coffee",
+          "coffee-lang"
+        ],
+        "extensions": [
+          ".cf",
+          ".cfc"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "coffee-lang",
+        "scopeName": "source.coffee-lang",
+        "path": "./syntaxes/coffee.tmLanguage.json"
+      }
+    ]
+  }
+}
