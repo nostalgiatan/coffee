@@ -1747,7 +1747,9 @@ fn thread_const_params(f: &Fun) => bool:
                 if f.op[v] == int(Op.Param) && f.blk[v] == b:
                     inb = inb + 1
         if inb != ext:
-            continue
+            /#/ a parameter of `b` is used past the way out: the block that way gets a parameter of its own for it
+            if !tc_extend(f, b, e2, t):
+                continue
         /#/ the instructions of `b` are used by itself only
         let outer = false
         i = f.bfirst[b]
@@ -1767,6 +1769,147 @@ fn thread_const_params(f: &Fun) => bool:
         tc_redirect(f, e, e2, b)
         changed = true
     return changed
+
+/#/ The parameters of `b` that are used outside it, all in blocks the target of edge `e2` dominates (and that block is entered only
+/#/ along `e2`), are passed along `e2` as parameters the target gets, which the uses there read instead.
+fn tc_extend(f: &Fun, b: int, e2: int, t: int) => bool:
+    let to = f.eto[e2]
+    let nin = 0
+    for e in 0..f.ne:
+        if f.eto[e] == to:
+            nin = nin + 1
+    let eo = f.b[t]
+    if eo == e2:
+        eo = f.c[t]
+    let to2 = f.eto[eo]
+    let nin2 = 0
+    for e in 0..f.ne:
+        if f.eto[e] == to2:
+            nin2 = nin2 + 1
+    if nin != 1 || to <= 0 || to2 <= 0 || to2 == b:
+        return false
+    let nb = f.nb
+    let rpo: buf<int> = new_buf(int, nb + 1)
+    let idom: buf<int> = new_buf(int, nb + 1)
+    let pc: buf<int> = new_buf(int, nb + 2)
+    let pl: buf<int> = new_buf(int, f.ne + 1)
+    dominators(f, &rpo, &idom, &pc, &pl)
+    /#/ the blocks `to` dominates
+    let inr: buf<int> = new_buf(int, nb + 1)
+    let inr2: buf<int> = new_buf(int, nb + 1)
+    for r in 0..nb:
+        let y = r
+        let guard = 0
+        while y >= 0 && y != to && idom[y] >= 0 && idom[y] != y && guard < nb + 2:
+            y = idom[y]
+            guard = guard + 1
+        if y == to && r != b:
+            inr[r] = 1
+        y = r
+        guard = 0
+        while y >= 0 && y != to2 && idom[y] >= 0 && idom[y] != y && guard < nb + 2:
+            y = idom[y]
+            guard = guard + 1
+        if y == to2 && r != b && inr[r] == 0:
+            inr2[r] = 1
+    /#/ every use of a parameter of `b` outside `b` must be in that region
+    let np = f.npar[b]
+    let want: buf<int> = new_buf(int, np + 1)
+    let nw = 0
+    let q = 0
+    let p = f.pfirst[b]
+    while p >= 0:
+        let inside = 0
+        let i = f.bfirst[b]
+        while i >= 0:
+            for u in 0..f.nval(i):
+                let v = f.val_at(i, u)
+                if v >= 0 && f.follow(v) == p:
+                    inside = inside + 1
+            i = f.nx[i]
+        for k in 0..f.nsucc(b):
+            let e3 = f.succ_edge(b, k)
+            for u in 0..f.eargn[e3]:
+                if f.follow(f.pool[f.eargs[e3] + u]) == p:
+                    inside = inside + 1
+        if f.uses[p] > inside:
+            /#/ count the uses in the region
+            let inreg = 0
+            for r in 0..nb:
+                if inr[r] == 1:
+                    let j = f.bfirst[r]
+                    while j >= 0:
+                        for u in 0..f.nval(j):
+                            let v = f.val_at(j, u)
+                            if v >= 0 && f.follow(v) == p:
+                                inreg = inreg + 1
+                        j = f.nx[j]
+                    for k in 0..f.nsucc(r):
+                        let e3 = f.succ_edge(r, k)
+                        for u in 0..f.eargn[e3]:
+                            if f.follow(f.pool[f.eargs[e3] + u]) == p:
+                                inreg = inreg + 1
+            /#/ and in the region of the side not taken, which `b` still leads to alone
+            let inreg2 = 0
+            for r in 0..nb:
+                if inr2[r] == 1:
+                    let j = f.bfirst[r]
+                    while j >= 0:
+                        for u in 0..f.nval(j):
+                            let v = f.val_at(j, u)
+                            if v >= 0 && f.follow(v) == p:
+                                inreg2 = inreg2 + 1
+                        j = f.nx[j]
+                    for k in 0..f.nsucc(r):
+                        let e3 = f.succ_edge(r, k)
+                        for u in 0..f.eargn[e3]:
+                            if f.follow(f.pool[f.eargs[e3] + u]) == p:
+                                inreg2 = inreg2 + 1
+            if inside + inreg + inreg2 != f.uses[p] || (inreg2 > 0 && nin2 != 1):
+                return false
+            if inreg > 0:
+                want[nw] = p
+                nw = nw + 1
+        p = f.nx[p]
+        q = q + 1
+    if nw == 0:
+        return true
+    /#/ the new parameters, their arguments on `e2`, and the uses
+    let at = f.np
+    for k in 0..f.eargn[e2]:
+        f.pool_put(f.follow(f.pool[f.eargs[e2] + k]))
+    for k in 0..nw:
+        f.pool_put(want[k])
+        f.uses[want[k]] = f.uses[want[k]] + 1
+    for k in 0..f.eargn[e2]:
+        let x = f.follow(f.pool[f.eargs[e2] + k])
+        f.uses[x] = f.uses[x] - 1
+    f.eargs[e2] = at
+    f.eargn[e2] = f.eargn[e2] + nw
+    for k in 0..f.eargn[e2] - nw:
+        let x = f.follow(f.pool[f.eargs[e2] + k])
+        f.uses[x] = f.uses[x] + 1
+    for k in 0..nw:
+        let pn = f.param(to, f.rep[want[k]], f.ty[want[k]])
+        for r in 0..nb:
+            if inr[r] == 1:
+                let j = f.bfirst[r]
+                while j >= 0:
+                    for u in 0..f.nval(j):
+                        let v = f.val_at(j, u)
+                        if v >= 0 && f.follow(v) == want[k]:
+                            f.set_val_at(j, u, pn)
+                            f.uses[want[k]] = f.uses[want[k]] - 1
+                            f.uses[pn] = f.uses[pn] + 1
+                    j = f.nx[j]
+                for u2 in 0..f.nsucc(r):
+                    let e3 = f.succ_edge(r, u2)
+                    for u in 0..f.eargn[e3]:
+                        if f.follow(f.pool[f.eargs[e3] + u]) == want[k]:
+                            f.pool[f.eargs[e3] + u] = pn
+                            f.uses[want[k]] = f.uses[want[k]] - 1
+                            f.uses[pn] = f.uses[pn] + 1
+    return true
 
 /#/ Edge `e` into block `b` is made a copy of edge `e2` out of it: the arguments of `e2` that are parameters of `b` are what `e` passes.
 fn tc_redirect(f: &Fun, e: int, e2: int, b: int) => void:
@@ -2099,18 +2242,20 @@ class VCtx:
     pta: buf<int>
     ptb: buf<int>
     pts: buf<int>
+    ptv: buf<int>
     nptr: int
     invs: buf<int>
     ninv: int
     depth: int
     stores: int
+    nload: int
     /#/ the place of each instruction in the loop's order, and the place of the last store so far: a load before it
     /#/ cannot be done again after it
     seq: buf<int>
     minseq: int
 
 fn new_vctx(lane: int, ni: int) => VCtx:
-    return VCtx { ok: true, lane: lane, prog: new_buf(int, 64), np: 0, ptrs: new_buf(int, 8), pta: new_buf(int, 8), ptb: new_buf(int, 8), pts: new_buf(int, 8), nptr: 0, invs: new_buf(int, 8), ninv: 0, depth: 0, stores: 0, seq: new_buf(int, ni + 1), minseq: -1 }
+    return VCtx { ok: true, lane: lane, prog: new_buf(int, 64), np: 0, ptrs: new_buf(int, 8), pta: new_buf(int, 8), ptb: new_buf(int, 8), pts: new_buf(int, 8), ptv: new_buf(int, 8), nptr: 0, invs: new_buf(int, 8), ninv: 0, depth: 0, stores: 0, nload: 0, seq: new_buf(int, ni + 1), minseq: -1 }
 
 /#/ The element kind of a value of representation `r`, -1 for none.
 fn v_lane_of(r: int) => int:
@@ -2161,12 +2306,13 @@ fn set_vector_wide(on: bool) => void:
 class VXtra:
     on: buf<int>
     step: buf<int>
+    sv: buf<int>
     adj: buf<int>
     cur: buf<int>
     n: int
 
 fn new_vxtra(ni: int) => VXtra:
-    return VXtra { on: new_buf(int, ni), step: new_buf(int, ni), adj: new_buf(int, ni), cur: new_buf(int, 8), n: 0 }
+    return VXtra { on: new_buf(int, ni), step: new_buf(int, ni), sv: new_buf(int, ni), adj: new_buf(int, ni), cur: new_buf(int, 8), n: 0 }
 
 fn vx_clear(x: &VXtra) => void:
     for q in 0..x.n:
@@ -2177,12 +2323,14 @@ fn vx_clear(x: &VXtra) => void:
 class VAff:
     ok: bool
     s: int
+    /#/ a stride that is a loop invariant (-1: the constant `s`)
+    sv: int
     nt: int
     t0: int
     t1: int
 
 fn new_vaff() => VAff:
-    return VAff { ok: true, s: 0, nt: 0, t0: -1, t1: -1 }
+    return VAff { ok: true, s: 0, sv: -1, nt: 0, t0: -1, t1: -1 }
 
 fn v_aff_term(r: &VAff, x: int) => void:
     if r.nt == 0:
@@ -2205,11 +2353,13 @@ fn v_aff(f: &Fun, inl: &buf<int>, iv: int, xt: &VXtra, x0: int, r: &VAff) => voi
         r.s = r.s + 1
         return
     if xt.on[x] == 1:
-        r.s = r.s + xt.step[x]
+        if xt.sv[x] >= 0:
+            v_aff_stride(r, xt.sv[x])
+        else:
+            r.s = r.s + xt.step[x]
         if xt.adj[x] >= 0:
             v_aff_term(r, xt.adj[x])
-        if r.s > 1048576 || (r.s > 1 && !vec_wide):
-            r.ok = false
+        v_aff_fin(r)
         return
     if v_outside(f, inl, x):
         v_aff_term(r, x)
@@ -2226,33 +2376,55 @@ fn v_aff(f: &Fun, inl: &buf<int>, iv: int, xt: &VXtra, x0: int, r: &VAff) => voi
         if !f.is_const(cb):
             cv = ca
             other = cb
-        if !f.is_const(cv) || !vec_wide:
+        if !vec_wide:
             r.ok = false
             return
         let m = new_vaff()
-        v_aff(f, inl, iv, xt, other, &m)
-        if !m.ok || m.nt > 0 || m.s < 1:
+        if f.is_const(cv):
+            v_aff(f, inl, iv, xt, other, &m)
+            if !m.ok || m.nt > 0 || m.sv >= 0 || m.s < 1:
+                r.ok = false
+                return
+            r.s = r.s + m.s * f.cval(cv)
+        elif v_outside(f, inl, cv):
+            /#/ the other factor is the counter, times a loop invariant
+            v_aff(f, inl, iv, xt, other, &m)
+            if !m.ok || m.nt > 0 || m.sv >= 0 || m.s != 1:
+                r.ok = false
+                return
+            v_aff_stride(r, cv)
+        else:
             r.ok = false
             return
-        r.s = r.s + m.s * f.cval(cv)
     else:
         r.ok = false
-    if r.s < 0 || r.s > 1048576 || (r.s > 1 && !vec_wide):
+    v_aff_fin(r)
+
+/#/ Adds the loop invariant `x` as the stride (one only, and not along with a constant one).
+fn v_aff_stride(r: &VAff, x: int) => void:
+    if r.sv >= 0 || r.s != 0:
+        r.ok = false
+        return
+    r.sv = x
+
+fn v_aff_fin(r: &VAff) => void:
+    if r.s < 0 || r.s > 1048576 || (r.s > 1 && !vec_wide) || (r.sv >= 0 && (!vec_wide || r.s != 0)):
         r.ok = false
 
 /#/ The index of the pointer for `base` with the affine index `ax` (added if new), -1 (and not ok) when there are too many.
 fn v_ptr(c: &VCtx, base: int, ax: &VAff) => int:
     let k = 0
-    while k < c.nptr && !(c.ptrs[k] == base && c.pta[k] == ax.t0 && c.ptb[k] == ax.t1 && c.pts[k] == ax.s):
+    while k < c.nptr && !(c.ptrs[k] == base && c.pta[k] == ax.t0 && c.ptb[k] == ax.t1 && c.pts[k] == ax.s && c.ptv[k] == ax.sv):
         k = k + 1
     if k == c.nptr:
-        if k >= 7:
+        if k >= 6:
             c.ok = false
             return -1
         c.ptrs[k] = base
         c.pta[k] = ax.t0
         c.ptb[k] = ax.t1
         c.pts[k] = ax.s
+        c.ptv[k] = ax.sv
         c.nptr = k + 1
     return k
 
@@ -2300,16 +2472,17 @@ fn v_emit(c: &VCtx, f: &Fun, inl: &buf<int>, iv: int, xt: &VXtra, v0: int) => vo
         let ax = new_vaff()
         v_aff(f, inl, iv, xt, f.b[a], &ax)
         let base = f.follow(f.a[a])
-        if !ax.ok || ax.s < 1 || !v_outside(f, inl, base) || c.seq[v] < c.minseq:
+        if !ax.ok || (ax.s < 1 && ax.sv < 0) || !v_outside(f, inl, base) || c.seq[v] < c.minseq:
             c.ok = false
             return
         let k = v_ptr(c, base, &ax)
         if k < 0:
             return
+        c.nload = c.nload + 1
         if ax.s == 1:
             v_push(c, 1, k)
         else:
-            v_push(c, 5, k | (ax.s * v_elem_size(c.lane) << 4))
+            v_push(c, 5, k)
         c.depth = c.depth + 1
     elif (o == int(Op.ZExt) || o == int(Op.SExt)) && c.lane >= 2 && c.lane <= 4:
         let x = f.follow(f.a[v])
@@ -2360,9 +2533,11 @@ fn v_op(f: &Fun, pre: int, t: int, op: int, rep: int, a: int, b: int, aux: int) 
     return x
 
 /#/ `i * s + t0 + t1` before `t` of `pre`.
-fn v_aff_val(f: &Fun, pre: int, t: int, i: int, s: int, t0: int, t1: int) => int:
+fn v_aff_val(f: &Fun, pre: int, t: int, i: int, s: int, sv: int, t0: int, t1: int) => int:
     let r = -1
-    if s == 1:
+    if sv >= 0:
+        r = v_op(f, pre, t, int(Op.Mul), int(Rp.I64), i, sv, 0)
+    elif s == 1:
         r = i
     elif s > 1:
         r = v_op(f, pre, t, int(Op.Mul), int(Rp.I64), i, f.cint(int(Rp.I64), s), 0)
@@ -2380,8 +2555,8 @@ fn v_aff_val(f: &Fun, pre: int, t: int, i: int, s: int, t0: int, t1: int) => int
 
 /#/ The pointer the vector loop gets for `base` with the terms and stride: where the elements `i0 * 1 + ...` start so that
 /#/ the loop's `ptr + i * size` is the first address (`i0` being where the loop starts); built at the end of block `vb`.
-fn v_ptr_val(f: &Fun, vb: int, base: int, t0: int, t1: int, s: int, i0: int, esz: int) => int:
-    if t0 < 0 && s == 1:
+fn v_ptr_val(f: &Fun, vb: int, base: int, t0: int, t1: int, s: int, sv: int, i0: int, esz: int, plus: bool, start: int) => int:
+    if t0 < 0 && s == 1 && sv < 0 && !plus:
         return base
     f.set_block(vb)
     let eo = -1
@@ -2389,8 +2564,16 @@ fn v_ptr_val(f: &Fun, vb: int, base: int, t0: int, t1: int, s: int, i0: int, esz
         eo = t0
     if t1 >= 0:
         eo = f.raw(int(Op.Add), int(Rp.I64), -1, eo, t1, -1, 0)
-    if s > 1:
-        let m = f.raw(int(Op.Mul), int(Rp.I64), -1, i0, f.cint(int(Rp.I64), s - 1), -1, 0)
+    if plus:
+        if eo < 0:
+            eo = start
+        else:
+            eo = f.raw(int(Op.Add), int(Rp.I64), -1, eo, start, -1, 0)
+    if s > 1 || sv >= 0:
+        let sm1 = f.cint(int(Rp.I64), s - 1)
+        if sv >= 0:
+            sm1 = f.raw(int(Op.Sub), int(Rp.I64), -1, sv, f.cint(int(Rp.I64), 1), -1, 0)
+        let m = f.raw(int(Op.Mul), int(Rp.I64), -1, i0, sm1, -1, 0)
         if eo < 0:
             eo = m
         else:
@@ -2529,7 +2712,7 @@ fn vectorize(f: &Fun) => bool:
         while pq >= 0:
             if qq != ipos:
                 let la = f.follow(f.pool[f.eargs[le] + qq])
-                let stepped = f.op[la] == int(Op.Add) && f.follow(f.a[la]) == pq && f.is_const(f.follow(f.b[la])) && v_outside(f, &inl, f.follow(f.b[la])) && f.rep[pq] == int(Rp.I64)
+                let stepped = f.op[la] == int(Op.Add) && f.follow(f.a[la]) == pq && v_outside(f, &inl, f.follow(f.b[la])) && f.rep[pq] == int(Rp.I64)
                 if stepped && !(f.npar[h] == 2):
                     xpos[nx] = qq
                     nx = nx + 1
@@ -2552,28 +2735,41 @@ fn vectorize(f: &Fun) => bool:
                 m = f.nx[m]
             let la = f.follow(f.pool[f.eargs[le] + xpos[q]])
             let init = f.follow(f.pool[f.eargs[e0] + xpos[q]])
-            let step = f.cval(f.follow(f.b[la]))
-            if step < 1 || step > 1048576:
+            let stv = f.follow(f.b[la])
+            let step = 0
+            if f.is_const(stv):
+                step = f.cval(stv)
+            if f.is_const(stv) && (step < 1 || step > 1048576):
                 xok = false
             else:
                 xt.on[m] = 1
                 xt.step[m] = step
+                xt.sv[m] = -1
+                if !f.is_const(stv):
+                    xt.sv[m] = stv
                 xt.adj[m] = -1
-                if f.is_const(init) && f.is_const(i0c):
+                if f.is_const(init) && f.is_const(i0c) && f.is_const(stv):
                     let ad = f.cval(init) - step * f.cval(i0c)
                     if ad != 0:
                         xt.adj[m] = f.cint(int(Rp.I64), ad)
                 else:
                     let pre0 = f.efrom[e0]
                     let t0 = f.blast[pre0]
-                    let pr = v_op(f, pre0, t0, int(Op.Mul), int(Rp.I64), i0c, f.cint(int(Rp.I64), step), 0)
+                    let pr = v_op(f, pre0, t0, int(Op.Mul), int(Rp.I64), i0c, stv, 0)
                     xt.adj[m] = v_op(f, pre0, t0, int(Op.Sub), int(Rp.I64), init, pr, 0)
                 xt.cur[xt.n] = m
                 xt.n = xt.n + 1
         if !xok:
             continue
-        if f.op[inext] != int(Op.Add) || f.follow(f.a[inext]) != iv || !f.is_const(f.follow(f.b[inext])) || f.cval(f.follow(f.b[inext])) != 1:
+        /#/ the counter steps by 1, or (a loop that only stores) by a loop invariant: then the vector loop counts rounds `t` and
+        /#/ the counter is `i0 + t * step`
+        let stp = -1
+        if f.op[inext] != int(Op.Add) || f.follow(f.a[inext]) != iv:
             continue
+        if !(f.is_const(f.follow(f.b[inext])) && f.cval(f.follow(f.b[inext])) == 1):
+            stp = f.follow(f.b[inext])
+            if !vec_wide || !v_outside(f, &inl, stp) || f.rep[stp] != int(Rp.I64) || f.npar[h] != 1 || (f.is_const(stp) && f.cval(stp) < 1):
+                continue
         /#/ a reduction: the accumulator becomes `acc op e1 op e2 ...` (op: + - ^ | &; a chain of one operation, each
         /#/ link used once), and nothing else in the loop reads it
         let rk = 0
@@ -2648,6 +2844,7 @@ fn vectorize(f: &Fun) => bool:
         let nstore = 0
         let checks: buf<int> = new_buf(int, 8)
         let cks: buf<int> = new_buf(int, 8)
+        let cksv: buf<int> = new_buf(int, 8)
         let cka: buf<int> = new_buf(int, 8)
         let ckb: buf<int> = new_buf(int, 8)
         let nchk = 0
@@ -2678,7 +2875,7 @@ fn vectorize(f: &Fun) => bool:
                             ok = false
                         else:
                             v_aff(f, &inl, iv, &xt, f.a[cc], &cx)
-                            if !cx.ok || cx.s < 1:
+                            if !cx.ok || (cx.s < 1 && cx.sv < 0):
                                 ok = false
                         if ok:
                             let l = f.follow(f.b[cc])
@@ -2686,11 +2883,12 @@ fn vectorize(f: &Fun) => bool:
                                 ok = false
                             else:
                                 let q = 0
-                                while q < nchk && !(checks[q] == l && cks[q] == cx.s && cka[q] == cx.t0 && ckb[q] == cx.t1):
+                                while q < nchk && !(checks[q] == l && cks[q] == cx.s && cksv[q] == cx.sv && cka[q] == cx.t0 && ckb[q] == cx.t1):
                                     q = q + 1
                                 if q == nchk:
                                     checks[q] = l
                                     cks[q] = cx.s
+                                    cksv[q] = cx.sv
                                     cka[q] = cx.t0
                                     ckb[q] = cx.t1
                                     nchk = nchk + 1
@@ -2736,7 +2934,10 @@ fn vectorize(f: &Fun) => bool:
             let store = sts[x]
             let sa = f.follow(f.a[store])
             let sv = f.follow(f.b[store])
-            if v_lane_of(f.rep[sv]) != lane || f.op[sa] != int(Op.Index) || f.follow(f.b[sa]) != iv || f.aux[sa] != v_elem_size(lane):
+            let sx = new_vaff()
+            if f.op[sa] == int(Op.Index):
+                v_aff(f, &inl, iv, &xt, f.b[sa], &sx)
+            if v_lane_of(f.rep[sv]) != lane || f.op[sa] != int(Op.Index) || !sx.ok || (sx.s < 1 && sx.sv < 0) || f.aux[sa] != v_elem_size(lane):
                 c.ok = false
                 break
             let sbase = f.follow(f.a[sa])
@@ -2756,12 +2957,13 @@ fn vectorize(f: &Fun) => bool:
             if !c.ok || c.depth != 1:
                 c.ok = false
                 break
-            let sx = new_vaff()
-            sx.s = 1
             let ks = v_ptr(&c, sbase, &sx)
             if ks < 0:
                 break
-            v_push(&c, 4, ks)
+            if sx.s == 1 && sx.sv < 0:
+                v_push(&c, 4, ks)
+            else:
+                v_push(&c, 6, ks)
             c.depth = 0
         if rk > 0:
             c.minseq = -1
@@ -2807,6 +3009,34 @@ fn vectorize(f: &Fun) => bool:
                             ok = false
         if !ok:
             continue
+        /#/ a store along with loads of the same buffers: only the plain `buf[i]` form is known not to depend across lanes
+        let plain = true
+        for q in 0..c.nptr:
+            if c.pta[q] >= 0 || c.pts[q] != 1 || c.ptv[q] >= 0:
+                plain = false
+        if nstore > 0 && !plain && (c.nload > 0 || nstore > 1):
+            continue
+        if stp >= 0:
+            for q in 0..nchk:
+                if cks[q] != 1 || cksv[q] >= 0:
+                    plain = false
+            for q in 0..c.nptr:
+                if c.pts[q] != 1 || c.ptv[q] >= 0:
+                    plain = false
+            if !plain || c.nload > 0 || nstore != 1:
+                continue
+        /#/ at most two different strides (the vector loop keeps them in registers)
+        let nstr0 = 0
+        for q in 0..c.nptr:
+            if c.pts[q] > 1 || c.ptv[q] >= 0:
+                let dup = false
+                for w in 0..q:
+                    if (c.pts[w] > 1 || c.ptv[w] >= 0) && c.pts[w] == c.pts[q] && c.ptv[w] == c.ptv[q]:
+                        dup = true
+                if !dup:
+                    nstr0 = nstr0 + 1
+        if nstr0 > 2:
+            continue
         /#/ the entry: the checks, then the vector loop or the scalar one
         let pre = f.efrom[e0]
         let t = f.blast[pre]
@@ -2831,13 +3061,13 @@ fn vectorize(f: &Fun) => bool:
         let guard = false
         for q in 0..nchk:
             let cm = -1
-            if cks[q] == 1 && cka[q] < 0:
+            if cks[q] == 1 && cka[q] < 0 && cksv[q] < 0:
                 cm = v_op(f, pre, t, int(Op.Cmp), int(Rp.I8), n, checks[q], int(Pr.SLe))
             else:
                 /#/ i * s + terms, at the first and at the last round
                 let nm1 = v_op(f, pre, t, int(Op.Sub), int(Rp.I64), n, f.cint(int(Rp.I64), 1), 0)
-                let fi = v_aff_val(f, pre, t, i0, cks[q], cka[q], ckb[q])
-                let la = v_aff_val(f, pre, t, nm1, cks[q], cka[q], ckb[q])
+                let fi = v_aff_val(f, pre, t, i0, cks[q], cksv[q], cka[q], ckb[q])
+                let la = v_aff_val(f, pre, t, nm1, cks[q], cksv[q], cka[q], ckb[q])
                 let c1 = v_op(f, pre, t, int(Op.Cmp), int(Rp.I8), fi, checks[q], int(Pr.ULt))
                 let c2 = v_op(f, pre, t, int(Op.Cmp), int(Rp.I8), la, checks[q], int(Pr.ULt))
                 cm = v_op(f, pre, t, int(Op.And), int(Rp.I8), c1, c2, 0)
@@ -2847,8 +3077,12 @@ fn vectorize(f: &Fun) => bool:
             else:
                 okv = v_op(f, pre, t, int(Op.And), int(Rp.I8), okv, cm, 0)
         for q in 0..c.nptr:
-            if c.pts[q] > 1:
+            if c.pts[q] > 1 || c.ptv[q] >= 0:
                 guard = true
+        let stm1 = -1
+        if stp >= 0:
+            guard = true
+            stm1 = v_op(f, pre, t, int(Op.Sub), int(Rp.I64), stp, f.cint(int(Rp.I64), 1), 0)
         if guard:
             /#/ the counter and the end are small, so no index computed above wraps
             let lim = f.cint(int(Rp.I64), 2147483648)
@@ -2859,32 +3093,90 @@ fn vectorize(f: &Fun) => bool:
                 okv = g3
             else:
                 okv = v_op(f, pre, t, int(Op.And), int(Rp.I8), okv, g3, 0)
+            for q in 0..c.nptr:
+                if c.ptv[q] >= 0:
+                    let gm = v_op(f, pre, t, int(Op.Sub), int(Rp.I64), c.ptv[q], f.cint(int(Rp.I64), 1), 0)
+                    let gs = v_op(f, pre, t, int(Op.Cmp), int(Rp.I8), gm, lim, int(Pr.ULt))
+                    okv = v_op(f, pre, t, int(Op.And), int(Rp.I8), okv, gs, 0)
+            if stp >= 0:
+                let gs = v_op(f, pre, t, int(Op.Cmp), int(Rp.I8), stm1, lim, int(Pr.ULt))
+                okv = v_op(f, pre, t, int(Op.And), int(Rp.I8), okv, gs, 0)
+            for q in 0..nchk:
+                if cksv[q] >= 0:
+                    let gm = v_op(f, pre, t, int(Op.Sub), int(Rp.I64), cksv[q], f.cint(int(Rp.I64), 1), 0)
+                    let gs = v_op(f, pre, t, int(Op.Cmp), int(Rp.I8), gm, lim, int(Pr.ULt))
+                    okv = v_op(f, pre, t, int(Op.And), int(Rp.I8), okv, gs, 0)
         let vb = f.new_block()
         f.set_block(vb)
         let pvals: buf<int> = new_buf(int, 8)
+        let vi0 = i0
+        let vn = n
+        if stp >= 0:
+            /#/ the rounds: ceil((n - i0) / step), and the pointers start at i0 and step by `step` elements
+            let dd = f.raw(int(Op.Sub), int(Rp.I64), -1, n, i0, -1, 0)
+            let d2 = f.raw(int(Op.Add), int(Rp.I64), -1, dd, stm1, -1, 0)
+            vn = f.raw(int(Op.SDiv), int(Rp.I64), -1, d2, stp, -1, 0)
+            vi0 = f.cint(int(Rp.I64), 0)
+            for q in 0..c.nptr:
+                c.pts[q] = 0
+                c.ptv[q] = stp
+            for q in 0..c.np:
+                if (c.prog[q] & 255) == 4:
+                    c.prog[q] = c.prog[q] + 2
         for q in 0..c.nptr:
-            pvals[q] = v_ptr_val(f, vb, c.ptrs[q], c.pta[q], c.ptb[q], c.pts[q], i0, v_elem_size(lane))
+            pvals[q] = v_ptr_val(f, vb, c.ptrs[q], c.pta[q], c.ptb[q], c.pts[q], c.ptv[q], vi0, v_elem_size(lane), stp >= 0, i0)
+        /#/ the strides in bytes of the pointers that have one (two kinds at most), and which each pointer uses: 4 bits a pointer
+        let svals: buf<int> = new_buf(int, 4)
+        let nstr = 0
+        let smap = 0
+        let jq: buf<int> = new_buf(int, 8)
+        for q in 0..c.nptr:
+            if c.pts[q] > 1 || c.ptv[q] >= 0:
+                let j = -1
+                for w in 0..q:
+                    if jq[w] >= 0 && c.pts[w] == c.pts[q] && c.ptv[w] == c.ptv[q]:
+                        j = jq[w]
+                if j < 0:
+                    let bytes = -1
+                    if c.ptv[q] >= 0:
+                        bytes = f.raw(int(Op.Mul), int(Rp.I64), -1, c.ptv[q], f.cint(int(Rp.I64), v_elem_size(lane)), -1, 0)
+                    else:
+                        bytes = f.cint(int(Rp.I64), c.pts[q] * v_elem_size(lane))
+                    j = nstr
+                    svals[j] = bytes
+                    nstr = nstr + 1
+                jq[q] = j
+                smap = smap | ((j + 1) << (4 * q))
+            else:
+                jq[q] = -1
         let sl = -1
         if rk > 0:
             /#/ the accumulator goes through a slot of the frame: the loop reads it and writes the new value
             sl = f.slot(8)
             f.store(sl, acc0)
             f.arg(sl)
-        f.arg(i0)
-        f.arg(n)
+        f.arg(vi0)
+        f.arg(vn)
         for q in 0..c.nptr:
             f.arg(pvals[q])
         for q in 0..c.ninv:
             f.arg(c.invs[q])
+        if nstr > 0:
+            for q in 0..nstr:
+                f.arg(svals[q])
+            f.arg(f.cint(int(Rp.I64), smap))
         for q in 0..c.np:
             f.arg(f.cint(int(Rp.I64), c.prog[q]))
-        let vl = f.vloop(lane | (rk << 4), c.nptr | (c.ninv << 8) | (c.np << 16))
+        let vl = f.vloop(lane | (rk << 4), c.nptr | (c.ninv << 8) | (nstr << 12) | (c.np << 16))
         let accv = -1
         if rk > 0:
             accv = f.load(int(Rp.I64), -1, sl)
         /#/ the counters stepped by a constant go on from where the vector loop stopped
         let outv: buf<int> = new_buf(int, 8)
         outv[ipos] = vl
+        if stp >= 0:
+            let mvl = f.raw(int(Op.Mul), int(Rp.I64), -1, vl, stp, -1, 0)
+            outv[ipos] = f.raw(int(Op.Add), int(Rp.I64), -1, i0, mvl, -1, 0)
         if rk > 0:
             outv[apos] = accv
         if nx > 0:

@@ -533,6 +533,17 @@ fn rv_vlse(a: &Asm, sew: int, v: int, rs1: int, rs2: int) => void:
         width = 7
     rv_w(a, (2 << 26) | (1 << 25) | (rs2 << 20) | (rs1 << 15) | (width << 12) | (v << 7) | 7)
 
+/#/ A strided vector store: the elements of v[v] go to rs1, rs1 + x[rs2], ...
+fn rv_vsse(a: &Asm, sew: int, v: int, rs1: int, rs2: int) => void:
+    let width = 0
+    if sew == 1:
+        width = 5
+    elif sew == 2:
+        width = 6
+    elif sew == 3:
+        width = 7
+    rv_w(a, (2 << 26) | (1 << 25) | (rs2 << 20) | (rs1 << 15) | (width << 12) | (v << 7) | 39)
+
 /#/ An unmasked vector operation: `f6` and `f3` (0 integer, 1 float, 2 integer with the multiply group) as the manual gives them.
 fn rv_vop(a: &Asm, f6: int, f3: int, vd: int, vs2: int, vs1: int) => void:
     rv_w(a, (f6 << 26) | (1 << 25) | (vs2 << 20) | (vs1 << 15) | (f3 << 12) | (vd << 7) | 87)

@@ -23,19 +23,22 @@ let gr_vl_depth: int = 0
 /#/ the stride in bytes of each buffer (0 for the unit ones)
 
 /#/ Steps the buffers by the `vl` elements (x5) just done.
-fn gr_vl_step(g: &Gen, es: int, np: int, sb: &buf<int>) => void:
+fn gr_vl_step(g: &Gen, es: int, np: int, smap: int) => void:
+    for k in 0..8:
+        if k < np:
+            let si = (smap >> (4 * k)) & 15
+            if si > 0:
+                rv_mul(&g.a, 6, 5, 29 + si)
+                rv_add(&g.a, gr_vl_buf(k), gr_vl_buf(k), 6)
     if es > 0:
         rv_shift_i(&g.a, 0, 6, 5, es)
     for k in 0..8:
         if k < np:
-            if sb[k] > 0:
-                rv_li(&g.a, 30, sb[k])
-                rv_mul(&g.a, 30, 5, 30)
-                rv_add(&g.a, gr_vl_buf(k), gr_vl_buf(k), 30)
-            elif es > 0:
-                rv_add(&g.a, gr_vl_buf(k), gr_vl_buf(k), 6)
-            else:
-                rv_add(&g.a, gr_vl_buf(k), gr_vl_buf(k), 5)
+            if ((smap >> (4 * k)) & 15) == 0:
+                if es > 0:
+                    rv_add(&g.a, gr_vl_buf(k), gr_vl_buf(k), 6)
+                else:
+                    rv_add(&g.a, gr_vl_buf(k), gr_vl_buf(k), 5)
 
 fn gr_vl_inv(j: int) => int:
     return j * gr_vl_l
@@ -68,7 +71,8 @@ fn gr_gen_vloop(g: &Gen, f: &Fun, i: int) => void:
     let lane = f.c[i] & 15
     let rk = f.c[i] >> 4
     let np = f.aux[i] & 255
-    let ni = (f.aux[i] >> 8) & 255
+    let ni = (f.aux[i] >> 8) & 15
+    let nstr = (f.aux[i] >> 12) & 15
     let plen = f.aux[i] >> 16
     let at = 0
     if rk > 0:
@@ -93,6 +97,8 @@ fn gr_gen_vloop(g: &Gen, f: &Fun, i: int) => void:
     elif lane == 5:
         es = 3
     let nops = 2 + np + ni
+    if nstr > 0:
+        nops = nops + nstr + 1
     if rk > 0:
         nops = nops + 1
     if rk > 0:
@@ -101,24 +107,24 @@ fn gr_gen_vloop(g: &Gen, f: &Fun, i: int) => void:
     gr_ld(g, 11, f, f.pool[base + at + 1])
     for k in 0..np:
         gr_ld(g, gr_vl_buf(k), f, f.pool[base + at + 2 + k])
+    /#/ the strides in bytes (x30, x31), and for each buffer which one it steps by (0: the element size)
+    let smap = 0
+    if nstr > 0:
+        for j in 0..nstr:
+            gr_ld(g, 30 + j, f, f.pool[base + at + 2 + np + ni + j])
+        smap = f.cval(g_res(g, f, f.pool[base + at + 2 + np + ni + nstr]))
     /#/ how deep the program's stack gets decides how many registers a vector may take
     let pb = base + nops
     let sp = 0
     let depth = 0
-    /#/ the stride in bytes of each buffer that is loaded with a stride (0: a unit one)
-    let sb: buf<int> = new_buf(int, 8)
-    for k in 0..8:
-        sb[k] = 0
     for q in 0..plen:
         let tk = f.cval(g_res(g, f, f.pool[pb + q]))
         let code = tk & 255
-        if code == 5:
-            sb[(tk >> 8) & 15] = tk >> 12
         if code == 1 || code == 2 || code == 5:
             sp = sp + 1
             if sp > depth:
                 depth = sp
-        elif code == 4 || code == 3:
+        elif code == 4 || code == 6 || code == 3:
             sp = sp - 1
     gr_vl_ni = ni
     gr_vl_depth = depth
@@ -146,8 +152,8 @@ fn gr_gen_vloop(g: &Gen, f: &Fun, i: int) => void:
             rv_add(&g.a, gr_vl_buf(k), gr_vl_buf(k), 10)
     g.a.bind(top)
     rv_vsetvli(&g.a, 5, 29, es + 8 * gr_vl_lmul())
-    gr_vl_body(g, f, base + nops, plen, es, fl, rk, &sb)
-    gr_vl_step(g, es, np, &sb)
+    gr_vl_body(g, f, base + nops, plen, es, fl, rk, smap)
+    gr_vl_step(g, es, np, smap)
     rv_sub(&g.a, 29, 29, 5)
     rv_bcc(&g.a, 1, 29, 0, top)
     rv_mov_rr(&g.a, 10, 11)
@@ -170,7 +176,7 @@ fn gr_gen_vloop(g: &Gen, f: &Fun, i: int) => void:
     gr_st(g, i, 10)
 
 /#/ The program of a vector loop for the vector at the buffers' pointers.
-fn gr_vl_body(g: &Gen, f: &Fun, pbase: int, plen: int, es: int, fl: bool, rk: int, sb: &buf<int>) => void:
+fn gr_vl_body(g: &Gen, f: &Fun, pbase: int, plen: int, es: int, fl: bool, rk: int, smap: int) => void:
     /#/ `inv[k]` is the invariant a stack slot stands for (it is copied only when something writes to the slot)
     let inv: buf<int> = new_buf(int, plen + 2)
     let sp = 0
@@ -183,8 +189,7 @@ fn gr_vl_body(g: &Gen, f: &Fun, pbase: int, plen: int, es: int, fl: bool, rk: in
             inv[sp] = 0 - 1
             sp = sp + 1
         elif code == 5:
-            rv_li(&g.a, 30, sb[arg & 15])
-            rv_vlse(&g.a, es, gr_vl_stk(sp), gr_vl_buf(arg & 15), 30)
+            rv_vlse(&g.a, es, gr_vl_stk(sp), gr_vl_buf(arg), 29 + ((smap >> (4 * arg)) & 15))
             inv[sp] = 0 - 1
             sp = sp + 1
         elif code == 2:
@@ -203,7 +208,10 @@ fn gr_vl_body(g: &Gen, f: &Fun, pbase: int, plen: int, es: int, fl: bool, rk: in
             let v = gr_vl_stk(sp - 1)
             if inv[sp - 1] >= 0:
                 v = gr_vl_inv(inv[sp - 1])
-            rv_vmem(&g.a, false, es, v, gr_vl_buf(arg))
+            if code == 6:
+                rv_vsse(&g.a, es, v, gr_vl_buf(arg), 29 + ((smap >> (4 * arg)) & 15))
+            else:
+                rv_vmem(&g.a, false, es, v, gr_vl_buf(arg))
             sp = sp - 1
     if rk > 0:
         let v = gr_vl_stk(sp - 1)

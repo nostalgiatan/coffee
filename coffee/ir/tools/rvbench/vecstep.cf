@@ -1,0 +1,18 @@
+fn fill(s: &buf<int>, j0: int, n: int, st: int) => void:
+    let j = j0
+    while j < n:
+        s[j] = 1
+        j = j + st
+
+fn main() => int:
+    let tot = 0
+    for st in 1..12:
+        for j0 in 0..9:
+            for n in 0..40:
+                let s: buf<int> = new_buf(int, 40)
+                fill(&s, j0, n, st)
+                let h = 0
+                for q in 0..40:
+                    h = h * 3 + s[q]
+                tot = (tot * 7 + h) % 1000003
+    return tot % 256

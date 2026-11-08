@@ -374,14 +374,20 @@ fn gr_alloc_regs(g: &Gen, f: &Fun, rs: &Reps) => void:
     g.nsaved = 0
     if nd == 0:
         return
-    let npool = tr_npool()
+    let ncal = tr_npool()
     if g.a.acc.sbx:
         /#/ s10 holds the start of the linear memory and s11 the shadow frame pointer of sandbox code
-        npool = npool - 2
+        ncal = ncal - 2
+    /#/ a2 to a7 follow the callee-saved ones: a value that is live at no call (not as an argument or result either) and is not a
+    /#/ parameter may use them
+    let nextra = 6
+    let npool = ncal + nextra
     let order = lscan_order(g, nd)
     let regs: buf<int> = new_buf(int, npool)
-    for r in 0..npool:
+    for r in 0..ncal:
         regs[r] = tr_pool_reg(r)
+    for r in 0..nextra:
+        regs[ncal + r] = 12 + r
     let skip: buf<int> = new_buf(int, nd + 1)
     let allow: buf<int> = new_buf(int, nd + 1)
     let nfp = tr_nfpool()
@@ -394,6 +400,8 @@ fn gr_alloc_regs(g: &Gen, f: &Fun, rs: &Reps) => void:
         allow[d] = (1 << npool) - 1
         let v = g.dv[d]
         let rd = f.rep[v]
+        if rd != int(Rp.F32) && rd != int(Rp.F64) && (g_crosses(g, g.ra_lo[d] - 1, g.ra_hi[d] + 1) || f.op[v] == int(Op.Param)):
+            allow[d] = (1 << ncal) - 1
         if rd == int(Rp.F32) || rd == int(Rp.F64):
             skip[d] = 1
             for r in 0..nfp:
@@ -442,7 +450,7 @@ fn gr_alloc_regs(g: &Gen, f: &Fun, rs: &Reps) => void:
             g.home[c] = g.home[first]
     if len(g.saved) < npool + tr_nfsaved() + 1:
         g.saved = new_buf(int, npool + tr_nfsaved() + 1)
-    for r in 0..npool:
+    for r in 0..ncal:
         if used[r] == 1:
             g.saved[g.nsaved] = tr_pool_reg(r)
             g.nsaved = g.nsaved + 1
