@@ -3,6 +3,7 @@
 /#/ `link_exe` is the whole link once the inputs are added; the result is the bytes of the file,
 /#/ or an empty text after an error was reported.
 use * in link
+use * in dynlink
 use * in dwarf
 
 /#/ where an executable is loaded
@@ -215,6 +216,8 @@ fn link_exe(l: &Linker) => Txt:
     let none = new_txt()
     l.add_start()
     l.add_syscall()
+    if l.dyn_on:
+        l.resolve_dynamic()
     l.check_undefined()
     if l.errs > 0:
         return none
@@ -230,6 +233,8 @@ fn link_exe(l: &Linker) => Txt:
     let mem = l.build_image()
     if l.apply_relocs(&mem, base) > 0:
         return none
+    if l.dyn_on:
+        dyn_fill(l, &mem, base)
     let nseg = l.sg_off.n
     let out = new_txt()
     for k in 0..nseg:
@@ -240,11 +245,14 @@ fn link_exe(l: &Linker) => Txt:
     let shoff = 0
     let shnum = 0
     let shstr = 0
-    if l.syms:
+    if l.syms && !l.dyn_on:
         shoff = add_symbols(l, &out, base)
         shnum = l.nshdr
         shstr = nseg + 3
     /#/ the headers, over the start of the first piece
+    let dn = 0
+    if l.dyn_on:
+        dn = 2
     let h = new_txt()
     h.put_byte(127)
     h.put("ELF")
@@ -261,12 +269,18 @@ fn link_exe(l: &Linker) => Txt:
     put32(&h, eflags_of(ld_arch))
     put16(&h, 64)
     put16(&h, 56)
-    put16(&h, nseg + 1)
+    put16(&h, nseg + 1 + dn)
     put16(&h, 64)
     put16(&h, shnum)
     put16(&h, shstr)
     for k in 0..nseg:
         phdr(&h, 1, l.sg_flags.b[k], l.sg_off.b[k], base + l.sg_rva.b[k], l.sg_fsz.b[k], l.sg_msz.b[k], 4096)
+    if l.dyn_on:
+        let ig = l.gbase[1] + l.d_interp
+        phdr(&h, 3, 4, file_off(l, ig), base + ig, 28, 28, 1)
+        let dg = l.gbase[2] + l.d_dynamic
+        let dsz = 16 * (l.nneed + 11)
+        phdr(&h, 2, 6, file_off(l, dg), base + dg, dsz, dsz, 8)
     /#/ PT_GNU_STACK: the stack is not executable
     phdr(&h, 1685382481, 6, 0, 0, 0, 0, 16)
     for k in 0..h.n:

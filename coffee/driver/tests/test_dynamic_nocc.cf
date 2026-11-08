@@ -1,0 +1,26 @@
+/#/ `--no-cc`: a program that uses the C library (`printf`, `sqrt`) is linked dynamically by the built-in
+/#/ linker, with no `cc` on the PATH; the output goes through stdio, which the C library flushes at exit.
+use * in say
+use * in files
+use * in cstr
+use * in txt
+use system, fflush in libc of c
+
+fn main() => int:
+    system("rm -rf dn && mkdir dn")
+    let src = "use printf, puts in libc of c\nuse sqrt in libm of c\n\nfn main() => int:\n    puts(\"hello\")\n    printf(\"%.1f %d\\n\", sqrt(16.0), 7)\n    return 3\n"
+    let p = txt_of("dn/d.cf")
+    let t = txt_of(&src)
+    write_file(&p, &t)
+    let r = system("cd dn && PATH=$(dirname $(command -v coffee2)):/nonexistent coffee2 d.cf --no-cc -o d > build.log 2>&1 && ./d > out.txt")
+    let m = 0
+    if r != 768:
+        say(f"MISS: exit status {r}, want 768\n")
+        m = 1
+    let o = read_file(&txt_of("dn/out.txt"))
+    if o.n != 12:
+        say(f"MISS: output has {o.n} bytes, want 12\n")
+        m = 1
+    system("rm -rf dn")
+    fflush(0)
+    return m

@@ -1,0 +1,103 @@
+/#/ The tables of a dynamically linked x86-64 executable, written into the image once its addresses
+/#/ are known: a stub in the text for each import (`jmp *slot`), the interpreter name, the symbol
+/#/ table with its hash and strings, one `R_X86_64_GLOB_DAT` for each import, and the dynamic section.
+/#/ The loader binds everything at start (`DT_FLAGS` BIND_NOW), so there is no lazy PLT.
+use * in link
+use * in args
+
+fn dyn_interp() => str:
+    return "/lib64/ld-linux-x86-64.so.2"
+
+fn dyn_fill(l: &Linker, mem: &Txt, base: int) => void:
+    let ndyn = l.dyn_ids.n
+    let nsym = ndyn + 1
+    let g0 = l.gbase[0]
+    let g1 = l.gbase[1]
+    let g2 = l.gbase[2]
+    for d in 0..ndyn:
+        let at = g0 + l.d_stub + 8 * d
+        mem.b[at] = 255
+        mem.b[at + 1] = 37
+        wr32(mem, at + 2, (l.got_rva + 8 * d) - (at + 6))
+        mem.b[at + 6] = 204
+        mem.b[at + 7] = 204
+    let ip = dyn_interp()
+    for k in 0..len(ip):
+        mem.b[g1 + l.d_interp + k] = int(ip[k])
+    let h = g1 + l.d_hash
+    wr32(mem, h, 1)
+    wr32(mem, h + 4, nsym)
+    let sy = g1 + l.d_sym
+    for d in 0..ndyn:
+        let e = sy + 24 * (d + 1)
+        wr32(mem, e, l.str_sym.b[d])
+        mem.b[e + 4] = 18
+    for k in 0..l.dyn_str.n:
+        mem.b[g1 + l.d_str + k] = l.dyn_str.b[k]
+    let ra = g1 + l.d_rela
+    for d in 0..ndyn:
+        let e = ra + 24 * d
+        wr64(mem, e, base + l.got_rva + 8 * d)
+        wr64(mem, e + 8, ((d + 1) << 32) + 6)
+    let dy = g2 + l.d_dynamic
+    let n = 0
+    for i in 0..l.nneed:
+        wr64(mem, dy + 16 * n, 1)
+        wr64(mem, dy + 16 * n + 8, l.str_so.b[i])
+        n = n + 1
+    let tags = [4, 5, 6, 10, 11, 7, 8, 9, 30, 21]
+    let vals = [base + g1 + l.d_hash, base + g1 + l.d_str, base + g1 + l.d_sym, l.dyn_str.n, 24, base + g1 + l.d_rela, 24 * ndyn, 24, 8, 0]
+    for k in 0..10:
+        wr64(mem, dy + 16 * n, tags[k])
+        wr64(mem, dy + 16 * n + 8, vals[k])
+        n = n + 1
+
+/#/ The file offset of image address `rva`.
+fn file_off(l: &Linker, rva: int) => int:
+    for k in 0..l.sg_off.n:
+        if rva >= l.sg_rva.b[k] && rva < l.sg_rva.b[k] + l.sg_fsz.b[k]:
+            return l.sg_off.b[k] + rva - l.sg_rva.b[k]
+    return 0
+
+/#/ The shared library `lib<name>.so` (or a versioned `.so.N`) in the directories and the usual places:
+/#/ the first that is an ELF file; an empty text if none.
+fn find_shared(dirs: &Txt, name: &Txt) => Txt:
+    let ds = new_txt()
+    ds.put_all(dirs)
+    ds.put("/lib/x86_64-linux-gnu\n/usr/lib/x86_64-linux-gnu\n/usr/lib64\n/usr/lib\n/lib64\n/lib\n")
+    let lo = 0
+    for i in 0..ds.n:
+        if ds.b[i] == 10:
+            let d = cut(&ds, lo, i)
+            lo = i + 1
+            for v in 0..12:
+                let p = copy_txt(&d)
+                p.put("/lib")
+                p.put_all(name)
+                p.put(".so")
+                if v == 1:
+                    p.put(".6")
+                elif v == 2:
+                    p.put(".1")
+                elif v == 3:
+                    p.put(".0")
+                elif v == 4:
+                    p.put(".2")
+                elif v == 5:
+                    p.put(".3")
+                elif v == 6:
+                    p.put(".4")
+                elif v == 7:
+                    p.put(".5")
+                elif v == 8:
+                    p.put(".7")
+                elif v == 9:
+                    p.put(".8")
+                elif v == 10:
+                    p.put(".9")
+                elif v == 11:
+                    p.put(".10")
+                let data = read_file(&p)
+                if data.n > 4 && data.b[0] == 127 && data.b[1] == 69:
+                    return p
+    return new_txt()

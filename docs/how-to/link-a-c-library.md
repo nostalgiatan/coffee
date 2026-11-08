@@ -59,6 +59,12 @@ coffee2 use_c.cf -o use_c
 
 条件:库只依赖内置 C 库(`library/cfc/libc.cfc` 里 `rt/src/min.cf` 提供的那部分)。依赖 glibc 其余部分的库(`printf`、`snprintf`、`libm`)或只有 `.so` 的库,仍然走 `cc`;在没有 `cc` 的机器上这类程序链接失败。回调(C 调 Coffee 函数值)、浮点、超过 8 个整数参数的调用在三个目标上都测过(`driver/tests/test_static_lib.cf`)。
 
+## 动态链接,也不用 `cc`
+
+库只有 `.so`,或要用 glibc 的其余部分(`printf`、`sqrt`)时,内置链接器也能做动态链接(仅 x86-64 Linux):机器上没有 `cc` 时自动用,有 `cc` 时加 `--no-cc` 强制。它写出带 `PT_INTERP`、`DT_NEEDED` 的可执行文件,每个导入函数有一个跳转桩和一个 GOT 槽,加载时全部绑定(`BIND_NOW`);入口调用 `__libc_start_main`。`.so` 按 `.cfc` 所在目录、再按系统库目录找(`libz.so`、`libz.so.1` 等),只有真正用到的库才进 `DT_NEEDED`。
+
+限制:不支持 TLS(如 C 代码里的 `errno`)、复制重定位(C 对象要用 `-fPIC` 或通过函数访问外部数据)、版本化符号的显式版本。验证:`driver/tests/test_dynamic_nocc.cf`,编译器本身用 `--no-cc` 链接后能编出同样的字节。
+
 ## 注意
 
 - 同名函数在 libc 或 libm 的内置表里已经有时,保留内置表的签名。

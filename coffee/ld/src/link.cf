@@ -142,6 +142,26 @@ class Linker:
     /#/ how many section headers `add_symbols` wrote
     nshdr: int
     live: buf<int>
+    /#/ ---- dynamic linking (x86-64): names the shared libraries define, and what the program imports
+    dyn_on: bool
+    g_dyn: Col
+    dyn_ix: Col
+    dyn_ids: Col
+    so_names: Txt
+    so_used: Col
+    so_count: int
+    dyn_str: Txt
+    str_so: Col
+    str_sym: Col
+    nneed: int
+    d_stub: int
+    d_interp: int
+    d_hash: int
+    d_sym: int
+    d_str: int
+    d_rela: int
+    d_dynamic: int
+    d_got: int
 
     fn err(self, what: &str, who: &Txt) => void:
         self.errs = self.errs + 1
@@ -206,6 +226,8 @@ class Linker:
         self.g_def.push(0 - 1)
         self.g_how.push(0)
         self.g_need.push(0)
+        self.g_dyn.push(0 - 1)
+        self.dyn_ix.push(0 - 1)
         let mask = len(self.ht) - 1
         let i = self.hash(w) & mask
         while self.ht[i] != 0:
@@ -340,6 +362,72 @@ class Linker:
                     self.r_sym.push(sym0 + (info >> 32))
                     self.r_add.push(rd64(b, e + 16))
 
+    /#/ Adds the shared library `data` (an x86-64 ELF `.so`): the global names it defines can satisfy
+    /#/ what the objects leave undefined, which the executable then imports.
+    fn add_shared(self, data: &Txt, who: &Txt) => void:
+        if data.n < 64 || data.b[0] != 127 || data.b[1] != 69 || data.b[2] != 76 || data.b[3] != 70 || rd16(data, 16) != 3 || rd16(data, 18) != 62:
+            self.err("not a shared library for x86-64:", who)
+            return
+        let shoff = rd64(data, 40)
+        let shnum = rd16(data, 60)
+        let dsym = 0 - 1
+        let dyn = 0 - 1
+        for i in 0..shnum:
+            let ty = rd32(data, shoff + 64 * i + 4)
+            if ty == 11:
+                dsym = i
+            if ty == 6:
+                dyn = i
+        if dsym < 0:
+            self.err("shared library without symbols:", who)
+            return
+        let lib = self.so_count
+        let soname = new_txt()
+        if dyn >= 0:
+            let h = shoff + 64 * dyn
+            let at = rd64(data, h + 24)
+            let strs = rd64(data, shoff + 64 * rd32(data, h + 40) + 24)
+            for k in 0..rd64(data, h + 32) // 16:
+                if rd64(data, at + 16 * k) == 14:
+                    soname = cstr_at(data, strs + rd64(data, at + 16 * k + 8))
+        if soname.n == 0:
+            let lo = 0
+            for k in 0..who.n:
+                if who.b[k] == 47:
+                    lo = k + 1
+            soname = cut(who, lo, who.n)
+        self.so_names.put_all(&soname)
+        self.so_names.put_byte(10)
+        self.so_used.push(0)
+        self.so_count = self.so_count + 1
+        let sh = shoff + 64 * dsym
+        let at = rd64(data, sh + 24)
+        let strs = rd64(data, shoff + 64 * rd32(data, sh + 40) + 24)
+        for k in 1..rd64(data, sh + 32) // 24:
+            let e = at + 24 * k
+            let info = data.b[e + 4]
+            let bind = info >> 4
+            if rd16(data, e + 6) != 0 && (bind == 1 || bind == 2) && (info & 15) != 6:
+                let w = cstr_at(data, strs + rd32(data, e))
+                let id = self.intern(&w)
+                if self.g_dyn.b[id] < 0:
+                    self.g_dyn.b[id] = lib
+
+    /#/ The names the objects need that only a shared library defines become imports, in order.
+    fn resolve_dynamic(self) => void:
+        for id in 0..self.nm_off.n:
+            if self.g_need.b[id] == 1 && self.g_def.b[id] < 0 && self.g_dyn.b[id] >= 0:
+                self.dyn_ix.b[id] = self.dyn_ids.n
+                self.dyn_ids.push(id)
+                self.so_used.b[self.g_dyn.b[id]] = 1
+
+    /#/ The import number of the undefined symbol `f`, or -1.
+    fn dyn_of(self, f: int) => int:
+        let id = self.y_nm.b[f]
+        if id < 0 || self.y_sec.b[f] != no_sec() || self.g_def.b[id] >= 0:
+            return 0 - 1
+        return self.dyn_ix.b[id]
+
     /#/ Adds the file `data` as one input; an object, or an archive whose members are pulled in as
     /#/ the symbols they define are needed.
     fn add_file(self, data: &Txt, who: &Txt) => void:
@@ -419,6 +507,16 @@ class Linker:
             for k in 0..29:
                 code[k] = ms[k]
             call_at = 16
+        if self.dyn_on:
+            /#/ xor ebp,ebp; mov r9,rdx; pop rsi; mov rdx,rsp; and rsp,-16; push rax; push rsp; xor r8d,r8d; xor ecx,ecx;
+            /#/ mov rdi,main; call *__libc_start_main@GOT; hlt
+            let dy = [49, 237, 73, 137, 209, 94, 72, 137, 226, 72, 131, 228, 240, 80, 84, 69, 49, 192, 49, 201, 72, 199, 199, 0, 0, 0, 0, 255, 21, 0, 0, 0, 0, 244]
+            code = new_buf(int, 34)
+            for k in 0..34:
+                code[k] = dy[k]
+            call_at = 23
+            call_ty = 11
+            call_add = 0
         if ld_arch == 1:
             /#/ mov x29,#0; ldr x0,[sp]; add x1,sp,#8; bl main; mov x8,#94 (exit_group); svc #0
             let a64 = [29, 0, 128, 210, 224, 3, 64, 249, 225, 35, 0, 145, 0, 0, 0, 148, 200, 11, 128, 210, 1, 0, 0, 212]
@@ -472,6 +570,23 @@ class Linker:
         self.r_type.push(call_ty)
         self.r_sym.push(sym0 + 1)
         self.r_add.push(call_add)
+        if self.dyn_on:
+            /#/ the C library starts the program: a second symbol, reached through the GOT
+            let ls = txt_of("__libc_start_main")
+            self.y_val.push(0)
+            self.y_size.push(0)
+            self.y_bind.push(1)
+            self.y_type.push(0)
+            self.y_rva.push(0)
+            self.y_got.push(0 - 1)
+            self.y_sec.push(no_sec())
+            self.y_nm.push(self.intern(&ls))
+            self.declare(sym0 + 2)
+            self.r_sec.push(sec0)
+            self.r_off.push(29)
+            self.r_type.push(9)
+            self.r_sym.push(sym0 + 2)
+            self.r_add.push(0 - 4)
 
     /#/ When some input needs `cf_syscall(n, a, b, c, d, e, f)` and none defines it, adds the
     /#/ function: the C calling convention moved into the registers of the `syscall` instruction.
@@ -519,7 +634,7 @@ class Linker:
     /#/ Reports the names some input needs and none defines.
     fn check_undefined(self) => void:
         for id in 0..self.nm_off.n:
-            if self.g_need.b[id] == 1 && self.g_def.b[id] < 0:
+            if self.g_need.b[id] == 1 && self.g_def.b[id] < 0 && self.dyn_ix.b[id] < 0:
                 let w = self.name_of(id)
                 self.err("undefined symbol:", &w)
 
@@ -614,18 +729,28 @@ class Linker:
                 self.gsize[g] = self.gsize[g] + self.sc_size.b[s]
                 if a > self.galign[g]:
                     self.galign[g] = a
+        /#/ imports: a stub in the text for each, the GOT slots first
+        let ndyn = self.dyn_ids.n
+        if self.dyn_on:
+            self.gsize[0] = align_to(self.gsize[0], 16)
+            self.d_stub = self.gsize[0]
+            self.gsize[0] = self.gsize[0] + 8 * ndyn
         /#/ GOT slots, after the read-only sections
-        self.ngot = 0
+        self.ngot = ndyn
         for r in 0..self.r_type.n:
             let ty = self.r_type.b[r]
             if (ty == 9 || ty == 41 || ty == 42) && self.sc_grp.b[self.r_sec.b[r]] >= 0:
                 let f = self.final_sym(self.r_sym.b[r])
-                if self.y_got.b[f] < 0:
+                if self.y_got.b[f] < 0 && self.dyn_of(f) < 0:
                     self.y_got.b[f] = self.ngot
                     self.ngot = self.ngot + 1
-        self.gsize[1] = align_to(self.gsize[1], 8)
-        let got_off = self.gsize[1]
-        self.gsize[1] = self.gsize[1] + 8 * self.ngot
+        let got_off = 0
+        if self.dyn_on:
+            self.dyn_layout()
+        else:
+            self.gsize[1] = align_to(self.gsize[1], 8)
+            got_off = self.gsize[1]
+            self.gsize[1] = self.gsize[1] + 8 * self.ngot
         if self.galign[1] < 8:
             self.galign[1] = 8
         /#/ common symbols go to the end of .bss
@@ -649,6 +774,8 @@ class Linker:
         let has_ro = self.gsize[1] > 0
         let has_data = self.gsize[2] > 0 || self.gsize[3] > 0
         let nph = 2
+        if self.dyn_on:
+            nph = nph + 2
         if has_ro:
             nph = nph + 1
         if has_data:
@@ -666,7 +793,8 @@ class Linker:
             let off = align_to(end_f, self.galign[1])
             let rva = align_to(end_r, 4096) + off % 4096
             self.gbase[1] = rva
-            self.got_rva = rva + got_off
+            if !self.dyn_on:
+                self.got_rva = rva + got_off
             end_f = off + self.gsize[1]
             end_r = rva + self.gsize[1]
             self.sg_off.push(off)
@@ -678,6 +806,8 @@ class Linker:
             let off = align_to(end_f, self.galign[2])
             let rva = align_to(end_r, 4096) + off % 4096
             self.gbase[2] = rva
+            if self.dyn_on:
+                self.got_rva = rva + self.d_got
             end_r = rva + self.gsize[2]
             let bss = align_to(end_r, self.galign[3])
             self.gbase[3] = bss
@@ -695,6 +825,52 @@ class Linker:
             if self.g_how.b[id] == 1:
                 let sid = self.g_def.b[id]
                 self.y_rva.b[sid] = self.y_rva.b[sid] + self.gbase[3]
+
+    /#/ The places of the dynamic-linking tables: read-only ones at the end of the read-only group, the
+    /#/ GOT and the dynamic section at the end of the data group.
+    fn dyn_layout(self) => void:
+        let ndyn = self.dyn_ids.n
+        let nsym = ndyn + 1
+        self.dyn_str = new_txt()
+        self.dyn_str.put_byte(0)
+        self.nneed = 0
+        let lo = 0
+        let lib = 0
+        for i in 0..self.so_names.n:
+            if self.so_names.b[i] == 10:
+                if self.so_used.b[lib] == 1:
+                    self.str_so.push(self.dyn_str.n)
+                    for k in lo..i:
+                        self.dyn_str.put_byte(self.so_names.b[k])
+                    self.dyn_str.put_byte(0)
+                    self.nneed = self.nneed + 1
+                lo = i + 1
+                lib = lib + 1
+        for k in 0..ndyn:
+            self.str_sym.push(self.dyn_str.n)
+            let w = self.name_of(self.dyn_ids.b[k])
+            self.dyn_str.put_all(&w)
+            self.dyn_str.put_byte(0)
+        let g = self.gsize[1]
+        self.d_interp = g
+        g = align_to(g + 28, 8)
+        self.d_hash = g
+        g = align_to(g + 4 * (3 + nsym), 8)
+        self.d_sym = g
+        g = g + 24 * nsym
+        self.d_str = g
+        g = align_to(g + self.dyn_str.n, 8)
+        self.d_rela = g
+        g = g + 24 * ndyn
+        self.gsize[1] = g
+        let d = align_to(self.gsize[2], 8)
+        self.d_got = d
+        d = d + 8 * self.ngot
+        self.d_dynamic = d
+        d = d + 16 * (self.nneed + 11)
+        self.gsize[2] = d
+        if self.galign[2] < 8:
+            self.galign[2] = 8
 
     /#/ The image: zeros, with the bytes of every section that has some in its place.
     fn build_image(self) => Txt:
@@ -714,6 +890,9 @@ class Linker:
         let f = self.final_sym(sid)
         let sec = self.y_sec.b[f]
         if sec == no_sec():
+            let d = self.dyn_of(f)
+            if d >= 0:
+                return base + self.gbase[0] + self.d_stub + 8 * d
             return 0
         if sec == abs_sec():
             return self.y_val.b[f]
@@ -724,7 +903,11 @@ class Linker:
         return base + self.sc_rva.b[sec] + self.y_val.b[f]
 
     fn got_addr(self, sid: int, base: int) => int:
-        return base + self.got_rva + 8 * self.y_got.b[self.final_sym(sid)]
+        let f = self.final_sym(sid)
+        let d = self.dyn_of(f)
+        if d >= 0:
+            return base + self.got_rva + 8 * d
+        return base + self.got_rva + 8 * self.y_got.b[f]
 
     /#/ Patches `mem`, the image from `build_image`, for a load address of `base`: fills the GOT
     /#/ and applies every relocation. Returns the number of errors.
@@ -860,4 +1043,4 @@ class Linker:
         return 1
 
 fn new_linker() => Linker:
-    return Linker { blob: new_txt(), errs: 0, nin: 0, in_sec0: new_col(), in_sym0: new_col(), sc_type: new_col(), sc_flags: new_col(), sc_off: new_col(), sc_size: new_col(), sc_align: new_col(), sc_grp: new_col(), sc_goff: new_col(), sc_rva: new_col(), y_sec: new_col(), y_val: new_col(), y_size: new_col(), y_bind: new_col(), y_type: new_col(), y_nm: new_col(), y_rva: new_col(), y_got: new_col(), r_sec: new_col(), r_off: new_col(), r_type: new_col(), r_sym: new_col(), r_add: new_col(), pool: new_txt(), nm_off: new_col(), ht: new_buf(int, 64), g_def: new_col(), g_how: new_col(), g_need: new_col(), pulled: new_col(), gsize: new_buf(int, 4), galign: new_buf(int, 4), gbase: new_buf(int, 4), ngot: 0, got_rva: 0, sg_off: new_col(), sg_rva: new_col(), sg_fsz: new_col(), sg_msz: new_col(), sg_flags: new_col(), image_size: 0, gc_on: false, quiet: false, syms: false, dbg: new_txt(), nshdr: 0, live: new_buf(int, 1) }
+    return Linker { blob: new_txt(), errs: 0, nin: 0, in_sec0: new_col(), in_sym0: new_col(), sc_type: new_col(), sc_flags: new_col(), sc_off: new_col(), sc_size: new_col(), sc_align: new_col(), sc_grp: new_col(), sc_goff: new_col(), sc_rva: new_col(), y_sec: new_col(), y_val: new_col(), y_size: new_col(), y_bind: new_col(), y_type: new_col(), y_nm: new_col(), y_rva: new_col(), y_got: new_col(), r_sec: new_col(), r_off: new_col(), r_type: new_col(), r_sym: new_col(), r_add: new_col(), pool: new_txt(), nm_off: new_col(), ht: new_buf(int, 64), g_def: new_col(), g_how: new_col(), g_need: new_col(), pulled: new_col(), gsize: new_buf(int, 4), galign: new_buf(int, 4), gbase: new_buf(int, 4), ngot: 0, got_rva: 0, sg_off: new_col(), sg_rva: new_col(), sg_fsz: new_col(), sg_msz: new_col(), sg_flags: new_col(), image_size: 0, gc_on: false, quiet: false, syms: false, dbg: new_txt(), nshdr: 0, live: new_buf(int, 1), dyn_on: false, g_dyn: new_col(), dyn_ix: new_col(), dyn_ids: new_col(), so_names: new_txt(), so_used: new_col(), so_count: 0, dyn_str: new_txt(), str_so: new_col(), str_sym: new_col(), nneed: 0, d_stub: 0, d_interp: 0, d_hash: 0, d_sym: 0, d_str: 0, d_rela: 0, d_dynamic: 0, d_got: 0 }

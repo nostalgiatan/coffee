@@ -1,7 +1,7 @@
 /#/ `--static`: the objects are linked by `cfld`'s linker, in this process, into an executable that
 /#/ needs no C library. The program gets the runtime of `rt/src/min.cf` (`min_rt_text`).
 use * in exe
-use chmod in libc of c
+use chmod, system in libc of c
 
 /#/ `-g`: the executable keeps the names of its functions and data (a symbol table); without it the
 /#/ file has none, which is what a release build wants.
@@ -32,6 +32,8 @@ fn link_objects(paths: &Txt, quoted: &Txt, flags: &Txt, out: &Txt, static_link: 
         let rc = link_static(paths, out, quiet)
         if rc == 0 || !quiet:
             return rc
+    if target_arch == 0 && target_os == os_linux() && (use_builtin_dynamic || system("command -v cc > /dev/null 2>&1") != 0):
+        return link_dynamic(paths, flags, out)
     let cmd = cc_link_start()
     cmd.put_all(out)
     cmd.put("'")
@@ -40,6 +42,64 @@ fn link_objects(paths: &Txt, quoted: &Txt, flags: &Txt, out: &Txt, static_link: 
     cmd.put(" -lm")
     if system(txt_str(&cmd)) != 0:
         return 1
+    return 0
+
+/#/ `--no-cc`: x86-64 programs are linked dynamically by the built-in linker even where `cc` exists.
+let use_builtin_dynamic = false
+
+fn set_builtin_dynamic() => void:
+    use_builtin_dynamic = true
+
+/#/ Links dynamically without `cc`: the objects in `paths`, the shared libraries named by the `-l` and
+/#/ `-L` words of `flags` (the `.cfc` files' libraries), and the C library and the math library.
+fn link_dynamic(paths: &Txt, flags: &Txt, out: &Txt) => int:
+    let l = new_linker()
+    l.dyn_on = true
+    l.syms = false
+    let lo = 0
+    for i in 0..paths.n:
+        if paths.b[i] == 10:
+            let p = slice(paths, lo, i)
+            let data = read_file(&p)
+            if data.n < 0:
+                say(f"error: cannot read '{txt_str(&p)}'\n")
+                return 1
+            l.add_file(&data, &p)
+            lo = i + 1
+    let dirs = new_txt()
+    let names = txt_of("c\nm\n")
+    let n = flags.n
+    let i = 0
+    while i < n:
+        if i + 4 < n && flags.b[i] == 45 && flags.b[i + 1] == 76 && flags.b[i + 2] == 39:
+            let j = i + 3
+            while j < n && flags.b[j] != 39:
+                dirs.put_byte(flags.b[j])
+                j = j + 1
+            dirs.put_byte(10)
+            i = j
+        elif i + 2 < n && flags.b[i] == 45 && flags.b[i + 1] == 108 && (i == 0 || flags.b[i - 1] == 32):
+            let j = i + 2
+            while j < n && flags.b[j] != 32:
+                names.put_byte(flags.b[j])
+                j = j + 1
+            names.put_byte(10)
+            i = j
+        i = i + 1
+    lo = 0
+    for k in 0..names.n:
+        if names.b[k] == 10:
+            let nm = slice(&names, lo, k)
+            lo = k + 1
+            let sp = find_shared(&dirs, &nm)
+            if sp.n > 0:
+                let sd = read_file(&sp)
+                l.add_shared(&sd, &sp)
+    let exe = link_exe(&l)
+    if exe.n == 0:
+        return 1
+    write_file(out, &exe)
+    chmod(txt_str(out), 493)
     return 0
 
 /#/ Links the object files named in `paths` (one per line) into the executable `out`.

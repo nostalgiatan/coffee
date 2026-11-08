@@ -67,10 +67,22 @@ fn main() => int:
             i = i + 1
         elif w.is("-g"):
             l.syms = true
+        elif w.is("--dynamic"):
+            l.dyn_on = true
         elif starts_with(&w, "-L"):
             seen = seen
         elif starts_with(&w, "-l") && w.n > 2:
             let name = cut(&w, 2, w.n)
+            if l.dyn_on:
+                let sp = find_shared(&dirs, &name)
+                if sp.n == 0:
+                    say(f"ld: cannot find -l{txt_str(&name)}\n")
+                    return 1
+                let sd = read_file(&sp)
+                l.add_shared(&sd, &sp)
+                seen = seen + 1
+                i = i + 1
+                continue
             let p = find_lib(&dirs, &name)
             if p.n == 0:
                 say(f"ld: cannot find -l{txt_str(&name)}\n")
