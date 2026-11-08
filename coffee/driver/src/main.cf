@@ -379,9 +379,9 @@ fn main() => int:
         write_file(&rt_path, &rt_obj)
         list.put_all(&rt_path)
         list.put_byte(10)
-        /#/ the objects and archives of the C libraries the program imports
-        let extra = fl.static_objs()
-        list.put_all(&extra)
+    /#/ the objects and archives of the C libraries the program imports
+    let extra = fl.static_objs()
+    list.put_all(&extra)
     let flags = new_txt()
     fl.link_flags(&flags)
     let rc = link_objects(&list, &quoted, &flags, &out, cli.static_link, cli.auto_static)

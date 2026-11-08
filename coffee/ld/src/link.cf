@@ -147,6 +147,12 @@ class Linker:
     g_dyn: Col
     dyn_ix: Col
     dyn_ids: Col
+    /#/ per name id: the type and size of the symbol a shared library defines; per import: its copy in .bss (-1: none)
+    g_dty: Col
+    g_dsz: Col
+    g_dval: Col
+    dyn_alias: Col
+    cp_off: Col
     so_names: Txt
     so_used: Col
     so_count: int
@@ -228,6 +234,9 @@ class Linker:
         self.g_need.push(0)
         self.g_dyn.push(0 - 1)
         self.dyn_ix.push(0 - 1)
+        self.g_dty.push(0)
+        self.g_dsz.push(0)
+        self.g_dval.push(0)
         let mask = len(self.ht) - 1
         let i = self.hash(w) & mask
         while self.ht[i] != 0:
@@ -412,6 +421,9 @@ class Linker:
                 let id = self.intern(&w)
                 if self.g_dyn.b[id] < 0:
                     self.g_dyn.b[id] = lib
+                    self.g_dty.b[id] = info & 15
+                    self.g_dsz.b[id] = rd64(data, e + 16)
+                    self.g_dval.b[id] = rd64(data, e + 8)
 
     /#/ The names the objects need that only a shared library defines become imports, in order.
     fn resolve_dynamic(self) => void:
@@ -419,7 +431,19 @@ class Linker:
             if self.g_need.b[id] == 1 && self.g_def.b[id] < 0 && self.g_dyn.b[id] >= 0:
                 self.dyn_ix.b[id] = self.dyn_ids.n
                 self.dyn_ids.push(id)
+                self.dyn_alias.push(0 - 1)
                 self.so_used.b[self.g_dyn.b[id]] = 1
+        /#/ a copied variable has other names at the same place in its library (`environ`, `__environ`):
+        /#/ they share the copy, so the library and the program see one variable
+        let n0 = self.dyn_ids.n
+        for d in 0..n0:
+            let id = self.dyn_ids.b[d]
+            if self.g_dty.b[id] == 1:
+                for q in 0..self.nm_off.n:
+                    if q != id && self.g_dyn.b[q] == self.g_dyn.b[id] && self.g_dty.b[q] == 1 && self.g_dval.b[q] == self.g_dval.b[id] && self.g_dsz.b[q] == self.g_dsz.b[id] && self.dyn_ix.b[q] < 0 && self.g_def.b[q] < 0:
+                        self.dyn_ix.b[q] = self.dyn_ids.n
+                        self.dyn_ids.push(q)
+                        self.dyn_alias.push(d)
 
     /#/ The import number of the undefined symbol `f`, or -1.
     fn dyn_of(self, f: int) => int:
@@ -765,6 +789,19 @@ class Linker:
                 self.gsize[3] = self.gsize[3] + self.y_size.b[sid]
                 if a > self.galign[3]:
                     self.galign[3] = a
+        /#/ data an import names is copied into .bss (the program refers to it directly)
+        for d in 0..ndyn:
+            let id = self.dyn_ids.b[d]
+            if self.dyn_alias.b[d] >= 0:
+                self.cp_off.push(self.cp_off.b[self.dyn_alias.b[d]])
+            elif self.g_dty.b[id] == 1:
+                self.gsize[3] = align_to(self.gsize[3], 16)
+                self.cp_off.push(self.gsize[3])
+                self.gsize[3] = self.gsize[3] + self.g_dsz.b[id]
+                if self.galign[3] < 16:
+                    self.galign[3] = 16
+            else:
+                self.cp_off.push(0 - 1)
         for g in 0..4:
             if self.galign[g] > 4096:
                 self.msg("section alignment over a page")
@@ -892,6 +929,8 @@ class Linker:
         if sec == no_sec():
             let d = self.dyn_of(f)
             if d >= 0:
+                if self.cp_off.n > d && self.cp_off.b[d] >= 0:
+                    return base + self.gbase[3] + self.cp_off.b[d]
                 return base + self.gbase[0] + self.d_stub + 8 * d
             return 0
         if sec == abs_sec():
@@ -1043,4 +1082,4 @@ class Linker:
         return 1
 
 fn new_linker() => Linker:
-    return Linker { blob: new_txt(), errs: 0, nin: 0, in_sec0: new_col(), in_sym0: new_col(), sc_type: new_col(), sc_flags: new_col(), sc_off: new_col(), sc_size: new_col(), sc_align: new_col(), sc_grp: new_col(), sc_goff: new_col(), sc_rva: new_col(), y_sec: new_col(), y_val: new_col(), y_size: new_col(), y_bind: new_col(), y_type: new_col(), y_nm: new_col(), y_rva: new_col(), y_got: new_col(), r_sec: new_col(), r_off: new_col(), r_type: new_col(), r_sym: new_col(), r_add: new_col(), pool: new_txt(), nm_off: new_col(), ht: new_buf(int, 64), g_def: new_col(), g_how: new_col(), g_need: new_col(), pulled: new_col(), gsize: new_buf(int, 4), galign: new_buf(int, 4), gbase: new_buf(int, 4), ngot: 0, got_rva: 0, sg_off: new_col(), sg_rva: new_col(), sg_fsz: new_col(), sg_msz: new_col(), sg_flags: new_col(), image_size: 0, gc_on: false, quiet: false, syms: false, dbg: new_txt(), nshdr: 0, live: new_buf(int, 1), dyn_on: false, g_dyn: new_col(), dyn_ix: new_col(), dyn_ids: new_col(), so_names: new_txt(), so_used: new_col(), so_count: 0, dyn_str: new_txt(), str_so: new_col(), str_sym: new_col(), nneed: 0, d_stub: 0, d_interp: 0, d_hash: 0, d_sym: 0, d_str: 0, d_rela: 0, d_dynamic: 0, d_got: 0 }
+    return Linker { blob: new_txt(), errs: 0, nin: 0, in_sec0: new_col(), in_sym0: new_col(), sc_type: new_col(), sc_flags: new_col(), sc_off: new_col(), sc_size: new_col(), sc_align: new_col(), sc_grp: new_col(), sc_goff: new_col(), sc_rva: new_col(), y_sec: new_col(), y_val: new_col(), y_size: new_col(), y_bind: new_col(), y_type: new_col(), y_nm: new_col(), y_rva: new_col(), y_got: new_col(), r_sec: new_col(), r_off: new_col(), r_type: new_col(), r_sym: new_col(), r_add: new_col(), pool: new_txt(), nm_off: new_col(), ht: new_buf(int, 64), g_def: new_col(), g_how: new_col(), g_need: new_col(), pulled: new_col(), gsize: new_buf(int, 4), galign: new_buf(int, 4), gbase: new_buf(int, 4), ngot: 0, got_rva: 0, sg_off: new_col(), sg_rva: new_col(), sg_fsz: new_col(), sg_msz: new_col(), sg_flags: new_col(), image_size: 0, gc_on: false, quiet: false, syms: false, dbg: new_txt(), nshdr: 0, live: new_buf(int, 1), dyn_on: false, g_dyn: new_col(), dyn_ix: new_col(), dyn_ids: new_col(), g_dty: new_col(), g_dsz: new_col(), g_dval: new_col(), dyn_alias: new_col(), cp_off: new_col(), so_names: new_txt(), so_used: new_col(), so_count: 0, dyn_str: new_txt(), str_so: new_col(), str_sym: new_col(), nneed: 0, d_stub: 0, d_interp: 0, d_hash: 0, d_sym: 0, d_str: 0, d_rela: 0, d_dynamic: 0, d_got: 0 }

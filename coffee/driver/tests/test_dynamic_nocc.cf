@@ -21,6 +21,23 @@ fn main() => int:
     if o.n != 12:
         say(f"MISS: output has {o.n} bytes, want 12\n")
         m = 1
+    /#/ C code that reads library variables directly (copy relocations), when a C compiler can make the object
+    if system("command -v cc > /dev/null 2>&1") == 0:
+        let cs = "#include <stdio.h>\nextern char **environ;\nint f(int x) { fputs(\"hi\\n\", stdout); return environ != 0 ? x + 1 : 0; }\n"
+        let us = "use f in g3 of c\n\nfn main() => int:\n    return f(41)\n"
+        let cp = txt_of("dn/g3.c")
+        let ct = txt_of(&cs)
+        write_file(&cp, &ct)
+        let cf = txt_of("dn/g3.cfc")
+        let cft = txt_of("c fn f(x: int(4)+) => int(4)+:\n")
+        write_file(&cf, &cft)
+        let up = txt_of("dn/u3.cf")
+        let ut = txt_of(&us)
+        write_file(&up, &ut)
+        let r2 = system("cd dn && cc -O1 -fno-pic -fno-pie -c g3.c -o g3.o && PATH=$(dirname $(command -v coffee2)):/nonexistent coffee2 u3.cf --no-cc -o u3 > build2.log 2>&1 && ./u3 > out3.txt")
+        if r2 != 10752:
+            say(f"MISS: copy relocations: status {r2}, want 10752\n")
+            m = m + 1
     system("rm -rf dn")
     fflush(0)
     return m

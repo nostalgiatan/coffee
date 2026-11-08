@@ -659,6 +659,9 @@ fn build_incremental(fl: &Flat, a0: Ast, dir: &Txt, out: &Txt, opt: int, jobs: i
             write_file(&cache_path(dir, &mn, ".key"), &mkt)
         plain.put_all(&cache_path(dir, &mn, ".o"))
         plain.put_byte(10)
+    /#/ the objects and archives of the C libraries the program imports
+    let extra = fl.static_objs()
+    plain.put_all(&extra)
     say(f"incremental: {compiled} compiled, {reused} reused\n")
     fflush(0)
     let flags = new_txt()

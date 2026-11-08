@@ -14,6 +14,7 @@ fn dyn_fill(l: &Linker, mem: &Txt, base: int) => void:
     let g0 = l.gbase[0]
     let g1 = l.gbase[1]
     let g2 = l.gbase[2]
+    let g3 = l.gbase[3]
     for d in 0..ndyn:
         let at = g0 + l.d_stub + 8 * d
         mem.b[at] = 255
@@ -28,17 +29,39 @@ fn dyn_fill(l: &Linker, mem: &Txt, base: int) => void:
     wr32(mem, h, 1)
     wr32(mem, h + 4, nsym)
     let sy = g1 + l.d_sym
+    let prev = 0
     for d in 0..ndyn:
         let e = sy + 24 * (d + 1)
         wr32(mem, e, l.str_sym.b[d])
-        mem.b[e + 4] = 18
+        if l.cp_off.b[d] >= 0:
+            /#/ defined here, so the libraries bind to the copy; the hash chain has these only
+            let id = l.dyn_ids.b[d]
+            mem.b[e + 4] = 17
+            mem.b[e + 6] = 241
+            mem.b[e + 7] = 255
+            wr64(mem, e + 8, base + g3 + l.cp_off.b[d])
+            wr64(mem, e + 16, l.g_dsz.b[id])
+            if prev == 0:
+                wr32(mem, h + 8, d + 1)
+            else:
+                wr32(mem, h + 12 + 4 * prev, d + 1)
+            prev = d + 1
+        else:
+            mem.b[e + 4] = 18
     for k in 0..l.dyn_str.n:
         mem.b[g1 + l.d_str + k] = l.dyn_str.b[k]
     let ra = g1 + l.d_rela
     for d in 0..ndyn:
         let e = ra + 24 * d
-        wr64(mem, e, base + l.got_rva + 8 * d)
-        wr64(mem, e + 8, ((d + 1) << 32) + 6)
+        if l.cp_off.b[d] >= 0:
+            /#/ a copy: R_X86_64_COPY, and the GOT slot holds the copy's address
+            wr64(mem, e, base + g3 + l.cp_off.b[d])
+            if l.dyn_alias.b[d] < 0:
+                wr64(mem, e + 8, ((d + 1) << 32) + 5)
+            wr64(mem, l.got_rva + 8 * d, base + g3 + l.cp_off.b[d])
+        else:
+            wr64(mem, e, base + l.got_rva + 8 * d)
+            wr64(mem, e + 8, ((d + 1) << 32) + 6)
     let dy = g2 + l.d_dynamic
     let n = 0
     for i in 0..l.nneed:
