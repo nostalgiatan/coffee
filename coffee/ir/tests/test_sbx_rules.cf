@@ -4,6 +4,7 @@ use * in say
 use * in txt
 use * in sbxcheck
 use * in sbxcheck_a64
+use * in sbxcheck_rv
 use * in sbxrules
 use * in sbxcases
 use fflush in libc of c
@@ -26,6 +27,8 @@ fn run_line(f: &buf<int>, nf: int, n: int) => int:
     let arch = 0
     if f[1] == 97:
         arch = 1
+    elif f[1] == 118:
+        arch = 2
     let want = f[3]
     let t = new_txt()
     if arch == 0:
@@ -54,8 +57,10 @@ fn run_line(f: &buf<int>, nf: int, n: int) => int:
     let got = 0 - 1
     if arch == 0:
         got = sbx_verify(&t, t.n, -1)
-    else:
+    elif arch == 1:
         got = sbx_verify_a64(&t, t.n, -1)
+    else:
+        got = sbx_verify_rv(&t, t.n, -1)
     sbx_set_base(false)
     if got != want:
         return miss(f"case {n}: refused at {got}, want {want}\n")
@@ -89,6 +94,8 @@ fn main() => int:
                 let arch = 0
                 if f[1] == 97:
                     arch = 1
+                elif f[1] == 118:
+                    arch = 2
                 let r = rule_by_letter(f[0])
                 seen[arch * 8 + r] = seen[arch * 8 + r] + 1
                 nf = 0
@@ -100,7 +107,7 @@ fn main() => int:
                 cur = c
                 have = true
             alpha = true
-    for arch in 0..2:
+    for arch in 0..3:
         for r in 1..sbr_count() + 1:
             if sbr_applies(arch, r) && seen[arch * 8 + r] == 0:
                 m = m + miss(f"no case for rule {sbr_name(r)} on target {arch}\n")

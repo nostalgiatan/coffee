@@ -1,0 +1,154 @@
+/#/ The riscv64 stubs of the sandbox loader (the counterpart of the stubs in sandbox_a64.cf; design:
+/#/ docs/explanation/sandbox-design.md and docs/reference/riscv64-backend.md). The sandbox code keeps the start of the 4 GB
+/#/ region in s10 and the shadow frame pointer in s11; every access of it goes through `srli`/`add` onto s10, so whatever it
+/#/ computes lands inside. The control block, the signals and the system calls are those of aarch64 (the generic Linux table);
+/#/ the differences are the registers and the signal frame: the pc is at 176 in the `ucontext`, the faulting address at 16 in
+/#/ the `siginfo`. The stubs are made with the assembler; nothing here is sandbox code.
+use * in image
+use * in asm
+use * in asm_rv
+use * in loader
+
+/#/ Saves ra and s0 to s11 below sp (112 bytes).
+fn save_host_rv(a: &Asm) => void:
+    rv_addi(a, 2, 2, 0 - 112)
+    rv_st(a, 2, 0, 1, 8)
+    rv_st(a, 2, 8, 8, 8)
+    rv_st(a, 2, 16, 9, 8)
+    for k in 0..10:
+        rv_st(a, 2, 24 + 8 * k, 18 + k, 8)
+
+/#/ Back to the host: sp from the control block, the saved registers, return with a0 as it is.
+fn leave_host_rv(a: &Asm, ctrl: int) => void:
+    rv_li(a, 5, ctrl)
+    rv_ld(a, 6, 5, 0, 8)
+    rv_mov_rr(a, 2, 6)
+    rv_ld(a, 1, 2, 0, 8)
+    rv_ld(a, 8, 2, 8, 8)
+    rv_ld(a, 9, 2, 16, 8)
+    for k in 0..10:
+        rv_ld(a, 18 + k, 2, 24 + 8 * k, 8)
+    rv_addi(a, 2, 2, 112)
+    rv_ret(a)
+
+/#/ Called with a0 the control block: saves the host registers, moves to the stack of the code, sets s10 (the region) and
+/#/ s11 (the shadow frame pointer; the shadow stack grows up from the bottom of its part of the linear memory), calls `main`.
+fn stub_enter_rv(ss_base: int, entry: int, region: int, ctrl: int) => Txt:
+    let a = new_asm()
+    save_host_rv(&a)
+    rv_mov_rr(&a, 5, 2)
+    rv_st(&a, 10, 0, 5, 8)
+    rv_ld(&a, 5, 10, 8, 8)
+    rv_mov_rr(&a, 2, 5)
+    rv_li(&a, 26, region)
+    rv_li(&a, 27, ss_base)
+    rv_li(&a, 5, entry)
+    rv_callr(&a, 5)
+    leave_host_rv(&a, ctrl)
+    return clone a.c
+
+/#/ Reached after the handler moved the faulting instruction here: back to the host with a0 0.
+fn stub_trap_rv(ctrl: int) => Txt:
+    let a = new_asm()
+    rv_li(&a, 10, 0)
+    leave_host_rv(&a, ctrl)
+    return clone a.c
+
+/#/ Where the exit of the sandbox code goes (a0 holds the status): back to the host with it.
+fn stub_exit_rv(ctrl: int) => Txt:
+    let a = new_asm()
+    leave_host_rv(&a, ctrl)
+    return clone a.c
+
+/#/ `ecall` with the number in a7.
+fn rv_ecall(a: &Asm, n: int) => void:
+    rv_li(a, 17, n)
+    rv_w(a, 115)
+
+/#/ The signal handler (a0 the signal, a1 the `siginfo`, a2 the `ucontext`): when the instruction that faulted is in the code
+/#/ of the sandbox, it is replaced by the trap stub and the signal is noted; else exit.
+fn stub_handler_rv(code_lo: int, code_hi: int, trap: int, ctrl: int) => Txt:
+    let a = new_asm()
+    a.begin_fun()
+    let out = a.new_label()
+    rv_ld(&a, 5, 12, 176, 8)
+    rv_li(&a, 6, code_lo)
+    rv_bcc(&a, 6, 5, 6, out)
+    rv_li(&a, 6, code_hi)
+    rv_bcc(&a, 7, 5, 6, out)
+    rv_li(&a, 6, ctrl)
+    rv_st(&a, 6, 24, 5, 8)
+    rv_ld(&a, 7, 11, 16, 8)
+    rv_st(&a, 6, 32, 7, 8)
+    rv_li(&a, 5, trap)
+    rv_st(&a, 12, 176, 5, 8)
+    rv_st(&a, 6, 16, 10, 8)
+    rv_ret(&a)
+    a.bind(out)
+    rv_li(&a, 10, 134)
+    rv_ecall(&a, 94)
+    rv_end_fun(&a)
+    return clone a.c
+
+/#/ The host side of `read` (n 0) and `write` (n 1), reached from the sandbox with a0 the number, a1 the descriptor, a2 the
+/#/ offset of the buffer and a3 its length. The descriptor must be marked in the table of the control block
+/#/ (ctrl + 512 + 64 * n + fd) and the buffer must lie inside the linear memory, else the call fails (EBADF, EFAULT) and
+/#/ nothing reaches the kernel. This is the only place with an `ecall` besides the handlers. It runs on the stack of the sandbox.
+fn stub_io_rv(n: int, ctrl: int, limit: int) => Txt:
+    let a = new_asm()
+    a.begin_fun()
+    let badfd = a.new_label()
+    let efault = a.new_label()
+    rv_li(&a, 5, 63)
+    rv_bcc(&a, 6, 5, 11, badfd)
+    rv_li(&a, 5, ctrl + 512 + 64 * n)
+    rv_add(&a, 5, 5, 11)
+    rv_ld(&a, 5, 5, 0, 1)
+    rv_bcc(&a, 0, 5, 0, badfd)
+    rv_li(&a, 6, limit)
+    rv_bcc(&a, 6, 6, 13, efault)
+    rv_li(&a, 7, 4294967295)
+    rv_and(&a, 12, 12, 7)
+    rv_add(&a, 28, 12, 13)
+    rv_bcc(&a, 6, 6, 28, efault)
+    rv_mov_rr(&a, 10, 11)
+    rv_add(&a, 11, 12, 26)
+    rv_mov_rr(&a, 12, 13)
+    if n == 1:
+        rv_ecall(&a, 64)
+    else:
+        rv_ecall(&a, 63)
+    rv_ret(&a)
+    a.bind(badfd)
+    rv_li(&a, 10, 0 - 9)
+    rv_ret(&a)
+    a.bind(efault)
+    rv_li(&a, 10, 0 - 14)
+    rv_ret(&a)
+    rv_end_fun(&a)
+    return clone a.c
+
+/#/ The handler of the CPU quota (SIGALRM): when the code of the sandbox was running, it is stopped like on a fault; when a
+/#/ host stub was (a read that waits, say), the timer is armed again for a millisecond and the next alarm ends it.
+fn stub_alarm_rv(code_lo: int, code_hi: int, trap: int, ctrl: int) => Txt:
+    let a = new_asm()
+    a.begin_fun()
+    let out = a.new_label()
+    rv_ld(&a, 5, 12, 176, 8)
+    rv_li(&a, 6, code_lo)
+    rv_bcc(&a, 6, 5, 6, out)
+    rv_li(&a, 6, code_hi)
+    rv_bcc(&a, 7, 5, 6, out)
+    rv_li(&a, 5, trap)
+    rv_st(&a, 12, 176, 5, 8)
+    rv_li(&a, 6, ctrl)
+    rv_st(&a, 6, 16, 10, 8)
+    rv_ret(&a)
+    a.bind(out)
+    rv_li(&a, 10, 0)
+    rv_li(&a, 11, ctrl + 352)
+    rv_li(&a, 12, 0)
+    rv_ecall(&a, 103)
+    rv_ret(&a)
+    rv_end_fun(&a)
+    return clone a.c

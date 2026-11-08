@@ -23,6 +23,8 @@ fn gr_epilogue(g: &Gen) => void:
         else:
             rv_ld(&g.a, g.saved[k], tr_fp(), 16 + g.rbase + 8 * k, 8)
     rv_ld(&g.a, tr_ra(), tr_fp(), 8, 8)
+    if g.sframe > 0:
+        rv_bump(&g.a, rv_sbx_sh(), 0 - g.sframe)
     rv_ld(&g.a, tr_fp(), tr_fp(), 0, 8)
     rv_addi(&g.a, 2, 2, g.frame)
     rv_ret(&g.a)
@@ -32,6 +34,7 @@ fn gr_epilogue(g: &Gen) => void:
 fn gr_gen_fun(g: &Gen, f: &Fun, rs: &Reps, sy: &Names) => bool:
     rv_far = 0
     rv_range_miss = 0
+    rv_err = false
     let ok = gr_gen_fun1(g, f, rs, sy)
     while !ok && g.err == 0 && rv_range_miss > rv_far:
         g.a.c.n = g.a.fs
@@ -69,6 +72,8 @@ fn gr_gen_fun1(g: &Gen, f: &Fun, rs: &Reps, sy: &Names) => bool:
     rv_st(&g.a, 2, 0, tr_fp(), 8)
     rv_st(&g.a, 2, 8, tr_ra(), 8)
     rv_mov_rr(&g.a, tr_fp(), 2)
+    if g.sframe > 0:
+        rv_bump(&g.a, rv_sbx_sh(), g.sframe)
     let ci = 0
     if g.rbase > 0:
         rv_st(&g.a, tr_fp(), 16, tr_int_arg(0), 8)
@@ -87,14 +92,14 @@ fn gr_gen_fun1(g: &Gen, f: &Fun, rs: &Reps, sy: &Names) => bool:
         if r >= rp_first_agg() || g_is_int_class(g, r):
             if ci < tr_nint_args():
                 if r >= rp_first_agg():
-                    gr_copy_mem(g, tr_fp(), g.voff[p], tr_int_arg(ci), 0, rsize(rs, r))
+                    gr_copy_mem(g, gr_sb(g, p), g.voff[p], tr_int_arg(ci), 0, rsize(rs, r))
                 else:
                     gr_st(g, p, tr_int_arg(ci))
                 ci = ci + 1
             else:
                 rv_ld(&g.a, tr_s1(), tr_fp(), g.frame + 8 * cs, 8)
                 if r >= rp_first_agg():
-                    gr_copy_mem(g, tr_fp(), g.voff[p], tr_s1(), 0, rsize(rs, r))
+                    gr_copy_mem(g, gr_sb(g, p), g.voff[p], tr_s1(), 0, rsize(rs, r))
                 else:
                     gr_st(g, p, tr_s1())
                 cs = cs + 1
@@ -103,7 +108,7 @@ fn gr_gen_fun1(g: &Gen, f: &Fun, rs: &Reps, sy: &Names) => bool:
                 if g.xhome[p] >= 0:
                     rv_fmv_ff(&g.a, g.xhome[p], tr_float_arg(cx))
                 else:
-                    rv_fldst(&g.a, false, tr_float_arg(cx), tr_fp(), g.voff[p], rsize_scalar(r))
+                    rv_fldst(&g.a, false, tr_float_arg(cx), gr_sb(g, p), g.voff[p], rsize_scalar(r))
                 cx = cx + 1
             else:
                 rv_ld(&g.a, tr_s1(), tr_fp(), g.frame + 8 * cs, 8)
@@ -170,7 +175,7 @@ fn gr_gen_fun1(g: &Gen, f: &Fun, rs: &Reps, sy: &Names) => bool:
             g.lm_at[g.lm_n] = g.a.lab[g.mk_l[k]]
             g.lm_ln[g.lm_n] = g.mk_ln[k]
             g.lm_n = g.lm_n + 1
-    return ok && g.err == 0
+    return ok && g.err == 0 && !rv_err
 
 /#/ The object file of riscv64 code: the ELF writer's, with the machine number of RISC-V (243) and the flags of the double-float ABI.
 fn gr_elf(g: &Gen) => Txt:

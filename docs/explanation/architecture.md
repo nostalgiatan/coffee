@@ -141,7 +141,7 @@ IR 之后的两个变换:
 | H | 宿主调用跳板(`--host=名字=签名`,`hostcall.cf`;两个后端) | 完成 |
 | I | 删除 `gs`(满足第 6.3 节的条件之后) | 复测:基址是 `gs` 开销的 2.09 倍(+9.2% 对 +4.4%),略超 2 倍,暂缓(验证器数据流去 `lea` 试过,无效,已撤回) |
 | J | PE 对象写入器、Win64 调用约定、`os_windows_*.cf`、Windows 加载器 | 编译器一侧完成:COFF 写入器(`coff.cf`)、Win64 约定(`x86_64-linux-ms` 在 Linux 上对 gcc 的 `ms_abi` 测过)、`--target=x86_64-windows` 经 MinGW 链接;展开信息、加载器、运行时待做([Windows 目标](../reference/windows-backend.md)) |
-| K | riscv64 | 编译器一侧完成:`asm_rv.cf` 与 `gen_rv_*.cf`、`cfld` 的 riscv64 重定位,`--target=riscv64-linux`,在 qemu-riscv64 下与 x86-64 版本逐字相同,编译器自己编成 riscv64 能复现自身([riscv64 后端](../reference/riscv64-backend.md));向量循环、沙盒加载器待做 |
+| K | riscv64 | 编译器一侧完成:`asm_rv.cf` 与 `gen_rv_*.cf`、`cfld` 的 riscv64 重定位,`--target=riscv64-linux`,在 qemu-riscv64 下与 x86-64 版本逐字相同,编译器自己编成 riscv64 能复现自身([riscv64 后端](../reference/riscv64-backend.md));向量循环(rva23)和沙盒加载器也已做:`sbxcheck_rv.cf`、`sandbox_rv.cf`,`cfjit --target=riscv64 --sandbox` 在 qemu-riscv64 下过沙盒测试和 191 个 `exits` 用例(与 aarch64 的结果逐项相同) |
 | 可选 | pkeys 加速模式;静态叠放影子帧 | 不排期 |
 
 每个阶段的门槛:两个目标的语料输出逐字节不变(整理类),或有测量(语义类);各阶段 `tea test`、`compat`、沙盒的 `compare.sh`(`SANDBOX=1`/`base`)全过;种子刷新后再构建一次逐字节相同。

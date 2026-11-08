@@ -1,7 +1,7 @@
 /#/ Code the sandbox verifiers must refuse, one line each, the same list for both targets: the rule it breaks (see
-/#/ src/sbxrules.cf), the target (x for x86-64, a for aarch64), the mode (x86-64: b for base mode, g for the `gs`
-/#/ form; aarch64: w for one word placed in the body of a frame, r for the words as they are), the offset of the
-/#/ refusal, and the code: decimal bytes for x86-64, decimal words for aarch64.
+/#/ src/sbxrules.cf), the target (x for x86-64, a for aarch64, v for riscv64), the mode (x86-64: b for base mode, g for the `gs`
+/#/ form; aarch64: w for one word placed in the body of a frame, r for the words as they are; riscv64: r), the offset of the
+/#/ refusal, and the code: decimal bytes for x86-64, decimal words for aarch64 and riscv64.
 fn sbx_cases() => str:
     let c = ""
     c = c + "decode x g 1 195 15 5\n"
@@ -59,4 +59,32 @@ fn sbx_cases() => str:
     c = c + "adjacent x b 4 72 141 72 8 73 139 4 15 195\n"
     c = c + "adjacent x b 3 141 80 8 73 139 4 15 195\n"
     c = c + "adjacent x b 5 235 3 141 72 8 73 139 4 15 195\n"
+    c = c + "decode v r 0 115 32871\n"
+    c = c + "decode v r 0 1 32871\n"
+    c = c + "decode v r 0 7549615 32871\n"
+    c = c + "decode v r 0 15 32871\n"
+    c = c + "decode v r 0 87 32871\n"
+    c = c + "decode v r 0 197255 32871\n"
+    c = c + "unguarded v r 0 209539 32871\n"
+    c = c + "unguarded v r 0 5451811 32871\n"
+    c = c + "unguarded v r 8 34594707 28282803 9417347 32871\n"
+    c = c + "unguarded v r 0 78467 32871\n"
+    c = c + "frame v r 0 5518371 32871\n"
+    c = c + "frame v r 0 5517347 32871\n"
+    c = c + "adjacent v r 0 1028739 32871\n"
+    c = c + "adjacent v r 12 19 19 28282803 1028739 32871\n"
+    c = c + "adjacent v r 0 8388719 34594707 28282803 1028739 32871\n"
+    c = c + "adjacent v r 0 12583023 34594707 28282803 1028739 32871\n"
+    c = c + "protected v r 0 1903891 32871\n"
+    c = c + "protected v r 0 147 32871\n"
+    c = c + "protected v r 0 1311763 32871\n"
+    c = c + "protected v r 0 17051907 32871\n"
+    c = c + "protected v r 0 4535 32871\n"
+    c = c + "protected v r 0 1049107 32871\n"
+    c = c + "protected v r 0 3791651155 32871\n"
+    c = c + "protected v r 0 4195055 32871\n"
+    c = c + "branch v r 0 419430511 32871\n"
+    c = c + "branch v r 0 163943\n"
+    c = c + "branch v r 0 151 32871\n"
+    c = c + "branch v r 0 1049235\n"
     return c

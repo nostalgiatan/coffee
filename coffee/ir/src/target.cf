@@ -16,6 +16,7 @@ use * in opt
 use * in asm
 use * in minrt
 use * in sbxcheck_a64
+use * in sbxcheck_rv
 use * in sbxrules
 use * in txt
 use * in elf
@@ -139,6 +140,11 @@ fn target_object(g: &Gen) => Txt:
                 return new_txt()
         return ga_elf(g)
     if target_arch == arch_riscv64():
+        if g.a.acc.sbx:
+            let bad = sbx_verify_rv(&g.a.c, g.a.c.n, -1)
+            if bad >= 0:
+                say(f"error: the sandbox code is not safe (offset {bad}, rule {sbr_name(sbx_rule)}, reason {sbx_rv_why})\n")
+                return new_txt()
         return gr_elf(g)
     if target_os == os_windows():
         return write_coff(&g.o, &g.a)

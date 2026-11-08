@@ -23,6 +23,17 @@ fn r_rv_lo12_i() => int:
 let rv_far: int = 0
 let rv_range_miss: int = 0
 
+/#/ Set when sandbox code (`Asm.acc.sbx`) needed a form the verifier does not take (a frame offset past 12 bits, a call with
+/#/ arguments on the stack): the function is not made.
+let rv_err: bool = false
+
+/#/ Sandbox code keeps the start of the linear memory in s10 and the shadow frame pointer in s11.
+fn rv_sbx_base() => int:
+    return 26
+
+fn rv_sbx_sh() => int:
+    return 27
+
 fn rv_w(a: &Asm, w: int) => void:
     a.le32(w)
 
@@ -215,13 +226,49 @@ fn rv_log2(n: int) => int:
         return 2
     return 3
 
+/#/ Sandbox code: x31 = s10 + the low 32 bits of base + disp, the address in the linear memory (the access that follows uses
+/#/ 0(x31)). The five words (the first two when `disp` is 0, `addiw` or `li`/`addw` before them otherwise): the sum as a 32-bit
+/#/ number, shifted up and down to clear the upper half, then added to the start of the memory. Whatever `base` holds, the address
+/#/ lands in the 4 GB the code owns; the verifier wants the `srli`, `add` and the access one after the other.
+fn rv_sbx_addr(a: &Asm, base: int, disp: int) => void:
+    let s = base
+    if disp != 0:
+        if disp >= 0 - 2048 && disp < 2048:
+            rv_w(a, rv_enc_i(0, 27, 31, base, disp))
+        else:
+            rv_li(a, 31, disp)
+            rv_w(a, rv_enc_r(0, 0, 59, 31, base, 31))
+        s = 31
+    rv_w(a, rv_enc_i(1, 19, 31, s, 32))
+    rv_w(a, rv_enc_i(5, 19, 31, 31, 32))
+    rv_w(a, rv_enc_r(0, 0, 51, 31, 31, rv_sbx_base()))
+
+/#/ rd += v in steps of at most 2032 (sandbox code moves the shadow frame pointer by immediates only).
+fn rv_bump(a: &Asm, rd: int, v: int) => void:
+    let left = v
+    while left > 2032:
+        rv_w(a, rv_enc_i(0, 19, rd, rd, 2032))
+        left = left - 2032
+    while left < 0 - 2032:
+        rv_w(a, rv_enc_i(0, 19, rd, rd, 0 - 2032))
+        left = left + 2032
+    if left != 0:
+        rv_w(a, rv_enc_i(0, 19, rd, rd, left))
+
 /#/ A load into (or store of) the integer register `rt` of `n` bytes (1, 2, 4, 8) at [base + disp]. A load does not
 /#/ extend: the upper bytes are zero. A displacement past 12 bits goes through x31.
 fn rv_ldst(a: &Asm, load: bool, rt: int, base: int, disp: int, n: int) => void:
     let sz = rv_log2(n)
     let b = base
     let d = disp
-    if disp < 0 - 2048 || disp >= 2048:
+    if a.acc.sbx:
+        if a.acc.guarded(false, base == 8 || base == 2):
+            rv_sbx_addr(a, base, disp)
+            b = 31
+            d = 0
+        elif disp < 0 - 2048 || disp >= 2048:
+            rv_err = true
+    elif disp < 0 - 2048 || disp >= 2048:
         rv_li(a, 31, disp)
         rv_add(a, 31, base, 31)
         b = 31
@@ -410,7 +457,14 @@ fn rv_fldst(a: &Asm, load: bool, ft: int, base: int, disp: int, n: int) => void:
         f3 = 3
     let b = base
     let d = disp
-    if disp < 0 - 2048 || disp >= 2048:
+    if a.acc.sbx:
+        if a.acc.guarded(false, base == 8 || base == 2):
+            rv_sbx_addr(a, base, disp)
+            b = 31
+            d = 0
+        elif disp < 0 - 2048 || disp >= 2048:
+            rv_err = true
+    elif disp < 0 - 2048 || disp >= 2048:
         rv_li(a, 31, disp)
         rv_add(a, 31, base, 31)
         b = 31

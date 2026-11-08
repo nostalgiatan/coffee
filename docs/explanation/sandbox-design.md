@@ -272,7 +272,8 @@ aarch64 的寻址模式不带位移,所以那里比 x86 多一条 `add`;不过 `
 2. **规则成数据**(已做一部分:沙盒里寄存器的角色 `tg_sbx_base`/`tg_sbx_addr`/`tg_sbx_shadow` 在 `target_x86.cf`,`Asm.mem`、`tg_reserved`、验证器都读它们,`tg_pool_reg(s)` 取池位的寄存器号;输出不变。验证器里的指令形式仍是 x86 解码的细节,允许表整体搬成数据要等 a64 验证器出现,才知道哪些字段是通用的)。原计划:`tg_sbx_reserved`、`tg_frame_base`、验证器的允许表从 `sbxcheck.cf` 和 `target_x86.cf` 里的常数改成目标描述表的字段。
 3. **aarch64 实现 `tg_sbx_access`**(aarch64 会话,等它的寄存器分配和浮点做完),同时写它的验证器,用上面的反例集。
 4. **cfjit 的 aarch64**:加载器进入沙盒时设 x28,陷阱用信号处理器(`sigaction` 的 aarch64 版)。
-5. 之后再做的:影子帧用 `[r15 + r14 + disp]` 省一条指令(x86 基址模式);宿主调用的跳板(见 jit-design.md)用同一个区域起点翻译指针。
+5. **riscv64**(已做):没有带寄存器偏移的访存,所以每个受限访存是 `addiw`(有位移时)、`slli 32`、`srli 32`、`add s10` 再 `0(t6)`;验证器要求 `srli`、`add`、访存连在一起,并且不许跳进 `add` 和访存(那时 t6 是任意值)。s10 放区域起点,s11 是影子帧指针。加载器与 aarch64 共用,桩另写(见 [riscv64 后端](../reference/riscv64-backend.md) 的沙盒一节)。
+6. 之后再做的:影子帧用 `[r15 + r14 + disp]` 省一条指令(x86 基址模式);宿主调用的跳板(见 jit-design.md)用同一个区域起点翻译指针。
 
 ### 不属于这一层的
 

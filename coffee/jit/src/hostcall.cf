@@ -11,6 +11,7 @@ use * in asm
 use * in txt
 use * in loader
 use * in asm_a64
+use * in asm_rv
 
 class Hosts:
     names: Txt
@@ -181,4 +182,46 @@ fn host_tramp_a64(fn_addr: int, sig: &Txt, region: int, lo: int, limit: int, ctr
     a64_mov_ri(&a, 9, trap)
     a64_w(&a, 3592355840 | (9 << 5))
     a64_end_fun(&a)
+    return clone a.c
+
+/#/ The same trampoline for riscv64: the arguments in a0 to a5, s10 the start of the linear memory.
+fn host_tramp_rv(fn_addr: int, sig: &Txt, region: int, lo: int, limit: int, ctrl: int, trap: int) => Txt:
+    let a = new_asm()
+    a.begin_fun()
+    let bad = a.new_label()
+    let i = 0
+    while sig.b[i] != 58:
+        if sig.b[i] == 112:
+            let p = 10 + i
+            let l = 11 + i
+            rv_li(&a, 5, limit)
+            rv_bcc(&a, 6, 5, l, bad)
+            rv_extend(&a, p, p, 4, false)
+            rv_li(&a, 6, lo)
+            rv_bcc(&a, 6, p, 6, bad)
+            rv_add(&a, 7, p, l)
+            rv_bcc(&a, 6, 5, 7, bad)
+            rv_add(&a, p, p, 26)
+        i = i + 1
+    rv_addi(&a, 2, 2, 0 - 16)
+    rv_st(&a, 2, 0, 1, 8)
+    rv_li(&a, 5, fn_addr)
+    rv_callr(&a, 5)
+    rv_ld(&a, 1, 2, 0, 8)
+    rv_addi(&a, 2, 2, 16)
+    if sig.b[i + 1] == 112:
+        let ok = a.new_label()
+        rv_sub(&a, 10, 10, 26)
+        rv_li(&a, 5, limit)
+        rv_bcc(&a, 6, 10, 5, ok)
+        rv_li(&a, 10, 0)
+        a.bind(ok)
+    rv_ret(&a)
+    a.bind(bad)
+    rv_li(&a, 5, ctrl)
+    rv_li(&a, 6, 11)
+    rv_st(&a, 5, 16, 6, 8)
+    rv_li(&a, 7, trap)
+    rv_w(&a, (7 << 15) | 103)
+    rv_end_fun(&a)
     return clone a.c

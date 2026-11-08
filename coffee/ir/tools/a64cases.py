@@ -6,8 +6,10 @@ the interpreter in a64sim.py: each program is compiled with --target=aarch64-lin
 With qemu-aarch64 each program is linked with --static and run under qemu; otherwise (or with --sim)
 the object is run in the interpreter.
 
-Usage: a64cases.py <coffee2> [name-filter] [-j N] [--sim] [--target=aarch64-linux|riscv64-linux]
+Usage: a64cases.py <coffee2> [name-filter] [-j N] [--sim] [--target=aarch64-linux|riscv64-linux] [--sandbox=<cfjit>]
 (with --target=riscv64-linux the programs run under qemu-riscv64; there is no interpreter for them)
+With --sandbox=<cfjit> (a cfjit built for the target) each program is made with --emit-cir and run in the sandbox of that
+cfjit (`--sandbox=base`) under qemu: the exit code must be the same, except for the programs that reach outside the sandbox.
 """
 import concurrent.futures
 import glob
@@ -49,8 +51,31 @@ for a in sys.argv:
 QEMU = {'aarch64-linux': ['qemu-aarch64'], 'riscv64-linux': ['qemu-riscv64'], 'riscv64-linux-rva22': ['qemu-riscv64', '-cpu', 'rva22u64'], 'riscv64-linux-rva23': ['qemu-riscv64', '-cpu', 'rva23u64']}[TARGET]
 
 
+SANDBOX = ''
+for a in sys.argv:
+    if a.startswith('--sandbox='):
+        SANDBOX = a[10:]
+
+
+def run_sandbox(coffee2, name, src, want):
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, 'c.cf')
+        open(p, 'w').write(src)
+        out = os.path.join(d, 'c.cir')
+        r = subprocess.run([coffee2, p, '--target=' + TARGET, '--emit-cir', '-o', out], capture_output=True, text=True)
+        if r.returncode != 0 or not os.path.exists(out):
+            return name, 'compile', (r.stdout + r.stderr)[:200]
+        tname = TARGET.split('-')[0]
+        r = subprocess.run(QEMU + [SANDBOX, out, '--target=' + tname, '--sandbox=base'], capture_output=True, text=True, timeout=120)
+        if r.returncode == want:
+            return name, 'ok', ''
+        return name, 'wrong', 'got %d want %d %s' % (r.returncode, want, (r.stdout + r.stderr).strip().splitlines()[-1:])
+
+
 def run(args):
     coffee2, name, src, want = args
+    if SANDBOX:
+        return run_sandbox(coffee2, name, src, want)
     with tempfile.TemporaryDirectory() as d:
         p = os.path.join(d, 'c.cf')
         open(p, 'w').write(src)

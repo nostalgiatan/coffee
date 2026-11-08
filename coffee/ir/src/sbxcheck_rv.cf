@@ -1,0 +1,246 @@
+/#/ A check of riscv64 sandbox code (see docs/explanation/sandbox-design.md and docs/reference/riscv64-backend.md).
+/#/ It reads the words the code generator made (`Asm.acc.sbx`) and accepts only what keeps the code inside the linear
+/#/ memory and the control flow inside the code:
+/#/
+/#/ - A load or store is `ld/sd .. 0(t6)` right after `srli t6, t6, 32` and `add t6, t6, s10` (s10 holds the start of a 4 GB
+/#/   region): the address is the region plus a 32-bit number, whatever the register held before. Or it is a plain
+/#/   `imm(s0)` on the stack of the code, a store not below s0+16 (s0+0 and s0+8 hold the saved s0 and ra). The prologue
+/#/   stores `sd s0, 0(sp)` and `sd ra, 8(sp)` are the only ones through sp. The `add` and the access cannot be the target of
+/#/   a jump (t6 would be anything).
+/#/ - s10 is not written. ra, sp and s0 are written only by the frame: `addi sp, sp, imm`, `mv s0, sp`, `ld ra, 8(s0)`,
+/#/   `ld s0, 0(s0)`, and `jal ra` and the `auipc ra` / `jalr ra, lo(ra)` pair of a call.
+/#/ - Branches are `jal x0/ra`, `bcc`, and `jalr` only as the second word of an `auipc` / `jalr` pair (to an instruction of
+/#/   the code; a call may also go to `entry`, the system call function of the image, or an import entry), and `ret`;
+/#/   `ebreak` stops. No `ecall`, atomics, fences, vector instructions or compressed ones. The last word does not run on
+/#/   into what follows.
+/#/ - What is left (arithmetic, logic, moves, floating point on registers) cannot reach memory or change the flow, once the
+/#/   writes above are held back.
+use * in txt
+use * in sbxrules
+
+/#/ Why the last word was refused (a number from `rvk_no`).
+let sbx_rv_why = 0
+
+fn rvk_no(why: int) => int:
+    sbx_rv_why = why
+    sbx_rule = sbr_of_rv(why)
+    return -1
+
+fn rvk_sext(v: int, bits: int) => int:
+    if v >= (1 << (bits - 1)):
+        return v - (1 << bits)
+    return v
+
+/#/ The immediates of the formats.
+fn rvk_imm_i(w: int) => int:
+    return rvk_sext((w >> 20) & 4095, 12)
+
+fn rvk_imm_s(w: int) => int:
+    return rvk_sext(((w >> 25) << 5) | ((w >> 7) & 31), 12)
+
+fn rvk_imm_b(w: int) => int:
+    let v = (((w >> 31) & 1) << 12) | (((w >> 7) & 1) << 11) | (((w >> 25) & 63) << 5) | (((w >> 8) & 15) << 1)
+    return rvk_sext(v, 13)
+
+fn rvk_imm_j(w: int) => int:
+    let v = (((w >> 31) & 1) << 20) | (((w >> 12) & 255) << 12) | (((w >> 20) & 1) << 11) | (((w >> 21) & 1023) << 1)
+    return rvk_sext(v, 21)
+
+/#/ The words of the code generator that the rules name: `add t6, t6, s10`, `srli t6, t6, 32`, and the frame's own.
+fn rvk_w_add() => int:
+    return (26 << 20) | (31 << 15) | (31 << 7) | 51
+
+fn rvk_w_srli() => int:
+    return (32 << 20) | (31 << 15) | (5 << 12) | (31 << 7) | 19
+
+fn rvk_w_ret() => int:
+    return (1 << 15) | 103
+
+fn rvk_w_ebreak() => int:
+    return 1048691
+
+fn rvk_w_mv_fp() => int:
+    return (2 << 15) | (8 << 7) | 19
+
+fn rvk_w_ld_ra() => int:
+    return (8 << 20) | (8 << 15) | (3 << 12) | (1 << 7) | 3
+
+fn rvk_w_ld_fp() => int:
+    return (8 << 15) | (3 << 12) | (8 << 7) | 3
+
+fn rvk_w_sd_fp() => int:
+    return (8 << 20) | (2 << 15) | (3 << 12) | 35
+
+fn rvk_w_sd_ra() => int:
+    return (1 << 20) | (2 << 15) | (3 << 12) | (8 << 7) | 35
+
+/#/ May the integer register `r` be written? x1 (ra), x2 (sp), x3 (gp), x4 (tp: the host's thread pointer), x8 (s0) and x26 (s10) may not.
+fn rvk_wr_ok(r: int) => bool:
+    return r != 1 && r != 2 && r != 3 && r != 4 && r != 8 && r != 26
+
+/#/ What a word is for the scan: `kind` 0 none, 1 a jump or branch, 2 a call; `ends` when execution does not go on to the next
+/#/ word; `tgt` the target; `inner` when the word cannot be jumped to (and the one before it too, with `back`).
+class RvWk:
+    kind: int
+    tgt: int
+    ends: bool
+    inner: bool
+    back: bool
+
+fn new_rvwk() => RvWk:
+    return RvWk { kind: 0, tgt: -1, ends: false, inner: false, back: false }
+
+fn rvk_word_at(code: &Txt, i: int) => int:
+    return int(code.b[i]) | (int(code.b[i + 1]) << 8) | (int(code.b[i + 2]) << 16) | (int(code.b[i + 3]) << 24)
+
+/#/ Checks the word at `at` of `code` (`n` bytes); -1 when it is refused (`sbx_rv_why` says why), else 0.
+fn rvk_word(code: &Txt, n: int, at: int, d: &RvWk) => int:
+    d.kind = 0
+    d.tgt = -1
+    d.ends = false
+    d.inner = false
+    d.back = false
+    let w = rvk_word_at(code, at)
+    if (w & 3) != 3:
+        return rvk_no(1)
+    let op = w & 127
+    let rd = (w >> 7) & 31
+    let f3 = (w >> 12) & 7
+    let rs1 = (w >> 15) & 31
+    if op == 3 || op == 7 || op == 35 || op == 39:
+        /#/ loads and stores: the integer ones (3 and 35: any width; not 7 and 39: 2 and 3 are flw/fld, the rest vector)
+        if (op == 7 || op == 39) && f3 != 2 && f3 != 3:
+            return rvk_no(2)
+        let store = op == 35 || op == 39
+        let imm = rvk_imm_i(w)
+        if store:
+            imm = rvk_imm_s(w)
+        if w == rvk_w_ld_ra() || w == rvk_w_ld_fp() || w == rvk_w_sd_fp() || w == rvk_w_sd_ra():
+            return 0
+        if !store && op == 3 && !rvk_wr_ok(rd):
+            return rvk_no(6)
+        if rs1 == 31:
+            if imm != 0:
+                return rvk_no(3)
+            if at < 8 || rvk_word_at(code, at - 4) != rvk_w_add() || rvk_word_at(code, at - 8) != rvk_w_srli():
+                return rvk_no(4)
+            d.inner = true
+            d.back = true
+            return 0
+        if rs1 != 8:
+            return rvk_no(3)
+        if store && imm < 16:
+            /#/ [s0 + 0..15] holds the saved s0 and ra
+            return rvk_no(5)
+        return 0
+    if op == 19 || op == 27 || op == 51 || op == 59 || op == 55 || op == 23:
+        if op == 23 && rd == 1:
+            /#/ auipc ra: the first word of a call
+            if at + 8 > n:
+                return rvk_no(7)
+            let nx = rvk_word_at(code, at + 4)
+            if (nx & 127) != 103 || ((nx >> 7) & 31) != 1 || ((nx >> 15) & 31) != 1 || ((nx >> 12) & 7) != 0:
+                return rvk_no(7)
+            return 0
+        if w == rvk_w_mv_fp():
+            return 0
+        if op == 19 && rd == 2 && rs1 == 2 && f3 == 0:
+            /#/ addi sp, sp, imm
+            return 0
+        if !rvk_wr_ok(rd):
+            return rvk_no(6)
+        return 0
+    if op == 83:
+        /#/ floating point: the operations that write an integer register are not into the protected ones
+        let f7 = w >> 25
+        if f7 == 80 || f7 == 81 || f7 == 96 || f7 == 97 || f7 == 112 || f7 == 113:
+            if !rvk_wr_ok(rd):
+                return rvk_no(6)
+        return 0
+    if op == 67 || op == 71 || op == 75 || op == 79:
+        return 0
+    if op == 99:
+        d.kind = 1
+        d.tgt = at + rvk_imm_b(w)
+        return 0
+    if op == 111:
+        if rd != 0 && rd != 1:
+            return rvk_no(6)
+        d.kind = 1
+        d.ends = true
+        if rd == 1:
+            d.kind = 2
+            d.ends = false
+        d.tgt = at + rvk_imm_j(w)
+        return 0
+    if op == 103:
+        if w == rvk_w_ret():
+            d.ends = true
+            return 0
+        /#/ jalr only after the auipc it adds to: ra / ra (a call) or t6 / x0 (a far jump)
+        if f3 != 0 || at < 4:
+            return rvk_no(7)
+        let pw = rvk_word_at(code, at - 4)
+        if (pw & 127) != 23 || ((pw >> 7) & 31) != rs1:
+            return rvk_no(7)
+        if !((rd == 1 && rs1 == 1) || (rd == 0 && rs1 == 31)):
+            return rvk_no(7)
+        d.inner = true
+        d.kind = 1
+        d.ends = true
+        if rd == 1:
+            d.kind = 2
+            d.ends = false
+        d.tgt = (at - 4) + rvk_sext(pw >> 12, 20) * 4096 + rvk_imm_i(w)
+        return 0
+    if w == rvk_w_ebreak():
+        d.ends = true
+        return 0
+    return rvk_no(2)
+
+/#/ -1 when the `n` bytes of `code` pass, else the offset of the first word refused (or of the branch whose target is bad).
+/#/ `entry` is where a call may go besides the words of the code, or -1.
+fn sbx_verify_rv(code: &Txt, n: int, entry: int) => int:
+    if n % 4 != 0:
+        sbx_rv_why = 10
+        sbx_rule = sbr_decode()
+        return 0
+    let d = new_rvwk()
+    let nw = n // 4
+    let inner: buf<int> = new_buf(int, nw + 1)
+    let tg: buf<int> = new_buf(int, nw + 1)
+    let tk: buf<int> = new_buf(int, nw + 1)
+    let falls = false
+    for k in 0..nw:
+        inner[k] = 0
+        tg[k] = 0 - 1
+        tk[k] = 0
+    for k in 0..nw:
+        let i = k * 4
+        if rvk_word(code, n, i, &d) < 0:
+            return i
+        falls = !d.ends
+        if d.inner:
+            inner[k] = 1
+            if d.back:
+                inner[k - 1] = 1
+        if d.kind != 0:
+            tg[k] = d.tgt
+            tk[k] = d.kind
+    for k in 0..nw:
+        if tk[k] != 0:
+            let t = tg[k]
+            if !(tk[k] == 2 && sbx_call_entry(t, entry)):
+                if t < 0 || t >= n || t % 4 != 0:
+                    sbx_rv_why = 8
+                    sbx_rule = sbr_branch()
+                    return k * 4
+                if inner[t // 4] == 1:
+                    sbx_rv_why = 8
+                    sbx_rule = sbr_adjacent()
+                    return k * 4
+    if falls:
+        sbx_rv_why = 9
+        sbx_rule = sbr_branch()
+        return n - 4
+    return -1

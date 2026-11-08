@@ -145,31 +145,31 @@ fn sys_mprotect(addr: int, n: int, prot: int) => int:
 /#/ machine `cfjit` runs on: it loads what it generates). The kernel makes the instruction cache see
 /#/ the new code when a page becomes executable, so there is no flush.
 fn sc_mmap() => int:
-    if target_arch == arch_aarch64():
+    if target_arch != arch_x86_64():
         return 222
     return 9
 
 fn sc_munmap() => int:
-    if target_arch == arch_aarch64():
+    if target_arch != arch_x86_64():
         return 215
     return 11
 
 fn sc_mprotect() => int:
-    if target_arch == arch_aarch64():
+    if target_arch != arch_x86_64():
         return 226
     return 10
 
 fn sc_clock_gettime() => int:
-    if target_arch == arch_aarch64():
+    if target_arch != arch_x86_64():
         return 113
     return 228
 
 fn sc_getpid() => int:
-    if target_arch == arch_aarch64():
+    if target_arch != arch_x86_64():
         return 172
     return 39
 
 fn sc_kill() => int:
-    if target_arch == arch_aarch64():
+    if target_arch != arch_x86_64():
         return 129
     return 62

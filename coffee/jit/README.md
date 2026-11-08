@@ -10,6 +10,8 @@ cfjit prog.cir
 
 `tests/compare.sh <coffee2> <cfjit> <stage dir>` runs each test file of a stage natively and through `cfjit` and compares exit code and output. All of `compat`, `lexer`, `parser`, `sema`, `types` and `own` agree (90 files).
 
+`cfjit prog.cir --target=riscv64 --sandbox=base` (and `--target=aarch64`) does the same for those targets from a `cfjit` built for them and run by `qemu-riscv64` / `qemu-aarch64` (docs/reference/riscv64-backend.md); riscv64 has no unsandboxed loading.
+
 `cfjit prog.cir --sandbox` runs the code confined to a 4 GB linear memory (every access goes through `gs` in 32 bits; `--sandbox=base` does the same with the start of the memory in a register, the form other processors can have); a bad access, a division by zero or a stack overflow ends the run with a trap (exit 139 and the signal on stdout). `exit`, `mmap`, and `read`/`write` on the allowed standard streams (`--allow=stdin,stdout,stderr`, a subset; default all three) work as system calls; the rest fail with -ENOSYS. Quotas: `--mem=MB` limits the heap, `--cpu=MS` ends the run (trap, signal 14) after that much wall time, also when it waits in a read.
 
 Before the sandbox code runs, `ir/src/sbxcheck.cf` checks its machine code (only what the generator emits, memory only through `gs` or the frame, direct jumps to instruction starts); a refusal exits with 2.

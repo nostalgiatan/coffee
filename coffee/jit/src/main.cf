@@ -7,6 +7,7 @@ use * in sandbox
 use * in sandbox_a64
 use * in hostcall
 use * in sbxcheck_a64
+use * in sbxcheck_rv
 use * in sbxcheck
 use * in sbxrules
 use * in imgfile
@@ -228,6 +229,10 @@ fn main() => int:
     let a64 = flag_arg("--target=aarch64") || flag_arg("--target=aarch64-linux")
     if a64:
         set_target(&txt_of("aarch64-linux"))
+    /#/ `--target=riscv64`: the same for riscv64 (sandbox only, base instruction set)
+    let rv64 = flag_arg("--target=riscv64") || flag_arg("--target=riscv64-linux")
+    if rv64:
+        set_target(&txt_of("riscv64-linux"))
     let sbx = flag_arg("--sandbox") || bm
     let path = path_arg()
     if path.n == 0:
@@ -255,6 +260,9 @@ fn main() => int:
     if a64:
         mode = mode + 16
         cache_path.put(".a64")
+    if rv64:
+        mode = mode + 32
+        cache_path.put(".rv64")
     cache_path.put(".cim")
     let key = 0
     if use_cache:
@@ -387,19 +395,32 @@ fn main() => int:
             if hosts.find(&hn) < 0 || im.imp_slot[k] < 0:
                 say(f"cfjit: the module calls '{txt_str(&hn)}', which is not a host function of the sandbox\n")
                 return 2
-            if imp_lo < 0 || im.imp_slot[k] - 8 < imp_lo:
-                imp_lo = im.imp_slot[k] - 8
+            if imp_lo < 0 || im.imp_slot[k] - sbx_entry_stride() // 2 < imp_lo:
+                imp_lo = im.imp_slot[k] - sbx_entry_stride() // 2
         if imp_lo >= 0:
-            sbx_set_imports(imp_lo, imp_lo + 16 * im.nimp)
+            sbx_set_import_step(sbx_entry_stride())
+            sbx_set_imports(imp_lo, imp_lo + sbx_entry_stride() * im.nimp)
         if flag_arg("--perf-map"):
             /#/ the code of the sandbox is mapped by `sandbox_run`: the addresses in the map are offsets from its start
             write_perf_map(&im, 0)
+        if rv64:
+            let badrv = sbx_verify_rv(&im.b, im.text_n, im.sys_at)
+            if badrv >= 0:
+                say(f"cfjit: the code is not safe to run in the sandbox (offset {badrv}, rule {sbr_name(sbx_rule)}, reason {sbx_rv_why})\n")
+                return 2
+            let rrv = sandbox_run_a64(&im, at, allow_arg(), num_arg("mem"), num_arg("cpu"), &hosts, true)
+            if rrv == 0 - 1:
+                say("cfjit: the sandbox could not be made\n")
+                return 2
+            if rrv == 0 - 2:
+                return 139
+            return rrv
         if a64:
             let bad64 = sbx_verify_a64(&im.b, im.text_n, im.sys_at)
             if bad64 >= 0:
                 say(f"cfjit: the code is not safe to run in the sandbox (offset {bad64}, rule {sbr_name(sbx_rule)}, reason {sbx_a64_why})\n")
                 return 2
-            let r64 = sandbox_run_a64(&im, at, allow_arg(), num_arg("mem"), num_arg("cpu"), &hosts)
+            let r64 = sandbox_run_a64(&im, at, allow_arg(), num_arg("mem"), num_arg("cpu"), &hosts, false)
             if r64 == 0 - 1:
                 say("cfjit: the sandbox could not be made\n")
                 return 2

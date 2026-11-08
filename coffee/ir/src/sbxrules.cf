@@ -49,27 +49,31 @@ fn sbr_name(r: int) => str:
         return "adjacent"
     return "?"
 
-/#/ Does the verifier of the target (0 x86-64, 1 aarch64) have rule `r`?
+/#/ Does the verifier of the target (0 x86-64, 1 aarch64, 2 riscv64) have rule `r`?
 fn sbr_applies(arch: int, r: int) => bool:
-    return r != sbr_adjacent() || arch == 0
+    return r != sbr_adjacent() || arch != 1
 
 /#/ The rule of the last refusal, set by the verifier that made it.
 let sbx_rule = 0
 
-/#/ The entries of the imports that a call may go to besides `entry`: `lo` up to `hi`, one every 16 bytes
-/#/ (the image makes them, see make_image_sbx); empty when `hi` is `lo`.
+/#/ The entries of the imports that a call may go to besides `entry`: `lo` up to `hi`, one every `sbx_imp_step` bytes
+/#/ (16, 32 on riscv64; the image makes them, see make_image_sbx); empty when `hi` is `lo`.
 let sbx_imp_lo = 0
 let sbx_imp_hi = 0
+let sbx_imp_step = 16
 
 fn sbx_set_imports(lo: int, hi: int) => void:
     sbx_imp_lo = lo
     sbx_imp_hi = hi
 
+fn sbx_set_import_step(step: int) => void:
+    sbx_imp_step = step
+
 /#/ May a call go to `t` without it being the start of an instruction of the code: `entry`, or an import entry?
 fn sbx_call_entry(t: int, entry: int) => bool:
     if t == entry:
         return true
-    return t >= sbx_imp_lo && t < sbx_imp_hi && (t - sbx_imp_lo) % 16 == 0
+    return t >= sbx_imp_lo && t < sbx_imp_hi && (t - sbx_imp_lo) % sbx_imp_step == 0
 
 /#/ The rule of x86-64 reason `why` (the numbers of `dec_no` in sbxcheck.cf), indexed by the reason.
 fn sbr_of_x86(why: int) => int:
@@ -79,4 +83,9 @@ fn sbr_of_x86(why: int) => int:
 /#/ The rule of aarch64 reason `why` (the numbers of `a64k_no` in sbxcheck_a64.cf).
 fn sbr_of_a64(why: int) => int:
     let t = [0, 1, 1, 2, 1, 3, 3, 4, 2, 4, 3, 4, 1, 1, 1, 5, 5]
+    return t[why]
+
+/#/ The rule of riscv64 reason `why` (the numbers of `rvk_no` in sbxcheck_rv.cf).
+fn sbr_of_rv(why: int) => int:
+    let t = [0, 1, 1, 2, 6, 3, 4, 5, 5, 5, 1]
     return t[why]

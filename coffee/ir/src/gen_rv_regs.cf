@@ -18,6 +18,13 @@ use * in gen_rv_call
 use * in gen_rv_isel
 use * in gen_rv_fun
 
+/#/ The base register of the bytes of value `x`: s0, or s11 (the shadow frame in the linear memory) for the aggregates and
+/#/ slots of sandbox code.
+fn gr_sb(g: &Gen, x: int) => int:
+    if g.a.acc.sbx && g.sh[x] == 1:
+        return rv_sbx_sh()
+    return tr_fp()
+
 /#/ reg = the value (a scalar, 8 bytes; narrower ones have meaningful low bytes only)
 fn gr_ld(g: &Gen, reg: int, f: &Fun, v: int) => void:
     let x = g_res(g, f, v)
@@ -37,9 +44,9 @@ fn gr_ld(g: &Gen, reg: int, f: &Fun, v: int) => void:
     elif k == int(Op.StrLit):
         rv_adr_sym(&g.a, reg, 1, g.sbase + g_so(g, f.aux[x]))
     elif k == int(Op.Slot):
-        rv_addi(&g.a, reg, tr_fp(), g.voff[x])
+        rv_addi(&g.a, reg, gr_sb(g, x), g.voff[x])
     else:
-        rv_ld(&g.a, reg, tr_fp(), g.voff[x], 8)
+        rv_ld(&g.a, reg, gr_sb(g, x), g.voff[x], 8)
 
 /#/ The register that holds `v` extended from its width: its own when it needs no extension, else `scratch`.
 fn gr_srcx(g: &Gen, f: &Fun, v: int, scratch: int, signed: bool) => int:
@@ -81,7 +88,7 @@ fn gr_fsrc(g: &Gen, f: &Fun, v: int, scratch: int) => int:
         gr_ld(g, tr_s0(), f, x)
         rv_fmv_to(&g.a, scratch, tr_s0(), single)
     else:
-        rv_fldst(&g.a, true, scratch, tr_fp(), g.voff[x], rsize_scalar(f.rep[x]))
+        rv_fldst(&g.a, true, scratch, gr_sb(g, x), g.voff[x], rsize_scalar(f.rep[x]))
     return scratch
 
 /#/ Where the float instruction `i` makes its result: its own register, else `scratch`.
@@ -96,7 +103,7 @@ fn gr_ffin(g: &Gen, f: &Fun, i: int, v: int) => void:
         if g.xhome[i] != v:
             rv_fmv_ff(&g.a, g.xhome[i], v)
     else:
-        rv_fldst(&g.a, false, v, tr_fp(), g.voff[i], rsize_scalar(f.rep[i]))
+        rv_fldst(&g.a, false, v, gr_sb(g, i), g.voff[i], rsize_scalar(f.rep[i]))
 
 /#/ Float register `d` = the float value `v`.
 fn gr_fmove(g: &Gen, f: &Fun, d: int, v: int) => void:
@@ -118,7 +125,7 @@ fn gr_st(g: &Gen, i: int, reg: int) => void:
     elif g.xhome[i] >= 0:
         rv_fmv_to(&g.a, g.xhome[i], reg, g.xsg[i] == 1)
     else:
-        rv_st(&g.a, tr_fp(), g.voff[i], reg, 8)
+        rv_st(&g.a, gr_sb(g, i), g.voff[i], reg, 8)
 
 /#/ For an aggregate value: the base register and displacement of its bytes (an undefined one
 /#/ reads from the start of the read-only data).
@@ -127,7 +134,7 @@ fn gr_ab_reg(g: &Gen, f: &Fun, v: int) => int:
     if f.op[x] == int(Op.Undef):
         rv_adr_sym(&g.a, tr_ind(), 1, 0)
         return tr_ind()
-    return tr_fp()
+    return gr_sb(g, x)
 
 fn gr_ab_disp(g: &Gen, f: &Fun, v: int) => int:
     let x = g_res(g, f, v)
@@ -169,7 +176,7 @@ fn gr_val_to(g: &Gen, f: &Fun, rs: &Reps, db: int, dd: int, v: int) => void:
 
 /#/ Gives every value its place; the size of the frame.
 fn gr_layout(g: &Gen, f: &Fun, rs: &Reps) => void:
-    layout_frame(g, f, rs, 16, false, 0)
+    layout_frame(g, f, rs, 16, false, 2000)
 
 /#/ The copies of edge `e` that are not independent, through registers: every argument into a temporary (t1 to t5, ft0, ft1), then
 /#/ the temporaries into the parameters. False (nothing emitted) when there are more than fit or an aggregate.
@@ -331,7 +338,7 @@ fn gr_edge_copy(g: &Gen, f: &Fun, rs: &Reps, e: int) => void:
             elif g.xhome[p] >= 0:
                 gr_fmove(g, f, g.xhome[p], f.pool[f.eargs[e] + k])
             else:
-                gr_val_to(g, f, rs, tr_fp(), g.voff[p], f.pool[f.eargs[e] + k])
+                gr_val_to(g, f, rs, gr_sb(g, p), g.voff[p], f.pool[f.eargs[e] + k])
             p = f.nx[p]
         return
     if gr_edge_moves(g, f, e):
@@ -352,7 +359,7 @@ fn gr_edge_copy(g: &Gen, f: &Fun, rs: &Reps, e: int) => void:
         elif g.xhome[p] >= 0:
             rv_fldst(&g.a, true, g.xhome[p], tr_fp(), g.tmp + at, rsize_scalar(f.rep[p]))
         else:
-            gr_copy_mem(g, tr_fp(), g.voff[p], tr_fp(), g.tmp + at, sz)
+            gr_copy_mem(g, gr_sb(g, p), g.voff[p], tr_fp(), g.tmp + at, sz)
         at = at + sz
         p = f.nx[p]
 
@@ -368,6 +375,9 @@ fn gr_alloc_regs(g: &Gen, f: &Fun, rs: &Reps) => void:
     if nd == 0:
         return
     let npool = tr_npool()
+    if g.a.acc.sbx:
+        /#/ s10 holds the start of the linear memory and s11 the shadow frame pointer of sandbox code
+        npool = npool - 2
     let order = lscan_order(g, nd)
     let regs: buf<int> = new_buf(int, npool)
     for r in 0..npool:

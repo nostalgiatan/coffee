@@ -230,6 +230,13 @@ fn sbx_heap_size() => int:
 fn sbx_header() => int:
     return 16
 
+/#/ The size of an import entry (and of the stubs of `read` and `write`) of sandbox code: the code that jumps through the
+/#/ slot in its second half, which the loader fills. 16 bytes, 32 on riscv64 (the jump takes three words).
+fn sbx_entry_stride() => int:
+    if target_arch == arch_riscv64():
+        return 32
+    return 16
+
 /#/ The bytes ff 25 02 00 00 00 of `jmp [rip+2]`.
 fn host_entry_x86(q: int) => int:
     if q == 0:
@@ -273,6 +280,8 @@ fn make_image_sbx(o: &Obj, a: &Asm) => Image:
     let sys_at = -1
     if sys_sym >= 0 && target_arch == arch_aarch64():
         sys_at = sbx_sys_a64(&im)
+    elif sys_sym >= 0 && target_arch == arch_riscv64():
+        sys_at = sbx_sys_rv(&im)
     elif sys_sym >= 0:
         while im.b.n % 16 != 0:
             im.b.put_byte(0)
@@ -365,7 +374,13 @@ fn make_image_sbx(o: &Obj, a: &Asm) => Image:
                 while im.b.n % 16 != 0:
                     im.b.put_byte(0)
             ent_of[k] = im.b.n
-            if target_arch == arch_aarch64():
+            if target_arch == arch_riscv64():
+                /#/ auipc t6, 0; ld t6, 16(t6); jalr x0, 0(t6); ebreak, then the slot
+                w32(&im.b, (31 << 7) | 23)
+                w32(&im.b, (16 << 20) | (31 << 15) | (3 << 12) | (31 << 7) | 3)
+                w32(&im.b, (31 << 15) | 103)
+                w32(&im.b, 1048691)
+            elif target_arch == arch_aarch64():
                 w32(&im.b, 1476395088)
                 w32(&im.b, 3592356352)
             else:
@@ -373,7 +388,7 @@ fn make_image_sbx(o: &Obj, a: &Asm) => Image:
                     im.b.put_byte(host_entry_x86(q))
                 im.b.put_byte(204)
                 im.b.put_byte(204)
-            for q in 0..8:
+            for q in 0..(sbx_entry_stride() // 2):
                 im.b.put_byte(0)
             ni = ni + 1
     for k in 0..im.nimp:
@@ -382,7 +397,7 @@ fn make_image_sbx(o: &Obj, a: &Asm) => Image:
         if ent_of[k] >= 0:
             for q in 0..im.nimp:
                 if im.imp_name[q] == o.s_name[k]:
-                    im.imp_slot[q] = ent_of[k] + 8
+                    im.imp_slot[q] = ent_of[k] + sbx_entry_stride() // 2
     for q in 0..sbx_header():
         im.lin.put_byte(0)
     im.lin.put_all(&o.ro)
@@ -397,7 +412,7 @@ fn make_image_sbx(o: &Obj, a: &Asm) => Image:
             im.err = 1
             return im
         let d = 0
-        if ty == r_abs32() || ty == 264 || ty == 266:
+        if ty == r_abs32() || ty == 264 || ty == 266 || ty == 26 || ty == 27:
             let target = 0 - 1
             if sym == 1:
                 target = ro_lin
@@ -412,6 +427,16 @@ fn make_image_sbx(o: &Obj, a: &Asm) => Image:
                 im.err = 2
                 return im
             d = target + a.rl_add[r]
+            if ty == 26 || ty == 27:
+                /#/ lui / addi of riscv64: the offset in the 20 bits of the lui, the low 12 of the addi
+                let w = im.b.b[at] | (im.b.b[at + 1] << 8) | (im.b.b[at + 2] << 16) | (im.b.b[at + 3] << 24)
+                if ty == 26:
+                    w = w | ((((d + 2048) >> 12) & 1048575) << 12)
+                else:
+                    w = w | ((d & 4095) << 20)
+                for q in 0..4:
+                    im.b.b[at + q] = (w >> (8 * q)) & 255
+                continue
             if ty == 264 || ty == 266:
                 /#/ movz / movk of aarch64: 16 bits of the offset in bits 5 to 20
                 let w = im.b.b[at] | (im.b.b[at + 1] << 8) | (im.b.b[at + 2] << 16) | (im.b.b[at + 3] << 24)
@@ -435,6 +460,19 @@ fn make_image_sbx(o: &Obj, a: &Asm) => Image:
                 return im
             else:
                 d = o.s_def[tk] + a.rl_add[r] - at
+            if target_arch == arch_riscv64():
+                /#/ auipc / jalr of a call: the distance from the auipc
+                if ty != 19 || at + 8 > a.c.n:
+                    im.err = 1
+                    return im
+                let w1 = im.b.b[at] | (im.b.b[at + 1] << 8) | (im.b.b[at + 2] << 16) | (im.b.b[at + 3] << 24)
+                let w2 = im.b.b[at + 4] | (im.b.b[at + 5] << 8) | (im.b.b[at + 6] << 16) | (im.b.b[at + 7] << 24)
+                w1 = w1 | ((((d + 2048) >> 12) & 1048575) << 12)
+                w2 = w2 | ((d & 4095) << 20)
+                for q in 0..4:
+                    im.b.b[at + q] = (w1 >> (8 * q)) & 255
+                    im.b.b[at + 4 + q] = (w2 >> (8 * q)) & 255
+                continue
             if target_arch == arch_aarch64():
                 if ty != 283 && ty != 282:
                     im.err = 1
@@ -521,6 +559,89 @@ fn sbx_sys_a64(im: &Image) => int:
     im.b.put_all(&sa.c)
     im.sys_at = sys_at
     im.hc_at = sys_at + sa.lab[wr] + 8
+    /#/ the exit stub follows at once: the code above falls into it
+    im.exit_at = im.b.n
+    while im.b.n < im.exit_at + 128:
+        im.b.put_byte(0)
+    return sys_at
+
+/#/ The system function of riscv64 sandbox code, the counterpart of `sbx_sys_a64`: called as `cf_syscall(n, a, b, c, ..)`
+/#/ (n in a0, the arguments in a1 to a6), it sends `exit` and `exit_group` to the exit stub, `mmap` takes the next bytes of the
+/#/ heap (the header is at s10 + `sbx_lin_at()`), `write` and `read` jump through slots the loader fills with the host stubs;
+/#/ the rest fail (ENOSYS). The code is the loader's, not the sandbox's: it is not verified.
+fn sbx_sys_rv(im: &Image) => int:
+    while im.b.n % 16 != 0:
+        im.b.put_byte(0)
+    let sys_at = im.b.n
+    let sa = new_asm()
+    sa.acc.sbx = false
+    sa.begin_fun()
+    let ex = sa.new_label()
+    let mm = sa.new_label()
+    let nomem = sa.new_label()
+    let wr = sa.new_label()
+    let rd = sa.new_label()
+    for k in 0..4:
+        let nr = 0
+        let lab = ex
+        if k == 0:
+            nr = 93
+        elif k == 1:
+            nr = 94
+        elif k == 2:
+            nr = 222
+            lab = mm
+        elif k == 3:
+            nr = 64
+            lab = wr
+        rv_li(&sa, 5, nr)
+        rv_bcc(&sa, 0, 10, 5, lab)
+    rv_li(&sa, 5, 63)
+    rv_bcc(&sa, 0, 10, 5, rd)
+    rv_li(&sa, 10, 0 - 38)
+    rv_ret(&sa)
+    /#/ mmap(0, len, ..): the next len bytes of the heap, rounded up to a page, or ENOMEM
+    sa.bind(mm)
+    rv_li(&sa, 5, sbx_lin_at())
+    rv_add(&sa, 5, 5, rv_sbx_base())
+    rv_ld(&sa, 6, 5, 0, 8)
+    rv_ld(&sa, 7, 5, 8, 8)
+    rv_li(&sa, 28, 4095)
+    rv_add(&sa, 12, 12, 28)
+    rv_li(&sa, 28, 0 - 4096)
+    rv_and(&sa, 12, 12, 28)
+    rv_mov_rr(&sa, 29, 6)
+    rv_bcc(&sa, 6, 7, 12, nomem)
+    rv_add(&sa, 6, 6, 12)
+    rv_bcc(&sa, 6, 7, 6, nomem)
+    rv_st(&sa, 5, 0, 6, 8)
+    rv_mov_rr(&sa, 10, 29)
+    rv_ret(&sa)
+    sa.bind(nomem)
+    rv_li(&sa, 10, 0 - 12)
+    rv_ret(&sa)
+    /#/ read and write: `auipc t6, 0; ld t6, 16(t6); jalr x0, 0(t6)`, a trap word, the slot (8-aligned) and padding
+    for t in 0..2:
+        while sa.c.n % 8 != 0:
+            rv_brk(&sa)
+        if t == 0:
+            sa.bind(wr)
+        else:
+            sa.bind(rd)
+        rv_w(&sa, (31 << 7) | 23)
+        rv_w(&sa, (16 << 20) | (31 << 15) | (3 << 12) | (31 << 7) | 3)
+        rv_w(&sa, (31 << 15) | 103)
+        rv_brk(&sa)
+        for q in 0..16:
+            sa.c.put_byte(0)
+    sa.bind(ex)
+    rv_mov_rr(&sa, 10, 11)
+    if !rv_end_fun(&sa):
+        im.err = 1
+        return sys_at
+    im.b.put_all(&sa.c)
+    im.sys_at = sys_at
+    im.hc_at = sys_at + sa.lab[wr] + 16
     /#/ the exit stub follows at once: the code above falls into it
     im.exit_at = im.b.n
     while im.b.n < im.exit_at + 128:

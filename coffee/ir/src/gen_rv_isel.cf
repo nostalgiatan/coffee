@@ -397,7 +397,7 @@ fn gr_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => vo
         let sb = gr_ab_reg(g, f, f.a[i])
         let sd = gr_ab_disp(g, f, f.a[i]) + eo
         if r >= rp_first_agg():
-            gr_copy_mem(g, tr_fp(), g.voff[i], sb, sd, rsize(rs, r))
+            gr_copy_mem(g, gr_sb(g, i), g.voff[i], sb, sd, rsize(rs, r))
         elif !g_is_int_class(g, r):
             let d = gr_fdst(g, i, 0)
             rv_fldst(&g.a, true, d, sb, sd, rsize(rs, r))
@@ -410,19 +410,19 @@ fn gr_gen_inst(g: &Gen, f: &Fun, rs: &Reps, sy: &Names, i: int, next: int) => vo
     if op == int(Op.Insert):
         let eo = elem_off(rs, r, f.aux[i])
         let sb = gr_ab_reg(g, f, f.a[i])
-        gr_copy_mem(g, tr_fp(), g.voff[i], sb, gr_ab_disp(g, f, f.a[i]), rsize(rs, r))
+        gr_copy_mem(g, gr_sb(g, i), g.voff[i], sb, gr_ab_disp(g, f, f.a[i]), rsize(rs, r))
         let er = f.rep[g_res(g, f, f.b[i])]
         if er >= rp_first_agg():
             let eb = gr_ab_reg(g, f, f.b[i])
-            gr_copy_mem(g, tr_fp(), g.voff[i] + eo, eb, gr_ab_disp(g, f, f.b[i]), rsize(rs, er))
+            gr_copy_mem(g, gr_sb(g, i), g.voff[i] + eo, eb, gr_ab_disp(g, f, f.b[i]), rsize(rs, er))
         else:
             let rv = gr_src(g, f, f.b[i], tr_s0())
-            rv_st(&g.a, tr_fp(), g.voff[i] + eo, rv, rsize(rs, er))
+            rv_st(&g.a, gr_sb(g, i), g.voff[i] + eo, rv, rsize(rs, er))
         return
     if op == int(Op.Load):
         if r >= rp_first_agg():
             gr_ld(g, tr_a0(), f, f.a[i])
-            gr_copy_mem(g, tr_fp(), g.voff[i], tr_a0(), 0, rsize(rs, r))
+            gr_copy_mem(g, gr_sb(g, i), g.voff[i], tr_a0(), 0, rsize(rs, r))
             return
         let x = g_res(g, f, f.a[i])
         if !g_is_int_class(g, r):

@@ -147,7 +147,7 @@ class Access: kind, width, base, index, scale, disp, pfx
 |---|---|---|---|
 | 1 | legalize、目标描述、运行时分离、`--target=` | | 已做 |
 | 2 | x86 访存口 `Asm.mem`;沙盒寄存器角色成数据 | | 已做 |
-| 3 | aarch64 后端里程碑 1 到 3,cfjit 在 aarch64 | | 已做(沙盒加载器未移植) |
+| 3 | aarch64 后端里程碑 1 到 3,cfjit 在 aarch64 | | 已做 |
 | 4 | 两边**字段名统一**:`ta_*` 与 `tg_*` 合一,共用代码读同一组名字 | 3 | 待做(共用代码目前不读目标常数,只在第 6 步需要;先不改) |
 | 5 | 抽 `regalloc.cf`:与指令集无关的辅助函数搬家;`layout` 合一(`layout_frame`) | | **已做**,两个目标输出逐字节不变 |
 | 6 | 线性扫描骨架合一(寄存器类) | 5 | 待做 |
@@ -160,6 +160,6 @@ class Access: kind, width, base, index, scale, disp, pfx
 | 13 | 删除 `gs` 模式 | 10 的实测 | 待做 |
 | 14 | 宿主调用跳板 | 10 | 完成 |
 | 15 | PE 对象写入器、Win64 调用约定、`os_windows_x86_64.cf`、Windows 加载器 | 5 到 7 | 编译器一侧完成(见 [Windows 目标](../reference/windows-backend.md));展开信息、加载器、运行时待做 |
-| 16 | riscv64 | 5 到 9 | 编译器一侧完成(汇编器、代码生成、链接器的重定位和 `_start`;qemu-riscv64 下 191 个用例、11 个程序、各阶段测试通过,编译器自己编成 riscv64 后能逐字节复现自身);沙盒/JIT 加载器待做 |
+| 16 | riscv64 | 5 到 9 | 编译器一侧完成(汇编器、代码生成、链接器的重定位和 `_start`;qemu-riscv64 下 191 个用例、11 个程序、各阶段测试通过,编译器自己编成 riscv64 后能逐字节复现自身);沙盒加载器和验证器已做(`sbxcheck_rv.cf`、`sandbox_rv.cf`、`host_tramp_rv`,`cfjit --target=riscv64 --sandbox`);非沙盒的 JIT 加载(外部函数桩、位置无关的地址)不做,riscv64 的程序用 `cfld` 静态链接 |
 
 门槛脚本:`ir/tools/corpus-x86.sh`、`ir/tools/corpus-a64.sh`(同一棵树上用两个编译器各跑一遍,比较 `.sha`)。第 6 步(线性扫描骨架合一)是剩下的整理里最难的一步,因为 x86 的调用者保存约束要表驱动化。9 以后有语义改动,每步要单独量。
