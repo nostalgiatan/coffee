@@ -54,3 +54,31 @@ fn copy_txt(t: &Txt) => Txt:
     let r = new_txt()
     r.put_all(t)
     return r
+
+/#/ The machine this program runs on, from its own ELF header: 62 x86-64, 183 aarch64, 243 riscv64; 0 when unknown.
+fn host_machine() => int:
+    let fd = open("/proc/self/exe", 0, 0 as object)
+    if fd < 0:
+        return 0
+    let head: buf<i8> = new_buf(i8, 32)
+    let got = read(fd, buf_ptr(head), 32)
+    close(fd)
+    if got < 20 || int(head[0]) != 127 || int(head[1]) != 69:
+        return 0
+    return (int(head[18]) & 255) + (int(head[19]) & 255) * 256
+
+/#/ The directory the process was started in (`PWD` of its environment).
+fn pwd_of() => Txt:
+    let env = read_file(&txt_of("/proc/self/environ"))
+    let w = new_txt()
+    let out = new_txt()
+    for i in 0..env.n + 1:
+        if i == env.n || env.b[i] == 0:
+            if w.n > 4 && w.b[0] == int('P') && w.b[1] == int('W') && w.b[2] == int('D') && w.b[3] == int('='):
+                out = new_txt()
+                for k in 4..w.n:
+                    out.put_byte(w.b[k])
+            w = new_txt()
+        else:
+            w.put_byte(env.b[i])
+    return out

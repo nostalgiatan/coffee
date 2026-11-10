@@ -160,6 +160,9 @@ class Linker:
     str_so: Col
     str_sym: Col
     nneed: int
+    /#/ directories for DT_RUNPATH (newline separated in, colon separated in the file), and its place in the strings
+    rpath: Txt
+    str_rpath: int
     d_stub: int
     d_interp: int
     d_hash: int
@@ -883,6 +886,16 @@ class Linker:
                     self.nneed = self.nneed + 1
                 lo = i + 1
                 lib = lib + 1
+        self.str_rpath = 0
+        if self.rpath.n > 0:
+            self.str_rpath = self.dyn_str.n
+            for k in 0..self.rpath.n:
+                if self.rpath.b[k] == 10:
+                    if k + 1 < self.rpath.n:
+                        self.dyn_str.put_byte(58)
+                else:
+                    self.dyn_str.put_byte(self.rpath.b[k])
+            self.dyn_str.put_byte(0)
         for k in 0..ndyn:
             self.str_sym.push(self.dyn_str.n)
             let w = self.name_of(self.dyn_ids.b[k])
@@ -904,7 +917,7 @@ class Linker:
         self.d_got = d
         d = d + 8 * self.ngot
         self.d_dynamic = d
-        d = d + 16 * (self.nneed + 11)
+        d = d + 16 * (self.nneed + 12)
         self.gsize[2] = d
         if self.galign[2] < 8:
             self.galign[2] = 8
@@ -1082,4 +1095,4 @@ class Linker:
         return 1
 
 fn new_linker() => Linker:
-    return Linker { blob: new_txt(), errs: 0, nin: 0, in_sec0: new_col(), in_sym0: new_col(), sc_type: new_col(), sc_flags: new_col(), sc_off: new_col(), sc_size: new_col(), sc_align: new_col(), sc_grp: new_col(), sc_goff: new_col(), sc_rva: new_col(), y_sec: new_col(), y_val: new_col(), y_size: new_col(), y_bind: new_col(), y_type: new_col(), y_nm: new_col(), y_rva: new_col(), y_got: new_col(), r_sec: new_col(), r_off: new_col(), r_type: new_col(), r_sym: new_col(), r_add: new_col(), pool: new_txt(), nm_off: new_col(), ht: new_buf(int, 64), g_def: new_col(), g_how: new_col(), g_need: new_col(), pulled: new_col(), gsize: new_buf(int, 4), galign: new_buf(int, 4), gbase: new_buf(int, 4), ngot: 0, got_rva: 0, sg_off: new_col(), sg_rva: new_col(), sg_fsz: new_col(), sg_msz: new_col(), sg_flags: new_col(), image_size: 0, gc_on: false, quiet: false, syms: false, dbg: new_txt(), nshdr: 0, live: new_buf(int, 1), dyn_on: false, g_dyn: new_col(), dyn_ix: new_col(), dyn_ids: new_col(), g_dty: new_col(), g_dsz: new_col(), g_dval: new_col(), dyn_alias: new_col(), cp_off: new_col(), so_names: new_txt(), so_used: new_col(), so_count: 0, dyn_str: new_txt(), str_so: new_col(), str_sym: new_col(), nneed: 0, d_stub: 0, d_interp: 0, d_hash: 0, d_sym: 0, d_str: 0, d_rela: 0, d_dynamic: 0, d_got: 0 }
+    return Linker { blob: new_txt(), errs: 0, nin: 0, in_sec0: new_col(), in_sym0: new_col(), sc_type: new_col(), sc_flags: new_col(), sc_off: new_col(), sc_size: new_col(), sc_align: new_col(), sc_grp: new_col(), sc_goff: new_col(), sc_rva: new_col(), y_sec: new_col(), y_val: new_col(), y_size: new_col(), y_bind: new_col(), y_type: new_col(), y_nm: new_col(), y_rva: new_col(), y_got: new_col(), r_sec: new_col(), r_off: new_col(), r_type: new_col(), r_sym: new_col(), r_add: new_col(), pool: new_txt(), nm_off: new_col(), ht: new_buf(int, 64), g_def: new_col(), g_how: new_col(), g_need: new_col(), pulled: new_col(), gsize: new_buf(int, 4), galign: new_buf(int, 4), gbase: new_buf(int, 4), ngot: 0, got_rva: 0, sg_off: new_col(), sg_rva: new_col(), sg_fsz: new_col(), sg_msz: new_col(), sg_flags: new_col(), image_size: 0, gc_on: false, quiet: false, syms: false, dbg: new_txt(), nshdr: 0, live: new_buf(int, 1), dyn_on: false, g_dyn: new_col(), dyn_ix: new_col(), dyn_ids: new_col(), g_dty: new_col(), g_dsz: new_col(), g_dval: new_col(), dyn_alias: new_col(), cp_off: new_col(), so_names: new_txt(), so_used: new_col(), so_count: 0, dyn_str: new_txt(), str_so: new_col(), str_sym: new_col(), nneed: 0, rpath: new_txt(), str_rpath: 0, d_stub: 0, d_interp: 0, d_hash: 0, d_sym: 0, d_str: 0, d_rela: 0, d_dynamic: 0, d_got: 0 }

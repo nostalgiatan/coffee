@@ -1,6 +1,6 @@
 # Coffee 文档
 
-Coffee 是带 Python 式缩进语法的静态类型语言,有双向的 C 互操作。编译器是自举的:`coffee/` 目录里用 Coffee 写成,x86-64 机器码后端,用系统的 `cc` 链接。Rust 写的第一代已经归档(git 标签 `rust-stage0-final`)。
+Coffee 是带 Python 式缩进语法的静态类型语言,有双向的 C 互操作。编译器是自举的:`coffee/` 目录里用 Coffee 写成,有 x86-64、aarch64、riscv64 三个机器码后端,自带链接器(`cc` 只是后备),另有可沙盒的 JIT。Rust 写的第一代已经归档(git 标签 `rust-stage0-final`)。
 
 文档按 [Diátaxis](https://diataxis.fr) 分成四类。
 
@@ -44,6 +44,7 @@ Coffee 是带 Python 式缩进语法的静态类型语言,有双向的 C 互操�
 - [所有权与释放怎么落到代码上](explanation/ownership-and-drop.md)
 - [IR 的设计](explanation/ir-design.md)
 - [机器码后端的取舍](explanation/backend-choices.md)
+- [现状:缺什么、有什么问题、有哪些局限](explanation/status.md)
 
 ## 存档
 

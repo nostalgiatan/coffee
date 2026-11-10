@@ -15,7 +15,7 @@ coffee2 -c header.h [-o output.cfc]
 | `-o output` | 输出路径。省略时见下表。 |
 | `-I dir` | 增加一个模块搜索目录和 `.cfc` 搜索目录,可重复。 |
 | `--pic` | 目标文件给共享库用:不是 `c fn` 的符号都是隐藏可见性,链接器因此可以在共享对象里解析对它们的引用。默认不开,开了才改目标文件。 |
-| `--target=名字` | 为哪台机器生成代码。`x86_64-linux`(默认,可写成 `x86_64`),`aarch64-linux`(可写成 `aarch64`,见 [aarch64 后端](aarch64-backend.md):`--emit-obj` 得到目标文件,`--static` 链接出可执行文件,在 qemu-aarch64 下运行),`x86_64-windows`(COFF 对象、Win64 调用约定,由 MinGW-w64 链接,见 [Windows 目标](windows-backend.md)),`riscv64-linux`(可写成 `riscv64`,见 [riscv64 后端](riscv64-backend.md):同 aarch64,在 qemu-riscv64 下运行;`riscv64-linux-rva22` 用 Zba、Zbb,`riscv64-linux-rva23` 再加向量扩展),或 `x86_64-linux-ms`(Win64 约定放进 ELF,测试用);别的名字报未知目标。 |
+| `--target=名字` | 为哪台机器生成代码。默认是编译器运行所在的机器(读自己的 ELF 头:x86-64、aarch64 或 riscv64 的 Linux)。`x86_64-linux`(可写成 `x86_64`),`aarch64-linux`(可写成 `aarch64`,见 [aarch64 后端](aarch64-backend.md):`--emit-obj` 得到目标文件,`--static` 链接出可执行文件,在 qemu-aarch64 下运行),`x86_64-windows`(COFF 对象、Win64 调用约定,由 MinGW-w64 链接,见 [Windows 目标](windows-backend.md)),`riscv64-linux`(可写成 `riscv64`,见 [riscv64 后端](riscv64-backend.md):同 aarch64,在 qemu-riscv64 下运行;`riscv64-linux-rva22` 用 Zba、Zbb,`riscv64-linux-rva23` 再加向量扩展),或 `x86_64-linux-ms`(Win64 约定放进 ELF,测试用);别的名字报未知目标。 |
 | `--sandbox` | (仅 `aarch64-linux`)生成沙箱代码:访存只经 `[x28, w, uxtw]`,代码过 aarch64 验证器,见 [aarch64 后端](aarch64-backend.md)。 |
 | `-O0` | 关闭 IR 优化器。 |
 | `-O1` `-O2` `-O3` | 打开 IR 优化器。默认 `-O1`。 |
@@ -28,6 +28,7 @@ coffee2 -c header.h [-o output.cfc]
 | `--incremental dir` | 每个源文件一个 `.o`,放在 `dir`,没变的复用;再链接。前端仍检查整个程序。文件的记号(注释和空行不算)、别的文件的接口(函数头、类字段和方法头、枚举、别名、模块级 `let`、泛型整体)、编译器、`.cfc`、优化级别任何一样变了,才重编。这个模式下优化器不跨文件内联。 |
 | `-j n` | 增量构建里同时编译 `n` 个文件(进程,共享前端的结果);默认是在线的处理器数,最多 16。产物和 `-j 1` 逐字节相同。 |
 | `--dynamic` | 强制用 `cc` 链接。 |
+| `--no-cc` | 不用 `cc`:x86-64 Linux 上由 `cfld` 动态链接(`PT_INTERP`、`DT_NEEDED`、导入桩和 GOT、`BIND_NOW`、复制重定位),可用 glibc 和 `.so`。机器上没有 `cc` 时不加这个选项也自动如此。 |
 | `--stats` | 编译后在标准输出打印一张表:代码量最大的 30 个函数,每个函数的字节数、IR 指令数、基本块数、循环数、load/store/调用/分配数、陷阱数(越界和除零检查)、放进栈帧的值的个数、保存的寄存器数、栈帧大小,最后是合计。只统计程序本身,不含链接进来的运行库。`--incremental` 下不可用。 |
 | `--lint-perf` | 编译后在标准输出打印性能和无意义行为的发现,每条是 `文件:行: perf\|pointless: in '函数': 说明`:循环里分配或 memcpy(每次迭代复制字符串/聚合)、循环里除以循环不变量、同一地址紧接着 load 两次、只写不读的变量、分配后只释放没用过的块、与 0 相加或乘 1、值与自身比较、栈帧里的值超过 16 个(寄存器压力)。用法见 [如何找热点和无意义的代码](../how-to/find-hot-spots.md)。 |
 | `-g` | 输出文件保留符号表(函数和数据的名字、大小、地址)和节头,gdb、perf 能显示名字,并生成 DWARF(版本 4):每个函数一个子程序、一段行号序列、`.debug_frame` 调用帧信息(所以断在函数第一条指令也能 `bt`),gdb 能按源码行下断点、单步、`bt` 显示 `文件:行`,valgrind/callgrind 的报告里有 `文件:行`。文件名是各 `.cf` 源文件(相对路径加编译时的 `PWD`),不是展开后的文本。变量和类型:每个参数和局部变量放在栈帧里,`info args`、`info locals`、`print x`、`print *p`、`ptype` 可用(任何 `-O` 级别都一样,代价是变量不再进寄存器,所以 `-g` 的代码比不带 `-g` 的慢);类的变量显示为指向结构体的指针,`&类` 与类变量是同一个指针,`str` 显示为字符串,`buf`/切片/元组显示为结构体,带 payload 的 enum 显示为 `tag` 加各变体的字段(只有 `tag` 所指的变体有值)。`--static`:DWARF 由自带的链接器生成。`--dynamic`(`cc` 链接):链接后用可执行文件自己的符号表补 DWARF,有变量。`--incremental`:每个文件的目标文件带行号表,链接后补 DWARF,只有行号和回溯,没有变量(各文件分开编译,类型编号不一致)。JIT 见 `cfjit --gdb`。不给 `-g` 时输出没有符号表也没有节头(`--static`),用 `cc` 链接时加 `-s`。 |
@@ -63,7 +64,7 @@ libc 和 libm 的签名内置在编译器里。其他 C 库要有 `<库名>.cfc`
 - 只在 Linux 和 Android 上能用:参数从 `/proc/self/cmdline` 读取。
 - 机器码后端只支持 x86-64。
 - 诊断只有错误码和展开后源码的行号,没有文件名。
-- 链接默认调用 `cc`;`--static` 用自带的链接器。
+- 链接:只用内置 C 库的程序,以及 C 库以 `<库>.o`/`lib<库>.a` 放在 `.cfc` 旁边的程序,由自带的链接器静态链接(三个目标);其余默认调用 `cc`,x86-64 上没有 `cc` 或加 `--no-cc` 时由自带链接器动态链接。
 
 ## 相关
 

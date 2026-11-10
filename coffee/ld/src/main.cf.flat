@@ -1,0 +1,2969 @@
+/#/ `cfld`: links x86-64 ELF objects and archives into a static executable, without `cc`.
+/#/
+/#/     cfld [-g] [-o out] [-L dir]... file.o|file.a|-lname ...
+/#/
+/#/ Inputs are read in the order given (an archive only contributes the members that define
+/#/ something still needed). If no input defines `_start`, one that calls `main` is added.
+/#/ The executable: the linked image cut into the pieces of an ELF64 file, plus the headers.
+/#/
+/#/ `link_exe` is the whole link once the inputs are added; the result is the bytes of the file,
+/#/ or an empty text after an error was reported.
+/#/ The static linker, in two halves.
+/#/
+/#/ The first reads relocatable objects (`add_object`) and archives (`add_archive`), joins the
+/#/ sections into one memory image (`layout`, `build_image`) and resolves symbols. The second,
+/#/ `apply_relocs`, patches that image for a load address. It does not know about files, so a JIT
+/#/ can use it to relocate the image in memory; `write_exe` (exe.cf) puts the same image in an
+/#/ ELF executable.
+/#/
+/#/ Everything is flat columns: sections and symbols of all inputs are numbered one after the
+/#/ other (an input's first number is in `in_sec0` / `in_sym0`), so a symbol or section number
+/#/ alone says which input it came from.
+/#/
+/#/ Image addresses are `rva`s, relative to the load address (`base`); an executable is loaded
+/#/ at `0x400000`.
+/#/ Small helpers for the linker: a growable column of integers, and little-endian reads and
+/#/ writes on the bytes of a `Txt`.
+/#/ Text built a byte at a time: the buffer the printer and the emitter write to.
+/#/ The operations of the IR and the one table that defines them. The printer, the verifier,
+/#/ the folder and the emitter ask this table; none of them lists operations on its own.
+
+enum Op:
+    Param
+    Const
+    StrLit
+    FnAddr
+    Undef
+    Add
+    Sub
+    Mul
+    SDiv
+    UDiv
+    SRem
+    URem
+    And
+    Or
+    Xor
+    Shl
+    AShr
+    LShr
+    Neg
+    Not
+    FAdd
+    FSub
+    FMul
+    FDiv
+    FRem
+    FNeg
+    Cmp
+    FCmp
+    Trunc
+    SExt
+    ZExt
+    FpToSi
+    FpToUi
+    SiToFp
+    UiToFp
+    FpExt
+    FpTrunc
+    Bitcast
+    PtrToInt
+    IntToPtr
+    Extract
+    Insert
+    Slot
+    Load
+    Store
+    Field
+    Index
+    Call
+    CCall
+    CallI
+    Alloc
+    Free
+    Drop
+    Clone
+    OwnMove
+    Br
+    CondBr
+    Switch
+    Ret
+    Unreachable
+    VLoop
+    SMulHi
+    UMulHi
+
+/#/ Comparison predicates; the signedness of an integer compare is in the predicate.
+enum Pr:
+    Eq
+    Ne
+    SLt
+    SLe
+    SGt
+    SGe
+    ULt
+    ULe
+    UGt
+    UGe
+    OEq
+    ONe
+    OLt
+    OLe
+    OGt
+    OGe
+
+/#/ Properties of an operation, as bits.
+fn f_pure() => int:
+    return 1
+
+fn f_comm() => int:
+    return 2
+
+fn f_reads() => int:
+    return 4
+
+fn f_writes() => int:
+    return 8
+
+fn f_term() => int:
+    return 16
+
+fn f_consumes() => int:
+    return 32
+
+fn f_trap() => int:
+    return 64
+
+fn f_allocs() => int:
+    return 128
+
+/#/ Byte `i` of a string.
+fn ch(src: &str, i: int) => int:
+    if i < 0 || i >= len(src):
+        return 0
+    return int(src[i])
+
+/#/ Operand count of an operation whose number of operands varies (calls).
+fn var_args() => int:
+    return -1
+
+class OpTab:
+    pool: buf<int>
+    pool_n: int
+    off: buf<int>
+    size: buf<int>
+    nargs: buf<int>
+    flags: buf<int>
+    n: int
+
+    fn def(self, name: &str, nargs: int, flags: int) => void:
+        if self.n >= len(self.off):
+            let cap = (self.n + 1) * 2
+            self.off = buf_resize(self.off, cap)
+            self.size = buf_resize(self.size, cap)
+            self.nargs = buf_resize(self.nargs, cap)
+            self.flags = buf_resize(self.flags, cap)
+        self.off[self.n] = self.pool_n
+        self.size[self.n] = len(name)
+        self.nargs[self.n] = nargs
+        self.flags[self.n] = flags
+        for i in 0..len(name):
+            if self.pool_n >= len(self.pool):
+                self.pool = buf_resize(self.pool, (self.pool_n + 1) * 2)
+            self.pool[self.pool_n] = ch(name, i)
+            self.pool_n = self.pool_n + 1
+        self.n = self.n + 1
+
+    fn has(self, op: int, flag: int) => bool:
+        return (self.flags[op] & flag) != 0
+
+/#/ The table, one row per `Op` in the order of the enum.
+fn new_optab() => OpTab:
+    let t = OpTab { pool: new_buf(int, 256), pool_n: 0, off: new_buf(int, 64), size: new_buf(int, 64), nargs: new_buf(int, 64), flags: new_buf(int, 64), n: 0 }
+    let p = f_pure()
+    let c = f_pure() | f_comm()
+    let pt = f_pure() | f_trap()
+    t.def("param", 0, p)
+    t.def("const", 0, p)
+    t.def("str.lit", 0, p)
+    t.def("fn.addr", 0, p)
+    t.def("undef", 0, p)
+    t.def("add", 2, c)
+    t.def("sub", 2, p)
+    t.def("mul", 2, c)
+    t.def("sdiv", 2, pt)
+    t.def("udiv", 2, pt)
+    t.def("srem", 2, pt)
+    t.def("urem", 2, pt)
+    t.def("and", 2, c)
+    t.def("or", 2, c)
+    t.def("xor", 2, c)
+    t.def("shl", 2, p)
+    t.def("ashr", 2, p)
+    t.def("lshr", 2, p)
+    t.def("neg", 1, p)
+    t.def("not", 1, p)
+    t.def("fadd", 2, c)
+    t.def("fsub", 2, p)
+    t.def("fmul", 2, c)
+    t.def("fdiv", 2, p)
+    t.def("frem", 2, p)
+    t.def("fneg", 1, p)
+    t.def("cmp", 2, p)
+    t.def("fcmp", 2, p)
+    t.def("trunc", 1, p)
+    t.def("sext", 1, p)
+    t.def("zext", 1, p)
+    t.def("fptosi", 1, p)
+    t.def("fptoui", 1, p)
+    t.def("sitofp", 1, p)
+    t.def("uitofp", 1, p)
+    t.def("fpext", 1, p)
+    t.def("fptrunc", 1, p)
+    t.def("bitcast", 1, p)
+    t.def("ptrtoint", 1, p)
+    t.def("inttoptr", 1, p)
+    t.def("extract", 1, p)
+    t.def("insert", 2, p)
+    t.def("slot", 0, f_allocs())
+    t.def("load", 1, f_reads())
+    t.def("store", 2, f_writes())
+    t.def("field", 1, p)
+    t.def("index", 2, p)
+    t.def("call", var_args(), f_reads() | f_writes() | f_allocs())
+    t.def("ccall", var_args(), f_reads() | f_writes() | f_allocs())
+    t.def("calli", var_args(), f_reads() | f_writes() | f_allocs())
+    t.def("alloc", 0, f_allocs())
+    t.def("free", 1, f_writes() | f_consumes())
+    t.def("drop", 1, f_writes() | f_consumes())
+    t.def("clone", 1, f_reads() | f_allocs())
+    t.def("own.move", 1, f_consumes())
+    t.def("br", 0, f_term())
+    t.def("condbr", 1, f_term())
+    t.def("switch", 1, f_term())
+    t.def("ret", 1, f_term())
+    t.def("unreachable", 0, f_term())
+    /#/ The vector loop of `vectorize`: arguments as for a call; see `gen_vloop`.
+    t.def("vloop", var_args(), f_reads() | f_writes())
+    /#/ The high 64 bits of the signed 128-bit product; made by `legalize` for a division by a constant.
+    t.def("smulhi", 2, p)
+    return t
+
+/#/ Output that needs no C library beyond `write`: every stage prints with these.
+use write in libc of c
+
+/#/ Writes `s` to standard output, at once (no buffering).
+fn say(s: str) => void:
+    write(1, s as object, len(s))
+
+/#/ Writes the byte `c` to standard output.
+fn say_byte(c: int) => void:
+    let b: buf<i8> = new_buf(i8, 1)
+    b[0] = i8(c)
+    write(1, buf_ptr(b), 1)
+
+use write, open, close in libc of c
+
+class Txt:
+    b: buf<int>
+    n: int
+
+    fn put_byte(self, c: int) => void:
+        if self.n >= len(self.b):
+            self.b = buf_resize(self.b, (self.n + 1) * 2)
+        self.b[self.n] = c
+        self.n = self.n + 1
+
+    fn put(self, s: &str) => void:
+        for i in 0..len(s):
+            self.put_byte(ch(s, i))
+
+    fn clear(self) => void:
+        self.n = 0
+
+    fn put_all(self, w: &Txt) => void:
+        if self.n + w.n > len(self.b):
+            self.b = buf_resize(self.b, (self.n + w.n) * 2)
+        for i in 0..w.n:
+            self.b[self.n + i] = w.b[i]
+        self.n = self.n + w.n
+
+    fn put_int(self, v: int) => void:
+        if v < 0 - 9223372036854775807:
+            /#/ the smallest int has no negation
+            self.put_byte('-')
+            self.put_int(922337203685477580)
+            self.put_byte('8')
+        elif v < 0:
+            self.put_byte('-')
+            self.put_int(0 - v)
+        elif v < 10:
+            self.put_byte('0' + v)
+        else:
+            self.put_int(v // 10)
+            self.put_byte('0' + v % 10)
+
+    /#/ `v` (not negative) in lower-case hexadecimal.
+    fn put_hex(self, v: int) => void:
+        if v >= 16:
+            self.put_hex(v >> 4)
+        let d = v & 15
+        if d < 10:
+            self.put_byte('0' + d)
+        else:
+            self.put_byte('a' + d - 10)
+
+    /#/ Is the text the same as `o`?
+    fn same(self, o: &Txt) => bool:
+        if self.n != o.n:
+            return false
+        for i in 0..self.n:
+            if self.b[i] != o.b[i]:
+                return false
+        return true
+
+    /#/ Does the text equal `want`?
+    fn is(self, want: &str) => bool:
+        if self.n != len(want):
+            return false
+        for i in 0..self.n:
+            if self.b[i] != ch(want, i):
+                return false
+        return true
+
+fn new_txt() => Txt:
+    return Txt { b: new_buf(int, 256), n: 0 }
+
+
+/#/ Writes the bytes of `t` to the file `path`.
+fn save_bytes(path: str, t: &Txt) => void:
+    let fd = open(path, 577, 420 as object)
+    if fd < 0:
+        return
+    let chunk: buf<i8> = new_buf(i8, t.n + 1)
+    for k in 0..t.n:
+        chunk[k] = i8(t.b[k])
+    let done = 0
+    while done < t.n:
+        let w = write(fd, (int(buf_ptr(chunk)) + done) as object, t.n - done)
+        if w <= 0:
+            break
+        done = done + w
+    close(fd)
+
+
+class Col:
+    b: buf<int>
+    n: int
+
+    fn push(self, v: int) => void:
+        if self.n >= len(self.b):
+            self.b = buf_resize(self.b, (self.n + 1) * 2)
+        self.b[self.n] = v
+        self.n = self.n + 1
+
+fn new_col() => Col:
+    return Col { b: new_buf(int, 16), n: 0 }
+
+fn align_to(v: int, a: int) => int:
+    if a <= 1:
+        return v
+    return (v + a - 1) // a * a
+
+fn rd16(t: &Txt, at: int) => int:
+    return t.b[at] | (t.b[at + 1] << 8)
+
+fn rd32(t: &Txt, at: int) => int:
+    return t.b[at] | (t.b[at + 1] << 8) | (t.b[at + 2] << 16) | (t.b[at + 3] << 24)
+
+/#/ Eight bytes as a two's complement integer.
+fn rd64(t: &Txt, at: int) => int:
+    return rd32(t, at) | (rd32(t, at + 4) << 32)
+
+/#/ Four bytes, big endian (the numbers inside an `ar` archive).
+fn rd32be(t: &Txt, at: int) => int:
+    return (t.b[at] << 24) | (t.b[at + 1] << 16) | (t.b[at + 2] << 8) | t.b[at + 3]
+
+fn wr32(t: &Txt, at: int, v: int) => void:
+    for k in 0..4:
+        t.b[at + k] = (v >> (8 * k)) & 255
+
+fn wr64(t: &Txt, at: int, v: int) => void:
+    for k in 0..8:
+        t.b[at + k] = (v >> (8 * k)) & 255
+
+/#/ `n` zero bytes at the end of `t`.
+fn put_zeros(t: &Txt, n: int) => void:
+    for k in 0..n:
+        t.put_byte(0)
+
+/#/ The NUL-ended string at `at`.
+fn cstr_at(t: &Txt, at: int) => Txt:
+    let r = new_txt()
+    let k = at
+    while k < t.n && t.b[k] != 0:
+        r.put_byte(t.b[k])
+        k = k + 1
+    return r
+
+/#/ Strings built at run time from bytes. There is no way to make a `str` from a buffer, so a byte
+/#/ becomes a one-character literal and the pieces are joined pairwise (O(n log n), not O(n^2)).
+
+/#/ The one-character string of byte `c` (anything outside printable ASCII, tab and newline is `?`).
+fn ch_str(c: int) => str:
+    if c == 32:
+        return " "
+    if c == 33:
+        return "!"
+    if c == 34:
+        return "\""
+    if c == 35:
+        return "#"
+    if c == 36:
+        return "$"
+    if c == 37:
+        return "%"
+    if c == 38:
+        return "&"
+    if c == 39:
+        return "'"
+    if c == 40:
+        return "("
+    if c == 41:
+        return ")"
+    if c == 42:
+        return "*"
+    if c == 43:
+        return "+"
+    if c == 44:
+        return ","
+    if c == 45:
+        return "-"
+    if c == 46:
+        return "."
+    if c == 47:
+        return "/"
+    if c == 48:
+        return "0"
+    if c == 49:
+        return "1"
+    if c == 50:
+        return "2"
+    if c == 51:
+        return "3"
+    if c == 52:
+        return "4"
+    if c == 53:
+        return "5"
+    if c == 54:
+        return "6"
+    if c == 55:
+        return "7"
+    if c == 56:
+        return "8"
+    if c == 57:
+        return "9"
+    if c == 58:
+        return ":"
+    if c == 59:
+        return ";"
+    if c == 60:
+        return "<"
+    if c == 61:
+        return "="
+    if c == 62:
+        return ">"
+    if c == 63:
+        return "?"
+    if c == 64:
+        return "@"
+    if c == 65:
+        return "A"
+    if c == 66:
+        return "B"
+    if c == 67:
+        return "C"
+    if c == 68:
+        return "D"
+    if c == 69:
+        return "E"
+    if c == 70:
+        return "F"
+    if c == 71:
+        return "G"
+    if c == 72:
+        return "H"
+    if c == 73:
+        return "I"
+    if c == 74:
+        return "J"
+    if c == 75:
+        return "K"
+    if c == 76:
+        return "L"
+    if c == 77:
+        return "M"
+    if c == 78:
+        return "N"
+    if c == 79:
+        return "O"
+    if c == 80:
+        return "P"
+    if c == 81:
+        return "Q"
+    if c == 82:
+        return "R"
+    if c == 83:
+        return "S"
+    if c == 84:
+        return "T"
+    if c == 85:
+        return "U"
+    if c == 86:
+        return "V"
+    if c == 87:
+        return "W"
+    if c == 88:
+        return "X"
+    if c == 89:
+        return "Y"
+    if c == 90:
+        return "Z"
+    if c == 91:
+        return "["
+    if c == 92:
+        return "\\"
+    if c == 93:
+        return "]"
+    if c == 94:
+        return "^"
+    if c == 95:
+        return "_"
+    if c == 96:
+        return "`"
+    if c == 97:
+        return "a"
+    if c == 98:
+        return "b"
+    if c == 99:
+        return "c"
+    if c == 100:
+        return "d"
+    if c == 101:
+        return "e"
+    if c == 102:
+        return "f"
+    if c == 103:
+        return "g"
+    if c == 104:
+        return "h"
+    if c == 105:
+        return "i"
+    if c == 106:
+        return "j"
+    if c == 107:
+        return "k"
+    if c == 108:
+        return "l"
+    if c == 109:
+        return "m"
+    if c == 110:
+        return "n"
+    if c == 111:
+        return "o"
+    if c == 112:
+        return "p"
+    if c == 113:
+        return "q"
+    if c == 114:
+        return "r"
+    if c == 115:
+        return "s"
+    if c == 116:
+        return "t"
+    if c == 117:
+        return "u"
+    if c == 118:
+        return "v"
+    if c == 119:
+        return "w"
+    if c == 120:
+        return "x"
+    if c == 121:
+        return "y"
+    if c == 122:
+        return "z"
+    if c == 123:
+        return "{"
+    if c == 124:
+        return "|"
+    if c == 125:
+        return "}"
+    if c == 126:
+        return "~"
+    if c == 10:
+        return "\n"
+    if c == 9:
+        return "\t"
+    return "?"
+
+fn span_str(t: &Txt, lo: int, hi: int) => str:
+    if hi <= lo:
+        return ""
+    if hi - lo == 1:
+        return ch_str(t.b[lo])
+    let mid = (lo + hi) // 2
+    let left = span_str(t, lo, mid)
+    let right = span_str(t, mid, hi)
+    return left + right
+
+/#/ The bytes of `t` as a `str`.
+fn txt_str(t: &Txt) => str:
+    return span_str(t, 0, t.n)
+
+/#/ Reading and writing whole files by a path held in a `Txt`.
+use open, read, write, close, remove, access in libc of c
+
+/#/ The bytes of the file; `n` is -1 when it cannot be opened.
+fn read_file(path: &Txt) => Txt:
+    let t = new_txt()
+    let p = txt_str(path)
+    if access(p, 4) != 0:
+        t.n = 0 - 1
+        return t
+    let fd = open(p, 0, 0 as object)
+    if fd < 0:
+        t.n = 0 - 1
+        return t
+    let chunk: buf<i8> = new_buf(i8, 65536)
+    let got = read(fd, buf_ptr(chunk), 65536)
+    while got > 0:
+        if t.n + got > len(t.b):
+            t.b = buf_resize(t.b, (t.n + got) * 2)
+        for k in 0..got:
+            t.b[t.n + k] = int(chunk[k]) & 255
+        t.n = t.n + got
+        got = read(fd, buf_ptr(chunk), 65536)
+    close(fd)
+    return t
+
+/#/ Writes `t` to the file.
+fn write_file(path: &Txt, t: &Txt) => void:
+    let fd = open(txt_str(path), 577, 420 as object)
+    if fd < 0:
+        return
+    let chunk: buf<i8> = new_buf(i8, t.n + 1)
+    for k in 0..t.n:
+        chunk[k] = i8(t.b[k])
+    let done = 0
+    while done < t.n:
+        let w = write(fd, (int(buf_ptr(chunk)) + done) as object, t.n - done)
+        if w <= 0:
+            break
+        done = done + w
+    close(fd)
+
+fn remove_file(path: &Txt) => void:
+    remove(txt_str(path))
+
+/#/ A `Txt` holding `s`.
+fn txt_of(s: &str) => Txt:
+    let t = new_txt()
+    t.put(s)
+    return t
+
+/#/ A new `Txt` with the bytes of `t` (`clone` would share the buffer).
+fn copy_txt(t: &Txt) => Txt:
+    let r = new_txt()
+    r.put_all(t)
+    return r
+
+/#/ The machine this program runs on, from its own ELF header: 62 x86-64, 183 aarch64, 243 riscv64; 0 when unknown.
+fn host_machine() => int:
+    let fd = open("/proc/self/exe", 0, 0 as object)
+    if fd < 0:
+        return 0
+    let head: buf<i8> = new_buf(i8, 32)
+    let got = read(fd, buf_ptr(head), 32)
+    close(fd)
+    if got < 20 || int(head[0]) != 127 || int(head[1]) != 69:
+        return 0
+    return (int(head[18]) & 255) + (int(head[19]) & 255) * 256
+
+/#/ The directory the process was started in (`PWD` of its environment).
+fn pwd_of() => Txt:
+    let env = read_file(&txt_of("/proc/self/environ"))
+    let w = new_txt()
+    let out = new_txt()
+    for i in 0..env.n + 1:
+        if i == env.n || env.b[i] == 0:
+            if w.n > 4 && w.b[0] == int('P') && w.b[1] == int('W') && w.b[2] == int('D') && w.b[3] == int('='):
+                out = slice(&w, 4, w.n)
+            w.clear()
+        else:
+            w.put_byte(env.b[i])
+    return out
+
+/#/ The machine code of `cf_syscall(n, a, b, c, d, e, f)`: the C calling convention moved into the
+/#/ registers of the system call instruction, then a return. One table for the linker (which adds it to a
+/#/ program) and for the code generator (which puts it in a `--pic` library's object).
+
+/#/ `arch`: 0 x86-64, 1 aarch64, 2 riscv64, 10 x86-64 with the Win64 calling convention (the arguments in rcx, rdx, r8, r9 and the stack
+/#/ above 32 bytes of shadow space; rsi and rdi are kept).
+fn syscall_stub_for(arch: int) => buf<int>:
+    if arch == 1:
+        /#/ mov x8,x0; mov x0,x1; mov x1,x2; mov x2,x3; mov x3,x4; mov x4,x5; mov x5,x6; svc #0; ret
+        let a64 = [232, 3, 0, 170, 224, 3, 1, 170, 225, 3, 2, 170, 226, 3, 3, 170, 227, 3, 4, 170, 228, 3, 5, 170, 229, 3, 6, 170, 1, 0, 0, 212, 192, 3, 95, 214]
+        let out: buf<int> = new_buf(int, 36)
+        for k in 0..36:
+            out[k] = a64[k]
+        return out
+    if arch == 2:
+        /#/ mv a7,a0; mv a0,a1; mv a1,a2; mv a2,a3; mv a3,a4; mv a4,a5; mv a5,a6; ecall; ret
+        let rv = [147, 8, 5, 0, 19, 133, 5, 0, 147, 5, 6, 0, 19, 134, 6, 0, 147, 6, 7, 0, 19, 135, 7, 0, 147, 7, 8, 0, 115, 0, 0, 0, 103, 128, 0, 0]
+        let out: buf<int> = new_buf(int, 36)
+        for k in 0..36:
+            out[k] = rv[k]
+        return out
+    if arch == 10:
+        let ms = [86, 87, 72, 137, 200, 72, 137, 215, 76, 137, 198, 76, 137, 202, 76, 139, 84, 36, 56, 76, 139, 68, 36, 64, 76, 139, 76, 36, 72, 15, 5, 95, 94, 195]
+        let out: buf<int> = new_buf(int, 34)
+        for k in 0..34:
+            out[k] = ms[k]
+        return out
+    /#/ mov rax,rdi; mov rdi,rsi; mov rsi,rdx; mov rdx,rcx; mov r10,r8; mov r8,r9; mov r9,[rsp+8]; syscall; ret
+    let x86 = [72, 137, 248, 72, 137, 247, 72, 137, 214, 72, 137, 202, 77, 137, 194, 77, 137, 200, 76, 139, 76, 36, 8, 15, 5, 195]
+    let out: buf<int> = new_buf(int, 26)
+    for k in 0..26:
+        out[k] = x86[k]
+    return out
+
+use fflush in libc of c
+
+/#/ the four groups sections are joined into, in image order
+fn g_text() => int:
+    return 0
+
+fn g_ro() => int:
+    return 1
+
+fn g_data() => int:
+    return 2
+
+fn g_bss() => int:
+    return 3
+
+/#/ the number of a section in an input that has none (undefined symbols)
+fn no_sec() => int:
+    return 0 - 1
+
+fn abs_sec() => int:
+    return 0 - 2
+
+fn common_sec() => int:
+    return 0 - 3
+
+/#/ The architecture of the objects to link (0 x86-64, 1 aarch64, 2 riscv64); the driver sets it from `--target=`.
+let ld_arch: int = 0
+
+fn set_ld_arch(a: int) => void:
+    ld_arch = a
+
+/#/ The ELF machine number of the architecture (x86-64 62, aarch64 183).
+fn machine_of(arch: int) => int:
+    if arch == 1:
+        return 183
+    if arch == 2:
+        return 243
+    return 62
+
+/#/ The ELF flags of the architecture: RISC-V says which float ABI the code follows (double, 4).
+fn eflags_of(arch: int) => int:
+    if arch == 2:
+        return 4
+    return 0
+
+/#/ The program's code follows the Win64 calling convention (`--target=x86_64-linux-ms`; used by the tests of that convention).
+let ld_win64: bool = false
+
+fn set_ld_win64(on: bool) => void:
+    ld_win64 = on
+
+fn syscall_stub() => buf<int>:
+    if ld_win64 && ld_arch == 0:
+        return syscall_stub_for(10)
+    return syscall_stub_for(ld_arch)
+
+class Linker:
+    /#/ all input files, one after the other
+    blob: Txt
+    errs: int
+    /#/ ---- inputs
+    nin: int
+    in_sec0: Col
+    in_sym0: Col
+    /#/ ---- sections: the bytes are `blob[sc_off ..][..sc_size]`
+    sc_type: Col
+    sc_flags: Col
+    sc_off: Col
+    sc_size: Col
+    sc_align: Col
+    /#/ group of the output (-1: not in the image), offset in the group, and image address
+    sc_grp: Col
+    sc_goff: Col
+    sc_rva: Col
+    /#/ ---- symbols; `y_bind` 0 local, 1 global, 2 weak; `y_nm` is the name id (-1: none)
+    y_sec: Col
+    y_val: Col
+    y_size: Col
+    y_bind: Col
+    y_type: Col
+    y_nm: Col
+    /#/ the address of a common symbol, and the slot in the GOT of a symbol (-1: none)
+    y_rva: Col
+    y_got: Col
+    /#/ ---- relocations
+    r_sec: Col
+    r_off: Col
+    r_type: Col
+    r_sym: Col
+    r_add: Col
+    /#/ ---- names, interned: `nm_off[id]` into `pool` (NUL-ended), `ht` the hash table (id + 1)
+    pool: Txt
+    nm_off: Col
+    ht: buf<int>
+    /#/ per name id: the defining symbol (-1), how it is defined (0 not, 1 common, 2 weak, 3
+    /#/ strong), and 1 when some input needs it (an undefined, non-weak reference)
+    g_def: Col
+    g_how: Col
+    g_need: Col
+    /#/ archive members already added: the blob offsets of their headers
+    pulled: Col
+    /#/ ---- the layout
+    gsize: buf<int>
+    galign: buf<int>
+    /#/ where each group starts in the image
+    gbase: buf<int>
+    ngot: int
+    got_rva: int
+    /#/ the pieces of the file: offset, address, bytes in the file, bytes in memory, flags
+    sg_off: Col
+    sg_rva: Col
+    sg_fsz: Col
+    sg_msz: Col
+    sg_flags: Col
+    /#/ size of the whole image
+    image_size: int
+    /#/ after `gc`: the text sections some root reaches (1) or not (0)
+    gc_on: bool
+    quiet: bool
+    /#/ keep the names of functions and data in the file (a symbol table for debuggers)
+    syms: bool
+    /#/ the line tables of the objects (`.cf_lines`), for the debug sections of an executable made with `syms`
+    dbg: Txt
+    /#/ how many section headers `add_symbols` wrote
+    nshdr: int
+    live: buf<int>
+    /#/ ---- dynamic linking (x86-64): names the shared libraries define, and what the program imports
+    dyn_on: bool
+    g_dyn: Col
+    dyn_ix: Col
+    dyn_ids: Col
+    /#/ per name id: the type and size of the symbol a shared library defines; per import: its copy in .bss (-1: none)
+    g_dty: Col
+    g_dsz: Col
+    g_dval: Col
+    dyn_alias: Col
+    cp_off: Col
+    so_names: Txt
+    so_used: Col
+    so_count: int
+    dyn_str: Txt
+    str_so: Col
+    str_sym: Col
+    nneed: int
+    /#/ directories for DT_RUNPATH (newline separated in, colon separated in the file), and its place in the strings
+    rpath: Txt
+    str_rpath: int
+    d_stub: int
+    d_interp: int
+    d_hash: int
+    d_sym: int
+    d_str: int
+    d_rela: int
+    d_dynamic: int
+    d_got: int
+
+    fn err(self, what: &str, who: &Txt) => void:
+        self.errs = self.errs + 1
+        if self.quiet:
+            return
+        say(f"ld: {what} {txt_str(who)}\n")
+        fflush(0)
+
+    fn msg(self, what: &str) => void:
+        self.errs = self.errs + 1
+        if self.quiet:
+            return
+        say(f"ld: {what}\n")
+        fflush(0)
+
+    /#/ ---- names ----------------------------------------------------------------------------
+
+    fn hash(self, w: &Txt) => int:
+        let h = 5381
+        for k in 0..w.n:
+            h = (h * 33 + w.b[k]) & 1073741823
+        return h
+
+    fn name_eq(self, id: int, w: &Txt) => bool:
+        let at = self.nm_off.b[id]
+        for k in 0..w.n:
+            if self.pool.b[at + k] != w.b[k]:
+                return false
+        return self.pool.b[at + w.n] == 0
+
+    /#/ The id of name `w`, or -1 if no input mentioned it.
+    fn find(self, w: &Txt) => int:
+        let mask = len(self.ht) - 1
+        let i = self.hash(w) & mask
+        while self.ht[i] != 0:
+            if self.name_eq(self.ht[i] - 1, w):
+                return self.ht[i] - 1
+            i = (i + 1) & mask
+        return 0 - 1
+
+    fn grow_ht(self) => void:
+        let cap = len(self.ht) * 2
+        self.ht = new_buf(int, cap)
+        let mask = cap - 1
+        for id in 0..self.nm_off.n:
+            let w = cstr_at(&self.pool, self.nm_off.b[id])
+            let i = self.hash(&w) & mask
+            while self.ht[i] != 0:
+                i = (i + 1) & mask
+            self.ht[i] = id + 1
+
+    fn intern(self, w: &Txt) => int:
+        let found = self.find(w)
+        if found >= 0:
+            return found
+        if (self.nm_off.n + 1) * 2 > len(self.ht):
+            self.grow_ht()
+        let id = self.nm_off.n
+        self.nm_off.push(self.pool.n)
+        self.pool.put_all(w)
+        self.pool.put_byte(0)
+        self.g_def.push(0 - 1)
+        self.g_how.push(0)
+        self.g_need.push(0)
+        self.g_dyn.push(0 - 1)
+        self.dyn_ix.push(0 - 1)
+        self.g_dty.push(0)
+        self.g_dsz.push(0)
+        self.g_dval.push(0)
+        let mask = len(self.ht) - 1
+        let i = self.hash(w) & mask
+        while self.ht[i] != 0:
+            i = (i + 1) & mask
+        self.ht[i] = id + 1
+        return id
+
+    fn name_of(self, id: int) => Txt:
+        return cstr_at(&self.pool, self.nm_off.b[id])
+
+    /#/ ---- reading objects --------------------------------------------------------------------
+
+    /#/ A symbol just added is a definition or a reference of a global name.
+    fn declare(self, sid: int) => void:
+        let id = self.y_nm.b[sid]
+        let bind = self.y_bind.b[sid]
+        if id < 0 || bind == 0:
+            return
+        let sec = self.y_sec.b[sid]
+        if sec == no_sec():
+            if bind == 1:
+                self.g_need.b[id] = 1
+            return
+        let how = 3
+        if sec == common_sec():
+            how = 1
+        elif bind == 2:
+            how = 2
+        let old = self.g_how.b[id]
+        if old == 0 || how > old:
+            self.g_def.b[id] = sid
+            self.g_how.b[id] = how
+        elif how == 3 && old == 3:
+            let w = self.name_of(id)
+            self.err("duplicate symbol", &w)
+        elif how == 1 && old == 1:
+            /#/ two commons: the larger one wins
+            let was = self.g_def.b[id]
+            if self.y_size.b[sid] > self.y_size.b[was]:
+                self.g_def.b[id] = sid
+
+    /#/ Adds the object that starts at `off` in the blob (`who` names it in messages).
+    fn add_object(self, off: int, who: &Txt) => void:
+        let b = &self.blob
+        if b.n < off + 64 || b.b[off] != 127 || b.b[off + 1] != 69 || b.b[off + 2] != 76 || b.b[off + 3] != 70:
+            self.err("not an ELF file:", who)
+            return
+        if b.b[off + 4] != 2 || b.b[off + 5] != 1 || rd16(b, off + 16) != 1 || rd16(b, off + 18) != machine_of(ld_arch):
+            self.err("not a relocatable object of the target machine:", who)
+            return
+        let shoff = off + rd64(b, off + 40)
+        let shnum = rd16(b, off + 60)
+        let sec0 = self.sc_type.n
+        let sym0 = self.y_sec.n
+        self.in_sec0.push(sec0)
+        self.in_sym0.push(sym0)
+        self.nin = self.nin + 1
+        let symtab = 0 - 1
+        for i in 0..shnum:
+            let h = shoff + 64 * i
+            let ty = rd32(b, h + 4)
+            self.sc_type.push(ty)
+            self.sc_flags.push(rd64(b, h + 8))
+            self.sc_off.push(off + rd64(b, h + 24))
+            self.sc_size.push(rd64(b, h + 32))
+            self.sc_align.push(rd64(b, h + 48))
+            self.sc_grp.push(0 - 1)
+            self.sc_goff.push(0)
+            self.sc_rva.push(0)
+            if ty == 2:
+                symtab = i
+        /#/ the line table, a section called `.cf_lines`
+        let shs = rd16(b, off + 62)
+        if self.syms && shs > 0 && shs < shnum:
+            let names = self.sc_off.b[sec0 + shs]
+            for i in 0..shnum:
+                let w = cstr_at(b, names + rd32(b, shoff + 64 * i))
+                if w.n == 9 && w.is(".cf_lines"):
+                    let from = self.sc_off.b[sec0 + i]
+                    for q in 0..self.sc_size.b[sec0 + i]:
+                        self.dbg.put_byte(b.b[from + q])
+        if symtab < 0:
+            return
+        /#/ the symbols
+        let sh = shoff + 64 * symtab
+        let nsym = rd64(b, sh + 32) // 24
+        let at = off + rd64(b, sh + 24)
+        let strs = self.sc_off.b[sec0 + rd32(b, sh + 40)]
+        for k in 0..nsym:
+            let e = at + 24 * k
+            let info = b.b[e + 4]
+            let shndx = rd16(b, e + 6)
+            let sec = no_sec()
+            if shndx == 65521:
+                sec = abs_sec()
+            elif shndx == 65522:
+                sec = common_sec()
+            elif shndx != 0:
+                sec = sec0 + shndx
+            let bind = info >> 4
+            if bind > 2:
+                bind = 1
+            let ty = info & 15
+            let nm = 0 - 1
+            if k > 0 && ty != 3 && ty != 4:
+                let w = cstr_at(b, strs + rd32(b, e))
+                if w.n > 0:
+                    nm = self.intern(&w)
+            if bind != 0 && nm < 0:
+                bind = 0
+            self.y_sec.push(sec)
+            self.y_val.push(rd64(b, e + 8))
+            self.y_size.push(rd64(b, e + 16))
+            self.y_bind.push(bind)
+            self.y_type.push(ty)
+            self.y_nm.push(nm)
+            self.y_rva.push(0)
+            self.y_got.push(0 - 1)
+            self.declare(sym0 + k)
+        /#/ the relocations
+        for i in 0..shnum:
+            let s = sec0 + i
+            if self.sc_type.b[s] == 4 && rd32(b, shoff + 64 * i + 40) == symtab:
+                let target = sec0 + rd32(b, shoff + 64 * i + 44)
+                let n = self.sc_size.b[s] // 24
+                for k in 0..n:
+                    let e = self.sc_off.b[s] + 24 * k
+                    let info = rd64(b, e + 8)
+                    self.r_sec.push(target)
+                    self.r_off.push(rd64(b, e))
+                    self.r_type.push(info & 4294967295)
+                    self.r_sym.push(sym0 + (info >> 32))
+                    self.r_add.push(rd64(b, e + 16))
+
+    /#/ Adds the shared library `data` (an x86-64 ELF `.so`): the global names it defines can satisfy
+    /#/ what the objects leave undefined, which the executable then imports.
+    fn add_shared(self, data: &Txt, who: &Txt) => void:
+        if data.n < 64 || data.b[0] != 127 || data.b[1] != 69 || data.b[2] != 76 || data.b[3] != 70 || rd16(data, 16) != 3 || rd16(data, 18) != 62:
+            self.err("not a shared library for x86-64:", who)
+            return
+        let shoff = rd64(data, 40)
+        let shnum = rd16(data, 60)
+        let dsym = 0 - 1
+        let dyn = 0 - 1
+        for i in 0..shnum:
+            let ty = rd32(data, shoff + 64 * i + 4)
+            if ty == 11:
+                dsym = i
+            if ty == 6:
+                dyn = i
+        if dsym < 0:
+            self.err("shared library without symbols:", who)
+            return
+        let lib = self.so_count
+        let soname = new_txt()
+        if dyn >= 0:
+            let h = shoff + 64 * dyn
+            let at = rd64(data, h + 24)
+            let strs = rd64(data, shoff + 64 * rd32(data, h + 40) + 24)
+            for k in 0..rd64(data, h + 32) // 16:
+                if rd64(data, at + 16 * k) == 14:
+                    soname = cstr_at(data, strs + rd64(data, at + 16 * k + 8))
+        if soname.n == 0:
+            let lo = 0
+            for k in 0..who.n:
+                if who.b[k] == 47:
+                    lo = k + 1
+            soname = cut(who, lo, who.n)
+        self.so_names.put_all(&soname)
+        self.so_names.put_byte(10)
+        self.so_used.push(0)
+        self.so_count = self.so_count + 1
+        let sh = shoff + 64 * dsym
+        let at = rd64(data, sh + 24)
+        let strs = rd64(data, shoff + 64 * rd32(data, sh + 40) + 24)
+        for k in 1..rd64(data, sh + 32) // 24:
+            let e = at + 24 * k
+            let info = data.b[e + 4]
+            let bind = info >> 4
+            if rd16(data, e + 6) != 0 && (bind == 1 || bind == 2) && (info & 15) != 6:
+                let w = cstr_at(data, strs + rd32(data, e))
+                let id = self.intern(&w)
+                if self.g_dyn.b[id] < 0:
+                    self.g_dyn.b[id] = lib
+                    self.g_dty.b[id] = info & 15
+                    self.g_dsz.b[id] = rd64(data, e + 16)
+                    self.g_dval.b[id] = rd64(data, e + 8)
+
+    /#/ The names the objects need that only a shared library defines become imports, in order.
+    fn resolve_dynamic(self) => void:
+        for id in 0..self.nm_off.n:
+            if self.g_need.b[id] == 1 && self.g_def.b[id] < 0 && self.g_dyn.b[id] >= 0:
+                self.dyn_ix.b[id] = self.dyn_ids.n
+                self.dyn_ids.push(id)
+                self.dyn_alias.push(0 - 1)
+                self.so_used.b[self.g_dyn.b[id]] = 1
+        /#/ a copied variable has other names at the same place in its library (`environ`, `__environ`):
+        /#/ they share the copy, so the library and the program see one variable
+        let n0 = self.dyn_ids.n
+        for d in 0..n0:
+            let id = self.dyn_ids.b[d]
+            if self.g_dty.b[id] == 1:
+                for q in 0..self.nm_off.n:
+                    if q != id && self.g_dyn.b[q] == self.g_dyn.b[id] && self.g_dty.b[q] == 1 && self.g_dval.b[q] == self.g_dval.b[id] && self.g_dsz.b[q] == self.g_dsz.b[id] && self.dyn_ix.b[q] < 0 && self.g_def.b[q] < 0:
+                        self.dyn_ix.b[q] = self.dyn_ids.n
+                        self.dyn_ids.push(q)
+                        self.dyn_alias.push(d)
+
+    /#/ The import number of the undefined symbol `f`, or -1.
+    fn dyn_of(self, f: int) => int:
+        let id = self.y_nm.b[f]
+        if id < 0 || self.y_sec.b[f] != no_sec() || self.g_def.b[id] >= 0:
+            return 0 - 1
+        return self.dyn_ix.b[id]
+
+    /#/ Adds the file `data` as one input; an object, or an archive whose members are pulled in as
+    /#/ the symbols they define are needed.
+    fn add_file(self, data: &Txt, who: &Txt) => void:
+        let off = self.blob.n
+        self.blob.put_all(data)
+        if data.n >= 8 && data.b[0] == 33 && data.b[1] == 60:
+            self.add_archive(off, data.n, who)
+        else:
+            self.add_object(off, who)
+
+    /#/ ---- archives ---------------------------------------------------------------------------
+
+    /#/ Pulls in the members of the archive at `off` (`size` bytes) that define a name some input
+    /#/ needs, until nothing more is needed. Only archives with a symbol index are understood.
+    fn add_archive(self, off: int, size: int, who: &Txt) => void:
+        let b = &self.blob
+        /#/ the first member is the symbol index: `/`, a count, the member offsets, the names
+        let h = off + 8
+        if h + 60 > off + size || b.b[h] != 47 || b.b[h + 1] != 32:
+            self.err("archive without a symbol index:", who)
+            return
+        let isz = 0
+        for k in 0..10:
+            let c = b.b[h + 48 + k]
+            if c >= 48 && c <= 57:
+                isz = isz * 10 + c - 48
+        let cnt = rd32be(b, h + 60)
+        let names = h + 60 + 4 + 4 * cnt
+        let nm_at = new_col()
+        let p = names
+        for k in 0..cnt:
+            nm_at.push(p)
+            while b.b[p] != 0:
+                p = p + 1
+            p = p + 1
+        let again = true
+        while again:
+            again = false
+            for k in 0..cnt:
+                let w = cstr_at(b, nm_at.b[k])
+                let id = self.find(&w)
+                if id >= 0 && self.g_need.b[id] == 1 && self.g_how.b[id] == 0:
+                    let mh = off + rd32be(b, h + 64 + 4 * k)
+                    if !self.was_pulled(mh):
+                        self.pulled.push(mh)
+                        self.add_object(mh + 60, who)
+                        again = true
+
+    fn was_pulled(self, mh: int) => bool:
+        for k in 0..self.pulled.n:
+            if self.pulled.b[k] == mh:
+                return true
+        return false
+
+    /#/ ---- the start-up code --------------------------------------------------------------------
+
+    /#/ When no input defines `_start`, adds a small one that calls `main(argc, argv)` and exits
+    /#/ with its result (system call `exit`), so a program needs no C runtime.
+    fn add_start(self) => void:
+        let sid = self.find_def("_start")
+        if sid >= 0:
+            return
+        if self.find_def("main") < 0:
+            return
+        /#/ xor ebp,ebp; mov rdi,[rsp]; lea rsi,[rsp+8]; call main; mov edi,eax; mov eax,60; syscall
+        let x86 = [49, 237, 72, 139, 60, 36, 72, 141, 116, 36, 8, 232, 0, 0, 0, 0, 137, 199, 184, 60, 0, 0, 0, 15, 5]
+        let code: buf<int> = new_buf(int, 25)
+        for k in 0..25:
+            code[k] = x86[k]
+        let call_at = 12
+        let call_ty = 4
+        let call_add = 0 - 4
+        if ld_win64 && ld_arch == 0:
+            /#/ xor ebp,ebp; mov rcx,[rsp]; lea rdx,[rsp+8]; sub rsp,32; call main; mov edi,eax; mov eax,60; syscall
+            let ms = [49, 237, 72, 139, 12, 36, 72, 141, 84, 36, 8, 72, 131, 236, 32, 232, 0, 0, 0, 0, 137, 199, 184, 60, 0, 0, 0, 15, 5]
+            code = new_buf(int, 29)
+            for k in 0..29:
+                code[k] = ms[k]
+            call_at = 16
+        if self.dyn_on:
+            /#/ xor ebp,ebp; mov r9,rdx; pop rsi; mov rdx,rsp; and rsp,-16; push rax; push rsp; xor r8d,r8d; xor ecx,ecx;
+            /#/ mov rdi,main; call *__libc_start_main@GOT; hlt
+            let dy = [49, 237, 73, 137, 209, 94, 72, 137, 226, 72, 131, 228, 240, 80, 84, 69, 49, 192, 49, 201, 72, 199, 199, 0, 0, 0, 0, 255, 21, 0, 0, 0, 0, 244]
+            code = new_buf(int, 34)
+            for k in 0..34:
+                code[k] = dy[k]
+            call_at = 23
+            call_ty = 11
+            call_add = 0
+        if ld_arch == 1:
+            /#/ mov x29,#0; ldr x0,[sp]; add x1,sp,#8; bl main; mov x8,#94 (exit_group); svc #0
+            let a64 = [29, 0, 128, 210, 224, 3, 64, 249, 225, 35, 0, 145, 0, 0, 0, 148, 200, 11, 128, 210, 1, 0, 0, 212]
+            for k in 0..24:
+                code[k] = a64[k]
+            code = buf_resize(code, 24)
+            call_ty = 283
+            call_add = 0
+        if ld_arch == 2:
+            /#/ mv s0,zero; ld a0,[sp]; addi a1,sp,8; auipc ra; jalr ra (call main); li a7,94 (exit_group); ecall
+            let rv = [19, 4, 0, 0, 3, 53, 1, 0, 147, 5, 129, 0, 151, 0, 0, 0, 231, 128, 0, 0, 147, 8, 224, 5, 115, 0, 0, 0]
+            code = new_buf(int, 28)
+            for k in 0..28:
+                code[k] = rv[k]
+            call_ty = 19
+            call_add = 0
+        let nstart = len(code)
+        let off = self.blob.n
+        for k in 0..nstart:
+            self.blob.put_byte(code[k])
+        let sec0 = self.sc_type.n
+        let sym0 = self.y_sec.n
+        self.in_sec0.push(sec0)
+        self.in_sym0.push(sym0)
+        self.nin = self.nin + 1
+        self.sc_type.push(1)
+        self.sc_flags.push(6)
+        self.sc_off.push(off)
+        self.sc_size.push(nstart)
+        self.sc_align.push(16)
+        self.sc_grp.push(0 - 1)
+        self.sc_goff.push(0)
+        self.sc_rva.push(0)
+        let w = txt_of("_start")
+        let m = txt_of("main")
+        for k in 0..2:
+            self.y_val.push(0)
+            self.y_size.push(0)
+            self.y_bind.push(1)
+            self.y_type.push(0)
+            self.y_rva.push(0)
+            self.y_got.push(0 - 1)
+        self.y_sec.push(sec0)
+        self.y_nm.push(self.intern(&w))
+        self.y_sec.push(no_sec())
+        self.y_nm.push(self.intern(&m))
+        self.declare(sym0)
+        self.declare(sym0 + 1)
+        self.r_sec.push(sec0)
+        self.r_off.push(call_at)
+        self.r_type.push(call_ty)
+        self.r_sym.push(sym0 + 1)
+        self.r_add.push(call_add)
+        if self.dyn_on:
+            /#/ the C library starts the program: a second symbol, reached through the GOT
+            let ls = txt_of("__libc_start_main")
+            self.y_val.push(0)
+            self.y_size.push(0)
+            self.y_bind.push(1)
+            self.y_type.push(0)
+            self.y_rva.push(0)
+            self.y_got.push(0 - 1)
+            self.y_sec.push(no_sec())
+            self.y_nm.push(self.intern(&ls))
+            self.declare(sym0 + 2)
+            self.r_sec.push(sec0)
+            self.r_off.push(29)
+            self.r_type.push(9)
+            self.r_sym.push(sym0 + 2)
+            self.r_add.push(0 - 4)
+
+    /#/ When some input needs `cf_syscall(n, a, b, c, d, e, f)` and none defines it, adds the
+    /#/ function: the C calling convention moved into the registers of the `syscall` instruction.
+    fn add_syscall(self) => void:
+        let w = txt_of("cf_syscall")
+        let id = self.find(&w)
+        if id < 0 || self.g_need.b[id] != 1 || self.g_def.b[id] >= 0:
+            return
+        let code = syscall_stub()
+        let nstub = len(code)
+        let off = self.blob.n
+        for k in 0..nstub:
+            self.blob.put_byte(code[k])
+        let sec0 = self.sc_type.n
+        let sym0 = self.y_sec.n
+        self.in_sec0.push(sec0)
+        self.in_sym0.push(sym0)
+        self.nin = self.nin + 1
+        self.sc_type.push(1)
+        self.sc_flags.push(6)
+        self.sc_off.push(off)
+        self.sc_size.push(nstub)
+        self.sc_align.push(16)
+        self.sc_grp.push(0 - 1)
+        self.sc_goff.push(0)
+        self.sc_rva.push(0)
+        self.y_val.push(0)
+        self.y_size.push(0)
+        self.y_bind.push(1)
+        self.y_type.push(0)
+        self.y_rva.push(0)
+        self.y_got.push(0 - 1)
+        self.y_sec.push(sec0)
+        self.y_nm.push(self.intern(&w))
+        self.declare(sym0)
+
+    /#/ The defining symbol of the global called `name`, or -1.
+    fn find_def(self, name: &str) => int:
+        let w = txt_of(name)
+        let id = self.find(&w)
+        if id < 0:
+            return 0 - 1
+        return self.g_def.b[id]
+
+    /#/ Reports the names some input needs and none defines.
+    fn check_undefined(self) => void:
+        for id in 0..self.nm_off.n:
+            if self.g_need.b[id] == 1 && self.g_def.b[id] < 0 && self.dyn_ix.b[id] < 0:
+                let w = self.name_of(id)
+                self.err("undefined symbol:", &w)
+
+    /#/ ---- layout -------------------------------------------------------------------------------
+
+    /#/ The symbol that stands for `sid` after resolution: the definition of its name, or itself.
+    fn final_sym(self, sid: int) => int:
+        let id = self.y_nm.b[sid]
+        if id >= 0 && self.y_bind.b[sid] != 0 && self.g_def.b[id] >= 0:
+            return self.g_def.b[id]
+        return sid
+
+    fn group_of(self, s: int) => int:
+        let fl = self.sc_flags.b[s]
+        if fl & 2 == 0:
+            return 0 - 1
+        if fl & 1024 != 0:
+            return 0 - 2
+        if fl & 4 != 0:
+            return g_text()
+        if self.sc_type.b[s] == 8:
+            return g_bss()
+        if fl & 1 != 0:
+            return g_data()
+        return g_ro()
+
+    /#/ Drops the text sections that `entry` (a symbol) does not reach through relocations. Data
+    /#/ sections are all kept, so what they point at stays too. Call it before `layout`.
+    fn gc(self, entry: int) => void:
+        let ns = self.sc_type.n
+        let live: buf<int> = new_buf(int, ns + 1)
+        /#/ the relocations of each section, found by counting
+        let first: buf<int> = new_buf(int, ns + 2)
+        for r in 0..self.r_type.n:
+            first[self.r_sec.b[r] + 1] = first[self.r_sec.b[r] + 1] + 1
+        for s in 0..ns + 1:
+            first[s + 1] = first[s + 1] + first[s]
+        let fill: buf<int> = new_buf(int, ns + 1)
+        let order: buf<int> = new_buf(int, self.r_type.n + 1)
+        for r in 0..self.r_type.n:
+            let s = self.r_sec.b[r]
+            order[first[s] + fill[s]] = r
+            fill[s] = fill[s] + 1
+        let stack: buf<int> = new_buf(int, ns + 1)
+        let sp = 0
+        for s in 0..ns:
+            let g = self.group_of(s)
+            if g >= 0 && g != g_text():
+                live[s] = 1
+                stack[sp] = s
+                sp = sp + 1
+        let es = self.y_sec.b[entry]
+        if es >= 0 && live[es] == 0:
+            live[es] = 1
+            stack[sp] = es
+            sp = sp + 1
+        while sp > 0:
+            sp = sp - 1
+            let s = stack[sp]
+            for k in first[s]..first[s + 1]:
+                let f = self.final_sym(self.r_sym.b[order[k]])
+                let t = self.y_sec.b[f]
+                if t >= 0 && live[t] == 0:
+                    live[t] = 1
+                    stack[sp] = t
+                    sp = sp + 1
+        self.live = live
+        self.gc_on = true
+
+    /#/ Decides where everything goes: the group and image address of each section, the slots of
+    /#/ the GOT, the common symbols, and the pieces of the file.
+    fn layout(self) => void:
+        self.gsize = new_buf(int, 4)
+        self.galign = new_buf(int, 4)
+        self.gbase = new_buf(int, 4)
+        for g in 0..4:
+            self.galign[g] = 1
+        for s in 0..self.sc_type.n:
+            let g = self.group_of(s)
+            if g == g_text() && self.gc_on && self.live[s] == 0:
+                g = 0 - 1
+            self.sc_grp.b[s] = g
+            if g == 0 - 2:
+                self.msg("thread-local storage is not supported")
+                self.sc_grp.b[s] = 0 - 1
+            elif g >= 0:
+                let a = self.sc_align.b[s]
+                if a < 1:
+                    a = 1
+                self.gsize[g] = align_to(self.gsize[g], a)
+                self.sc_goff.b[s] = self.gsize[g]
+                self.gsize[g] = self.gsize[g] + self.sc_size.b[s]
+                if a > self.galign[g]:
+                    self.galign[g] = a
+        /#/ imports: a stub in the text for each, the GOT slots first
+        let ndyn = self.dyn_ids.n
+        if self.dyn_on:
+            self.gsize[0] = align_to(self.gsize[0], 16)
+            self.d_stub = self.gsize[0]
+            self.gsize[0] = self.gsize[0] + 8 * ndyn
+        /#/ GOT slots, after the read-only sections
+        self.ngot = ndyn
+        for r in 0..self.r_type.n:
+            let ty = self.r_type.b[r]
+            if (ty == 9 || ty == 41 || ty == 42) && self.sc_grp.b[self.r_sec.b[r]] >= 0:
+                let f = self.final_sym(self.r_sym.b[r])
+                if self.y_got.b[f] < 0 && self.dyn_of(f) < 0:
+                    self.y_got.b[f] = self.ngot
+                    self.ngot = self.ngot + 1
+        let got_off = 0
+        if self.dyn_on:
+            self.dyn_layout()
+        else:
+            self.gsize[1] = align_to(self.gsize[1], 8)
+            got_off = self.gsize[1]
+            self.gsize[1] = self.gsize[1] + 8 * self.ngot
+        if self.galign[1] < 8:
+            self.galign[1] = 8
+        /#/ common symbols go to the end of .bss
+        for id in 0..self.nm_off.n:
+            if self.g_how.b[id] == 1:
+                let sid = self.g_def.b[id]
+                let a = self.y_val.b[sid]
+                if a < 1:
+                    a = 1
+                self.gsize[3] = align_to(self.gsize[3], a)
+                self.y_rva.b[sid] = self.gsize[3]
+                self.gsize[3] = self.gsize[3] + self.y_size.b[sid]
+                if a > self.galign[3]:
+                    self.galign[3] = a
+        /#/ data an import names is copied into .bss (the program refers to it directly)
+        for d in 0..ndyn:
+            let id = self.dyn_ids.b[d]
+            if self.dyn_alias.b[d] >= 0:
+                self.cp_off.push(self.cp_off.b[self.dyn_alias.b[d]])
+            elif self.g_dty.b[id] == 1:
+                self.gsize[3] = align_to(self.gsize[3], 16)
+                self.cp_off.push(self.gsize[3])
+                self.gsize[3] = self.gsize[3] + self.g_dsz.b[id]
+                if self.galign[3] < 16:
+                    self.galign[3] = 16
+            else:
+                self.cp_off.push(0 - 1)
+        for g in 0..4:
+            if self.galign[g] > 4096:
+                self.msg("section alignment over a page")
+                self.galign[g] = 4096
+        /#/ the file: headers and text, rodata, data + bss; each piece starts at the same place
+        /#/ modulo the page size in the file and in memory
+        let has_ro = self.gsize[1] > 0
+        let has_data = self.gsize[2] > 0 || self.gsize[3] > 0
+        let nph = 2
+        if self.dyn_on:
+            nph = nph + 2
+        if has_ro:
+            nph = nph + 1
+        if has_data:
+            nph = nph + 1
+        let off_t = align_to(64 + 56 * nph, self.galign[0])
+        self.gbase[0] = off_t
+        let end_f = off_t + self.gsize[0]
+        let end_r = end_f
+        self.sg_off.push(0)
+        self.sg_rva.push(0)
+        self.sg_fsz.push(end_f)
+        self.sg_msz.push(end_f)
+        self.sg_flags.push(5)
+        if has_ro:
+            let off = align_to(end_f, self.galign[1])
+            let rva = align_to(end_r, 4096) + off % 4096
+            self.gbase[1] = rva
+            if !self.dyn_on:
+                self.got_rva = rva + got_off
+            end_f = off + self.gsize[1]
+            end_r = rva + self.gsize[1]
+            self.sg_off.push(off)
+            self.sg_rva.push(rva)
+            self.sg_fsz.push(self.gsize[1])
+            self.sg_msz.push(self.gsize[1])
+            self.sg_flags.push(4)
+        if has_data:
+            let off = align_to(end_f, self.galign[2])
+            let rva = align_to(end_r, 4096) + off % 4096
+            self.gbase[2] = rva
+            if self.dyn_on:
+                self.got_rva = rva + self.d_got
+            end_r = rva + self.gsize[2]
+            let bss = align_to(end_r, self.galign[3])
+            self.gbase[3] = bss
+            self.sg_off.push(off)
+            self.sg_rva.push(rva)
+            self.sg_fsz.push(self.gsize[2])
+            self.sg_msz.push(bss + self.gsize[3] - rva)
+            self.sg_flags.push(6)
+            end_r = bss + self.gsize[3]
+        self.image_size = end_r
+        for s in 0..self.sc_type.n:
+            if self.sc_grp.b[s] >= 0:
+                self.sc_rva.b[s] = self.gbase[self.sc_grp.b[s]] + self.sc_goff.b[s]
+        for id in 0..self.nm_off.n:
+            if self.g_how.b[id] == 1:
+                let sid = self.g_def.b[id]
+                self.y_rva.b[sid] = self.y_rva.b[sid] + self.gbase[3]
+
+    /#/ The places of the dynamic-linking tables: read-only ones at the end of the read-only group, the
+    /#/ GOT and the dynamic section at the end of the data group.
+    fn dyn_layout(self) => void:
+        let ndyn = self.dyn_ids.n
+        let nsym = ndyn + 1
+        self.dyn_str = new_txt()
+        self.dyn_str.put_byte(0)
+        self.nneed = 0
+        let lo = 0
+        let lib = 0
+        for i in 0..self.so_names.n:
+            if self.so_names.b[i] == 10:
+                if self.so_used.b[lib] == 1:
+                    self.str_so.push(self.dyn_str.n)
+                    for k in lo..i:
+                        self.dyn_str.put_byte(self.so_names.b[k])
+                    self.dyn_str.put_byte(0)
+                    self.nneed = self.nneed + 1
+                lo = i + 1
+                lib = lib + 1
+        self.str_rpath = 0
+        if self.rpath.n > 0:
+            self.str_rpath = self.dyn_str.n
+            for k in 0..self.rpath.n:
+                if self.rpath.b[k] == 10:
+                    if k + 1 < self.rpath.n:
+                        self.dyn_str.put_byte(58)
+                else:
+                    self.dyn_str.put_byte(self.rpath.b[k])
+            self.dyn_str.put_byte(0)
+        for k in 0..ndyn:
+            self.str_sym.push(self.dyn_str.n)
+            let w = self.name_of(self.dyn_ids.b[k])
+            self.dyn_str.put_all(&w)
+            self.dyn_str.put_byte(0)
+        let g = self.gsize[1]
+        self.d_interp = g
+        g = align_to(g + 28, 8)
+        self.d_hash = g
+        g = align_to(g + 4 * (3 + nsym), 8)
+        self.d_sym = g
+        g = g + 24 * nsym
+        self.d_str = g
+        g = align_to(g + self.dyn_str.n, 8)
+        self.d_rela = g
+        g = g + 24 * ndyn
+        self.gsize[1] = g
+        let d = align_to(self.gsize[2], 8)
+        self.d_got = d
+        d = d + 8 * self.ngot
+        self.d_dynamic = d
+        d = d + 16 * (self.nneed + 12)
+        self.gsize[2] = d
+        if self.galign[2] < 8:
+            self.galign[2] = 8
+
+    /#/ The image: zeros, with the bytes of every section that has some in its place.
+    fn build_image(self) => Txt:
+        let mem = new_txt()
+        put_zeros(&mem, self.image_size)
+        for s in 0..self.sc_type.n:
+            let g = self.sc_grp.b[s]
+            if g >= 0 && g != g_bss():
+                for k in 0..self.sc_size.b[s]:
+                    mem.b[self.sc_rva.b[s] + k] = self.blob.b[self.sc_off.b[s] + k]
+        return mem
+
+    /#/ ---- relocation ---------------------------------------------------------------------------
+
+    /#/ The address of symbol `sid` for an image loaded at `base`; 0 for an undefined weak one.
+    fn sym_addr(self, sid: int, base: int) => int:
+        let f = self.final_sym(sid)
+        let sec = self.y_sec.b[f]
+        if sec == no_sec():
+            let d = self.dyn_of(f)
+            if d >= 0:
+                if self.cp_off.n > d && self.cp_off.b[d] >= 0:
+                    return base + self.gbase[3] + self.cp_off.b[d]
+                return base + self.gbase[0] + self.d_stub + 8 * d
+            return 0
+        if sec == abs_sec():
+            return self.y_val.b[f]
+        if sec == common_sec():
+            return base + self.y_rva.b[f]
+        if self.sc_grp.b[sec] < 0:
+            return 0
+        return base + self.sc_rva.b[sec] + self.y_val.b[f]
+
+    fn got_addr(self, sid: int, base: int) => int:
+        let f = self.final_sym(sid)
+        let d = self.dyn_of(f)
+        if d >= 0:
+            return base + self.got_rva + 8 * d
+        return base + self.got_rva + 8 * self.y_got.b[f]
+
+    /#/ Patches `mem`, the image from `build_image`, for a load address of `base`: fills the GOT
+    /#/ and applies every relocation. Returns the number of errors.
+    fn apply_relocs(self, mem: &Txt, base: int) => int:
+        let bad = 0
+        for y in 0..self.y_got.n:
+            if self.y_got.b[y] >= 0:
+                wr64(mem, self.got_rva + 8 * self.y_got.b[y], self.sym_addr(y, base))
+        for r in 0..self.r_type.n:
+            let s = self.r_sec.b[r]
+            if self.sc_grp.b[s] >= 0:
+                let ty = self.r_type.b[r]
+                let at = self.sc_rva.b[s] + self.r_off.b[r]
+                let p = base + at
+                let a = self.r_add.b[r]
+                let sym = self.r_sym.b[r]
+                if ty == 0:
+                    continue
+                if ld_arch == 1:
+                    bad = bad + self.apply_a64(mem, at, p, ty, sym, a, base, r)
+                    continue
+                if ld_arch == 2:
+                    bad = bad + self.apply_rv(mem, at, p, ty, sym, a, base, r)
+                    continue
+                if ty == 1:
+                    wr64(mem, at, self.sym_addr(sym, base) + a)
+                elif ty == 24:
+                    wr64(mem, at, self.sym_addr(sym, base) + a - p)
+                elif ty == 2 || ty == 4:
+                    bad = bad + self.put_signed(mem, at, self.sym_addr(sym, base) + a - p, r)
+                elif ty == 9 || ty == 41 || ty == 42:
+                    bad = bad + self.put_signed(mem, at, self.got_addr(sym, base) + a - p, r)
+                elif ty == 10:
+                    let v = self.sym_addr(sym, base) + a
+                    if v < 0 || v > 4294967295:
+                        bad = bad + self.reloc_err("relocation out of range", r)
+                    else:
+                        wr32(mem, at, v)
+                elif ty == 11:
+                    bad = bad + self.put_signed(mem, at, self.sym_addr(sym, base) + a, r)
+                else:
+                    bad = bad + self.reloc_err("unsupported relocation type", r)
+        return bad
+
+    /#/ One relocation of an aarch64 object: `at` is the place in the image, `p` its address.
+    fn apply_a64(self, mem: &Txt, at: int, p: int, ty: int, sym: int, a: int, base: int, r: int) => int:
+        let s = self.sym_addr(sym, base) + a
+        if ty == 257:
+            wr64(mem, at, s)
+            return 0
+        if ty == 261:
+            return self.put_signed(mem, at, s - p, r)
+        if ty == 258:
+            if s < 0 || s > 4294967295:
+                return self.reloc_err("relocation out of range", r)
+            wr32(mem, at, s)
+            return 0
+        let w = rd32(mem, at)
+        if ty == 283 || ty == 282:
+            let d = s - p
+            if d % 4 != 0 || d < 0 - 134217728 || d >= 134217728:
+                return self.reloc_err("branch out of range", r)
+            wr32(mem, at, w | ((d >> 2) & 67108863))
+            return 0
+        if ty == 275 || ty == 311:
+            let t = s
+            if ty == 311:
+                t = self.got_addr(sym, base)
+            let d = (t >> 12) - (p >> 12)
+            if d < 0 - 1048576 || d >= 1048576:
+                return self.reloc_err("page offset out of range", r)
+            wr32(mem, at, w | ((d & 3) << 29) | (((d >> 2) & 524287) << 5))
+            return 0
+        let lo = s & 4095
+        if ty == 277 || ty == 278:
+            wr32(mem, at, w | (lo << 10))
+        elif ty == 284:
+            wr32(mem, at, w | ((lo >> 1) << 10))
+        elif ty == 285:
+            wr32(mem, at, w | ((lo >> 2) << 10))
+        elif ty == 286:
+            wr32(mem, at, w | ((lo >> 3) << 10))
+        elif ty == 299:
+            wr32(mem, at, w | ((lo >> 4) << 10))
+        elif ty == 312:
+            wr32(mem, at, w | (((self.got_addr(sym, base) & 4095) >> 3) << 10))
+        else:
+            return self.reloc_err("unsupported relocation type", r)
+        return 0
+
+    /#/ One RISC-V relocation: the 32 and 64-bit data words, a call (auipc and jalr, 8 bytes), and the upper and lower parts of an
+    /#/ absolute address (lui and addi, or a load).
+    fn apply_rv(self, mem: &Txt, at: int, p: int, ty: int, sym: int, a: int, base: int, r: int) => int:
+        let s = self.sym_addr(sym, base) + a
+        if ty == 2:
+            wr64(mem, at, s)
+            return 0
+        if ty == 1:
+            wr32(mem, at, s & 4294967295)
+            return 0
+        if ty == 18 || ty == 19:
+            let d = s - p
+            if d < 0 - 2147483648 || d >= 2147483648:
+                return self.reloc_err("call out of range", r)
+            let hi = ((d + 2048) >> 12) & 1048575
+            let lo = d - (((d + 2048) >> 12) << 12)
+            wr32(mem, at, rd32(mem, at) | (hi << 12))
+            wr32(mem, at + 4, rd32(mem, at + 4) | ((lo & 4095) << 20))
+            return 0
+        if ty == 26 || ty == 27 || ty == 28:
+            if s < 0 || s >= 2147481600:
+                return self.reloc_err("address out of range (the program must lie below 2 GiB)", r)
+            if ty == 26:
+                wr32(mem, at, rd32(mem, at) | ((((s + 2048) >> 12) & 1048575) << 12))
+            elif ty == 27:
+                wr32(mem, at, rd32(mem, at) | ((s & 4095) << 20))
+            else:
+                let lo = s & 4095
+                wr32(mem, at, rd32(mem, at) | ((lo >> 5) << 25) | ((lo & 31) << 7))
+            return 0
+        return self.reloc_err("unsupported relocation type", r)
+
+    fn put_signed(self, mem: &Txt, at: int, v: int, r: int) => int:
+        if v < 0 - 2147483648 || v > 2147483647:
+            return self.reloc_err("relocation out of range", r)
+        wr32(mem, at, v)
+        return 0
+
+    fn reloc_err(self, what: &str, r: int) => int:
+        self.errs = self.errs + 1
+        say(f"ld: {what} (type {self.r_type.b[r]})\n")
+        fflush(0)
+        return 1
+
+fn new_linker() => Linker:
+    return Linker { blob: new_txt(), errs: 0, nin: 0, in_sec0: new_col(), in_sym0: new_col(), sc_type: new_col(), sc_flags: new_col(), sc_off: new_col(), sc_size: new_col(), sc_align: new_col(), sc_grp: new_col(), sc_goff: new_col(), sc_rva: new_col(), y_sec: new_col(), y_val: new_col(), y_size: new_col(), y_bind: new_col(), y_type: new_col(), y_nm: new_col(), y_rva: new_col(), y_got: new_col(), r_sec: new_col(), r_off: new_col(), r_type: new_col(), r_sym: new_col(), r_add: new_col(), pool: new_txt(), nm_off: new_col(), ht: new_buf(int, 64), g_def: new_col(), g_how: new_col(), g_need: new_col(), pulled: new_col(), gsize: new_buf(int, 4), galign: new_buf(int, 4), gbase: new_buf(int, 4), ngot: 0, got_rva: 0, sg_off: new_col(), sg_rva: new_col(), sg_fsz: new_col(), sg_msz: new_col(), sg_flags: new_col(), image_size: 0, gc_on: false, quiet: false, syms: false, dbg: new_txt(), nshdr: 0, live: new_buf(int, 1), dyn_on: false, g_dyn: new_col(), dyn_ix: new_col(), dyn_ids: new_col(), g_dty: new_col(), g_dsz: new_col(), g_dval: new_col(), dyn_alias: new_col(), cp_off: new_col(), so_names: new_txt(), so_used: new_col(), so_count: 0, dyn_str: new_txt(), str_so: new_col(), str_sym: new_col(), nneed: 0, rpath: new_txt(), str_rpath: 0, d_stub: 0, d_interp: 0, d_hash: 0, d_sym: 0, d_str: 0, d_rela: 0, d_dynamic: 0, d_got: 0 }
+
+/#/ The tables of a dynamically linked x86-64 executable, written into the image once its addresses
+/#/ are known: a stub in the text for each import (`jmp *slot`), the interpreter name, the symbol
+/#/ table with its hash and strings, one `R_X86_64_GLOB_DAT` for each import, and the dynamic section.
+/#/ The loader binds everything at start (`DT_FLAGS` BIND_NOW), so there is no lazy PLT.
+
+/#/ The command line, word by word. Coffee's `main` has no arguments, so they are read from
+/#/ /proc/self/cmdline, where the words end in NUL bytes.
+
+
+class Args:
+    text: Txt
+    at: buf<int>
+    n: int
+
+    fn get(self, i: int) => Txt:
+        return cut(&self.text, self.at[i], self.at[i + 1])
+
+fn cut(t: &Txt, lo: int, hi: int) => Txt:
+    let r = new_txt()
+    for i in lo..hi:
+        r.put_byte(t.b[i])
+    return r
+
+fn read_args() => Args:
+    let p = txt_of("/proc/self/cmdline")
+    let raw = read_file(&p)
+    let a = Args { text: new_txt(), at: new_buf(int, 16), n: 0 }
+    a.at[0] = 0
+    for i in 0..raw.n:
+        if raw.b[i] == 0:
+            a.n = a.n + 1
+            if a.n + 1 >= len(a.at):
+                a.at = buf_resize(a.at, (a.n + 1) * 2)
+            a.at[a.n] = a.text.n
+        else:
+            a.text.put_byte(raw.b[i])
+    return a
+
+
+fn dyn_interp() => str:
+    return "/lib64/ld-linux-x86-64.so.2"
+
+fn dyn_fill(l: &Linker, mem: &Txt, base: int) => void:
+    let ndyn = l.dyn_ids.n
+    let nsym = ndyn + 1
+    let g0 = l.gbase[0]
+    let g1 = l.gbase[1]
+    let g2 = l.gbase[2]
+    let g3 = l.gbase[3]
+    for d in 0..ndyn:
+        let at = g0 + l.d_stub + 8 * d
+        mem.b[at] = 255
+        mem.b[at + 1] = 37
+        wr32(mem, at + 2, (l.got_rva + 8 * d) - (at + 6))
+        mem.b[at + 6] = 204
+        mem.b[at + 7] = 204
+    let ip = dyn_interp()
+    for k in 0..len(ip):
+        mem.b[g1 + l.d_interp + k] = int(ip[k])
+    let h = g1 + l.d_hash
+    wr32(mem, h, 1)
+    wr32(mem, h + 4, nsym)
+    let sy = g1 + l.d_sym
+    let prev = 0
+    for d in 0..ndyn:
+        let e = sy + 24 * (d + 1)
+        wr32(mem, e, l.str_sym.b[d])
+        if l.cp_off.b[d] >= 0:
+            /#/ defined here, so the libraries bind to the copy; the hash chain has these only
+            let id = l.dyn_ids.b[d]
+            mem.b[e + 4] = 17
+            mem.b[e + 6] = 241
+            mem.b[e + 7] = 255
+            wr64(mem, e + 8, base + g3 + l.cp_off.b[d])
+            wr64(mem, e + 16, l.g_dsz.b[id])
+            if prev == 0:
+                wr32(mem, h + 8, d + 1)
+            else:
+                wr32(mem, h + 12 + 4 * prev, d + 1)
+            prev = d + 1
+        else:
+            mem.b[e + 4] = 18
+    for k in 0..l.dyn_str.n:
+        mem.b[g1 + l.d_str + k] = l.dyn_str.b[k]
+    let ra = g1 + l.d_rela
+    for d in 0..ndyn:
+        let e = ra + 24 * d
+        if l.cp_off.b[d] >= 0:
+            /#/ a copy: R_X86_64_COPY, and the GOT slot holds the copy's address
+            wr64(mem, e, base + g3 + l.cp_off.b[d])
+            if l.dyn_alias.b[d] < 0:
+                wr64(mem, e + 8, ((d + 1) << 32) + 5)
+            wr64(mem, l.got_rva + 8 * d, base + g3 + l.cp_off.b[d])
+        else:
+            wr64(mem, e, base + l.got_rva + 8 * d)
+            wr64(mem, e + 8, ((d + 1) << 32) + 6)
+    let dy = g2 + l.d_dynamic
+    let n = 0
+    for i in 0..l.nneed:
+        wr64(mem, dy + 16 * n, 1)
+        wr64(mem, dy + 16 * n + 8, l.str_so.b[i])
+        n = n + 1
+    let tags = [4, 5, 6, 10, 11, 7, 8, 9, 30, 21, 29]
+    let vals = [base + g1 + l.d_hash, base + g1 + l.d_str, base + g1 + l.d_sym, l.dyn_str.n, 24, base + g1 + l.d_rela, 24 * ndyn, 24, 8, 0, l.str_rpath]
+    let nt = 10
+    if l.rpath.n > 0:
+        nt = 11
+    for k in 0..nt:
+        wr64(mem, dy + 16 * n, tags[k])
+        wr64(mem, dy + 16 * n + 8, vals[k])
+        n = n + 1
+
+/#/ The file offset of image address `rva`.
+fn file_off(l: &Linker, rva: int) => int:
+    for k in 0..l.sg_off.n:
+        if rva >= l.sg_rva.b[k] && rva < l.sg_rva.b[k] + l.sg_fsz.b[k]:
+            return l.sg_off.b[k] + rva - l.sg_rva.b[k]
+    return 0
+
+/#/ The shared library `lib<name>.so` (or a versioned `.so.N`) in the directories and the usual places:
+/#/ the first that is an ELF file; an empty text if none.
+fn find_shared(dirs: &Txt, name: &Txt) => Txt:
+    let ds = new_txt()
+    ds.put_all(dirs)
+    ds.put("/lib/x86_64-linux-gnu\n/usr/lib/x86_64-linux-gnu\n/usr/lib64\n/usr/lib\n/lib64\n/lib\n")
+    let lo = 0
+    for i in 0..ds.n:
+        if ds.b[i] == 10:
+            let d = cut(&ds, lo, i)
+            lo = i + 1
+            for v in 0..12:
+                let p = copy_txt(&d)
+                p.put("/lib")
+                p.put_all(name)
+                p.put(".so")
+                if v == 1:
+                    p.put(".6")
+                elif v == 2:
+                    p.put(".1")
+                elif v == 3:
+                    p.put(".0")
+                elif v == 4:
+                    p.put(".2")
+                elif v == 5:
+                    p.put(".3")
+                elif v == 6:
+                    p.put(".4")
+                elif v == 7:
+                    p.put(".5")
+                elif v == 8:
+                    p.put(".7")
+                elif v == 9:
+                    p.put(".8")
+                elif v == 10:
+                    p.put(".9")
+                elif v == 11:
+                    p.put(".10")
+                let data = read_file(&p)
+                if data.n > 4 && data.b[0] == 127 && data.b[1] == 69:
+                    return p
+    return new_txt()
+
+/#/ DWARF for a linked executable: the function addresses the link gave, for `dwcore.cf`.
+
+/#/ DWARF sections (`.debug_abbrev`, `.debug_info`, `.debug_line`, `.debug_frame`) made from the line and type
+/#/ tables the compiler leaves (`D dir`, `T` types, `F function`, `L offset file:line`, `V` variables) and the
+/#/ addresses of the functions, which a link or a loaded JIT image gives. Version 4, so `gdb`, `valgrind` and
+/#/ `perf` read it.
+
+
+fn dw_uleb(t: &Txt, v: int) => void:
+    let x = v
+    let more = true
+    while more:
+        let b = x & 127
+        x = x >> 7
+        if x != 0:
+            t.put_byte(b | 128)
+        else:
+            t.put_byte(b)
+            more = false
+
+fn dw_sleb(t: &Txt, v: int) => void:
+    let x = v
+    let more = true
+    while more:
+        let b = x & 127
+        x = x >> 7
+        let sign = (b & 64) != 0
+        if (x == 0 && !sign) || (x == 0 - 1 && sign):
+            t.put_byte(b)
+            more = false
+        else:
+            t.put_byte(b | 128)
+
+fn dw_w16(t: &Txt, v: int) => void:
+    for k in 0..2:
+        t.put_byte((v >> (8 * k)) & 255)
+
+fn dw_w32(t: &Txt, v: int) => void:
+    for k in 0..4:
+        t.put_byte((v >> (8 * k)) & 255)
+
+fn dw_w64(t: &Txt, v: int) => void:
+    for k in 0..8:
+        t.put_byte((v >> (8 * k)) & 255)
+
+
+class DwList:
+    b: buf<int>
+    n: int
+
+fn new_dw_list() => DwList:
+    return DwList { b: new_buf(int, 64), n: 0 }
+
+fn dw_push(l: &DwList, v: int) => void:
+    if l.n >= len(l.b):
+        l.b = buf_resize(l.b, (l.n + 1) * 2)
+    l.b[l.n] = v
+    l.n = l.n + 1
+
+/#/ The end of the word of `t` that starts at `s` (words are separated by spaces, `e` ends the line).
+fn dw_wend(t: &Txt, s: int, e: int) => int:
+    let k = s
+    while k < e && t.b[k] != 32:
+        k = k + 1
+    return k
+
+fn dw_num(t: &Txt, s: int, e: int) => int:
+    let neg = false
+    let k = s
+    if k < e && t.b[k] == 45:
+        neg = true
+        k = k + 1
+    let v = 0
+    while k < e:
+        v = v * 10 + t.b[k] - 48
+        k = k + 1
+    if neg:
+        return 0 - v
+    return v
+
+fn dw_str(out: &Txt, t: &Txt, s: int, e: int) => void:
+    for k in s..e:
+        out.put_byte(t.b[k])
+    out.put_byte(0)
+
+/#/ A reference to the type `id`, patched when the offsets of all types are known.
+fn dw_ref(out: &Txt, fx_p: &DwList, fx_i: &DwList, id: int) => void:
+    dw_push(fx_p, out.n)
+    dw_push(fx_i, id)
+    dw_w32(out, 0)
+
+fn dw_ab(abbrev: &Txt, code: int, tag: int, kids: int) => void:
+    abbrev.put_byte(code)
+    abbrev.put_byte(tag)
+    abbrev.put_byte(kids)
+
+fn dw_abp(abbrev: &Txt, at: int, form: int) => void:
+    abbrev.put_byte(at)
+    abbrev.put_byte(form)
+    
+/#/ The DIE of the type line `T id kind ...` in `t[s..e]`.
+fn dw_type(out: &Txt, ids: &DwList, offs: &DwList, fx_p: &DwList, fx_i: &DwList, t: &Txt, s: int, e: int) => void:
+    let a = dw_wend(t, s + 2, e)
+    let id = dw_num(t, s + 2, a)
+    let kind = t.b[a + 1]
+    let w = a + 3
+    dw_push(ids, id)
+    dw_push(offs, out.n)
+    if kind == int('i') || kind == int('f') || kind == int('o'):
+        let w2 = dw_wend(t, w, e)
+        let size = dw_num(t, w, w2)
+        out.put_byte(4)
+        let enc = 8
+        if kind == int('i'):
+            let w3 = dw_wend(t, w2 + 1, e)
+            let signed = dw_num(t, w2 + 1, w3)
+            enc = 7
+            dw_int_name(out, signed, size)
+            if signed == 1:
+                enc = 5
+        elif kind == int('f'):
+            enc = 4
+            out.put("float")
+            if size != 8:
+                out.put("32")
+        else:
+            out.put("bytes")
+        out.put_byte(0)
+        out.put_byte(enc)
+        dw_uleb(out, size)
+    elif kind == int('b'):
+        out.put_byte(4)
+        out.put("bool")
+        out.put_byte(0)
+        out.put_byte(2)
+        dw_uleb(out, 1)
+    elif kind == int('s'):
+        out.put_byte(5)
+        dw_uleb(out, 8)
+        dw_ref(out, fx_p, fx_i, 0 - 2)
+    elif kind == int('p'):
+        let target = dw_num(t, w, e)
+        if target < 0:
+            out.put_byte(6)
+            dw_uleb(out, 8)
+        else:
+            out.put_byte(5)
+            dw_uleb(out, 8)
+            dw_ref(out, fx_p, fx_i, target)
+    elif kind == int('S'):
+        let w2 = dw_wend(t, w, e)
+        out.put_byte(7)
+        dw_str(out, t, w, w2)
+        let w3 = dw_wend(t, w2 + 1, e)
+        dw_uleb(out, dw_num(t, w2 + 1, w3))
+        let w4 = dw_wend(t, w3 + 1, e)
+        let q = w4 + 1
+        while q < e:
+            let q2 = dw_wend(t, q, e)
+            let c1 = q
+            while c1 < q2 && t.b[c1] != 58:
+                c1 = c1 + 1
+            let c2 = c1 + 1
+            while c2 < q2 && t.b[c2] != 58:
+                c2 = c2 + 1
+            out.put_byte(8)
+            dw_str(out, t, q, c1)
+            dw_ref(out, fx_p, fx_i, dw_num(t, c1 + 1, c2))
+            dw_uleb(out, dw_num(t, c2 + 1, q2))
+            q = q2 + 1
+        out.put_byte(0)
+
+fn dw_int_name(out: &Txt, signed: int, size: int) => void:
+    if signed == 1 && size == 8:
+        out.put("int")
+        return
+    if signed == 1:
+        out.put("int")
+    else:
+        out.put("uint")
+    out.put_int(size * 8)
+
+/#/ The DIE of the variable line `V name type offset P|L` in `t[s..e]`.
+fn dw_var(out: &Txt, fx_p: &DwList, fx_i: &DwList, t: &Txt, s: int, e: int) => void:
+    let a = dw_wend(t, s + 2, e)
+    let b = dw_wend(t, a + 1, e)
+    let c = dw_wend(t, b + 1, e)
+    if t.b[c + 1] == int('P'):
+        out.put_byte(9)
+    else:
+        out.put_byte(10)
+    dw_str(out, t, s + 2, a)
+    dw_ref(out, fx_p, fx_i, dw_num(t, a + 1, b))
+    let ex = new_txt()
+    /#/ DW_OP_fbreg: the offset from rbp, which is the CFA - 16
+    ex.put_byte(145)
+    dw_sleb(&ex, dw_num(t, b + 1, c) - 16)
+    dw_uleb(out, ex.n)
+    out.put_all(&ex)
+
+/#/ Writes the offset of each reference the type table gave out.
+fn dw_patch(out: &Txt, fx_p: &DwList, fx_i: &DwList, ids: &DwList, offs: &DwList, base: int, shift: int) => void:
+    for k in 0..fx_p.n:
+        let want = fx_i.b[k]
+        let v = 0
+        for j in 0..ids.n:
+            if ids.b[j] == want:
+                v = base + offs.b[j]
+        for m in 0..4:
+            out.b[shift + fx_p.b[k] + m] = (v >> (8 * m)) & 255
+
+/#/ The number (from 1) of `name` among the lines of `files`, which gets it when it is new.
+fn dw_file(files: &Txt, name: &Txt) => int:
+    let n = 0
+    let s = 0
+    for i in 0..files.n:
+        if files.b[i] == 10:
+            n = n + 1
+            if i - s == name.n:
+                let same = true
+                for k in 0..name.n:
+                    if files.b[s + k] != name.b[k]:
+                        same = false
+                if same:
+                    return n
+            s = i + 1
+    files.put_all(name)
+    files.put_byte(10)
+    return n + 1
+
+/#/ Appends the DIE of the function read last (`fhead`, its variables in `fvars`) to `kids`.
+fn dw_flush(kids: &Txt, fhead: &Txt, fvars: &Txt, ffx_p: &DwList, ffx_i: &DwList, kfx_p: &DwList, kfx_i: &DwList, nvar: int) => void:
+    if fhead.n == 0:
+        return
+    if nvar > 0:
+        kids.put_byte(3)
+    else:
+        kids.put_byte(2)
+    kids.put_all(fhead)
+    if nvar > 0:
+        for k in 0..ffx_p.n:
+            dw_push(kfx_p, kids.n + ffx_p.b[k])
+            dw_push(kfx_i, ffx_i.b[k])
+        kids.put_all(fvars)
+        kids.put_byte(0)
+    fhead.clear()
+    fvars.clear()
+    ffx_p.n = 0
+    ffx_i.n = 0
+
+/#/ Makes the three sections; false when no function has lines.
+/#/ `ta` and `ts` have, for the n-th `F` line of the table `t`, the address and size of that function
+/#/ (address -1: it is not in the program).
+fn build_dwarf_core(t: &Txt, ta: &DwList, ts: &DwList, abbrev: &Txt, info: &Txt, line: &Txt, frame: &Txt) => bool:
+    let fk = 0 - 1
+    if t.n == 0:
+        return false
+    let dir = new_txt()
+    let files = new_txt()
+    let prog = new_txt()
+    let kids = new_txt()
+    /#/ the type DIEs, their ids and offsets, and the references to patch (in them, in the kids, in the
+    /#/ function being read)
+    let tdies = new_txt()
+    let tids = new_dw_list()
+    let toffs = new_dw_list()
+    let tfx_p = new_dw_list()
+    let tfx_i = new_dw_list()
+    let kfx_p = new_dw_list()
+    let kfx_i = new_dw_list()
+    let ffx_p = new_dw_list()
+    let ffx_i = new_dw_list()
+    let fhead = new_txt()
+    let fvars = new_txt()
+    let nvar = 0
+    /#/ .debug_frame: the one CIE (the CFA is rsp+8 at a function's entry, the return address below it)
+    dw_w32(frame, 20)
+    dw_w32(frame, 4294967295)
+    frame.put_byte(1)
+    frame.put_byte(0)
+    frame.put_byte(1)
+    frame.put_byte(120)
+    frame.put_byte(16)
+    frame.put_byte(12)
+    frame.put_byte(7)
+    frame.put_byte(8)
+    frame.put_byte(144)
+    frame.put_byte(1)
+    for k in 0..6:
+        frame.put_byte(0)
+    /#/ the char type that string pointers point to
+    dw_push(&tids, 0 - 2)
+    dw_push(&toffs, 0)
+    tdies.put_byte(4)
+    tdies.put("char")
+    tdies.put_byte(0)
+    tdies.put_byte(6)
+    dw_uleb(&tdies, 1)
+    let lo = 0
+    let hi = 0
+    let nfn = 0
+    /#/ the function being read
+    let live = false
+    let fresh = false
+    let faddr = 0
+    let fsize = 0
+    let cur_addr = 0
+    let cur_line = 1
+    let cur_file = 1
+    let start = 0
+    for i in 0..t.n + 1:
+        if i < t.n && t.b[i] != 10:
+            continue
+        if i > start + 2 && t.b[start + 1] == 32:
+            let c = t.b[start]
+            if c == int('D'):
+                if dir.n == 0:
+                    for k in start + 2..i:
+                        dir.put_byte(t.b[k])
+            elif c == int('T'):
+                dw_type(&tdies, &tids, &toffs, &tfx_p, &tfx_i, t, start, i)
+            elif c == int('V'):
+                if live:
+                    dw_var(&fvars, &ffx_p, &ffx_i, t, start, i)
+                    nvar = nvar + 1
+            elif c == int('F'):
+                fk = fk + 1
+                dw_flush(&kids, &fhead, &fvars, &ffx_p, &ffx_i, &kfx_p, &kfx_i, nvar)
+                nvar = 0
+                if live:
+                    if faddr + fsize > cur_addr:
+                        prog.put_byte(2)
+                        dw_uleb(&prog, faddr + fsize - cur_addr)
+                    prog.put_byte(0)
+                    prog.put_byte(1)
+                    prog.put_byte(1)
+                live = false
+                let w = new_txt()
+                for k in start + 2..i:
+                    w.put_byte(t.b[k])
+                let ad = 0 - 1
+                if fk < ta.n:
+                    ad = ta.b[fk]
+                if ad >= 0:
+                    live = true
+                    fresh = true
+                    faddr = ad
+                    fsize = ts.b[fk]
+                    if nfn == 0 || faddr < lo:
+                        lo = faddr
+                    if faddr + fsize > hi:
+                        hi = faddr + fsize
+                    nfn = nfn + 1
+                    prog.put_byte(0)
+                    prog.put_byte(9)
+                    prog.put_byte(2)
+                    dw_w64(&prog, faddr)
+                    cur_addr = faddr
+                    cur_line = 1
+                    cur_file = 1
+                    fhead.put_all(&w)
+                    fhead.put_byte(0)
+                    dw_w64(&fhead, faddr)
+                    dw_w64(&fhead, fsize)
+                    /#/ the frame base is the CFA, which is rbp+16 once `push rbp; mov rbp, rsp` ran
+                    fhead.put_byte(1)
+                    fhead.put_byte(156)
+                    dw_w32(frame, 28)
+                    dw_w32(frame, 0)
+                    dw_w64(frame, faddr)
+                    dw_w64(frame, fsize)
+                    frame.put_byte(65)
+                    frame.put_byte(14)
+                    frame.put_byte(16)
+                    frame.put_byte(134)
+                    frame.put_byte(2)
+                    frame.put_byte(67)
+                    frame.put_byte(13)
+                    frame.put_byte(6)
+            elif c == int('L') && live:
+                let q = start + 2
+                let off = 0
+                while q < i && t.b[q] != 32:
+                    off = off * 10 + t.b[q] - 48
+                    q = q + 1
+                q = q + 1
+                let colon = i
+                for k in q..i:
+                    if t.b[k] == 58:
+                        colon = k
+                let name = new_txt()
+                for k in q..colon:
+                    name.put_byte(t.b[k])
+                let ln = 0
+                for k in colon + 1..i:
+                    ln = ln * 10 + t.b[k] - 48
+                let fi = dw_file(&files, &name)
+                if fresh && off > 0:
+                    /#/ the start of the function is a row too (the line of its first statement), so that a
+                    /#/ debugger sees the prologue as part of the function
+                    if fi != cur_file:
+                        prog.put_byte(4)
+                        dw_uleb(&prog, fi)
+                        cur_file = fi
+                    prog.put_byte(3)
+                    dw_sleb(&prog, ln - cur_line)
+                    cur_line = ln
+                    prog.put_byte(1)
+                fresh = false
+                if fi != cur_file:
+                    prog.put_byte(4)
+                    dw_uleb(&prog, fi)
+                    cur_file = fi
+                if ln != cur_line:
+                    prog.put_byte(3)
+                    dw_sleb(&prog, ln - cur_line)
+                    cur_line = ln
+                if faddr + off > cur_addr:
+                    prog.put_byte(2)
+                    dw_uleb(&prog, faddr + off - cur_addr)
+                    cur_addr = faddr + off
+                prog.put_byte(1)
+        start = i + 1
+    dw_flush(&kids, &fhead, &fvars, &ffx_p, &ffx_i, &kfx_p, &kfx_i, nvar)
+    if live:
+        if faddr + fsize > cur_addr:
+            prog.put_byte(2)
+            dw_uleb(&prog, faddr + fsize - cur_addr)
+        prog.put_byte(0)
+        prog.put_byte(1)
+        prog.put_byte(1)
+    if nfn == 0:
+        return false
+    /#/ .debug_abbrev
+    abbrev.put_byte(1)
+    abbrev.put_byte(17)
+    abbrev.put_byte(1)
+    for p in 0..7:
+        let at = 0
+        let form = 0
+        if p == 0:
+            at = 37
+            form = 8
+        elif p == 1:
+            at = 19
+            form = 11
+        elif p == 2:
+            at = 3
+            form = 8
+        elif p == 3:
+            at = 27
+            form = 8
+        elif p == 4:
+            at = 17
+            form = 1
+        elif p == 5:
+            at = 18
+            form = 7
+        else:
+            at = 16
+            form = 23
+        abbrev.put_byte(at)
+        abbrev.put_byte(form)
+    abbrev.put_byte(0)
+    abbrev.put_byte(0)
+    for code in 2..4:
+        dw_ab(abbrev, code, 46, code - 2)
+        dw_abp(abbrev, 3, 8)
+        dw_abp(abbrev, 17, 1)
+        dw_abp(abbrev, 18, 7)
+        dw_abp(abbrev, 64, 24)
+        dw_abp(abbrev, 63, 25)
+        abbrev.put_byte(0)
+        abbrev.put_byte(0)
+    dw_ab(abbrev, 4, 36, 0)
+    dw_abp(abbrev, 3, 8)
+    dw_abp(abbrev, 62, 11)
+    dw_abp(abbrev, 11, 15)
+    abbrev.put_byte(0)
+    abbrev.put_byte(0)
+    dw_ab(abbrev, 5, 15, 0)
+    dw_abp(abbrev, 11, 15)
+    dw_abp(abbrev, 73, 19)
+    abbrev.put_byte(0)
+    abbrev.put_byte(0)
+    dw_ab(abbrev, 6, 15, 0)
+    dw_abp(abbrev, 11, 15)
+    abbrev.put_byte(0)
+    abbrev.put_byte(0)
+    dw_ab(abbrev, 7, 19, 1)
+    dw_abp(abbrev, 3, 8)
+    dw_abp(abbrev, 11, 15)
+    abbrev.put_byte(0)
+    abbrev.put_byte(0)
+    dw_ab(abbrev, 8, 13, 0)
+    dw_abp(abbrev, 3, 8)
+    dw_abp(abbrev, 73, 19)
+    dw_abp(abbrev, 56, 15)
+    abbrev.put_byte(0)
+    abbrev.put_byte(0)
+    for code in 9..11:
+        dw_ab(abbrev, code, 5 + (code - 9) * 47, 0)
+        dw_abp(abbrev, 3, 8)
+        dw_abp(abbrev, 73, 19)
+        dw_abp(abbrev, 2, 24)
+        abbrev.put_byte(0)
+        abbrev.put_byte(0)
+    abbrev.put_byte(0)
+    /#/ .debug_info
+    let cu = new_txt()
+    cu.put_byte(1)
+    cu.put("coffee2")
+    cu.put_byte(0)
+    cu.put_byte(12)
+    let first = 0
+    while first < files.n && files.b[first] != 10:
+        cu.put_byte(files.b[first])
+        first = first + 1
+    cu.put_byte(0)
+    if dir.n == 0:
+        cu.put_byte(46)
+    cu.put_all(&dir)
+    cu.put_byte(0)
+    dw_w64(&cu, lo)
+    dw_w64(&cu, hi - lo)
+    dw_w32(&cu, 0)
+    /#/ offsets in the unit: its 11 byte header, then the DIE above, the types, the functions
+    let cbase = 11 + cu.n
+    dw_patch(&tdies, &tfx_p, &tfx_i, &tids, &toffs, cbase, 0)
+    dw_patch(&kids, &kfx_p, &kfx_i, &tids, &toffs, cbase, 0)
+    cu.put_all(&tdies)
+    cu.put_all(&kids)
+    cu.put_byte(0)
+    dw_w32(info, cu.n + 7)
+    dw_w16(info, 4)
+    dw_w32(info, 0)
+    info.put_byte(8)
+    info.put_all(&cu)
+    /#/ .debug_line
+    let hdr = new_txt()
+    hdr.put_byte(1)
+    hdr.put_byte(1)
+    hdr.put_byte(1)
+    hdr.put_byte(251)
+    hdr.put_byte(14)
+    hdr.put_byte(13)
+    for k in 0..12:
+        let n = 0
+        if k == 1 || k == 2 || k == 3 || k == 4 || k == 8 || k == 11:
+            n = 1
+        hdr.put_byte(n)
+    hdr.put_byte(0)
+    let s = 0
+    for i in 0..files.n:
+        if files.b[i] == 10:
+            for k in s..i:
+                hdr.put_byte(files.b[k])
+            hdr.put_byte(0)
+            hdr.put_byte(0)
+            hdr.put_byte(0)
+            hdr.put_byte(0)
+            s = i + 1
+    hdr.put_byte(0)
+    dw_w32(line, 2 + 4 + hdr.n + prog.n)
+    dw_w16(line, 4)
+    dw_w32(line, hdr.n)
+    line.put_all(&hdr)
+    line.put_all(&prog)
+    return true
+
+
+/#/ Makes the four sections; false when no function has lines.
+fn build_dwarf(l: &Linker, base: int, abbrev: &Txt, info: &Txt, line: &Txt, frame: &Txt) => bool:
+    let t = &l.dbg
+    let ta = new_dw_list()
+    let ts = new_dw_list()
+    let start = 0
+    for i in 0..t.n + 1:
+        if i < t.n && t.b[i] != 10:
+            continue
+        if i > start + 2 && t.b[start] == int('F') && t.b[start + 1] == 32:
+            let w = new_txt()
+            for k in start + 2..i:
+                w.put_byte(t.b[k])
+            let addr = 0 - 1
+            let size = 0
+            let id = l.find(&w)
+            if id >= 0 && l.g_def.b[id] >= 0:
+                let sid = l.g_def.b[id]
+                let f = l.final_sym(sid)
+                let sec = l.y_sec.b[f]
+                if sec >= 0 && sec < l.sc_grp.n && l.sc_grp.b[sec] >= 0:
+                    addr = l.sym_addr(sid, base)
+                    size = l.y_size.b[f]
+            dw_push(&ta, addr)
+            dw_push(&ts, size)
+        start = i + 1
+    return build_dwarf_core(t, &ta, &ts, abbrev, info, line, frame)
+
+
+/#/ where an executable is loaded
+fn exe_base() => int:
+    return 4194304
+
+fn put16(t: &Txt, v: int) => void:
+    for k in 0..2:
+        t.put_byte((v >> (8 * k)) & 255)
+
+fn put32(t: &Txt, v: int) => void:
+    for k in 0..4:
+        t.put_byte((v >> (8 * k)) & 255)
+
+fn put64(t: &Txt, v: int) => void:
+    for k in 0..8:
+        t.put_byte((v >> (8 * k)) & 255)
+
+fn phdr(t: &Txt, ty: int, flags: int, off: int, addr: int, fsz: int, msz: int, align: int) => void:
+    put32(t, ty)
+    put32(t, flags)
+    put64(t, off)
+    put64(t, addr)
+    put64(t, addr)
+    put64(t, fsz)
+    put64(t, msz)
+    put64(t, align)
+
+/#/ The symbol table, its names and the section headers, appended to `out`; returns where the
+/#/ section headers start. One section per segment, the symbols point into them.
+fn add_symbols(l: &Linker, out: &Txt, base: int) => int:
+    let nseg = l.sg_off.n
+    let strs = new_txt()
+    strs.put_byte(0)
+    let tab = new_txt()
+    put_zeros(&tab, 24)
+    let nlocal = 1
+    for pass in 0..2:
+        for sid in 0..l.y_sec.n:
+            let nm = l.y_nm.b[sid]
+            let sec = l.y_sec.b[sid]
+            let local = l.y_bind.b[sid] == 0
+            if nm >= 0 && sec >= 0 && sec < l.sc_grp.n && l.sc_grp.b[sec] >= 0 && l.final_sym(sid) == sid && local == (pass == 0):
+                let ty = l.y_type.b[sid]
+                if ty == 0 || ty == 1 || ty == 2:
+                    let addr = l.sym_addr(sid, base)
+                    let seg = 0
+                    for k in 0..nseg:
+                        if addr >= base + l.sg_rva.b[k] && addr < base + l.sg_rva.b[k] + l.sg_msz.b[k]:
+                            seg = k + 1
+                    if seg > 0:
+                        let w = l.name_of(nm)
+                        put32(&tab, strs.n)
+                        strs.put_all(&w)
+                        strs.put_byte(0)
+                        let bind = 1
+                        if local:
+                            bind = 0
+                        tab.put_byte((bind << 4) | ty)
+                        tab.put_byte(0)
+                        put16(&tab, seg)
+                        put64(&tab, addr)
+                        put64(&tab, l.y_size.b[sid])
+        if pass == 0:
+            nlocal = tab.n // 24
+    /#/ names of the sections: .symtab .strtab .shstrtab .seg
+    let sh = new_txt()
+    sh.put_byte(0)
+    let n_sym = sh.n
+    sh.put(".symtab")
+    sh.put_byte(0)
+    let n_str = sh.n
+    sh.put(".strtab")
+    sh.put_byte(0)
+    let n_shs = sh.n
+    sh.put(".shstrtab")
+    sh.put_byte(0)
+    /#/ the pieces are named as the usual sections are, for tools that look for `.text`
+    let n_seg = sh.n
+    sh.put(".text")
+    sh.put_byte(0)
+    let n_segro = sh.n
+    sh.put(".rodata")
+    sh.put_byte(0)
+    let n_segrw = sh.n
+    sh.put(".data")
+    sh.put_byte(0)
+    let dab = new_txt()
+    let din = new_txt()
+    let dli = new_txt()
+    let dfr = new_txt()
+    let has_dw = build_dwarf(l, base, &dab, &din, &dli, &dfr)
+    let n_dab = sh.n
+    let n_din = 0
+    let n_dli = 0
+    let n_dfr = 0
+    if has_dw:
+        sh.put(".debug_abbrev")
+        sh.put_byte(0)
+        n_din = sh.n
+        sh.put(".debug_info")
+        sh.put_byte(0)
+        n_dli = sh.n
+        sh.put(".debug_line")
+        sh.put_byte(0)
+        n_dfr = sh.n
+        sh.put(".debug_frame")
+        sh.put_byte(0)
+    put_zeros(out, align_to(out.n, 8) - out.n)
+    let off_sym = out.n
+    out.put_all(&tab)
+    let off_str = out.n
+    out.put_all(&strs)
+    let off_shs = out.n
+    out.put_all(&sh)
+    let off_dab = out.n
+    out.put_all(&dab)
+    let off_din = out.n
+    out.put_all(&din)
+    let off_dli = out.n
+    out.put_all(&dli)
+    let off_dfr = out.n
+    out.put_all(&dfr)
+    put_zeros(out, align_to(out.n, 8) - out.n)
+    let shoff = out.n
+    put_zeros(out, 64)
+    for k in 0..nseg:
+        let fl = 2
+        if l.sg_flags.b[k] & 1 != 0:
+            fl = fl | 4
+        if l.sg_flags.b[k] & 2 != 0:
+            fl = fl | 1
+        let nmo = n_segro
+        if l.sg_flags.b[k] & 1 != 0:
+            nmo = n_seg
+        elif l.sg_flags.b[k] & 2 != 0:
+            nmo = n_segrw
+        put32(out, nmo)
+        put32(out, 1)
+        put64(out, fl)
+        put64(out, base + l.sg_rva.b[k])
+        put64(out, l.sg_off.b[k])
+        put64(out, l.sg_fsz.b[k])
+        put32(out, 0)
+        put32(out, 0)
+        put64(out, 16)
+        put64(out, 0)
+    put32(out, n_sym)
+    put32(out, 2)
+    put64(out, 0)
+    put64(out, 0)
+    put64(out, off_sym)
+    put64(out, tab.n)
+    put32(out, nseg + 2)
+    put32(out, nlocal)
+    put64(out, 8)
+    put64(out, 24)
+    put32(out, n_str)
+    put32(out, 3)
+    put64(out, 0)
+    put64(out, 0)
+    put64(out, off_str)
+    put64(out, strs.n)
+    put32(out, 0)
+    put32(out, 0)
+    put64(out, 1)
+    put64(out, 0)
+    put32(out, n_shs)
+    put32(out, 3)
+    put64(out, 0)
+    put64(out, 0)
+    put64(out, off_shs)
+    put64(out, sh.n)
+    put32(out, 0)
+    put32(out, 0)
+    put64(out, 1)
+    put64(out, 0)
+    l.nshdr = nseg + 4
+    if has_dw:
+        for q in 0..4:
+            let nmo = n_dab
+            let off = off_dab
+            let sz = dab.n
+            if q == 1:
+                nmo = n_din
+                off = off_din
+                sz = din.n
+            elif q == 2:
+                nmo = n_dli
+                off = off_dli
+                sz = dli.n
+            elif q == 3:
+                nmo = n_dfr
+                off = off_dfr
+                sz = dfr.n
+            put32(out, nmo)
+            put32(out, 1)
+            put64(out, 0)
+            put64(out, 0)
+            put64(out, off)
+            put64(out, sz)
+            put32(out, 0)
+            put32(out, 0)
+            put64(out, 1)
+            put64(out, 0)
+        l.nshdr = nseg + 8
+    return shoff
+
+fn link_exe(l: &Linker) => Txt:
+    let none = new_txt()
+    l.add_start()
+    l.add_syscall()
+    if l.dyn_on:
+        l.resolve_dynamic()
+    l.check_undefined()
+    if l.errs > 0:
+        return none
+    let entry = l.find_def("_start")
+    if entry < 0:
+        l.msg("no entry point: define _start or main")
+        return none
+    l.gc(entry)
+    l.layout()
+    if l.errs > 0:
+        return none
+    let base = exe_base()
+    let mem = l.build_image()
+    if l.apply_relocs(&mem, base) > 0:
+        return none
+    if l.dyn_on:
+        dyn_fill(l, &mem, base)
+    let nseg = l.sg_off.n
+    let out = new_txt()
+    for k in 0..nseg:
+        let at = l.sg_off.b[k]
+        put_zeros(&out, at + l.sg_fsz.b[k] - out.n)
+        for q in 0..l.sg_fsz.b[k]:
+            out.b[at + q] = mem.b[l.sg_rva.b[k] + q]
+    let shoff = 0
+    let shnum = 0
+    let shstr = 0
+    if l.syms && !l.dyn_on:
+        shoff = add_symbols(l, &out, base)
+        shnum = l.nshdr
+        shstr = nseg + 3
+    /#/ the headers, over the start of the first piece
+    let dn = 0
+    if l.dyn_on:
+        dn = 2
+    let h = new_txt()
+    h.put_byte(127)
+    h.put("ELF")
+    h.put_byte(2)
+    h.put_byte(1)
+    h.put_byte(1)
+    put_zeros(&h, 9)
+    put16(&h, 2)
+    put16(&h, machine_of(ld_arch))
+    put32(&h, 1)
+    put64(&h, l.sym_addr(entry, base))
+    put64(&h, 64)
+    put64(&h, shoff)
+    put32(&h, eflags_of(ld_arch))
+    put16(&h, 64)
+    put16(&h, 56)
+    put16(&h, nseg + 1 + dn)
+    put16(&h, 64)
+    put16(&h, shnum)
+    put16(&h, shstr)
+    for k in 0..nseg:
+        phdr(&h, 1, l.sg_flags.b[k], l.sg_off.b[k], base + l.sg_rva.b[k], l.sg_fsz.b[k], l.sg_msz.b[k], 4096)
+    if l.dyn_on:
+        let ig = l.gbase[1] + l.d_interp
+        phdr(&h, 3, 4, file_off(l, ig), base + ig, 28, 28, 1)
+        let dg = l.gbase[2] + l.d_dynamic
+        let dsz = 16 * (l.nneed + 12)
+        phdr(&h, 2, 6, file_off(l, dg), base + dg, dsz, dsz, 8)
+    /#/ PT_GNU_STACK: the stack is not executable
+    phdr(&h, 1685382481, 6, 0, 0, 0, 0, 16)
+    for k in 0..h.n:
+        out.b[k] = h.b[k]
+    return out
+
+
+use chmod, fflush in libc of c
+
+fn usage() => int:
+    say("usage: cfld [-g] [-o out] [-L dir]... file.o|file.a|-lname ...\n")
+    fflush(0)
+    return 2
+
+fn starts_with(w: &Txt, head: &str) => bool:
+    if w.n < len(head):
+        return false
+    for i in 0..len(head):
+        if w.b[i] != ch(head, i):
+            return false
+    return true
+
+/#/ The path of `lib<name>.a` in the first directory that has it (an empty text if none).
+fn find_lib(dirs: &Txt, name: &Txt) => Txt:
+    let ds = new_txt()
+    ds.put_all(dirs)
+    ds.put("/usr/lib/x86_64-linux-gnu\n/usr/lib\n/lib\n")
+    let lo = 0
+    for i in 0..ds.n:
+        if ds.b[i] == 10:
+            let p = cut(&ds, lo, i)
+            p.put("/lib")
+            p.put_all(name)
+            p.put(".a")
+            if read_file(&p).n >= 0:
+                return p
+            lo = i + 1
+    return new_txt()
+
+fn main() => int:
+    let a = read_args()
+    let out = txt_of("a.out")
+    let dirs = new_txt()
+    let i = 1
+    while i < a.n:
+        let w = a.get(i)
+        if w.is("-o") && i + 1 < a.n:
+            out = a.get(i + 1)
+            i = i + 1
+        elif w.is("-L") && i + 1 < a.n:
+            let d = a.get(i + 1)
+            dirs.put_all(&d)
+            dirs.put_byte(10)
+            i = i + 1
+        elif starts_with(&w, "-L") && w.n > 2:
+            let d = cut(&w, 2, w.n)
+            dirs.put_all(&d)
+            dirs.put_byte(10)
+        i = i + 1
+    let l = new_linker()
+    let seen = 0
+    i = 1
+    while i < a.n:
+        let w = a.get(i)
+        if w.is("-o") || w.is("-L"):
+            i = i + 1
+        elif w.is("-g"):
+            l.syms = true
+        elif w.is("--dynamic"):
+            l.dyn_on = true
+        elif starts_with(&w, "-L"):
+            seen = seen
+        elif starts_with(&w, "-l") && w.n > 2:
+            let name = cut(&w, 2, w.n)
+            if l.dyn_on:
+                let sp = find_shared(&dirs, &name)
+                if sp.n == 0:
+                    say(f"ld: cannot find -l{txt_str(&name)}\n")
+                    return 1
+                let sd = read_file(&sp)
+                l.add_shared(&sd, &sp)
+                seen = seen + 1
+                i = i + 1
+                continue
+            let p = find_lib(&dirs, &name)
+            if p.n == 0:
+                say(f"ld: cannot find -l{txt_str(&name)}\n")
+                return 1
+            let data = read_file(&p)
+            l.add_file(&data, &p)
+            seen = seen + 1
+        elif starts_with(&w, "-"):
+            say(f"ld: unknown option '{txt_str(&w)}'\n")
+            return usage()
+        else:
+            let data = read_file(&w)
+            if data.n < 0:
+                say(f"ld: cannot read '{txt_str(&w)}'\n")
+                return 1
+            l.add_file(&data, &w)
+            seen = seen + 1
+        i = i + 1
+    if seen == 0:
+        return usage()
+    let exe = link_exe(&l)
+    if exe.n == 0:
+        return 1
+    write_file(&out, &exe)
+    chmod(txt_str(&out), 493)
+    return 0
+

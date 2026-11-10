@@ -1,6 +1,7 @@
 /#/ `--static`: the objects are linked by `cfld`'s linker, in this process, into an executable that
 /#/ needs no C library. The program gets the runtime of `rt/src/min.cf` (`min_rt_text`).
 use * in exe
+use * in files
 use chmod, system in libc of c
 
 /#/ `-g`: the executable keeps the names of its functions and data (a symbol table); without it the
@@ -86,6 +87,21 @@ fn link_dynamic(paths: &Txt, flags: &Txt, out: &Txt) => int:
             names.put_byte(10)
             i = j
         i = i + 1
+    /#/ the libraries found beside a `.cfc` are found again at run time: DT_RUNPATH, absolute
+    let pwd = pwd_of()
+    let dlo = 0
+    for k in 0..dirs.n:
+        if dirs.b[k] == 10:
+            let d = slice(&dirs, dlo, k)
+            dlo = k + 1
+            if d.n > 0 && d.b[0] == 47:
+                l.rpath.put_all(&d)
+            else:
+                l.rpath.put_all(&pwd)
+                if !(d.n == 1 && d.b[0] == 46):
+                    l.rpath.put_byte(47)
+                    l.rpath.put_all(&d)
+            l.rpath.put_byte(10)
     lo = 0
     for k in 0..names.n:
         if names.b[k] == 10:

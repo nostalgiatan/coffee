@@ -38,6 +38,22 @@ fn main() => int:
         if r2 != 10752:
             say(f"MISS: copy relocations: status {r2}, want 10752\n")
             m = m + 1
+    /#/ a shared library next to its `.cfc`: found at run time through DT_RUNPATH, with no LD_LIBRARY_PATH
+    if system("command -v cc > /dev/null 2>&1") == 0:
+        let ls = "int twice(int x) { return x * 2; }\n"
+        let lp = txt_of("dn/libso1.c")
+        let lt = txt_of(&ls)
+        write_file(&lp, &lt)
+        let sc = txt_of("dn/so1.cfc")
+        let sct = txt_of("c fn twice(x: int(4)+) => int(4)+:\n")
+        write_file(&sc, &sct)
+        let sp = txt_of("dn/s1.cf")
+        let st = txt_of("use twice in so1 of c\n\nfn main() => int:\n    return twice(21)\n")
+        write_file(&sp, &st)
+        let r3 = system("cd dn && cc -shared -fPIC -o libso1.so libso1.c && PATH=$(dirname $(command -v coffee2)):/nonexistent coffee2 s1.cf --no-cc -o s1 > build3.log 2>&1 && env -u LD_LIBRARY_PATH ./s1")
+        if r3 != 10752:
+            say(f"MISS: shared library: status {r3}, want 10752\n")
+            m = m + 1
     system("rm -rf dn")
     fflush(0)
     return m

@@ -1,17 +1,17 @@
 # Coffee
 
-Statically typed language with Python-like indentation, compiled to x86-64 machine code by a compiler written in Coffee. Source files are `.cf`; projects use `coffee.toml`. Headline feature: **bidirectional C interop** through `.cfc` files (no original C headers required). Long-term goal: the smallest possible footprint, down to an embedded JIT.
+Statically typed language with Python-like indentation, compiled to x86-64, aarch64 and riscv64 machine code by a compiler written in Coffee. Source files are `.cf`; projects use `coffee.toml`. Headline feature: **bidirectional C interop** through `.cfc` files (no original C headers required). Long-term goal: the smallest possible footprint, down to an embedded JIT.
 
-- **Compiler:** self-hosted, in [coffee/](coffee/): lexer, parser, semantic analysis, types, ownership, SSA IR with an optimizer, x86-64 code generator, ELF object writer, linker (`cfld`). It links with its own linker; `cc` is used only for programs that call C functions the built-in C library lacks (`printf`, `fopen`, ...). No LLVM, no Rust.
+- **Compiler:** self-hosted, in [coffee/](coffee/): lexer, parser, semantic analysis, types, ownership, SSA IR with an optimizer, x86-64, aarch64 and riscv64 code generators, ELF object writer, linker (`cfld`, static and, on x86-64, dynamic against glibc and shared libraries). It links with its own linker; `cc` is only a fallback. A JIT with a sandbox (`cfjit`) runs on all three. No LLVM, no Rust.
 - **Docs:** [docs/](docs/README.md) (中文; tutorial, how-to, reference, explanation). Syntax: [SYNTAX.md](SYNTAX.md). Contributor map: [CLAUDE.md](CLAUDE.md).
 - **First generation:** the Rust/LLVM compiler is archived. Its last version is the git tag `rust-stage0-final`; its docs are in [docs/legacy-rust](docs/legacy-rust/README.md). What it had and the self-hosted compiler does not: [docs/explanation/stage0.md](docs/explanation/stage0.md).
 
 ## Build
 
-x86-64 Linux is all that is needed: no C compiler either. A committed seed (a static executable of the compiler) builds it:
+x86-64 or aarch64 Linux is all that is needed: no C compiler either. A committed seed per architecture (a static executable of the compiler) builds it:
 
 ```bash
-coffee/driver/tools/build-from-seed.sh /tmp/coffee-seed     # → coffee2 and tea in /tmp/coffee-seed
+coffee/driver/tools/build-from-seed.sh /tmp/coffee-seed     # → coffee2, tea, cfjit, cfprof in /tmp/coffee-seed
 ```
 
 ```bash
@@ -22,7 +22,7 @@ tea test                                  # tests/ of the current package, in pa
 tea build / tea run                       # coffee.toml [build] main
 ```
 
-Run the whole suite with `coffee/compat` (1023 cases ported from the Rust tests) and each stage's own `tests/` through `tea test --compiler /tmp/coffee-seed/coffee2`. After a compiler change, `build-from-seed.sh <dir> --refresh` updates the seed.
+Run the whole suite with `coffee/compat` (1023 cases ported from the Rust tests) and each stage's own `tests/` through `tea test --compiler /tmp/coffee-seed/coffee2`. After a compiler change, `build-from-seed.sh <dir> --refresh` updates the seeds (on x86-64 both, the aarch64 one cross compiled). What is missing and what is limited: [docs/explanation/status.md](docs/explanation/status.md).
 
 `int(N)+` / `float(N)`: **N is bytes** (`int(4)+` ≈ C `int`). Memory: values copy, resources (`class`, `str`, `buf`, slices) move or `clone`; `rm` drops early; `&` / `&mut` borrow. See [docs/explanation/ownership-and-drop.md](docs/explanation/ownership-and-drop.md).
 

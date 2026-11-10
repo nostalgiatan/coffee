@@ -68,9 +68,12 @@ fn dyn_fill(l: &Linker, mem: &Txt, base: int) => void:
         wr64(mem, dy + 16 * n, 1)
         wr64(mem, dy + 16 * n + 8, l.str_so.b[i])
         n = n + 1
-    let tags = [4, 5, 6, 10, 11, 7, 8, 9, 30, 21]
-    let vals = [base + g1 + l.d_hash, base + g1 + l.d_str, base + g1 + l.d_sym, l.dyn_str.n, 24, base + g1 + l.d_rela, 24 * ndyn, 24, 8, 0]
-    for k in 0..10:
+    let tags = [4, 5, 6, 10, 11, 7, 8, 9, 30, 21, 29]
+    let vals = [base + g1 + l.d_hash, base + g1 + l.d_str, base + g1 + l.d_sym, l.dyn_str.n, 24, base + g1 + l.d_rela, 24 * ndyn, 24, 8, 0, l.str_rpath]
+    let nt = 10
+    if l.rpath.n > 0:
+        nt = 11
+    for k in 0..nt:
         wr64(mem, dy + 16 * n, tags[k])
         wr64(mem, dy + 16 * n + 8, vals[k])
         n = n + 1

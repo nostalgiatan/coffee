@@ -9,7 +9,7 @@
 | 要做的 | 一个静态类型、自举的编译器,带自己的后端、链接器和 JIT;JIT 是**最小占用的、可内嵌的、可沙盒的**;可以跨平台(x86-64、aarch64、riscv64 的 Linux 现在有,Windows 的编译器一侧有) |
 | 内嵌的主要使用者 | **别的语言**(Python、Rust、Go、Lua 等),所以接口是 C ABI;Coffee 自己用它的机会小,但要留 |
 | 不做的 | 解释器(JIT 是唯一的执行方式);iOS 的 JIT(系统不允许);32 位目标 |
-| `coffee2` 自己 | 仍是 x86-64,能交叉编译 |
+| `coffee2` 自己 | x86-64 和 aarch64 都有种子(aarch64 的由 x86-64 交叉编出),能互相交叉编译;riscv64 的编译器能交叉编出并在 qemu 下自举,还没有种子 |
 
 ## 2. 一张图
 
@@ -142,6 +142,7 @@ IR 之后的两个变换:
 | I | 删除 `gs`(满足第 6.3 节的条件之后) | 复测:基址是 `gs` 开销的 2.09 倍(+9.2% 对 +4.4%),略超 2 倍,暂缓(验证器数据流去 `lea` 试过,无效,已撤回) |
 | J | PE 对象写入器、Win64 调用约定、`os_windows_*.cf`、Windows 加载器 | 编译器一侧完成:COFF 写入器(`coff.cf`)、Win64 约定(`x86_64-linux-ms` 在 Linux 上对 gcc 的 `ms_abi` 测过)、`--target=x86_64-windows` 经 MinGW 链接;展开信息、加载器、运行时待做([Windows 目标](../reference/windows-backend.md)) |
 | K | riscv64 | 编译器一侧完成:`asm_rv.cf` 与 `gen_rv_*.cf`、`cfld` 的 riscv64 重定位,`--target=riscv64-linux`,在 qemu-riscv64 下与 x86-64 版本逐字相同,编译器自己编成 riscv64 能复现自身([riscv64 后端](../reference/riscv64-backend.md));向量循环(rva23)、沙盒加载器和非沙盒的 JIT 加载也已做:`sbxcheck_rv.cf`、`sandbox_rv.cf`,`cfjit --target=riscv64 --sandbox` 在 qemu-riscv64 下过沙盒测试和 191 个 `exits` 用例(与 aarch64 的结果逐项相同) |
+| L | 沙盒函数值(`sbxfn.cf`)、`cfld` 的 x86-64 动态链接、静态 C 库(`.o`/`.a`)免 `cc`、aarch64 种子、CI 在 qemu 下跑三个目标的门槛并发布交叉编译的包 | 完成 |
 | 可选 | pkeys 加速模式;静态叠放影子帧 | 不排期 |
 
 每个阶段的门槛:两个目标的语料输出逐字节不变(整理类),或有测量(语义类);各阶段 `tea test`、`compat`、沙盒的 `compare.sh`(`SANDBOX=1`/`base`)全过;种子刷新后再构建一次逐字节相同。
@@ -158,4 +159,5 @@ IR 之后的两个变换:
 | `sandbox-design.md` | 沙盒的原始设计和 S1 到 S4 的实现记录 | 有效;"基址模式"一节已按 r13 释放更新 |
 | `sandbox-pointers.md` | 指针与寄存器压力的**研究记录**(按时间顺序,含被推翻的推断) | 结论在本文第 6.3 节;读它是为了看测量和过程 |
 | `jit-design.md`、`jit-tiers.md` | JIT 的设计、分层、热替换 | 有效 |
+| `status.md` | 现状清单:缺什么、已知问题、局限 | 有效,随版本更新 |
 | `backend-choices.md`、`register-plan.md`、`loop-and-call-optimizations.md`、`ownership-and-drop.md`、`stage0.md` | 各自的专题 | 有效 |

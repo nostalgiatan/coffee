@@ -61,7 +61,7 @@ coffee2 use_c.cf -o use_c
 
 ## 动态链接,也不用 `cc`
 
-库只有 `.so`,或要用 glibc 的其余部分(`printf`、`sqrt`)时,内置链接器也能做动态链接(仅 x86-64 Linux):机器上没有 `cc` 时自动用,有 `cc` 时加 `--no-cc` 强制。它写出带 `PT_INTERP`、`DT_NEEDED` 的可执行文件,每个导入函数有一个跳转桩和一个 GOT 槽,加载时全部绑定(`BIND_NOW`);入口调用 `__libc_start_main`。`.so` 按 `.cfc` 所在目录、再按系统库目录找(`libz.so`、`libz.so.1` 等),只有真正用到的库才进 `DT_NEEDED`。
+库只有 `.so`,或要用 glibc 的其余部分(`printf`、`sqrt`)时,内置链接器也能做动态链接(仅 x86-64 Linux):机器上没有 `cc` 时自动用,有 `cc` 时加 `--no-cc` 强制。它写出带 `PT_INTERP`、`DT_NEEDED` 的可执行文件,每个导入函数有一个跳转桩和一个 GOT 槽,加载时全部绑定(`BIND_NOW`);入口调用 `__libc_start_main`。`.so` 按 `.cfc` 所在目录、再按系统库目录找(`libz.so`、`libz.so.1` 等),只有真正用到的库才进 `DT_NEEDED`;`.cfc` 所在目录写进 `DT_RUNPATH`(绝对路径),运行时不用设 `LD_LIBRARY_PATH`。
 
 C 对象里直接读库里的变量(`stdout`、`environ`,非 PIC 代码的 `R_X86_64_PC32`)用复制重定位:变量拷到程序的 .bss,同一位置的别名(`environ` 和 `__environ`)共用一份,并在动态符号表里导出,库内部也绑到这份拷贝。`--incremental` 同样走这两条路径。
 

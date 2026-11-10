@@ -94,6 +94,15 @@ fn cmdline() => Txt:
 
 fn parse_cli(fl: &Flat) => Cli:
     let cli = Cli { input: new_txt(), output: new_txt(), emit_only: false, flat_only: false, level: 1, bad: 0, cache: new_txt(), jobs: 0, static_link: false, dynamic: false, auto_static: false, emit_cir: false, lines_path: new_txt(), stats: false, lint: false, debug: false, gen_cfc: false, have_c: false }
+    /#/ the default target is the machine the compiler runs on (a compiler cross compiled for aarch64 or
+    /#/ riscv64 writes code for it); `--target=` below overrides
+    let hm = host_machine()
+    if hm == 183:
+        set_target(&txt_of("aarch64-linux"))
+        set_ld_arch(target_arch)
+    elif hm == 243:
+        set_target(&txt_of("riscv64-linux"))
+        set_ld_arch(target_arch)
     let raw = cmdline()
     let words = new_txt()
     /#/ one word per line
@@ -228,19 +237,6 @@ fn count_lines(t: &Txt) => int:
         if t.b[i] == 10:
             n = n + 1
     return n
-
-fn pwd_of() => Txt:
-    let env = read_file(&txt_of("/proc/self/environ"))
-    let w = new_txt()
-    let out = new_txt()
-    for i in 0..env.n + 1:
-        if i == env.n || env.b[i] == 0:
-            if w.n > 4 && w.b[0] == int('P') && w.b[1] == int('W') && w.b[2] == int('D') && w.b[3] == int('='):
-                out = slice(&w, 4, w.n)
-            w.clear()
-        else:
-            w.put_byte(env.b[i])
-    return out
 
 /#/ The directory part of a path ("." when there is none).
 fn dir_of(path: &Txt) => Txt:

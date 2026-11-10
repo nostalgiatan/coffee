@@ -279,7 +279,7 @@ fn link_exe(l: &Linker) => Txt:
         let ig = l.gbase[1] + l.d_interp
         phdr(&h, 3, 4, file_off(l, ig), base + ig, 28, 28, 1)
         let dg = l.gbase[2] + l.d_dynamic
-        let dsz = 16 * (l.nneed + 11)
+        let dsz = 16 * (l.nneed + 12)
         phdr(&h, 2, 6, file_off(l, dg), base + dg, dsz, dsz, 8)
     /#/ PT_GNU_STACK: the stack is not executable
     phdr(&h, 1685382481, 6, 0, 0, 0, 0, 16)

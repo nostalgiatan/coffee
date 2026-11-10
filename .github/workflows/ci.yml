@@ -49,3 +49,23 @@ jobs:
         run: coffee/driver/tools/build-from-seed.sh "$RUNNER_TEMP/w"
       - name: Cross gates
         run: coffee/driver/tools/cross-gates.sh "$RUNNER_TEMP/w"
+
+  # the aarch64 seed on a real aarch64 machine: it builds the sources, the result builds them again to the same
+  # bytes, the tools build, and a program compiled and run there is native aarch64
+  seed-aarch64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build from the aarch64 seed
+        run: |
+          out=$(coffee/driver/tools/build-from-seed.sh "$RUNNER_TEMP/w")
+          echo "$out"
+          case "$out" in *"seed is current"*) ;; *) echo "::error::the committed aarch64 seed is older than the sources; run build-from-seed.sh --refresh on x86-64"; exit 1;; esac
+      - name: Smoke test
+        run: |
+          printf 'fn main() => int:\n    return 42\n' > smoke.cf
+          "$RUNNER_TEMP/w/coffee2" smoke.cf -o smoke
+          set +e; ./smoke; rc=$?; set -e
+          [ "$rc" = 42 ] || { echo "::error::smoke test returned $rc"; exit 1; }
+          file smoke | grep -q aarch64
